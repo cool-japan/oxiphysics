@@ -25,6 +25,9 @@ pub struct SparseMatrixGpu {
     pub col_idx: Vec<usize>,
     /// Value array (length nnz).
     pub values: Vec<f64>,
+    /// COO triplets `(row, col, value)` queued by [`add_entry`](Self::add_entry)
+    /// and merged into the CSR arrays by [`finalize`](Self::finalize).
+    pending: Vec<(usize, usize, f64)>,
 }
 
 impl SparseMatrixGpu {
@@ -36,6 +39,7 @@ impl SparseMatrixGpu {
             row_ptr: vec![0usize; n + 1],
             col_idx: Vec::new(),
             values: Vec::new(),
+            pending: Vec::new(),
         }
     }
 
@@ -52,36 +56,97 @@ impl SparseMatrixGpu {
             row_ptr,
             col_idx,
             values,
+            pending: Vec::new(),
         }
     }
 
-    /// Append a single entry `(row, col, val)` in COO style.
+    /// Queue a single entry `(row, col, val)` in COO style.
     ///
-    /// This invalidates the CSR structure until [`finalize`](Self::finalize) is called.
-    pub fn add_entry(&mut self, row: usize, col: usize, val: f64) {
-        // Store as a pending triplet encoded in the arrays.
-        self.col_idx.push(col);
-        self.values.push(val);
-        // Use row_ptr[row+1] as a count (finalize will prefix-sum them).
-        if row + 1 < self.row_ptr.len() {
-            self.row_ptr[row + 1] += 1;
+    /// Entries may be added in any order; the CSR arrays (and therefore
+    /// [`nnz`](Self::nnz), SpMV and the solvers) only see them after
+    /// [`finalize`](Self::finalize) has been called.  Several entries for the
+    /// same `(row, col)` are summed.
+    ///
+    /// # Errors
+    /// Returns [`Error::General`](crate::error::Error::General) — and queues
+    /// nothing — if `row >= n` or `col >= n`.
+    pub fn add_entry(
+        &mut self,
+        row: usize,
+        col: usize,
+        val: f64,
+    ) -> Result<(), crate::error::Error> {
+        if row >= self.n || col >= self.n {
+            return Err(crate::error::Error::General(format!(
+                "add_entry: index ({row}, {col}) is outside the {n}x{n} matrix",
+                n = self.n
+            )));
         }
-        self.nnz += 1;
+        self.pending.push((row, col, val));
+        Ok(())
     }
 
-    /// Convert count-per-row in `row_ptr` to proper CSR offsets.
+    /// Merge all queued [`add_entry`](Self::add_entry) triplets into the CSR arrays.
     ///
-    /// Must be called after a series of [`add_entry`](Self::add_entry) calls
-    /// and before any SpMV or solver operations.
+    /// The queued triplets are combined with the entries already stored in the
+    /// matrix (for example those supplied through [`from_csr`](Self::from_csr)
+    /// or by an earlier `finalize`), sorted by `(row, col)`, duplicates are
+    /// summed, and `row_ptr`, `col_idx`, `values` and `nnz` are rebuilt from
+    /// scratch.  Column indices are therefore sorted within every row.
+    ///
+    /// Must be called after a series of `add_entry` calls and before any SpMV or
+    /// solver operation.  Calling it again without new entries leaves the matrix
+    /// unchanged.
     pub fn finalize(&mut self) {
-        // Prefix-sum row_ptr in-place.
-        for i in 1..=self.n {
-            self.row_ptr[i] += self.row_ptr[i - 1];
+        if self.pending.is_empty() {
+            return;
         }
-        self.nnz = *self.row_ptr.last().unwrap_or(&0);
+        let mut triplets: Vec<(usize, usize, f64)> =
+            Vec::with_capacity(self.values.len() + self.pending.len());
+        // Re-expand the committed CSR entries first so earlier data is merged,
+        // not discarded.  `get` keeps a malformed `row_ptr` from panicking.
+        for row in 0..self.n {
+            let start = self.row_ptr.get(row).copied().unwrap_or(0);
+            let end = self.row_ptr.get(row + 1).copied().unwrap_or(start);
+            for k in start..end {
+                if let (Some(&col), Some(&val)) = (self.col_idx.get(k), self.values.get(k)) {
+                    triplets.push((row, col, val));
+                }
+            }
+        }
+        triplets.append(&mut self.pending);
+        // Stable sort: duplicates are summed in insertion order (deterministic).
+        triplets.sort_by_key(|&(row, col, _)| (row, col));
+
+        let mut row_ptr = vec![0usize; self.n + 1];
+        let mut col_idx: Vec<usize> = Vec::with_capacity(triplets.len());
+        let mut values: Vec<f64> = Vec::with_capacity(triplets.len());
+        let mut last: Option<(usize, usize)> = None;
+        for (row, col, val) in triplets {
+            if last == Some((row, col))
+                && let Some(slot) = values.last_mut()
+            {
+                *slot += val;
+                continue;
+            }
+            row_ptr[row + 1] += 1;
+            col_idx.push(col);
+            values.push(val);
+            last = Some((row, col));
+        }
+        for i in 1..=self.n {
+            row_ptr[i] += row_ptr[i - 1];
+        }
+        self.nnz = values.len();
+        self.row_ptr = row_ptr;
+        self.col_idx = col_idx;
+        self.values = values;
     }
 
-    /// Return the number of non-zero entries.
+    /// Return the number of stored entries in the CSR arrays.
+    ///
+    /// Entries queued with [`add_entry`](Self::add_entry) are not counted until
+    /// [`finalize`](Self::finalize) has merged them.
     pub fn nnz(&self) -> usize {
         self.nnz
     }
@@ -116,6 +181,10 @@ impl SparseMatrixGpu {
             for k in start..end {
                 let col = self.col_idx[k];
                 let val = self.values[k];
+                if col >= self.n {
+                    // No row `col` exists, so no transpose entry can exist either.
+                    return false;
+                }
                 // Look for the transpose entry.
                 let mut found = false;
                 let cs = self.row_ptr[col];
@@ -500,15 +569,206 @@ mod tests {
     #[test]
     fn test_add_entry_finalize() {
         let mut mat = SparseMatrixGpu::new(2);
-        mat.add_entry(0, 0, 2.0);
-        mat.add_entry(0, 1, -1.0);
-        mat.add_entry(1, 0, -1.0);
-        mat.add_entry(1, 1, 2.0);
+        mat.add_entry(0, 0, 2.0).unwrap();
+        mat.add_entry(0, 1, -1.0).unwrap();
+        mat.add_entry(1, 0, -1.0).unwrap();
+        mat.add_entry(1, 1, 2.0).unwrap();
         mat.finalize();
         assert_eq!(mat.nnz(), 4);
         let y = gpu_spmv(&mat, &[1.0, 0.0]);
         assert!((y[0] - 2.0).abs() < 1e-12);
         assert!((y[1] + 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_add_entry_unsorted_rows_build_correct_csr() {
+        // Row 1 is added before row 0: every value must still land in its own row,
+        // independent of the insertion order.
+        let mut mat = SparseMatrixGpu::new(2);
+        mat.add_entry(1, 0, 2.0).unwrap();
+        mat.add_entry(0, 1, 3.0).unwrap();
+        mat.finalize();
+        assert_eq!(mat.row_ptr, vec![0, 1, 2]);
+        assert_eq!(mat.col_idx, vec![1, 0]);
+        assert_eq!(mat.values, vec![3.0, 2.0]);
+        assert_eq!(mat.nnz(), 2);
+        let y = gpu_spmv(&mat, &[1.0, 1.0]);
+        assert_eq!(y, vec![3.0, 2.0]);
+    }
+
+    #[test]
+    fn test_finalize_is_idempotent() {
+        let mut mat = SparseMatrixGpu::new(3);
+        mat.add_entry(2, 2, 5.0).unwrap();
+        mat.add_entry(0, 0, 1.0).unwrap();
+        mat.add_entry(1, 0, -2.0).unwrap();
+        mat.add_entry(0, 2, 4.0).unwrap();
+        mat.finalize();
+        let (row_ptr, col_idx, values, nnz) = (
+            mat.row_ptr.clone(),
+            mat.col_idx.clone(),
+            mat.values.clone(),
+            mat.nnz,
+        );
+        mat.finalize();
+        mat.finalize();
+        assert_eq!(mat.row_ptr, row_ptr);
+        assert_eq!(mat.col_idx, col_idx);
+        assert_eq!(mat.values, values);
+        assert_eq!(mat.nnz, nnz);
+        assert_eq!(mat.row_ptr, vec![0, 2, 3, 4]);
+        assert_eq!(mat.col_idx, vec![0, 2, 0, 2]);
+        assert_eq!(mat.values, vec![1.0, 4.0, -2.0, 5.0]);
+    }
+
+    #[test]
+    fn test_finalize_sorts_columns_and_sums_duplicates() {
+        let mut mat = SparseMatrixGpu::new(3);
+        for &(row, col, val) in &[
+            (0, 2, 1.0),
+            (0, 0, 2.0),
+            (0, 1, 3.0),
+            (0, 0, 0.5),
+            (2, 1, 7.0),
+            (2, 1, -2.0),
+        ] {
+            mat.add_entry(row, col, val).unwrap();
+        }
+        mat.finalize();
+        assert_eq!(mat.row_ptr, vec![0, 3, 3, 4]);
+        assert_eq!(mat.col_idx, vec![0, 1, 2, 1]);
+        assert_eq!(mat.values, vec![2.5, 3.0, 1.0, 5.0]);
+        assert_eq!(mat.nnz(), 4);
+    }
+
+    #[test]
+    fn test_add_entry_rejects_out_of_range_indices() {
+        let mut mat = SparseMatrixGpu::new(2);
+        assert!(
+            mat.add_entry(2, 0, 1.0).is_err(),
+            "row == n must be rejected"
+        );
+        assert!(
+            mat.add_entry(0, 2, 1.0).is_err(),
+            "col == n must be rejected"
+        );
+        assert!(mat.add_entry(usize::MAX, 0, 1.0).is_err());
+        let err = mat.add_entry(5, 1, 1.0).unwrap_err();
+        assert!(
+            err.to_string().contains("(5, 1)"),
+            "error should name the offending index, got: {err}"
+        );
+        // Nothing was queued, so finalize leaves an empty matrix untouched.
+        mat.finalize();
+        assert_eq!(mat.nnz(), 0);
+        assert_eq!(mat.row_ptr, vec![0, 0, 0]);
+        assert!(mat.is_symmetric());
+    }
+
+    #[test]
+    fn test_finalize_merges_with_existing_csr_entries() {
+        // Start from a CSR identity, then add an off-diagonal entry and bump (0, 0).
+        let mut mat = sparse_identity(2);
+        mat.add_entry(0, 1, 5.0).unwrap();
+        mat.add_entry(0, 0, 2.0).unwrap();
+        mat.finalize();
+        assert_eq!(mat.row_ptr, vec![0, 2, 3]);
+        assert_eq!(mat.col_idx, vec![0, 1, 1]);
+        assert_eq!(mat.values, vec![3.0, 5.0, 1.0]);
+        let y = gpu_spmv(&mat, &[1.0, 1.0]);
+        assert_eq!(y, vec![8.0, 1.0]);
+    }
+
+    #[test]
+    fn test_two_finalize_rounds_keep_first_batch() {
+        let mut mat = SparseMatrixGpu::new(2);
+        mat.add_entry(1, 1, 4.0).unwrap();
+        mat.add_entry(0, 0, 1.0).unwrap();
+        mat.finalize();
+        mat.add_entry(0, 1, -1.0).unwrap();
+        mat.add_entry(1, 0, -1.0).unwrap();
+        mat.finalize();
+        assert_eq!(mat.row_ptr, vec![0, 2, 4]);
+        assert_eq!(mat.col_idx, vec![0, 1, 0, 1]);
+        assert_eq!(mat.values, vec![1.0, -1.0, -1.0, 4.0]);
+        assert!(mat.is_symmetric());
+    }
+
+    #[test]
+    fn test_unsorted_assembly_solves_with_cg() {
+        // Assemble the 3x3 SPD tridiagonal system in a scrambled order and solve it.
+        let mut mat = SparseMatrixGpu::new(3);
+        for &(row, col, val) in &[
+            (2, 2, 4.0),
+            (1, 0, -1.0),
+            (0, 0, 4.0),
+            (2, 1, -1.0),
+            (1, 2, -1.0),
+            (0, 1, -1.0),
+            (1, 1, 4.0),
+        ] {
+            mat.add_entry(row, col, val).unwrap();
+        }
+        mat.finalize();
+        let reference = build_3x3_spd();
+        assert_eq!(mat.row_ptr, reference.row_ptr);
+        assert_eq!(mat.col_idx, reference.col_idx);
+        assert_eq!(mat.values, reference.values);
+        let b = vec![1.0, 2.0, 3.0];
+        let (x, iters, _) = gpu_cg_solver(&mat, &b, 100, 1e-12);
+        assert!(iters < 100);
+        let ax = gpu_spmv(&mat, &x);
+        for (ai, bi) in ax.iter().zip(b.iter()) {
+            assert!((ai - bi).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn test_random_assembly_order_matches_dense_reference() {
+        // 200 random triplets (many duplicates, any row order) must assemble to the
+        // same operator as a dense accumulation of the same triplets.
+        let n = 12;
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut dense = vec![vec![0.0f64; n]; n];
+        let mut mat = SparseMatrixGpu::new(n);
+        for _ in 0..200 {
+            let row = (next() % n as u64) as usize;
+            let col = (next() % n as u64) as usize;
+            let val = ((next() % 2001) as f64 - 1000.0) / 100.0;
+            dense[row][col] += val;
+            mat.add_entry(row, col, val).unwrap();
+        }
+        mat.finalize();
+        let x: Vec<f64> = (0..n).map(|i| 1.0 + 0.25 * i as f64).collect();
+        let y = gpu_spmv(&mat, &x);
+        for (row, y_row) in y.iter().enumerate() {
+            let expected: f64 = dense[row].iter().zip(x.iter()).map(|(a, b)| a * b).sum();
+            assert!(
+                (y_row - expected).abs() < 1e-9,
+                "row {row}: sparse {y_row} vs dense {expected}"
+            );
+        }
+        for row in 0..n {
+            let cols = &mat.col_idx[mat.row_ptr[row]..mat.row_ptr[row + 1]];
+            assert!(
+                cols.windows(2).all(|w| w[0] < w[1]),
+                "row {row}: columns must be strictly increasing, got {cols:?}"
+            );
+        }
+        assert_eq!(mat.nnz(), mat.values.len());
+        assert_eq!(mat.row_ptr.last().copied(), Some(mat.nnz()));
+    }
+
+    #[test]
+    fn test_is_symmetric_rejects_out_of_range_column_without_panicking() {
+        let mat = SparseMatrixGpu::from_csr(2, vec![0, 1, 1], vec![7], vec![1.0]);
+        assert!(!mat.is_symmetric());
     }
 
     // ── CG solver ────────────────────────────────────────────────────────────

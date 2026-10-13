@@ -3,12 +3,14 @@
 mod dynamicsmagorinsky_traits;
 mod dynamicsmagorinskyles_traits;
 pub mod functions;
+pub mod germano;
 mod kepsilonsph_traits;
 mod komegarans_traits;
 mod lesenergybudget_traits;
 mod mixinglength_traits;
 mod mixinglengthmodel_traits;
 mod sigmamodel_traits;
+pub(crate) mod singular_values;
 mod smagorinskyles_traits;
 mod spsmodel_traits;
 mod turbulentprandtlnumber_traits;

@@ -2,7 +2,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use super::elasticity::{
+    TetRest, explicit_stability_limit, linear_elastic_energy_density, linear_elastic_stress,
+    mat3_adjugate, mat3_symmetric_part, mat3_transpose, stability_substeps,
+};
 use super::functions::*;
+use std::collections::HashSet;
 /// A single tissue layer with distinct mechanical properties.
 #[derive(Debug, Clone)]
 pub struct TissueLayer {
@@ -117,6 +122,21 @@ impl HapticFeedback {
 }
 /// A multi-layer soft tissue model with heterogeneous elastic properties and
 /// pre-stress support.
+///
+/// The tetrahedral elements are linear elastic (small strain). The Lamé
+/// parameters of an element come from the layer of its first node, the
+/// deformation is measured against [`TissueModel::rest_positions`], and the
+/// isotropic [`TissueModel::pre_stress`] is added to the element stress.
+/// Energy is dissipated by Rayleigh damping `C = α M + β K` with the
+/// mass-proportional coefficient [`TissueModel::damping_alpha`] and the
+/// stiffness-proportional coefficient [`TissueModel::damping_beta`].
+///
+/// Small-strain elasticity is geometrically linear: infinitesimal rigid
+/// rotations of an element are force-free, and a large rotation is not resisted
+/// as it should be. The model is therefore meant for tissue that is anchored
+/// well enough (enough pinned nodes) for the deformation to stay small; use
+/// [`SoftTissueModel`], whose neo-Hookean energy is rotation invariant, for
+/// large deformations and rotations.
 #[derive(Debug, Clone)]
 pub struct TissueModel {
     /// Tissue nodes (particle positions).
@@ -127,10 +147,19 @@ pub struct TissueModel {
     pub layers: Vec<TissueLayer>,
     /// Global pre-stress tensor component σ₀ \[Pa\] (isotropic, for simplicity).
     pub pre_stress: f64,
-    /// Rayleigh damping coefficient α (mass-proportional).
+    /// Rayleigh damping coefficient α \[1/s\] (mass-proportional: force `-α m v`).
     pub damping_alpha: f64,
-    /// Rayleigh damping coefficient β (stiffness-proportional).
+    /// Rayleigh damping coefficient β \[s\] (stiffness-proportional: force `-β K v`).
     pub damping_beta: f64,
+    /// Rest (reference) node positions \[m\], recorded by [`TissueModel::add_node`].
+    ///
+    /// The element forces measure the deformation against these positions.
+    pub rest_positions: Vec<[f64; 3]>,
+    /// Severed flag of each element (parallel to `elements`).
+    ///
+    /// A severed element no longer carries load, see
+    /// [`TissueModel::sever_element`].
+    pub severed_elements: Vec<bool>,
 }
 impl TissueModel {
     /// Create a new tissue model.
@@ -142,17 +171,211 @@ impl TissueModel {
             pre_stress,
             damping_alpha: 0.02,
             damping_beta: 0.002,
+            rest_positions: Vec::new(),
+            severed_elements: Vec::new(),
         }
     }
     /// Add a node to the tissue.
+    ///
+    /// The position the node has when it is added becomes its rest position.
     pub fn add_node(&mut self, node: TissueNode) -> usize {
         let idx = self.nodes.len();
+        self.rest_positions.push(node.position);
         self.nodes.push(node);
         idx
     }
     /// Add a tetrahedral element.
     pub fn add_element(&mut self, indices: [usize; 4]) {
         self.elements.push(indices);
+        self.severed_elements.push(false);
+    }
+    /// `true` if the element has been severed and therefore carries no load.
+    pub fn is_element_severed(&self, element: usize) -> bool {
+        self.severed_elements.get(element).copied().unwrap_or(false)
+    }
+    /// Sever an element: it stops exerting elastic forces.
+    ///
+    /// Returns `false` (and changes nothing) if `element` is out of range.
+    pub fn sever_element(&mut self, element: usize) -> bool {
+        if element >= self.elements.len() {
+            return false;
+        }
+        if self.severed_elements.len() < self.elements.len() {
+            self.severed_elements.resize(self.elements.len(), false);
+        }
+        self.severed_elements[element] = true;
+        true
+    }
+    /// Sever every element that contains both end nodes of one of the given
+    /// (cut) edges.
+    ///
+    /// Returns the number of elements that were newly severed.
+    pub fn sever_elements_by_edges(
+        &mut self,
+        edges: impl IntoIterator<Item = (usize, usize)>,
+    ) -> usize {
+        let cut: HashSet<(usize, usize)> = edges
+            .into_iter()
+            .map(|(a, b)| (a.min(b), a.max(b)))
+            .collect();
+        if cut.is_empty() {
+            return 0;
+        }
+        let mut newly_severed = 0;
+        for element in 0..self.elements.len() {
+            if self.is_element_severed(element) {
+                continue;
+            }
+            let nodes = self.elements[element];
+            let touches_cut_edge = (0..4).any(|a| {
+                ((a + 1)..4).any(|b| {
+                    let (lo, hi) = (nodes[a].min(nodes[b]), nodes[a].max(nodes[b]));
+                    cut.contains(&(lo, hi))
+                })
+            });
+            if touches_cut_edge && self.sever_element(element) {
+                newly_severed += 1;
+            }
+        }
+        newly_severed
+    }
+    /// Layer that governs element `element`: the layer of its first node
+    /// (clamped to the last layer).  `None` if the model has no layers or the
+    /// element refers to a missing node.
+    fn layer_of_element(&self, element: usize) -> Option<&TissueLayer> {
+        let first_node = self.elements.get(element)?[0];
+        let layer_index = self.nodes.get(first_node)?.layer_index;
+        self.layers
+            .get(layer_index.min(self.layers.len().saturating_sub(1)))
+    }
+    /// Elements that currently carry load, with their precomputed rest data.
+    ///
+    /// Severed elements, elements that refer to missing nodes, flat rest
+    /// tetrahedra and elements whose layer has non-finite Lamé parameters
+    /// (for example Poisson's ratio 0.5) are left out.
+    fn load_bearing_elements(&self) -> Vec<TissueElement> {
+        let known_nodes = self.nodes.len().min(self.rest_positions.len());
+        let mut elements = Vec::with_capacity(self.elements.len());
+        for (element, &nodes) in self.elements.iter().enumerate() {
+            if self.is_element_severed(element) || nodes.iter().any(|&i| i >= known_nodes) {
+                continue;
+            }
+            let Some(layer) = self.layer_of_element(element) else {
+                continue;
+            };
+            let lame_lambda = layer.lame_lambda();
+            let shear_modulus = layer.shear_modulus();
+            if !lame_lambda.is_finite() || !shear_modulus.is_finite() {
+                continue;
+            }
+            let Some(rest) = TetRest::from_positions(nodes.map(|i| self.rest_positions[i])) else {
+                continue;
+            };
+            elements.push(TissueElement {
+                nodes,
+                rest,
+                lame_lambda,
+                shear_modulus,
+            });
+        }
+        elements
+    }
+    /// Add the internal forces of `elements` to `forces` (indexed by node).
+    ///
+    /// The element force is `-V0 σ Dm⁻ᵀ` for the stress
+    /// `σ = C : sym(∇(u + β v)) + σ₀ I`, where `u` is the displacement from the
+    /// rest position and `v` the velocity: the `u` part is the elastic force
+    /// `-K u`, the `β v` part the stiffness-proportional Rayleigh damping
+    /// `-β K v`, and `σ₀ I` the isotropic pre-stress.
+    fn accumulate_internal_forces(&self, elements: &[TissueElement], forces: &mut [[f64; 3]]) {
+        for element in elements {
+            let field = element.nodes.map(|i| {
+                let node = &self.nodes[i];
+                add3(
+                    sub3(node.position, self.rest_positions[i]),
+                    scale3(node.velocity, self.damping_beta),
+                )
+            });
+            let gradient = element.rest.gradient(&field);
+            let stress = linear_elastic_stress(
+                &gradient,
+                element.lame_lambda,
+                element.shear_modulus,
+                self.pre_stress,
+            );
+            let nodal = element.rest.nodal_forces(&stress);
+            for (&node, force) in element.nodes.iter().zip(nodal.iter()) {
+                forces[node] = add3(forces[node], *force);
+            }
+        }
+    }
+    /// Internal force on every node \[N\] for the current positions and
+    /// velocities: linear-elastic element forces, pre-stress and
+    /// stiffness-proportional damping.
+    ///
+    /// Severed elements and elements without a usable rest shape or material
+    /// do not contribute. Applied forces ([`TissueNode::force`]) and gravity
+    /// are not included.
+    pub fn internal_forces(&self) -> Vec<[f64; 3]> {
+        let mut forces = vec![[0.0; 3]; self.nodes.len()];
+        let elements = self.load_bearing_elements();
+        self.accumulate_internal_forces(&elements, &mut forces);
+        forces
+    }
+    /// Strain energy stored in the load-bearing elements \[J\]:
+    /// `Σ V0 (λ/2 tr(ε)² + μ tr(ε²) + σ₀ tr(ε))` with the small strain
+    /// `ε = sym(∇u)` of the displacement from the rest positions.
+    ///
+    /// Without damping the internal forces are exactly the negative gradient of
+    /// this energy with respect to the node positions.
+    pub fn elastic_energy(&self) -> f64 {
+        self.load_bearing_elements()
+            .iter()
+            .map(|element| {
+                let displacement = element
+                    .nodes
+                    .map(|i| sub3(self.nodes[i].position, self.rest_positions[i]));
+                let gradient = element.rest.gradient(&displacement);
+                let strain = mat3_symmetric_part(gradient);
+                let density = linear_elastic_energy_density(
+                    &strain,
+                    element.lame_lambda,
+                    element.shear_modulus,
+                );
+                let pre_stress_work = self.pre_stress * (strain[0] + strain[4] + strain[8]);
+                element.rest.volume * (density + pre_stress_work)
+            })
+            .sum()
+    }
+    /// Largest time step \[s\] for which explicit integration of this tissue
+    /// is guaranteed to be stable.
+    ///
+    /// It follows from a conservative bound on the highest natural frequency of
+    /// the linear-elastic model and the Rayleigh damping coefficients, see
+    /// [`TissueModel::step`]. Infinite if nothing limits the step (no elastic
+    /// element and no damping).
+    pub fn critical_time_step(&self) -> f64 {
+        self.stable_time_step(&self.load_bearing_elements())
+    }
+    fn stable_time_step(&self, elements: &[TissueElement]) -> f64 {
+        let mut stiffness = vec![0.0; self.nodes.len()];
+        for element in elements {
+            let sums = element
+                .rest
+                .stiffness_row_sums(element.lame_lambda, element.shear_modulus);
+            for (&node, sum) in element.nodes.iter().zip(sums) {
+                stiffness[node] += sum;
+            }
+        }
+        let omega_sq = self
+            .nodes
+            .iter()
+            .zip(stiffness.iter())
+            .filter(|(node, _)| !node.is_static && node.inv_mass() > 0.0)
+            .map(|(node, &k)| k * node.inv_mass())
+            .fold(0.0_f64, f64::max);
+        let damping_rate = self.damping_alpha.max(0.0) + self.damping_beta.max(0.0) * omega_sq;
+        explicit_stability_limit(omega_sq.sqrt(), damping_rate)
     }
     /// Compute the deformation gradient F for element `elem_idx` given the
     /// rest (reference) positions.
@@ -191,8 +414,9 @@ impl TissueModel {
     /// Linear elastic energy density W = λ/2 tr(ε)² + μ tr(ε²)
     /// where ε = (F + F^T)/2 − I (small strain approximation).
     pub fn elastic_energy_density(&self, elem_idx: usize, rest_positions: &[[f64; 3]]) -> f64 {
-        let layer_idx = self.nodes[self.elements[elem_idx][0]].layer_index;
-        let layer = &self.layers[layer_idx.min(self.layers.len() - 1)];
+        let Some(layer) = self.layer_of_element(elem_idx) else {
+            return 0.0;
+        };
         let lam = layer.lame_lambda();
         let mu = layer.shear_modulus();
         let f = self.deformation_gradient(elem_idx, rest_positions);
@@ -211,24 +435,63 @@ impl TissueModel {
         let trace_eps2 = mat3_frobenius_sq(eps);
         0.5 * lam * trace_eps * trace_eps + mu * trace_eps2
     }
-    /// Integrate one explicit time step for all free nodes.
+    /// Integrate the tissue forward by `dt` \[s\] with semi-implicit
+    /// (symplectic) Euler and Rayleigh damping.
     ///
-    /// Uses forward Euler with Rayleigh damping.
-    pub fn step(&mut self, dt: f64, external_force: [f64; 3]) {
-        for node in &mut self.nodes {
-            if node.is_static {
-                continue;
+    /// `gravity` is an *acceleration* \[m/s²\] such as `[0.0, -9.81, 0.0]`; it
+    /// acts on every free node independent of its mass. Forces accumulated in
+    /// [`TissueNode::force`] \[N\] are applied for the whole step and cleared
+    /// afterwards. Static nodes and nodes without positive mass do not move.
+    ///
+    /// The acceleration of a free node of mass `m` is
+    ///
+    /// `a = (f_applied + f_internal) / m + g - α v`,
+    ///
+    /// where `f_internal` collects the linear-elastic element forces of the
+    /// load-bearing elements (see [`TissueModel::internal_forces`]) and
+    /// `-α v` is the mass-proportional Rayleigh damping.
+    ///
+    /// Explicit integration is only conditionally stable. The step is
+    /// therefore split into the smallest number of equal sub-steps that stays
+    /// below half of [`TissueModel::critical_time_step`], capped at 4096
+    /// sub-steps; beyond the cap the caller has to reduce `dt`, the stiffness
+    /// or the stiffness-proportional damping `damping_beta`. For fine meshes
+    /// the explicitly integrated damping term `-β K v` limits the step to about
+    /// `2 / (β ω²)`, which is usually the limit that hits the cap first.
+    pub fn step(&mut self, dt: f64, gravity: [f64; 3]) {
+        let elements = self.load_bearing_elements();
+        let substeps = stability_substeps(dt, self.stable_time_step(&elements));
+        let h = dt / substeps as f64;
+        let alpha = self.damping_alpha;
+        let mut internal = vec![[0.0; 3]; self.nodes.len()];
+        for _ in 0..substeps {
+            internal.fill([0.0; 3]);
+            self.accumulate_internal_forces(&elements, &mut internal);
+            for (node, internal_force) in self.nodes.iter_mut().zip(internal.iter()) {
+                let inv_mass = node.inv_mass();
+                if node.is_static || inv_mass == 0.0 {
+                    continue;
+                }
+                let force = add3(node.force, *internal_force);
+                let accel = sub3(
+                    add3(scale3(force, inv_mass), gravity),
+                    scale3(node.velocity, alpha),
+                );
+                node.velocity = add3(node.velocity, scale3(accel, h));
+                node.position = add3(node.position, scale3(node.velocity, h));
             }
-            let damp = scale3(node.velocity, -self.damping_alpha);
-            let accel = scale3(
-                add3(add3(node.force, damp), external_force),
-                node.inv_mass(),
-            );
-            node.velocity = add3(node.velocity, scale3(accel, dt));
-            node.position = add3(node.position, scale3(node.velocity, dt));
+        }
+        for node in &mut self.nodes {
             node.force = [0.0; 3];
         }
     }
+}
+/// Precomputed data of a load-bearing element of a [`TissueModel`].
+struct TissueElement {
+    nodes: [usize; 4],
+    rest: TetRest,
+    lame_lambda: f64,
+    shear_modulus: f64,
 }
 /// A rigid surgical tool with a pose, geometry, and contact detection.
 #[derive(Debug, Clone)]
@@ -468,9 +731,10 @@ impl SimulationStep {
     /// Steps performed:
     /// 1. Reset haptic feedback.
     /// 2. Detect and respond to tool-tissue contact.
-    /// 3. Apply cutting forces.
+    /// 3. Apply cutting forces and sever the tissue elements that contain a
+    ///    fully cut edge (see [`TissueModel::sever_elements_by_edges`]).
     /// 4. Apply suture constraints.
-    /// 5. Integrate tissue dynamics.
+    /// 5. Integrate tissue dynamics; `gravity` is an acceleration \[m/s²\].
     /// 6. Advance healing.
     /// 7. Integrate tool pose.
     pub fn advance(&mut self, dt: f64, gravity: [f64; 3]) {
@@ -499,6 +763,16 @@ impl SimulationStep {
         let node_positions: Vec<[f64; 3]> = self.tissue.nodes.iter().map(|n| n.position).collect();
         self.cutting
             .apply_cut(tool_pos, cutting_force, tool_r * 2.0, &node_positions);
+        let cut_edges: Vec<(usize, usize)> = self
+            .cutting
+            .edges
+            .iter()
+            .filter(|edge| edge.is_severed())
+            .map(|edge| (edge.node_a, edge.node_b))
+            .collect();
+        if !cut_edges.is_empty() {
+            self.tissue.sever_elements_by_edges(cut_edges);
+        }
         self.haptic.cutting_energy += cutting_force * norm3(self.tool.velocity) * dt;
         for suture in &mut self.sutures {
             if !suture.active {
@@ -555,7 +829,11 @@ impl NeoHookeanParams {
         let ln_j = j.ln();
         self.mu / 2.0 * (i1 - 3.0) - self.mu * ln_j + self.kappa / 2.0 * ln_j * ln_j
     }
-    /// Viscous stress contribution: σ_visc = η * (F + F^T) / 2 (simplified).
+    /// Mean normal component `η tr(f) / 3` of the Newtonian viscous stress
+    /// `η sym(f)` for the velocity gradient `f` \[1/s\].
+    ///
+    /// This is a scalar summary only; [`SoftTissueModel::internal_forces`] uses
+    /// the full viscous stress tensor of every element.
     pub fn viscous_stress(&self, f: &[f64; 9]) -> f64 {
         let sym_trace = (f[0] + f[4] + f[8]) / 3.0;
         self.eta * sym_trace
@@ -563,8 +841,14 @@ impl NeoHookeanParams {
 }
 /// A neo-Hookean viscoelastic soft tissue simulation model.
 ///
-/// Each tetrahedral element has its own neo-Hookean material properties and
-/// a viscous damping term that resists rapid deformation.
+/// Each tetrahedral element has its own [`NeoHookeanParams`]. The elastic
+/// nodal forces are the negative gradient of the neo-Hookean strain energy
+/// `V0 W(F)` (see [`NeoHookeanParams::strain_energy_density`]) of the element
+/// with rest volume `V0`; elements that are inverted (`det F <= 0`) exert no
+/// force. Dissipation comes from two terms: a Newtonian viscous stress
+/// `σ_v = η sym(L)` driven by the velocity gradient `L = Ḟ F⁻¹` of the
+/// element (the viscosity `η` of its [`NeoHookeanParams`], rotation invariant
+/// and never energy-producing) and the mass-proportional Rayleigh damping `α`.
 #[derive(Debug, Clone)]
 pub struct SoftTissueModel {
     /// Node positions (world space) \[m\].
@@ -644,12 +928,17 @@ impl SoftTissueModel {
         ];
         mat3_mul(dm, mat3_inv(ds))
     }
-    /// Strain energy density for element `e`.
+    /// Strain energy density \[Pa\] of element `e` (energy per unit rest
+    /// volume).
     pub fn element_energy(&self, e: usize) -> f64 {
         let f = self.deformation_gradient(e);
         self.materials[e].strain_energy_density(&f)
     }
-    /// Total strain energy across all elements.
+    /// Sum of the strain energy *densities* \[Pa\] of all elements, see
+    /// [`SoftTissueModel::element_energy`].
+    ///
+    /// This is not an energy in joules; weigh each element with its rest
+    /// volume, [`SoftTissueModel::strain_energy`], for that.
     pub fn total_energy(&self) -> f64 {
         (0..self.elements.len())
             .map(|e| self.element_energy(e))
@@ -668,16 +957,224 @@ impl SoftTissueModel {
         let cr = cross3(b, c);
         (dot3(a, cr) / 6.0).abs()
     }
-    /// Explicit Euler step integrating tissue dynamics.
-    pub fn step(&mut self, dt: f64, gravity: [f64; 3]) {
-        for i in 0..self.nodes.len() {
-            if self.fixed[i] || self.masses[i] <= 0.0 {
+    /// Number of nodes that have every per-node array (position, velocity,
+    /// mass, fixed flag and rest position); elements may only refer to those.
+    fn known_node_count(&self) -> usize {
+        self.nodes
+            .len()
+            .min(self.velocities.len())
+            .min(self.masses.len())
+            .min(self.fixed.len())
+            .min(self.rest_positions.len())
+    }
+    /// Elements that can exert forces, with their precomputed rest data.
+    ///
+    /// Elements without a material, with missing nodes, a flat rest shape or
+    /// non-finite material constants are left out.
+    fn load_bearing_elements(&self) -> Vec<SoftTissueElement> {
+        let known_nodes = self.known_node_count();
+        let mut elements = Vec::with_capacity(self.elements.len());
+        for (&nodes, material) in self.elements.iter().zip(self.materials.iter()) {
+            if nodes.iter().any(|&i| i >= known_nodes) {
                 continue;
             }
-            let damp = scale3(self.velocities[i], -self.alpha);
-            let accel = scale3(add3(gravity, damp), 1.0);
-            self.velocities[i] = add3(self.velocities[i], scale3(accel, dt));
-            self.nodes[i] = add3(self.nodes[i], scale3(self.velocities[i], dt));
+            if !material.mu.is_finite() || !material.kappa.is_finite() || !material.eta.is_finite()
+            {
+                continue;
+            }
+            let Some(rest) = TetRest::from_positions(nodes.map(|i| self.rest_positions[i])) else {
+                continue;
+            };
+            elements.push(SoftTissueElement {
+                nodes,
+                rest,
+                mu: material.mu,
+                kappa: material.kappa,
+                eta: material.eta.max(0.0),
+            });
+        }
+        elements
+    }
+    /// Nodal forces of one element for the current positions and velocities,
+    /// or `None` when the element is inverted (`det F <= 0`).
+    ///
+    /// The first Piola-Kirchhoff stress is
+    /// `P = μ (F - F⁻ᵀ) + κ ln J F⁻ᵀ + η J sym(Ḟ F⁻¹) F⁻ᵀ`: the first two terms
+    /// derive from [`NeoHookeanParams::strain_energy_density`], the last is the
+    /// Newtonian viscous stress `η sym(L)` pulled back to the reference
+    /// configuration. The nodal forces are `-V0 P Dm⁻ᵀ`.
+    fn element_forces(&self, element: &SoftTissueElement) -> Option<[[f64; 3]; 4]> {
+        let positions = element.nodes.map(|i| self.nodes[i]);
+        let f = element.rest.gradient(&positions);
+        let j = mat3_det(f);
+        if !j.is_finite() || j <= 0.0 {
+            return None;
+        }
+        let inv_j = 1.0 / j;
+        let mut f_inv = mat3_adjugate(f);
+        for entry in &mut f_inv {
+            *entry *= inv_j;
+        }
+        let f_inv_t = mat3_transpose(f_inv);
+        let ln_j = j.ln();
+        let mut stress = [0.0; 9];
+        for k in 0..9 {
+            stress[k] = element.mu * (f[k] - f_inv_t[k]) + element.kappa * ln_j * f_inv_t[k];
+        }
+        if element.eta > 0.0 {
+            let velocities = element.nodes.map(|i| self.velocities[i]);
+            let f_dot = element.rest.gradient(&velocities);
+            let rate = mat3_symmetric_part(mat3_mul(f_dot, f_inv));
+            let viscous = mat3_mul(rate, f_inv_t);
+            for k in 0..9 {
+                stress[k] += element.eta * j * viscous[k];
+            }
+        }
+        Some(element.rest.nodal_forces(&stress))
+    }
+    /// Internal force on every node \[N\] for the current positions and
+    /// velocities: the neo-Hookean elastic forces plus the viscous forces of
+    /// the materials' viscosity `η`.
+    ///
+    /// Inverted elements and elements without a usable rest shape or material
+    /// do not contribute. Gravity and the Rayleigh damping `-α m v` are not
+    /// included.
+    pub fn internal_forces(&self) -> Vec<[f64; 3]> {
+        let mut forces = vec![[0.0; 3]; self.nodes.len()];
+        for element in &self.load_bearing_elements() {
+            if let Some(nodal) = self.element_forces(element) {
+                for (&node, force) in element.nodes.iter().zip(nodal.iter()) {
+                    forces[node] = add3(forces[node], *force);
+                }
+            }
+        }
+        forces
+    }
+    /// Rest volume \[m³\] of element `e`; `0` if the element does not exist,
+    /// refers to a node without rest position or has a degenerate rest shape.
+    pub fn rest_volume(&self, e: usize) -> f64 {
+        let Some(&nodes) = self.elements.get(e) else {
+            return 0.0;
+        };
+        let mut rest = [[0.0; 3]; 4];
+        for (slot, &node) in rest.iter_mut().zip(nodes.iter()) {
+            match self.rest_positions.get(node) {
+                Some(position) => *slot = *position,
+                None => return 0.0,
+            }
+        }
+        TetRest::from_positions(rest).map_or(0.0, |tet| tet.volume)
+    }
+    /// Total strain energy \[J\]: the energy density of every element that can
+    /// exert forces (see [`SoftTissueModel::internal_forces`]) weighted with its
+    /// rest volume, `Σ V0 W(F)`.
+    ///
+    /// Without viscosity the internal forces are the negative gradient of this
+    /// energy with respect to the node positions. Inverted elements store no
+    /// energy, just as they exert no force; elements that cannot exert forces
+    /// (missing nodes, flat rest shape, non-finite material) are left out.
+    pub fn strain_energy(&self) -> f64 {
+        self.load_bearing_elements()
+            .iter()
+            .map(|element| {
+                let material = NeoHookeanParams {
+                    mu: element.mu,
+                    kappa: element.kappa,
+                    eta: element.eta,
+                };
+                let positions = element.nodes.map(|i| self.nodes[i]);
+                let f = element.rest.gradient(&positions);
+                element.rest.volume * material.strain_energy_density(&f)
+            })
+            .sum()
+    }
+    /// Estimate of the largest time step \[s\] for which explicit integration
+    /// of this tissue is stable for small strains.
+    ///
+    /// It combines a rigorous bound on the highest natural frequency of the
+    /// linearised neo-Hookean model with a bound on the damping rate of the
+    /// viscosity `η` and of `α`, see [`SoftTissueModel::step`]. The viscous
+    /// damping matrix does not commute with the stiffness matrix, so the
+    /// combined limit is a sound estimate rather than a proof;
+    /// [`SoftTissueModel::step`] keeps half of it as a safety margin. Infinite
+    /// if nothing limits the step.
+    pub fn critical_time_step(&self) -> f64 {
+        self.stable_time_step(&self.load_bearing_elements())
+    }
+    fn stable_time_step(&self, elements: &[SoftTissueElement]) -> f64 {
+        let known_nodes = self.known_node_count();
+        let mut stiffness = vec![0.0; known_nodes];
+        let mut viscosity = vec![0.0; known_nodes];
+        for element in elements {
+            // Small-strain limit of the neo-Hookean energy: Lamé parameters
+            // (κ, μ); the Newtonian viscosity η acts like λ = 0, μ = η / 2.
+            let elastic = element.rest.stiffness_row_sums(element.kappa, element.mu);
+            let viscous = element.rest.stiffness_row_sums(0.0, 0.5 * element.eta);
+            for ((&node, elastic_sum), viscous_sum) in
+                element.nodes.iter().zip(elastic).zip(viscous)
+            {
+                stiffness[node] += elastic_sum;
+                viscosity[node] += viscous_sum;
+            }
+        }
+        let mut omega_sq = 0.0_f64;
+        let mut viscous_rate = 0.0_f64;
+        for node in 0..known_nodes {
+            if self.fixed[node] || self.masses[node] <= 0.0 {
+                continue;
+            }
+            let inv_mass = 1.0 / self.masses[node];
+            omega_sq = omega_sq.max(stiffness[node] * inv_mass);
+            viscous_rate = viscous_rate.max(viscosity[node] * inv_mass);
+        }
+        explicit_stability_limit(omega_sq.sqrt(), self.alpha.max(0.0) + viscous_rate)
+    }
+    /// Integrate the tissue forward by `dt` \[s\] with semi-implicit
+    /// (symplectic) Euler.
+    ///
+    /// `gravity` is an acceleration \[m/s²\]. Fixed nodes and nodes without
+    /// positive mass do not move; the acceleration of a free node of mass `m`
+    /// is
+    ///
+    /// `a = f_internal / m + g - α v`
+    ///
+    /// with the neo-Hookean and viscous element forces of
+    /// [`SoftTissueModel::internal_forces`].
+    ///
+    /// Explicit integration is only conditionally stable. The step is
+    /// therefore split into the smallest number of equal sub-steps that stays
+    /// below half of [`SoftTissueModel::critical_time_step`], capped at 4096
+    /// sub-steps; beyond the cap the caller has to reduce `dt`, the stiffness
+    /// or the viscosity `η` (for fine meshes the explicitly integrated viscous
+    /// force limits the step to about `2 / γ`, where `γ` is the damping rate
+    /// of `α` and `η`). Strongly compressed elements are stiffer than the
+    /// bound assumes, which the safety margin only partly covers.
+    pub fn step(&mut self, dt: f64, gravity: [f64; 3]) {
+        let known_nodes = self.known_node_count();
+        let elements = self.load_bearing_elements();
+        let substeps = stability_substeps(dt, self.stable_time_step(&elements));
+        let h = dt / substeps as f64;
+        let mut forces = vec![[0.0; 3]; known_nodes];
+        for _ in 0..substeps {
+            forces.fill([0.0; 3]);
+            for element in &elements {
+                if let Some(nodal) = self.element_forces(element) {
+                    for (&node, force) in element.nodes.iter().zip(nodal.iter()) {
+                        forces[node] = add3(forces[node], *force);
+                    }
+                }
+            }
+            for (i, force) in forces.iter().enumerate() {
+                if self.fixed[i] || self.masses[i] <= 0.0 {
+                    continue;
+                }
+                let accel = sub3(
+                    add3(scale3(*force, 1.0 / self.masses[i]), gravity),
+                    scale3(self.velocities[i], self.alpha),
+                );
+                self.velocities[i] = add3(self.velocities[i], scale3(accel, h));
+                self.nodes[i] = add3(self.nodes[i], scale3(self.velocities[i], h));
+            }
         }
     }
     /// Number of elements.
@@ -688,6 +1185,14 @@ impl SoftTissueModel {
     pub fn n_nodes(&self) -> usize {
         self.nodes.len()
     }
+}
+/// Precomputed data of an element of a [`SoftTissueModel`] that can exert forces.
+struct SoftTissueElement {
+    nodes: [usize; 4],
+    rest: TetRest,
+    mu: f64,
+    kappa: f64,
+    eta: f64,
 }
 /// Simulation of topological cuts using a damage-based approach.
 ///

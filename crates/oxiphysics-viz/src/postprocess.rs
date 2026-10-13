@@ -336,8 +336,12 @@ fn edge_interp(p0: [f64; 3], v0: f64, p1: [f64; 3], v1: f64, threshold: f64) -> 
 /// ```
 ///
 /// Returns a flat list of triangle vertices (3 vertices per triangle), with at
-/// most 5 triangles (15 vertices) per cell.  The function implements a
-/// simplified 16-pattern table covering all topologically distinct cases.
+/// most 5 triangles (15 vertices) per cell.  All 256 corner configurations are
+/// looked up in the classic triangle table; corners with a value `>= threshold`
+/// count as inside.  Every triangle is wound so that its normal
+/// `(b - a) x (c - a)` points towards the inside corners, and the face
+/// contours are resolved the same way in every case, so the patches of
+/// neighbouring cells join without cracks.
 pub fn marching_cubes_cell(
     values: [f64; 8],
     threshold: f64,
@@ -382,9 +386,9 @@ pub fn marching_cubes_cell(
         .collect();
 
     // Triangle table — each row is a sequence of edge indices terminated by -1.
-    // This is the full 256-entry standard MC triangle table (Paul Bourke / Lorensen & Cline).
-    // Rows that would be identical to their complement (case ^ 0xFF) are handled by
-    // the same entries after flipping the `case` sense above.
+    // This is the full 256-entry marching-cubes triangle table (after Lorensen & Cline
+    // and Paul Bourke), indexed by the corner case computed above.  The test
+    // `test_marching_cubes_every_case_is_a_consistent_surface_patch` validates every row.
     #[rustfmt::skip]
     let tri_table: [[i8; 16]; 256] = [
         [-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
@@ -590,7 +594,7 @@ pub fn marching_cubes_cell(
         [2,5,10,2,3,5,3,7,5,-1,-1,-1,-1,-1,-1,-1],
         [8,2,0,8,5,2,8,7,5,10,2,5,-1,-1,-1,-1],
         [9,0,1,2,3,5,2,5,10,5,3,7,-1,-1,-1,-1],
-        [8,2,9,8,9,7,2,10,9,5,9,3,10,3,9,-1],
+        [9,8,2,9,2,1,8,7,2,10,2,5,7,5,2,-1],
         [1,3,5,3,7,5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
         [0,8,7,0,7,1,1,7,5,-1,-1,-1,-1,-1,-1,-1],
         [9,0,3,9,3,5,5,3,7,-1,-1,-1,-1,-1,-1,-1],
@@ -1199,6 +1203,149 @@ mod tests {
             0,
             "triangle vertex count must be divisible by 3"
         );
+    }
+
+    /// Gradient of the trilinear interpolant of `values` over the unit cube.
+    fn trilinear_gradient(values: &[f64; 8], p: [f64; 3]) -> [f64; 3] {
+        let corners = unit_cube_corners();
+        let mut g = [0.0_f64; 3];
+        for (k, corner) in corners.iter().enumerate() {
+            // Per-axis weight and weight derivative of this corner.
+            let w: Vec<f64> = (0..3)
+                .map(|a| if corner[a] > 0.5 { p[a] } else { 1.0 - p[a] })
+                .collect();
+            let dw: Vec<f64> = (0..3)
+                .map(|a| if corner[a] > 0.5 { 1.0 } else { -1.0 })
+                .collect();
+            g[0] += values[k] * dw[0] * w[1] * w[2];
+            g[1] += values[k] * w[0] * dw[1] * w[2];
+            g[2] += values[k] * w[0] * w[1] * dw[2];
+        }
+        g
+    }
+
+    #[test]
+    fn test_marching_cubes_every_case_is_a_consistent_surface_patch() {
+        use std::collections::{BTreeMap, BTreeSet};
+        const EDGES: [(usize, usize); 12] = [
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (3, 0),
+            (4, 5),
+            (5, 6),
+            (6, 7),
+            (7, 4),
+            (0, 4),
+            (1, 5),
+            (2, 6),
+            (3, 7),
+        ];
+        let corners = unit_cube_corners();
+        // With corner values 0/1 and threshold 0.5 every surface vertex is the
+        // midpoint of a crossing edge; use doubled integer coordinates as keys.
+        let key = |p: [f64; 3]| {
+            [
+                (p[0] * 2.0) as i32,
+                (p[1] * 2.0) as i32,
+                (p[2] * 2.0) as i32,
+            ]
+        };
+        for case in 1u32..255 {
+            let mut values = [0.0_f64; 8];
+            for (k, v) in values.iter_mut().enumerate() {
+                if case & (1 << k) != 0 {
+                    *v = 1.0;
+                }
+            }
+            let verts: Vec<[i32; 3]> = marching_cubes_cell(values, 0.5, corners)
+                .into_iter()
+                .map(key)
+                .collect();
+            assert_eq!(verts.len() % 3, 0, "case {case}: partial triangle");
+
+            // The vertices are exactly the midpoints of the crossing edges.
+            let expected: BTreeSet<[i32; 3]> = EDGES
+                .iter()
+                .filter(|&&(a, b)| (values[a] >= 0.5) != (values[b] >= 0.5))
+                .map(|&(a, b)| {
+                    key([
+                        0.5 * (corners[a][0] + corners[b][0]),
+                        0.5 * (corners[a][1] + corners[b][1]),
+                        0.5 * (corners[a][2] + corners[b][2]),
+                    ])
+                })
+                .collect();
+            let used: BTreeSet<[i32; 3]> = verts.iter().copied().collect();
+            assert_eq!(
+                used, expected,
+                "case {case}: vertices must lie on crossing edges"
+            );
+
+            // Sides on a cube face occur once (the face contour); every other
+            // side is shared by two triangles that traverse it in opposite
+            // directions, so the patch is a consistently oriented manifold.
+            let mut sides: BTreeMap<([i32; 3], [i32; 3]), (usize, usize)> = BTreeMap::new();
+            let mut gradient_ok = true;
+            for tri in verts.chunks_exact(3) {
+                assert!(
+                    tri[0] != tri[1] && tri[1] != tri[2] && tri[2] != tri[0],
+                    "case {case}: degenerate triangle {tri:?}"
+                );
+                for (a, b) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+                    let entry = sides.entry((a.min(b), a.max(b))).or_insert((0, 0));
+                    if a < b {
+                        entry.0 += 1;
+                    } else {
+                        entry.1 += 1;
+                    }
+                }
+                // The normal points towards increasing field values.
+                let p: Vec<[f64; 3]> = tri
+                    .iter()
+                    .map(|v| {
+                        [
+                            f64::from(v[0]) / 2.0,
+                            f64::from(v[1]) / 2.0,
+                            f64::from(v[2]) / 2.0,
+                        ]
+                    })
+                    .collect();
+                let e1 = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
+                let e2 = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
+                let normal = [
+                    e1[1] * e2[2] - e1[2] * e2[1],
+                    e1[2] * e2[0] - e1[0] * e2[2],
+                    e1[0] * e2[1] - e1[1] * e2[0],
+                ];
+                let centroid = [
+                    (p[0][0] + p[1][0] + p[2][0]) / 3.0,
+                    (p[0][1] + p[1][1] + p[2][1]) / 3.0,
+                    (p[0][2] + p[1][2] + p[2][2]) / 3.0,
+                ];
+                let g = trilinear_gradient(&values, centroid);
+                if normal[0] * g[0] + normal[1] * g[1] + normal[2] * g[2] <= 0.0 {
+                    gradient_ok = false;
+                }
+            }
+            assert!(
+                gradient_ok,
+                "case {case}: a triangle faces away from the high-value side"
+            );
+            for (&(a, b), &(forward, backward)) in &sides {
+                let on_face =
+                    (0..3).any(|axis| a[axis] == b[axis] && (a[axis] == 0 || a[axis] == 2));
+                if on_face {
+                    assert_eq!(forward + backward, 1, "case {case}: face side {a:?}-{b:?}");
+                } else {
+                    assert_eq!(
+                        (forward, backward),
+                        (1, 1),
+                        "case {case}: interior side {a:?}-{b:?} must be shared with opposite orientation"
+                    );
+                }
+            }
+        }
     }
 
     // ── TAA Tests ─────────────────────────────────────────────────────────────

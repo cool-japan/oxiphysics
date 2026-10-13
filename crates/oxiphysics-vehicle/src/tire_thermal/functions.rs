@@ -479,6 +479,82 @@ mod tests {
         );
     }
     #[test]
+    fn test_rubber_degradation_rate_equals_k_ref_at_t_ref() {
+        let d = RubberDegradation::racing_compound();
+        let rate = d.degradation_rate(d.t_ref);
+        assert!(
+            (rate - d.k_ref).abs() <= 1e-12 * d.k_ref,
+            "rate at the reference temperature must equal k_ref: {rate}"
+        );
+        assert!((d.k_ref - RubberDegradation::DEFAULT_K_REF).abs() < 1e-18);
+        let custom = RubberDegradation::new(350.0, 5000.0).with_reference_rate(2.5e-4);
+        assert!((custom.degradation_rate(350.0) - 2.5e-4).abs() < 1e-16);
+    }
+    #[test]
+    fn test_rubber_degradation_rate_follows_arrhenius_ratio() {
+        let d = RubberDegradation::racing_compound();
+        // ratio = exp(Ea/R · (1/T_ref − 1/(T_ref + 50))) = exp(6000 · 3.01e-4) ≈ 6.096
+        let ratio = d.degradation_rate(d.t_ref + 50.0) / d.degradation_rate(d.t_ref);
+        let expected = (6000.0_f64 * (1.0 / 383.15 - 1.0 / 433.15)).exp();
+        assert!((ratio - expected).abs() < 1e-9, "ratio = {ratio}");
+        assert!((ratio - 6.096).abs() < 0.01, "ratio = {ratio}");
+        // Cooler than the reference the rate drops by two orders of magnitude.
+        let cold_ratio = d.degradation_rate(293.15) / d.degradation_rate(d.t_ref);
+        assert!(
+            (cold_ratio - 0.008167).abs() < 1e-5,
+            "cold ratio = {cold_ratio}"
+        );
+    }
+    #[test]
+    fn test_rubber_degradation_rate_increases_monotonically_with_temperature() {
+        let d = RubberDegradation::racing_compound();
+        let mut previous = d.degradation_rate(250.0);
+        for t in (260..=520).step_by(10) {
+            let rate = d.degradation_rate(t as f64);
+            assert!(rate > previous, "rate must grow with T: {rate} at {t} K");
+            previous = rate;
+        }
+    }
+    #[test]
+    fn test_rubber_degradation_does_not_saturate_at_room_temperature() {
+        // Regression: the old rate was ≈ 0.985 /s at 293 K, which saturated the
+        // degradation index after about one second.
+        let mut d = RubberDegradation::racing_compound();
+        for _ in 0..60 {
+            d.step(293.0, 1.0);
+        }
+        assert!(
+            d.degradation < 1e-4,
+            "60 s at 293 K must barely age the compound: {}",
+            d.degradation
+        );
+        assert!(d.degradation > 0.0, "ageing is slow but not zero");
+        assert!(d.residual_strength() > 0.9999);
+    }
+    #[test]
+    fn test_rubber_degradation_accumulates_linearly_at_t_ref() {
+        let mut d = RubberDegradation::racing_compound();
+        for _ in 0..1000 {
+            d.step(d.t_ref, 1.0);
+        }
+        // 1000 s at k_ref = 1e-5 /s → 1 % degradation.
+        assert!((d.degradation - 0.01).abs() < 1e-9, "{}", d.degradation);
+    }
+    #[test]
+    fn test_rubber_degradation_rate_is_finite_for_extreme_inputs() {
+        let d = RubberDegradation::racing_compound();
+        assert!(d.degradation_rate(0.0).is_finite());
+        assert!(d.degradation_rate(-50.0).is_finite());
+        assert!(d.degradation_rate(f64::INFINITY).is_finite());
+        assert!(d.degradation_rate(f64::NAN).is_finite());
+        let mut stressed = RubberDegradation::new(0.0, 1.0e9);
+        stressed.step(1.0e3, 0.0);
+        assert!(
+            stressed.degradation.is_finite(),
+            "zero dt must not give NaN"
+        );
+    }
+    #[test]
     fn test_rubber_degradation_clamped_at_one() {
         let mut d = RubberDegradation::racing_compound();
         d.degradation = 0.999;

@@ -7,6 +7,8 @@
 //! dynamically split into 8 children or merged from N particles into one,
 //! based on local flow activity (velocity gradients, density errors).
 
+use crate::adaptive_h;
+
 // ---------------------------------------------------------------------------
 // SphParticle
 // ---------------------------------------------------------------------------
@@ -450,59 +452,24 @@ pub fn sph_density_sum(
     neighbor_pos: &[[f64; 3]],
     neighbor_mass: &[f64],
 ) -> f64 {
-    let sigma_3d = 1.0 / std::f64::consts::PI;
-    let inv_h3 = 1.0 / (h * h * h);
-
-    let mut rho = 0.0_f64;
-    for (pos_j, &m_j) in neighbor_pos.iter().zip(neighbor_mass) {
-        let r = dist3(pos_i, *pos_j);
-        let q = r / h;
-        let w = if q < 1.0 {
-            sigma_3d * inv_h3 * (1.0 - 1.5 * q * q + 0.75 * q * q * q)
-        } else if q < 2.0 {
-            let t = 2.0 - q;
-            sigma_3d * inv_h3 * 0.25 * t * t * t
-        } else {
-            0.0
-        };
-        rho += m_j * w;
-    }
-    rho
+    adaptive_h::sph_density(pos_i, h, neighbor_pos, neighbor_mass)
 }
 
-/// Derivative dΩ/dh used in Newton iteration for adaptive h.
+/// Derivative ∂ρ/∂h of the density sum, used as the Jacobian in the Newton
+/// iteration for adaptive h.
 ///
-/// dρ_sph/dh = Σ_j m_j * (∂W/∂h)(r_ij, h)
+/// ∂ρ_sph/∂h = Σ_j m_j (∂W/∂h)(r_ij, h) with
+/// ∂W/∂h = −(3 W + q ∂W/∂q) / h, q = r / h.
+///
+/// This delegates to [`adaptive_h::sph_density_dh`] so the Jacobian is
+/// guaranteed to be the exact derivative of [`sph_density_sum`].
 pub fn sph_density_sum_dh(
     pos_i: [f64; 3],
     h: f64,
     neighbor_pos: &[[f64; 3]],
     neighbor_mass: &[f64],
 ) -> f64 {
-    let sigma_3d = 1.0 / std::f64::consts::PI;
-    let inv_h = 1.0 / h;
-
-    let mut drho_dh = 0.0_f64;
-    for (pos_j, &m_j) in neighbor_pos.iter().zip(neighbor_mass) {
-        let r = dist3(pos_i, *pos_j);
-        let q = r / h;
-        // dW/dh = -(3/h)*W + (1/h)*q*dW/dq
-        let (w, dw_dq) = if q < 1.0 {
-            let w = sigma_3d / (h * h * h) * (1.0 - 1.5 * q * q + 0.75 * q * q * q);
-            let dw_dq = sigma_3d / (h * h * h) * (-3.0 * q + 2.25 * q * q);
-            (w, dw_dq)
-        } else if q < 2.0 {
-            let t = 2.0 - q;
-            let w = sigma_3d / (h * h * h) * 0.25 * t * t * t;
-            let dw_dq = sigma_3d / (h * h * h) * (-0.75 * t * t);
-            (w, dw_dq)
-        } else {
-            (0.0, 0.0)
-        };
-        let dw_dh = -3.0 * inv_h * w + inv_h * q * dw_dq;
-        drho_dh += m_j * dw_dh;
-    }
-    drho_dh
+    adaptive_h::sph_density_dh(pos_i, h, neighbor_pos, neighbor_mass)
 }
 
 /// Solve for the adaptive smoothing length `h` such that the SPH density
@@ -550,9 +517,11 @@ pub fn adaptive_h_newton(
 
 /// Compute the variable-h kernel correction factor Ω_i for particle i.
 ///
-/// Ω_i = 1 - (∂ρ_i / ∂h_i) * h_i / (n_dim * ρ_i)
+/// Ω_i = 1 + (h_i / (n_dim ρ_i)) ∂ρ_i/∂h_i
 ///
-/// Used in the grad-h SPH formulation (Springel & Hernquist 2002).
+/// Used in the grad-h SPH formulation (Springel & Hernquist 2002).  The
+/// kernel is the 3-D cubic spline, so `n_dim` should be `3.0`.  This
+/// delegates to [`adaptive_h::omega_correction`].
 pub fn omega_grad_h_correction(
     pos_i: [f64; 3],
     h: f64,
@@ -561,16 +530,7 @@ pub fn omega_grad_h_correction(
     rho_i: f64,
     n_dim: f64,
 ) -> f64 {
-    if rho_i.abs() < 1e-30 {
-        return 1.0;
-    }
-    let drho_dh = sph_density_sum_dh(pos_i, h, neighbor_pos, neighbor_mass);
-    1.0 - drho_dh * h / (n_dim * rho_i)
-}
-
-/// Helper: 3D Euclidean distance.
-fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    adaptive_h::omega_correction(pos_i, h, neighbor_pos, neighbor_mass, rho_i, n_dim)
 }
 
 // ---------------------------------------------------------------------------
@@ -1450,16 +1410,102 @@ mod tests {
     // omega_grad_h_correction tests
     // -----------------------------------------------------------------------
 
+    /// Cubic lattice of `n`³ points with spacing `dx`, centred on the origin.
+    fn cubic_lattice(n: usize, dx: f64) -> Vec<[f64; 3]> {
+        let centre = (n as f64 - 1.0) * 0.5;
+        let mut points = Vec::with_capacity(n * n * n);
+        for i in 0..n {
+            for j in 0..n {
+                for k in 0..n {
+                    points.push([
+                        (i as f64 - centre) * dx,
+                        (j as f64 - centre) * dx,
+                        (k as f64 - centre) * dx,
+                    ]);
+                }
+            }
+        }
+        points
+    }
+
     #[test]
     fn test_omega_correction_near_unity_for_uniform() {
+        // 7³ lattice at h = 1.2 dx: density is almost independent of h, so the
+        // grad-h factor Ω = 1 + h/(3ρ) ∂ρ/∂h must be close to one (≈ 0.981).
+        let dx = 0.1;
+        let h = 1.2 * dx;
+        let rho0 = 1000.0;
+        let positions = cubic_lattice(7, dx);
+        let masses = vec![rho0 * dx * dx * dx; positions.len()];
         let pos_i = [0.0; 3];
-        let h = 0.1;
-        let positions: Vec<[f64; 3]> = vec![[0.05, 0.0, 0.0], [0.0, 0.05, 0.0], [0.0, 0.0, 0.05]];
-        let masses = vec![0.001; 3];
         let rho = sph_density_sum(pos_i, h, &positions, &masses);
         let omega = omega_grad_h_correction(pos_i, h, &positions, &masses, rho, 3.0);
-        // Omega should be a real number (not NaN or Inf)
-        assert!(omega.is_finite(), "omega must be finite, got {omega}");
+        assert!(
+            (omega - 1.0).abs() < 0.1,
+            "omega must be within 0.1 of 1 on a regular lattice, got {omega}"
+        );
+        assert!(
+            (omega - 0.9809).abs() < 1.0e-3,
+            "omega = {omega}, expected ≈ 0.981"
+        );
+    }
+
+    #[test]
+    fn test_sph_density_sum_dh_matches_finite_difference() {
+        let dx = 0.1;
+        let positions = cubic_lattice(5, dx);
+        let masses = vec![0.5; positions.len()];
+        let pos_i = [0.013, -0.007, 0.021];
+        for &h in &[0.06, 0.09, 0.12, 0.17] {
+            let delta = 1.0e-6 * h;
+            let rho_plus = sph_density_sum(pos_i, h + delta, &positions, &masses);
+            let rho_minus = sph_density_sum(pos_i, h - delta, &positions, &masses);
+            let numeric = (rho_plus - rho_minus) / (2.0 * delta);
+            let analytic = sph_density_sum_dh(pos_i, h, &positions, &masses);
+            assert!(
+                (analytic - numeric).abs() <= 1.0e-6 * numeric.abs().max(1.0e-9),
+                "h = {h}: analytic = {analytic}, numeric = {numeric}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_adaptive_h_newton_converges_for_compressed_lattice_target() {
+        // Unit-mass lattice with dx = 1: natural density ≈ 1.  The target
+        // ρ(h = 0.7) ≈ 1.19 is a compressed state requiring a smaller h.
+        // Starting from h = 1.3 the Newton iteration only converges quickly
+        // when the Jacobian ∂ρ/∂h has the correct sign.
+        let positions = cubic_lattice(7, 1.0);
+        let masses = vec![1.0; positions.len()];
+        let pos_i = [0.0; 3];
+        let h_true = 0.7;
+        let rho_target = sph_density_sum(pos_i, h_true, &positions, &masses);
+        assert!(rho_target > 1.15, "target must be compressed: {rho_target}");
+
+        let h = adaptive_h_newton(pos_i, 1.3, rho_target, &positions, &masses, 15, 1.0e-10)
+            .expect("Newton iteration must converge with the exact Jacobian");
+        assert!((h - h_true).abs() < 1.0e-7, "h = {h}, expected {h_true}");
+        let rho = sph_density_sum(pos_i, h, &positions, &masses);
+        assert!((rho - rho_target).abs() / rho_target < 1.0e-9);
+    }
+
+    #[test]
+    fn test_adaptive_h_result_omega_matches_lattice_value() {
+        // AdaptiveHResult::solve must report the grad-h factor of the solved h.
+        let positions = cubic_lattice(7, 1.0);
+        let masses = vec![1.0; positions.len()];
+        let pos_i = [0.0; 3];
+        let rho_target = sph_density_sum(pos_i, 1.2, &positions, &masses);
+        let result = AdaptiveHResult::solve(pos_i, 1.25, rho_target, &positions, &masses);
+        assert!(result.converged);
+        let expected =
+            omega_grad_h_correction(pos_i, result.h, &positions, &masses, result.rho, 3.0);
+        assert!((result.omega - expected).abs() < 1.0e-12);
+        assert!(
+            (0.9..=1.1).contains(&result.omega),
+            "omega = {}",
+            result.omega
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -4,7 +4,10 @@
 
 use std::f64::consts::FRAC_1_SQRT_2;
 
+use super::functions_2::symmetric_eigen_n;
 use super::types::RootResult;
+use crate::numerical_linear_algebra::EigenSolver;
+use crate::numerical_linear_algebra::krylov_eigen::ArnoldiFactorization;
 
 /// Newton-Raphson root finding.
 ///
@@ -924,73 +927,136 @@ pub fn inverse_power_iteration(a: &[Vec<f64>], max_iter: usize, tol: f64) -> (f6
     }
     (lambda, v)
 }
-/// QR algorithm for computing all eigenvalues of a symmetric matrix.
-pub fn qr_eigenvalues(a: &[Vec<f64>], max_iter: usize) -> Vec<f64> {
+/// Largest absolute entry of a matrix stored as rows.
+fn max_abs_entry(a: &[Vec<f64>]) -> f64 {
+    a.iter()
+        .flat_map(|row| row.iter())
+        .fold(0.0_f64, |m, v| m.max(v.abs()))
+}
+/// Whether the square matrix `a` equals its transpose up to a relative
+/// tolerance of `1e-12` (relative to the largest entry).
+fn is_numerically_symmetric(a: &[Vec<f64>]) -> bool {
+    let tol = 1.0e-12 * max_abs_entry(a);
+    (0..a.len()).all(|i| ((i + 1)..a.len()).all(|j| (a[i][j] - a[j][i]).abs() <= tol))
+}
+/// Reduces the square matrix `a` to upper-Hessenberg form in place by Householder
+/// similarity transformations `A ← H A H`, which preserve the eigenvalues.
+fn reduce_to_hessenberg(a: &mut [Vec<f64>]) {
     let n = a.len();
-    let mut ak = a.to_vec();
-    for _ in 0..max_iter {
-        let (q, r) = qr_decomp_gs(&ak);
-        let mut ak_new = vec![vec![0.0f64; n]; n];
-        for (i, row) in ak_new.iter_mut().enumerate() {
-            for (j, val) in row.iter_mut().enumerate() {
-                for k in 0..n {
-                    if k < q.len() {
-                        *val += r[i][k] * q[k][j];
-                    }
-                }
+    for k in 0..n.saturating_sub(2) {
+        let column_norm = ((k + 1)..n).map(|i| a[i][k] * a[i][k]).sum::<f64>().sqrt();
+        if column_norm == 0.0 {
+            continue;
+        }
+        // Householder vector v = x - alpha e_1 for the sub-column x = a[k+1.., k].
+        let alpha = if a[k + 1][k] > 0.0 {
+            -column_norm
+        } else {
+            column_norm
+        };
+        let mut v: Vec<f64> = ((k + 1)..n).map(|i| a[i][k]).collect();
+        v[0] -= alpha;
+        let v_norm_sq: f64 = v.iter().map(|x| x * x).sum();
+        if v_norm_sq == 0.0 {
+            continue;
+        }
+        // A ← H A = A − (2 / vᵀv) v (vᵀ A) acts on rows k+1..n.
+        let mut row_combination = vec![0.0_f64; n];
+        for (t, vt) in v.iter().enumerate() {
+            for (acc, entry) in row_combination.iter_mut().zip(a[k + 1 + t].iter()) {
+                *acc += vt * entry;
             }
         }
-        ak = ak_new;
-        let mut off_diag = 0.0f64;
-        for (oi, row) in ak.iter().enumerate() {
-            for (oj, &v) in row.iter().enumerate() {
-                if oi != oj {
-                    off_diag += v.powi(2);
-                }
+        for (t, vt) in v.iter().enumerate() {
+            let factor = 2.0 * vt / v_norm_sq;
+            for (entry, acc) in a[k + 1 + t].iter_mut().zip(row_combination.iter()) {
+                *entry -= factor * acc;
             }
         }
-        if off_diag < 1e-20 {
-            break;
+        // A ← A H acts on columns k+1..n of every row.
+        for row in a.iter_mut() {
+            let s: f64 = v
+                .iter()
+                .enumerate()
+                .map(|(t, vt)| row[k + 1 + t] * vt)
+                .sum();
+            let f = 2.0 * s / v_norm_sq;
+            for (t, vt) in v.iter().enumerate() {
+                row[k + 1 + t] -= f * vt;
+            }
+        }
+        // The reflection maps the sub-column onto alpha e_1 exactly.
+        a[k + 1][k] = alpha;
+        for row in a.iter_mut().skip(k + 2) {
+            row[k] = 0.0;
         }
     }
-    (0..n).map(|i| ak[i][i]).collect()
+}
+/// Eigenvalues of a real square matrix, in ascending order.
+///
+/// A symmetric matrix (symmetry is checked to a relative tolerance of `1e-12`)
+/// is reduced to tridiagonal form by Householder reflections and diagonalised
+/// with the implicit-shift QL algorithm ([`symmetric_eigen_n`]); all eigenvalues
+/// are real and accurate to roughly machine precision.  A non-symmetric matrix is
+/// reduced to upper-Hessenberg form by Householder reflections and iterated with
+/// the shifted (Francis) QR algorithm; since the result is real, a
+/// complex-conjugate pair contributes its real part twice.
+///
+/// `max_iter` is accepted for backward compatibility and ignored: both algorithms
+/// run until their own convergence criteria are met.  A matrix that is empty or
+/// not square yields an empty vector.
+pub fn qr_eigenvalues(a: &[Vec<f64>], _max_iter: usize) -> Vec<f64> {
+    let n = a.len();
+    if n == 0 || a.iter().any(|row| row.len() != n) {
+        return Vec::new();
+    }
+    if is_numerically_symmetric(a) {
+        return symmetric_eigen_n(a).0;
+    }
+    let mut hessenberg = a.to_vec();
+    reduce_to_hessenberg(&mut hessenberg);
+    let flat: Vec<f64> = hessenberg
+        .iter()
+        .flat_map(|row| row.iter().copied())
+        .collect();
+    EigenSolver::hessenberg_eigenvalues(&flat, n)
 }
 /// Arnoldi iteration for finding a few eigenvalues of a large matrix.
 ///
-/// Returns m Ritz values approximating the m largest eigenvalues.
-pub fn arnoldi_eigenvalues(a: &[Vec<f64>], m: usize, max_iter: usize) -> Vec<f64> {
+/// Runs `m` steps of the fully reorthogonalised Arnoldi process, started from a
+/// fixed pseudo-random vector (a constant start vector would be orthogonal to
+/// every antisymmetric eigenvector of mirror-symmetric matrices such as the
+/// finite-difference Laplacian), and returns the eigenvalues of the resulting
+/// `m × m` upper-Hessenberg matrix `H_m` (the Ritz values) in ascending order.
+/// When the Krylov space becomes invariant the process continues from a fresh
+/// vector orthogonal to the basis, so exactly `m` Ritz values are produced; for
+/// `m = n` they are all the eigenvalues of `a`.  As for [`qr_eigenvalues`], a
+/// complex-conjugate pair contributes its real part twice.
+///
+/// `max_iter` is accepted for backward compatibility and ignored.  An empty or
+/// non-square matrix, or `m = 0`, yields an empty vector.
+pub fn arnoldi_eigenvalues(a: &[Vec<f64>], m: usize, _max_iter: usize) -> Vec<f64> {
     let n = a.len();
     let m = m.min(n);
-    let mut q: Vec<Vec<f64>> = Vec::with_capacity(m);
-    let mut h = vec![vec![0.0f64; m]; m + 1];
-    let mut v0 = vec![1.0 / (n as f64).sqrt(); n];
-    let norm0 = (v0.iter().map(|x| x.powi(2)).sum::<f64>()).sqrt();
-    v0 = v0.iter().map(|x| x / norm0).collect();
-    q.push(v0.clone());
-    for j in 0..m {
-        let mut w: Vec<f64> = a
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .zip(q[j].iter())
-                    .map(|(&aik, &qjk)| aik * qjk)
-                    .sum()
-            })
-            .collect();
-        for i in 0..=j {
-            let hij: f64 = q[i].iter().zip(w.iter()).map(|(&qik, &wk)| qik * wk).sum();
-            h[i][j] = hij;
-            for (wk, &qik) in w.iter_mut().zip(q[i].iter()) {
-                *wk -= hij * qik;
-            }
-        }
-        let norm_w = (w.iter().map(|x| x.powi(2)).sum::<f64>()).sqrt();
-        h[j + 1][j] = norm_w;
-        if norm_w < 1e-12 || q.len() >= m {
+    if m == 0 || a.iter().any(|row| row.len() != n) {
+        return Vec::new();
+    }
+    let matrix_norm = a
+        .iter()
+        .map(|row| row.iter().map(|v| v.abs()).sum::<f64>())
+        .fold(0.0_f64, f64::max);
+    let mut factorization = ArnoldiFactorization::new(n, matrix_norm);
+    let mut matvec = |v: &[f64]| -> Vec<f64> {
+        a.iter()
+            .map(|row| row.iter().zip(v.iter()).map(|(x, y)| x * y).sum())
+            .collect()
+    };
+    while factorization.steps() < m {
+        if !factorization.extend(&mut matvec) {
             break;
         }
-        q.push(w.iter().map(|x| x / norm_w).collect());
     }
-    let hm: Vec<Vec<f64>> = (0..m).map(|i| h[i].clone()).collect();
-    qr_eigenvalues(&hm, max_iter)
+    let completed = factorization.steps();
+    let hessenberg = factorization.hessenberg(completed);
+    EigenSolver::hessenberg_eigenvalues(&hessenberg, completed)
 }

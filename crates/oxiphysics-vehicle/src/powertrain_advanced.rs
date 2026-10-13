@@ -34,6 +34,9 @@ fn interp1d(xs: &[f64], ys: &[f64], x: f64) -> f64 {
     ys[ys.len() - 1]
 }
 
+/// Lower heating value of gasoline \[J/kg\].
+const GASOLINE_LHV_J_PER_KG: f64 = 43.0e6;
+
 // ─── CombustionEngine ───────────────────────────────────────────────────────
 
 /// Wiebe combustion heat release parameters.
@@ -193,6 +196,20 @@ impl CombustionEngine {
         let power_kw = self.power(rpm, throttle) / 1000.0;
         let bsfc = self.bsfc(rpm, throttle); // g/kWh
         power_kw * bsfc / (3_600_000.0) // kg/s
+    }
+
+    /// Fuel mass flow \[kg/s\] needed to deliver `power_w` of brake power at `rpm`.
+    ///
+    /// [`CombustionEngine::fuel_flow_rate`] evaluates the engine map at a given
+    /// (speed, throttle) point and therefore burns fuel for whatever power the torque
+    /// curve yields there.  A powertrain controller works the other way round: it
+    /// asks for a power and has to know what that costs.  This returns
+    /// `P · BSFC / 3.6·10⁹` with the BSFC read from the map at the relative load
+    /// `power_w / peak_power`.  Zero, negative and NaN power cost no fuel.
+    pub fn fuel_flow_for_power(&self, rpm: f64, power_w: f64) -> f64 {
+        let power_w = power_w.max(0.0);
+        let relative_load = clamp(power_w / self.peak_power, 0.0, 1.0);
+        power_w / 1000.0 * self.bsfc(rpm, relative_load) / 3_600_000.0
     }
 
     /// Brake-specific fuel consumption \[g/kWh\].
@@ -857,7 +874,9 @@ pub enum EmsStrategy {
     RuleBased,
     /// Charge-depleting/charge-sustaining.
     Cdcs,
-    /// ECMS (Equivalent Consumption Minimization Strategy).
+    /// ECMS (Equivalent Consumption Minimization Strategy): the engine/motor split
+    /// that minimises fuel flow plus the fuel-equivalent of the battery power at
+    /// every instant, see [`HybridPowertrain::ecms_split`].
     Ecms,
 }
 
@@ -874,10 +893,15 @@ pub struct HybridPowertrain {
     pub mode: HybridMode,
     /// Energy management strategy.
     pub ems: EmsStrategy,
-    /// SOC target for charge-sustaining mode.
+    /// SOC target for charge-sustaining mode; also the SOC at which the ECMS
+    /// equivalence factor equals `lambda_ecms`.
     pub soc_target: f64,
-    /// ECMS equivalence factor.
+    /// ECMS equivalence factor s₀ (dimensionless): joules of fuel energy that one
+    /// joule of battery energy is worth when the SOC is at `soc_target`.
     pub lambda_ecms: f64,
+    /// Motor speed per unit engine speed (the motor is geared to the crankshaft by
+    /// this ratio; 1.0 puts it directly on the crankshaft).
+    pub motor_ratio: f64,
     /// Total regenerated energy \[J\] (runtime).
     pub regen_energy_j: f64,
     /// Total fuel consumed \[kg\] (runtime).
@@ -895,10 +919,20 @@ impl HybridPowertrain {
             ems: EmsStrategy::RuleBased,
             soc_target: 0.6,
             lambda_ecms: 2.5,
+            motor_ratio: 1.0,
             regen_energy_j: 0.0,
             total_fuel_kg: 0.0,
         }
     }
+
+    /// Lowest battery SOC at which ECMS still lets the motor discharge the battery.
+    const ECMS_SOC_MIN: f64 = 0.2;
+    /// Highest battery SOC at which ECMS still lets the motor charge the battery.
+    const ECMS_SOC_MAX: f64 = 0.9;
+    /// Number of motor-power candidates evaluated by the ECMS sweep.
+    const ECMS_SWEEP_POINTS: usize = 41;
+    /// Slope of the SOC correction of the ECMS equivalence factor.
+    const ECMS_SOC_GAIN: f64 = 1.0;
 
     /// Determine hybrid mode from driver demand and battery SOC.
     pub fn determine_mode(&self, demanded_power_w: f64, braking: bool) -> HybridMode {
@@ -923,14 +957,124 @@ impl HybridPowertrain {
                     HybridMode::EngineOnly
                 }
             }
-            EmsStrategy::Ecms => HybridMode::Parallel,
+            EmsStrategy::Ecms => {
+                if demanded_power_w < 0.0 {
+                    return HybridMode::RegenBraking;
+                }
+                let (engine_power, motor_power) = self.ecms_split(demanded_power_w);
+                if engine_power <= 0.0 {
+                    HybridMode::ElectricOnly
+                } else if motor_power == 0.0 {
+                    HybridMode::EngineOnly
+                } else {
+                    HybridMode::Parallel
+                }
+            }
         }
+    }
+
+    /// ECMS equivalence factor `s(SOC) = λ · (1 + (SOC_target − SOC))`
+    /// (dimensionless, never negative).
+    ///
+    /// Battery energy is dearer than `lambda_ecms` when the pack is below its target
+    /// and cheaper when it is above, which steers the SOC towards `soc_target`.
+    fn ecms_equivalence_factor(&self) -> f64 {
+        let correction = 1.0 + Self::ECMS_SOC_GAIN * (self.soc_target - self.battery.soc);
+        self.lambda_ecms * correction.max(0.0)
+    }
+
+    /// Engine/motor power split chosen by the Equivalent Consumption Minimization
+    /// Strategy for a wheel power demand `p_dem` \[W\].
+    ///
+    /// Returns `(engine_power, motor_power)` like [`HybridPowertrain::power_split`];
+    /// a negative motor power means that the motor generates (the engine then runs
+    /// above the demand and charges the battery, or the wheels recuperate when
+    /// `p_dem` is negative).
+    ///
+    /// The motor power `P_m` is swept over 41 equally spaced points of its feasible
+    /// interval and the point with the least instantaneous cost
+    ///
+    /// `J(P_m) = ṁ_f(P_e) + s(SOC) · P_m / H_u`  with  `P_e = p_dem − P_m`
+    ///
+    /// is returned.  `ṁ_f` is the fuel flow that delivers the engine power at the
+    /// current engine speed ([`CombustionEngine::fuel_flow_for_power`]), `H_u` the lower
+    /// heating value of gasoline (43 MJ/kg) and `s` the equivalence factor
+    /// `lambda_ecms · (1 + (soc_target − soc))`.  The battery power is the mechanical
+    /// motor power, the same lossless convention as [`HybridPowertrain::step`].
+    ///
+    /// The feasible interval of `P_m` keeps the engine power in
+    /// `[0, engine.peak_power]`, the motor power within
+    /// `±motor.peak_power · derating_factor()`, forbids discharging at or below an
+    /// SOC of 0.2 and charging at or above 0.9.  When the demand exceeds what engine
+    /// and motor can deliver together, both run flat out.
+    pub fn ecms_split(&self, p_dem: f64) -> (f64, f64) {
+        if p_dem.is_nan() {
+            return (0.0, 0.0);
+        }
+        let engine_max = self.engine.peak_power.max(0.0);
+        let motor_max = (self.motor.peak_power * self.motor.derating_factor()).max(0.0);
+        let soc = self.battery.soc;
+        let discharge_max = if soc > Self::ECMS_SOC_MIN {
+            motor_max
+        } else {
+            0.0
+        };
+        let charge_max = if soc < Self::ECMS_SOC_MAX {
+            motor_max
+        } else {
+            0.0
+        };
+
+        if p_dem <= 0.0 {
+            // Nothing to propel: the wheels return energy to the motor, as much as
+            // the motor and the battery accept.
+            return (0.0, p_dem.max(-charge_max));
+        }
+
+        let motor_hi = discharge_max.min(p_dem);
+        let motor_lo = (-charge_max).max(p_dem - engine_max);
+        if motor_lo > motor_hi {
+            return (clamp(p_dem - motor_hi, 0.0, engine_max), motor_hi);
+        }
+
+        let s = self.ecms_equivalence_factor();
+        let cost = |p_m: f64| -> f64 {
+            let p_e = clamp(p_dem - p_m, 0.0, engine_max);
+            self.engine.fuel_flow_for_power(self.engine.rpm, p_e) + s * p_m / GASOLINE_LHV_J_PER_KG
+        };
+        let last = (Self::ECMS_SWEEP_POINTS - 1) as f64;
+        let mut best_motor = motor_lo;
+        let mut best_cost = f64::INFINITY;
+        for i in 0..Self::ECMS_SWEEP_POINTS {
+            let t = i as f64 / last;
+            let p_m = motor_lo * (1.0 - t) + motor_hi * t;
+            let c = cost(p_m);
+            if c < best_cost {
+                best_cost = c;
+                best_motor = p_m;
+            }
+        }
+        (clamp(p_dem - best_motor, 0.0, engine_max), best_motor)
     }
 
     /// Power split between engine and motor \[W each\].
     ///
-    /// Returns (engine_power, motor_power).
+    /// Returns (engine_power, motor_power).  With the [`EmsStrategy::Ecms`]
+    /// strategy the propulsion modes ([`HybridMode::ElectricOnly`],
+    /// [`HybridMode::EngineOnly`], [`HybridMode::Parallel`]) and regenerative
+    /// braking take the split from [`HybridPowertrain::ecms_split`].
     pub fn power_split(&self, demanded_power_w: f64) -> (f64, f64) {
+        if self.ems == EmsStrategy::Ecms {
+            match self.mode {
+                HybridMode::ElectricOnly | HybridMode::EngineOnly | HybridMode::Parallel => {
+                    return self.ecms_split(demanded_power_w);
+                }
+                HybridMode::RegenBraking => {
+                    return self.ecms_split(-demanded_power_w.abs());
+                }
+                HybridMode::Series | HybridMode::Charging => {}
+            }
+        }
         match self.mode {
             HybridMode::ElectricOnly => (0.0, demanded_power_w),
             HybridMode::EngineOnly => (demanded_power_w, 0.0),
@@ -949,9 +1093,33 @@ impl HybridPowertrain {
         }
     }
 
+    /// Electrical power drawn from the battery \[W\] (positive = discharge) when the
+    /// engine delivers `engine_power_w` and the motor `motor_power_w` in the current
+    /// mode.
+    ///
+    /// The motor always exchanges its power with the battery.  In
+    /// [`HybridMode::Series`] the engine drives a generator that feeds the motor
+    /// directly, so only the difference reaches the battery; in
+    /// [`HybridMode::Charging`] the whole engine power charges it.
+    pub fn battery_power(&self, engine_power_w: f64, motor_power_w: f64) -> f64 {
+        match self.mode {
+            HybridMode::Series => motor_power_w - engine_power_w,
+            HybridMode::Charging => -engine_power_w,
+            HybridMode::ElectricOnly
+            | HybridMode::EngineOnly
+            | HybridMode::Parallel
+            | HybridMode::RegenBraking => motor_power_w,
+        }
+    }
+
     /// Step the hybrid system by dt \[s\].
     pub fn step(&mut self, dt: f64, demanded_power_w: f64, braking: bool) {
         self.mode = self.determine_mode(demanded_power_w, braking);
+        self.advance(dt, demanded_power_w);
+    }
+
+    /// Advance engine, battery and motor by `dt` seconds in the current mode.
+    fn advance(&mut self, dt: f64, demanded_power_w: f64) {
         let (eng_pow, mot_pow) = self.power_split(demanded_power_w);
 
         // Engine
@@ -962,22 +1130,26 @@ impl HybridPowertrain {
             0.0
         };
         self.engine.set_throttle(throttle);
-        let fuel_rate = self.engine.fuel_flow_rate(rpm, throttle);
-        self.total_fuel_kg += fuel_rate * dt;
+        self.total_fuel_kg += self.engine.fuel_flow_for_power(rpm, eng_pow) * dt;
         self.engine.step(dt, eng_pow / (rpm * PI / 30.0 + 1.0));
 
-        // Motor / battery
+        // Battery: `Battery::step` takes a positive current for discharge.
         let current = if self.battery.nominal_voltage > 0.0 {
-            -mot_pow / self.battery.nominal_voltage
+            self.battery_power(eng_pow, mot_pow) / self.battery.nominal_voltage
         } else {
             0.0
         };
         self.battery.step(current, dt);
-        if mot_pow < 0.0 {
+        if mot_pow < 0.0 && (self.mode == HybridMode::RegenBraking || demanded_power_w < 0.0) {
             self.regen_energy_j += mot_pow.abs() * dt;
         }
-        self.motor.torque_cmd = if (self.motor.rpm * PI / 30.0).abs() > 1.0 {
-            mot_pow / (self.motor.rpm * PI / 30.0)
+
+        // Motor: it turns with the engine, so it has a speed to develop torque at
+        // and to dissipate heat at.
+        self.motor.rpm = rpm * self.motor_ratio;
+        let motor_omega = self.motor.rpm * PI / 30.0;
+        self.motor.torque_cmd = if motor_omega.abs() > 1.0 {
+            mot_pow / motor_omega
         } else {
             0.0
         };
@@ -1376,490 +1548,4 @@ impl Default for ThrottleByWire {
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // CombustionEngine tests
-
-    #[test]
-    fn test_engine_create_default_values() {
-        let eng = CombustionEngine::new(2.0e-3, 4, 10.5);
-        assert_eq!(eng.cylinders, 4);
-        assert_eq!(eng.displacement, 2.0e-3);
-        assert!((eng.compression_ratio - 10.5).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_volumetric_efficiency_at_full_throttle() {
-        let eng = CombustionEngine::new(2.0e-3, 4, 10.5);
-        let ve = eng.volumetric_efficiency(3500.0, 1.0);
-        assert!(ve > 0.5 && ve <= 1.0);
-    }
-
-    #[test]
-    fn test_volumetric_efficiency_decreases_at_high_rpm() {
-        let eng = CombustionEngine::new(2.0e-3, 4, 10.5);
-        let ve_mid = eng.volumetric_efficiency(3500.0, 1.0);
-        let ve_high = eng.volumetric_efficiency(7000.0, 1.0);
-        assert!(ve_mid > ve_high);
-    }
-
-    #[test]
-    fn test_bmep_positive() {
-        let eng = CombustionEngine::new(2.0e-3, 4, 10.5);
-        let bmep = eng.bmep(200.0);
-        assert!(bmep > 0.0);
-    }
-
-    #[test]
-    fn test_wiebe_fraction_zero_before_start() {
-        let eng = CombustionEngine::new(2.0e-3, 4, 10.5);
-        let x = eng.wiebe_burned_fraction(-20.0);
-        assert_eq!(x, 0.0);
-    }
-
-    #[test]
-    fn test_wiebe_fraction_increases_monotonically() {
-        let eng = CombustionEngine::new(2.0e-3, 4, 10.5);
-        let x1 = eng.wiebe_burned_fraction(0.0);
-        let x2 = eng.wiebe_burned_fraction(20.0);
-        let x3 = eng.wiebe_burned_fraction(50.0);
-        assert!(x1 <= x2 && x2 <= x3);
-    }
-
-    #[test]
-    fn test_engine_torque_at_throttle_zero() {
-        let eng = CombustionEngine::new(2.0e-3, 4, 10.5);
-        let t = eng.torque(3500.0, 0.0);
-        assert_eq!(t, 0.0);
-    }
-
-    #[test]
-    fn test_engine_power_positive_at_full_throttle() {
-        let eng = CombustionEngine::new(2.0e-3, 4, 10.5);
-        let p = eng.power(3000.0, 1.0);
-        assert!(p > 0.0);
-    }
-
-    #[test]
-    fn test_bsfc_positive() {
-        let eng = CombustionEngine::new(2.0e-3, 4, 10.5);
-        let bsfc = eng.bsfc(2000.0, 0.8);
-        assert!(bsfc > 0.0 && bsfc < 1000.0);
-    }
-
-    #[test]
-    fn test_fuel_flow_rate_positive() {
-        let eng = CombustionEngine::new(2.0e-3, 4, 10.5);
-        let ffr = eng.fuel_flow_rate(3000.0, 1.0);
-        assert!(ffr > 0.0);
-    }
-
-    #[test]
-    fn test_knock_probability_clipped_to_unity() {
-        let eng = CombustionEngine::new(2.0e-3, 4, 14.0); // high CR
-        let kp = eng.knock_probability(7000.0, 1.0);
-        assert!((0.0..=1.0).contains(&kp));
-    }
-
-    #[test]
-    fn test_engine_step_increases_crank_angle() {
-        let mut eng = CombustionEngine::new(2.0e-3, 4, 10.5);
-        eng.set_throttle(0.5);
-        eng.rpm = 3000.0;
-        let before = eng.crank_angle;
-        eng.step(0.01, 50.0);
-        assert!(eng.crank_angle != before || eng.rpm > eng.idle_rpm);
-    }
-
-    // FuelInjection tests
-
-    #[test]
-    fn test_injection_port_create() {
-        let fi = FuelInjection::new_port_injection(4);
-        assert_eq!(fi.spec.count, 4);
-        assert!(fi.spec.rail_pressure > 0.0);
-    }
-
-    #[test]
-    fn test_injection_gdi_higher_pressure() {
-        let port = FuelInjection::new_port_injection(4);
-        let gdi = FuelInjection::new_gdi(4);
-        assert!(gdi.spec.rail_pressure > port.spec.rail_pressure);
-    }
-
-    #[test]
-    fn test_spray_penetration_zero_at_zero_time() {
-        let fi = FuelInjection::new_gdi(4);
-        let pen = fi.spray_penetration(0.0, 1.2);
-        assert_eq!(pen, 0.0);
-    }
-
-    #[test]
-    fn test_spray_penetration_increases_with_time() {
-        let fi = FuelInjection::new_gdi(4);
-        let p1 = fi.spray_penetration(1e-4, 1.2);
-        let p2 = fi.spray_penetration(1e-3, 1.2);
-        assert!(p2 > p1);
-    }
-
-    #[test]
-    fn test_compute_duration_positive() {
-        let fi = FuelInjection::new_port_injection(4);
-        let dur = fi.compute_duration(5e-5);
-        assert!(dur > 0.0);
-    }
-
-    #[test]
-    fn test_set_lambda_sets_fields() {
-        let mut fi = FuelInjection::new_port_injection(4);
-        fi.set_lambda_and_compute(0.03, 1.0);
-        assert!((fi.lambda - 1.0).abs() < 1e-9);
-        assert!(fi.fuel_mass_cycle > 0.0);
-    }
-
-    // ExhaustSystem tests
-
-    #[test]
-    fn test_exhaust_backpressure_increases_with_rpm() {
-        let exh = ExhaustSystem::new();
-        let bp1 = exh.back_pressure(1000.0);
-        let bp2 = exh.back_pressure(6000.0);
-        assert!(bp2 > bp1);
-    }
-
-    #[test]
-    fn test_exhaust_temp_increases_with_load() {
-        let exh = ExhaustSystem::new();
-        let t1 = exh.exhaust_temp(3000.0, 0.3);
-        let t2 = exh.exhaust_temp(3000.0, 0.9);
-        assert!(t2 > t1);
-    }
-
-    // TurboCharger tests
-
-    #[test]
-    fn test_turbo_create_default() {
-        let tc = TurboCharger::new();
-        assert_eq!(tc.turbo_rpm, 0.0);
-        assert_eq!(tc.boost_pressure, 0.0);
-    }
-
-    #[test]
-    fn test_turbo_compressor_pr_ge_one() {
-        let tc = TurboCharger::new();
-        let pr = tc.compressor_pr(0.10, 80_000.0);
-        assert!(pr >= 1.0);
-    }
-
-    #[test]
-    fn test_turbo_efficiency_in_range() {
-        let tc = TurboCharger::new();
-        let eff = tc.compressor_efficiency(0.15, 100_000.0);
-        assert!((0.0..=1.0).contains(&eff));
-    }
-
-    #[test]
-    fn test_turbo_step_builds_boost() {
-        let mut tc = TurboCharger::new();
-        tc.turbo_rpm = 80_000.0;
-        for _ in 0..100 {
-            tc.step(0.01, 50_000.0);
-        }
-        assert!(tc.boost_pressure >= 0.0);
-    }
-
-    #[test]
-    fn test_wastegate_opens_above_setpoint() {
-        let mut tc = TurboCharger::new();
-        tc.boost_pressure = tc.wastegate_setpoint + 10_000.0;
-        tc.step(0.001, 1_000.0);
-        assert!(tc.wastegate_dc > 0.0);
-    }
-
-    // ElectricMotor tests
-
-    #[test]
-    fn test_motor_available_torque_in_constant_region() {
-        let m = ElectricMotor::new_pmsm(250.0, 150_000.0, 10_000.0);
-        let t = m.available_torque(2000.0); // below base RPM
-        assert!((t - 250.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_motor_torque_decreases_above_base_rpm() {
-        let m = ElectricMotor::new_pmsm(250.0, 150_000.0, 10_000.0);
-        let t_base = m.available_torque(m.base_rpm);
-        let t_high = m.available_torque(m.max_rpm);
-        assert!(t_high <= t_base);
-    }
-
-    #[test]
-    fn test_motor_efficiency_in_range() {
-        let m = ElectricMotor::new_pmsm(250.0, 150_000.0, 10_000.0);
-        let eff = m.efficiency(100.0, 3000.0);
-        assert!((0.0..=1.0).contains(&eff));
-    }
-
-    #[test]
-    fn test_motor_derating_factor_at_normal_temp() {
-        let m = ElectricMotor::new_pmsm(250.0, 150_000.0, 10_000.0);
-        assert!((m.derating_factor() - 1.0).abs() < 1e-9);
-    }
-
-    // Battery tests
-
-    #[test]
-    fn test_battery_ocv_increases_with_soc() {
-        let bat = Battery::new_nmc(60.0, 400.0);
-        let v1 = bat.ocv(0.2);
-        let v2 = bat.ocv(0.8);
-        assert!(v2 > v1);
-    }
-
-    #[test]
-    fn test_battery_soc_decreases_on_discharge() {
-        let mut bat = Battery::new_nmc(60.0, 400.0);
-        let soc0 = bat.soc;
-        bat.step(100.0, 1.0); // 100A discharge for 1s
-        assert!(bat.soc < soc0);
-    }
-
-    #[test]
-    fn test_battery_terminal_voltage_drops_under_load() {
-        let bat = Battery::new_nmc(60.0, 400.0);
-        let v0 = bat.terminal_voltage(0.0);
-        let v_load = bat.terminal_voltage(200.0);
-        assert!(v_load < v0);
-    }
-
-    #[test]
-    fn test_battery_soc_clamped() {
-        let mut bat = Battery::new_nmc(10.0, 400.0);
-        bat.soc = 0.01;
-        bat.step(10_000.0, 1.0);
-        assert!(bat.soc >= 0.0);
-    }
-
-    // HybridPowertrain tests
-
-    #[test]
-    fn test_hybrid_determine_mode_regen_on_brake() {
-        let eng = CombustionEngine::new(2.0e-3, 4, 10.5);
-        let mot = ElectricMotor::new_pmsm(200.0, 100_000.0, 8000.0);
-        let bat = Battery::new_nmc(40.0, 350.0);
-        let hyb = HybridPowertrain::new(eng, mot, bat);
-        let mode = hyb.determine_mode(0.0, true);
-        assert_eq!(mode, HybridMode::RegenBraking);
-    }
-
-    #[test]
-    fn test_hybrid_power_split_electric_only() {
-        let eng = CombustionEngine::new(2.0e-3, 4, 10.5);
-        let mot = ElectricMotor::new_pmsm(200.0, 100_000.0, 8000.0);
-        let bat = Battery::new_nmc(40.0, 350.0);
-        let mut hyb = HybridPowertrain::new(eng, mot, bat);
-        hyb.mode = HybridMode::ElectricOnly;
-        let (eng_p, _mot_p) = hyb.power_split(50_000.0);
-        assert_eq!(eng_p, 0.0);
-    }
-
-    #[test]
-    fn test_hybrid_step_increments_fuel() {
-        let eng = CombustionEngine::new(2.0e-3, 4, 10.5);
-        let mot = ElectricMotor::new_pmsm(200.0, 100_000.0, 8000.0);
-        let bat = Battery::new_nmc(40.0, 350.0);
-        let mut hyb = HybridPowertrain::new(eng, mot, bat);
-        hyb.mode = HybridMode::EngineOnly;
-        hyb.engine.rpm = 3000.0;
-        hyb.step(1.0, 30_000.0, false);
-        assert!(hyb.total_fuel_kg >= 0.0);
-    }
-
-    // CVT tests
-
-    #[test]
-    fn test_cvt_output_torque_ratio_multiplied() {
-        let cvt = CvtTransmission::new();
-        let out = cvt.output_torque(100.0);
-        assert!(out > 100.0); // ratio > 1 multiplies torque (minus losses)
-    }
-
-    #[test]
-    fn test_cvt_step_changes_ratio() {
-        let mut cvt = CvtTransmission::new();
-        cvt.ratio = 2.0;
-        // rate_limit = 0.5/s, so after 1s we move 0.5 toward target 0.5
-        // new ratio = 2.0 - 0.5 = 1.5
-        cvt.step(1.0, 0.5);
-        assert!(cvt.ratio < 2.0, "ratio should decrease toward target");
-        assert!(cvt.ratio >= cvt.ratio_min, "ratio stays above minimum");
-    }
-
-    #[test]
-    fn test_cvt_ratio_stays_within_bounds() {
-        let mut cvt = CvtTransmission::new();
-        cvt.step(10.0, 0.0);
-        assert!(cvt.ratio >= cvt.ratio_min);
-        cvt.step(10.0, 100.0);
-        assert!(cvt.ratio <= cvt.ratio_max);
-    }
-
-    #[test]
-    fn test_cvt_efficiency_in_range() {
-        let cvt = CvtTransmission::new();
-        let eff = cvt.efficiency(100.0, 1.5);
-        assert!((0.0..=1.0).contains(&eff));
-    }
-
-    // DCT tests
-
-    #[test]
-    fn test_dct_create_7speed() {
-        let dct = DualClutchTransmission::new_7speed();
-        assert_eq!(dct.ratios.len(), 7);
-        assert_eq!(dct.current_gear, 1);
-    }
-
-    #[test]
-    fn test_dct_upshift_increments_gear() {
-        let mut dct = DualClutchTransmission::new_7speed();
-        dct.upshift();
-        // Simulate shift
-        for _ in 0..20 {
-            dct.step(0.01);
-        }
-        assert_eq!(dct.current_gear, 2);
-    }
-
-    #[test]
-    fn test_dct_downshift_decrements_gear() {
-        let mut dct = DualClutchTransmission::new_7speed();
-        // First go to gear 2
-        dct.upshift();
-        for _ in 0..20 {
-            dct.step(0.01);
-        }
-        // Now downshift
-        dct.downshift();
-        for _ in 0..20 {
-            dct.step(0.01);
-        }
-        assert_eq!(dct.current_gear, 1);
-    }
-
-    #[test]
-    fn test_dct_total_ratio_positive() {
-        let dct = DualClutchTransmission::new_7speed();
-        assert!(dct.total_ratio() > 0.0);
-    }
-
-    #[test]
-    fn test_dct_output_torque_positive() {
-        let dct = DualClutchTransmission::new_7speed();
-        let t = dct.output_torque(200.0);
-        assert!(t > 0.0);
-    }
-
-    // ThrottleByWire tests
-
-    #[test]
-    fn test_tbw_default_throttle_zero() {
-        let tbw = ThrottleByWire::new();
-        assert_eq!(tbw.throttle_pos, 0.0);
-    }
-
-    #[test]
-    fn test_tbw_pedal_increases_throttle() {
-        let mut tbw = ThrottleByWire::new();
-        tbw.process_pedal(0.5);
-        assert!(tbw.target_throttle > 0.0);
-    }
-
-    #[test]
-    fn test_tbw_step_converges_to_target() {
-        let mut tbw = ThrottleByWire::new();
-        tbw.process_pedal(1.0);
-        for _ in 0..100 {
-            tbw.step(0.1);
-        }
-        assert!((tbw.throttle_pos - tbw.target_throttle).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_tbw_fault_limits_throttle() {
-        let mut tbw = ThrottleByWire::new();
-        tbw.trigger_fault();
-        tbw.process_pedal(1.0);
-        assert!(tbw.target_throttle <= tbw.limp_home_limit);
-    }
-
-    #[test]
-    fn test_tbw_tcs_limit() {
-        let mut tbw = ThrottleByWire::new();
-        tbw.set_tcs_limit(0.3);
-        tbw.process_pedal(1.0);
-        assert!(tbw.target_throttle <= 0.3 + 1e-9);
-    }
-
-    #[test]
-    fn test_tbw_clear_fault() {
-        let mut tbw = ThrottleByWire::new();
-        tbw.trigger_fault();
-        tbw.clear_fault();
-        tbw.process_pedal(0.8);
-        for _ in 0..100 {
-            tbw.step(0.1);
-        }
-        assert!(tbw.throttle_pos > tbw.limp_home_limit);
-    }
-
-    #[test]
-    fn test_intercooler_reduces_temp() {
-        let ic = Intercooler::new();
-        let outlet = ic.outlet_temp(180.0);
-        assert!((25.0..180.0).contains(&outlet));
-    }
-
-    #[test]
-    fn test_pedal_map_sport_aggressive() {
-        let sport = PedalMap::sport();
-        let t = sport.evaluate(0.2);
-        let linear = PedalMap::linear();
-        let t_lin = linear.evaluate(0.2);
-        assert!(t > t_lin);
-    }
-
-    #[test]
-    fn test_wiebe_heat_release_nonnegative() {
-        let eng = CombustionEngine::new(2.0e-3, 4, 10.5);
-        let hrr = eng.heat_release_rate(10.0, 1000.0);
-        assert!(hrr >= 0.0);
-    }
-
-    #[test]
-    fn test_engine_set_throttle_clamps() {
-        let mut eng = CombustionEngine::new(2.0e-3, 4, 10.5);
-        eng.set_throttle(2.0);
-        assert!(eng.throttle <= 1.0);
-        eng.set_throttle(-1.0);
-        assert!(eng.throttle >= 0.0);
-    }
-
-    #[test]
-    fn test_hybrid_fuel_economy_nonnegative() {
-        let eng = CombustionEngine::new(2.0e-3, 4, 10.5);
-        let mot = ElectricMotor::new_pmsm(200.0, 100_000.0, 8000.0);
-        let bat = Battery::new_nmc(40.0, 350.0);
-        let hyb = HybridPowertrain::new(eng, mot, bat);
-        let fe = hyb.fuel_economy(20_000.0, 15.0);
-        assert!(fe >= 0.0);
-    }
-
-    #[test]
-    fn test_dct_recommended_gear_in_range() {
-        let dct = DualClutchTransmission::new_7speed();
-        let g = dct.recommended_gear(20.0, 0.5);
-        assert!(g >= 1 && g <= dct.ratios.len());
-    }
-}
+mod tests;

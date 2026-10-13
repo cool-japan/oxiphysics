@@ -41,12 +41,23 @@ mod gpu_tests {
     /// Verify `dispatch_count_for` arithmetic — this test requires no hardware.
     #[test]
     fn test_wgpu_dispatch_count_for() {
-        assert_eq!(WgpuBackendReal::dispatch_count_for(0, 64), [0, 1, 1]);
-        assert_eq!(WgpuBackendReal::dispatch_count_for(64, 64), [1, 1, 1]);
-        assert_eq!(WgpuBackendReal::dispatch_count_for(65, 64), [2, 1, 1]);
-        assert_eq!(WgpuBackendReal::dispatch_count_for(128, 64), [2, 1, 1]);
-        assert_eq!(WgpuBackendReal::dispatch_count_for(1, 1), [1, 1, 1]);
-        assert_eq!(WgpuBackendReal::dispatch_count_for(100, 32), [4, 1, 1]);
+        let shape = |n, ws| WgpuBackendReal::dispatch_count_for(n, ws).expect("dispatch shape");
+        assert_eq!(shape(0, 64), [0, 1, 1]);
+        assert_eq!(shape(64, 64), [1, 1, 1]);
+        assert_eq!(shape(65, 64), [2, 1, 1]);
+        assert_eq!(shape(128, 64), [2, 1, 1]);
+        assert_eq!(shape(1, 1), [1, 1, 1]);
+        assert_eq!(shape(100, 32), [4, 1, 1]);
+    }
+
+    /// Inputs beyond one dispatch dimension fold into y instead of producing
+    /// an invalid `[x > 65535, 1, 1]` shape.
+    #[test]
+    fn test_wgpu_dispatch_count_for_folds_five_million_items() {
+        let [x, y, z] = WgpuBackendReal::dispatch_count_for(5_000_000, 64).expect("shape");
+        assert!(x <= 65_535 && y <= 65_535 && z == 1);
+        assert!(y > 1, "78125 workgroups do not fit one dimension");
+        assert!(u64::from(x) * u64::from(y) * 64 >= 5_000_000);
     }
 
     // ── buffer round-trip ─────────────────────────────────────────────────────
@@ -60,7 +71,7 @@ mod gpu_tests {
         let data: Vec<f64> = (1..=n).map(|i| i as f64 * 0.5).collect();
         let buf = backend.create_buffer_f64(n);
         backend.write_buffer_f64(buf, &data);
-        let result = backend.read_buffer_f64(buf);
+        let result = backend.read_buffer_f64(buf).expect("readback");
         assert_eq!(result.len(), n, "Buffer length mismatch");
         for (i, (&orig, &got)) in data.iter().zip(result.iter()).enumerate() {
             let rel_err = (orig as f32 - got as f32).abs() / (orig as f32).abs().max(1e-6);
@@ -102,7 +113,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let out_buf = backend.create_buffer_f64(n);
         backend.write_buffer_f64(in_buf, &input);
 
-        let workgroups = WgpuBackendReal::dispatch_count_for(n, 64);
+        let workgroups = WgpuBackendReal::dispatch_count_for(n, 64).expect("dispatch shape");
         let result = backend.dispatch_wgsl(
             COPY_WGSL,
             "main",
@@ -114,7 +125,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         );
         assert!(result.is_ok(), "dispatch_wgsl failed: {:?}", result.err());
 
-        let gpu_out = backend.read_buffer_f64(out_buf);
+        let gpu_out = backend.read_buffer_f64(out_buf).expect("readback");
         assert_eq!(gpu_out.len(), n, "Output length mismatch");
 
         // GPU uses f32 precision; expect ~6 decimal-digit accuracy.
@@ -169,7 +180,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         );
 
         // Verify the shader actually wrote 42.0 into the buffer.
-        let out = backend.read_buffer_f64(buf);
+        let out = backend.read_buffer_f64(buf).expect("readback");
         assert!(!out.is_empty(), "Read-back returned empty vec");
         let val = out[0] as f32;
         assert!(
@@ -256,7 +267,7 @@ fn sph_density(@builtin(global_invocation_id) gid: vec3<u32>) {
             result.err()
         );
 
-        let densities = backend.read_buffer_f64(dens_buf);
+        let densities = backend.read_buffer_f64(dens_buf).expect("readback");
         assert_eq!(
             densities.len(),
             n as usize,

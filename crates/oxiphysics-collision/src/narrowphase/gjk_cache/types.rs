@@ -75,7 +75,8 @@ pub struct JohnsonSubResult {
     pub closest: [f64; 3],
     /// Barycentric weights for each simplex vertex (sums to 1).
     pub bary: [f64; 4],
-    /// Number of active vertices (1–4).
+    /// Number of active vertices (1–4): the simplex vertices with a positive
+    /// weight in `bary`, i.e. the vertices of the feature carrying `closest`.
     pub num_active: usize,
     /// Whether the origin is inside the simplex (distance ≈ 0).
     pub origin_inside: bool,
@@ -713,9 +714,13 @@ impl GjkWarmStart {
 /// Controls when the GJK distance iteration terminates.
 #[derive(Debug, Clone)]
 pub struct GjkTermination {
-    /// Absolute distance tolerance: stop when `|dist - prev_dist| < abs_tol`.
+    /// Absolute distance tolerance. The distance iteration stops once the distance
+    /// of the current simplex exceeds the proven lower bound on the true distance
+    /// by at most `max(abs_tol, rel_tol * dist)`; `should_terminate` additionally
+    /// stops when `|dist - prev_dist| < abs_tol` (stagnation).
     pub abs_tol: f64,
-    /// Relative distance tolerance: stop when `|dist - prev_dist| / dist < rel_tol`.
+    /// Relative distance tolerance: see `abs_tol`; the stagnation test uses
+    /// `|dist - prev_dist| / dist < rel_tol`.
     pub rel_tol: f64,
     /// Maximum number of iterations.
     pub max_iters: usize,

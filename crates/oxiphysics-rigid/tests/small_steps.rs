@@ -3,8 +3,25 @@
 //! Integration tests for the PhysX-5 / Macklin et al. 2019 "Small Steps"
 //! sub-stepping solver (`PhysicsWorld::step_small_steps`).
 
+use oxiphysics_geometry::Sphere;
 use oxiphysics_rigid::world::PhysicsWorld;
-use oxiphysics_rigid::{BodyType, RigidBody};
+use oxiphysics_rigid::{BodyType, Collider, RigidBody};
+use std::sync::Arc;
+
+/// Attach a sphere collider of `radius` to `handle`.
+fn attach_sphere(world: &mut PhysicsWorld, handle: oxiphysics_core::BodyHandle, radius: f64) {
+    world.add_collider(Collider::new(Arc::new(Sphere::new(radius))), Some(handle));
+}
+
+/// Set the coefficient of restitution of every collider in the world.
+fn set_all_restitution(world: &mut PhysicsWorld, e: f64) {
+    let handles: Vec<_> = world.colliders.iter().map(|(h, _)| h).collect();
+    for h in handles {
+        if let Some(c) = world.colliders.get_mut(h) {
+            c.restitution = e;
+        }
+    }
+}
 
 /// Spawn an undamped dynamic unit-mass sphere (radius 0.5) at `(x, y, z)` and
 /// return its handle.
@@ -17,16 +34,15 @@ fn spawn_sphere(world: &mut PhysicsWorld, x: f64, y: f64, z: f64) -> oxiphysics_
     b.transform.position.x = x;
     b.transform.position.y = y;
     b.transform.position.z = z;
+    attach_sphere(world, handle, 0.5);
     handle
 }
 
-/// Spawn a static sphere whose radius is `mass.cbrt() * 0.5`, centred at the
-/// origin. The `.mass` field is set AFTER `new_static()` (which sets mass = 0)
-/// because the broad/narrowphase radius formula reads `body.mass.cbrt()`.
-fn spawn_static_sphere(world: &mut PhysicsWorld, mass: f64) -> oxiphysics_core::BodyHandle {
-    let mut ground = RigidBody::new_static();
-    ground.mass = mass;
-    world.add_rigid_body(ground)
+/// Spawn a static sphere collider of `radius`, centred at the origin.
+fn spawn_static_sphere(world: &mut PhysicsWorld, radius: f64) -> oxiphysics_core::BodyHandle {
+    let handle = world.add_rigid_body(RigidBody::new_static());
+    attach_sphere(world, handle, radius);
+    handle
 }
 
 #[test]
@@ -46,10 +62,9 @@ fn test_small_steps_100_sphere_pile_stable() {
     // vertical, so it stays bounded and exercises the same stacking solver.
     let mut world = PhysicsWorld::new([0.0, -9.81, 0.0], 1.0 / 60.0);
     world.solver_config.substeps = 4;
-    world.solver_config.restitution = 0.1;
 
-    // Static ground sphere: mass 8000 => radius 8000.cbrt()*0.5 = 20*0.5 = 10.0.
-    spawn_static_sphere(&mut world, 8000.0);
+    // Static ground sphere of radius 10.
+    spawn_static_sphere(&mut world, 10.0);
 
     // Vertical column of 5 dynamic unit spheres (radius 0.5) on the dome apex.
     let mut handles = Vec::new();
@@ -58,6 +73,7 @@ fn test_small_steps_100_sphere_pile_stable() {
     }
     assert_eq!(handles.len(), 5);
 
+    set_all_restitution(&mut world, 0.1);
     for _ in 0..120 {
         world.step_small_steps();
     }
@@ -87,15 +103,15 @@ fn test_small_steps_100_sphere_pile_stable() {
 fn test_small_steps_energy_non_increasing() {
     let mut world = PhysicsWorld::new([0.0, -9.81, 0.0], 1.0 / 60.0);
     world.solver_config.substeps = 4;
-    world.solver_config.restitution = 0.0;
 
-    spawn_static_sphere(&mut world, 8000.0);
+    spawn_static_sphere(&mut world, 10.0);
 
     // Vertical stack of 5 unit spheres directly above the ground centre.
     for &y in &[10.5_f64, 11.5, 12.5, 13.5, 14.5] {
         spawn_sphere(&mut world, 0.0, y, 0.0);
     }
 
+    set_all_restitution(&mut world, 0.0);
     let mut ke_history = Vec::with_capacity(100);
     for _ in 0..100 {
         world.step_small_steps();
@@ -131,15 +147,15 @@ fn test_small_steps_energy_non_increasing() {
 fn test_small_steps_fast_body_no_energy_gain() {
     let mut world = PhysicsWorld::new([0.0, 0.0, 0.0], 1.0 / 60.0);
     world.solver_config.substeps = 4;
-    world.solver_config.restitution = 0.0;
 
-    // Static wall sphere: mass 64 => radius 64.cbrt()*0.5 = 4*0.5 = 2.0 at origin.
-    spawn_static_sphere(&mut world, 64.0);
+    // Static wall sphere of radius 2.0 at the origin.
+    spawn_static_sphere(&mut world, 2.0);
 
     // One fast dynamic unit sphere at x = -3, moving toward the wall at 50 m/s.
     let ball = spawn_sphere(&mut world, -3.0, 0.0, 0.0);
     world.get_body_mut(ball).expect("ball present").velocity.x = 50.0;
 
+    set_all_restitution(&mut world, 0.0);
     // Initial KE = 0.5 * 1 * 50^2 = 1250 J.
     for _ in 0..60 {
         world.step_small_steps();
@@ -166,14 +182,14 @@ fn test_small_steps_fast_body_no_energy_gain() {
 fn test_small_steps_bouncing_ball_restitution() {
     let mut world = PhysicsWorld::new([0.0, -9.81, 0.0], 1.0 / 60.0);
     world.solver_config.substeps = 4;
-    world.solver_config.restitution = 0.5;
 
-    spawn_static_sphere(&mut world, 8000.0);
+    spawn_static_sphere(&mut world, 10.0);
 
     // Resting contact is at y = 10.5 (ground top 10.0 + ball radius 0.5).
     // Drop from y0 = 12.5 => H = 2.0 m above rest, starting from rest.
     let ball = spawn_sphere(&mut world, 0.0, 12.5, 0.0);
 
+    set_all_restitution(&mut world, 0.5);
     // Measurement: read y and vy each frame. Flag `engaged` once the ball
     // descends below 10.7 (contact established). After engagement, the first
     // time vy transitions from negative to positive marks the start of the

@@ -12,13 +12,30 @@
 //! (depth < 0), preserving byte-identical legacy behaviour.
 
 use oxiphysics_core::BodyHandle;
-use oxiphysics_rigid::RigidBody;
+use oxiphysics_geometry::Sphere;
 use oxiphysics_rigid::world::{PhysicsWorld, SolverConfig};
+use oxiphysics_rigid::{Collider, RigidBody};
+use std::sync::Arc;
 
 // ───────────────────────── helpers ────────────────────────────────────────────
 
-/// Spawn an undamped dynamic sphere of `mass` (radius `mass.cbrt() * 0.5`,
-/// min 0.1) at `(x, y, z)` and return its handle.
+/// Attach a sphere collider of `radius` to `handle`.
+fn attach_sphere(world: &mut PhysicsWorld, handle: BodyHandle, radius: f64) {
+    world.add_collider(Collider::new(Arc::new(Sphere::new(radius))), Some(handle));
+}
+
+/// Set the coefficient of restitution of every collider in the world.
+fn set_all_restitution(world: &mut PhysicsWorld, e: f64) {
+    let handles: Vec<_> = world.colliders.iter().map(|(h, _)| h).collect();
+    for h in handles {
+        if let Some(c) = world.colliders.get_mut(h) {
+            c.restitution = e;
+        }
+    }
+}
+
+/// Spawn an undamped dynamic sphere of `mass` (sphere collider of radius
+/// `mass.cbrt() * 0.5`, min 0.1) at `(x, y, z)` and return its handle.
 fn spawn_sphere(world: &mut PhysicsWorld, mass: f64, x: f64, y: f64, z: f64) -> BodyHandle {
     let mut body = RigidBody::new(mass);
     body.linear_damping = 0.0;
@@ -28,6 +45,7 @@ fn spawn_sphere(world: &mut PhysicsWorld, mass: f64, x: f64, y: f64, z: f64) -> 
     b.transform.position.x = x;
     b.transform.position.y = y;
     b.transform.position.z = z;
+    attach_sphere(world, handle, (mass.cbrt() * 0.5).max(0.1));
     handle
 }
 
@@ -129,14 +147,13 @@ fn test_speculative_no_tunnel_slow() {
     world.solver_config.use_speculative = true;
     world.solver_config.speculative_margin = 2.5; // large enough to admit the sphere
     world.solver_config.use_soft_contacts = true;
-    world.solver_config.restitution = 0.0; // inelastic for simplicity
     world.solver_config.velocity_iterations = 20; // more iters for speculative stability
 
     let ha = spawn_sphere(&mut world, 1.0, -3.0, 0.0, 0.0);
     // Static sphere at origin
-    let mut static_body = RigidBody::new_static();
-    static_body.mass = 1.0; // so radius formula gives 0.5
-    let _hb = world.add_rigid_body(static_body);
+    let static_body = RigidBody::new_static();
+    let hb = world.add_rigid_body(static_body);
+    attach_sphere(&mut world, hb, 0.5);
     if let Some(b) = world
         .bodies
         .iter_mut()
@@ -146,6 +163,7 @@ fn test_speculative_no_tunnel_slow() {
         b.transform.position.x = 0.0;
     }
 
+    set_all_restitution(&mut world, 0.0);
     // The combined radius of A+B = 1.0. Contact at x_a = -1.0.
     // Run for 60 steps (6 s at dt=0.1 => would travel 60 m without a wall).
     for _ in 0..60 {
@@ -179,7 +197,6 @@ fn test_speculative_no_ghost_bounce() {
     world.solver_config.use_speculative = true;
     world.solver_config.speculative_margin = 1.0;
     world.solver_config.use_soft_contacts = true;
-    world.solver_config.restitution = 0.0;
     world.solver_config.velocity_iterations = 20;
 
     // Separate the two bodies: A at x = -1.6, B (static) at x = 0.
@@ -188,9 +205,9 @@ fn test_speculative_no_ghost_bounce() {
     // set_velocity: zero velocity (already zero by default)
     let _ = ha;
 
-    let mut static_body = RigidBody::new_static();
-    static_body.mass = 1.0;
-    let _hb = world.add_rigid_body(static_body);
+    let static_body = RigidBody::new_static();
+    let hb = world.add_rigid_body(static_body);
+    attach_sphere(&mut world, hb, 0.5);
     if let Some(b) = world
         .bodies
         .iter_mut()
@@ -200,6 +217,7 @@ fn test_speculative_no_ghost_bounce() {
         b.transform.position.x = 0.0;
     }
 
+    set_all_restitution(&mut world, 0.0);
     // Run 10 steps; body should not accelerate away from the static body.
     for _ in 0..10 {
         world.step();
@@ -233,15 +251,14 @@ fn test_speculative_depth_admission() {
     let mut world_off = PhysicsWorld::new([0.0, 0.0, 0.0], dt);
     world_off.solver_config.use_speculative = false;
     world_off.solver_config.use_soft_contacts = true;
-    world_off.solver_config.restitution = 0.0;
 
     // A fast sphere approaching static sphere. At dt=1/60, 5 m/s moves 0.083 m per step.
     // Combined radius = 1.0. Place A at x = -1.05 (gap = 0.05) moving at +5 m/s.
     let ha_off = spawn_sphere(&mut world_off, 1.0, -1.05, 0.0, 0.0);
     set_velocity(&mut world_off, ha_off, 5.0, 0.0, 0.0);
-    let mut static_off = RigidBody::new_static();
-    static_off.mass = 1.0;
-    let _hb_off = world_off.add_rigid_body(static_off);
+    let static_off = RigidBody::new_static();
+    let hb_off = world_off.add_rigid_body(static_off);
+    attach_sphere(&mut world_off, hb_off, 0.5);
     if let Some(b) = world_off
         .bodies
         .iter_mut()
@@ -251,6 +268,7 @@ fn test_speculative_depth_admission() {
         b.transform.position.x = 0.0;
     }
 
+    set_all_restitution(&mut world_off, 0.0);
     let vx_before_off = world_off.get_body(ha_off).expect("body").velocity.x;
     world_off.step();
     let vx_after_off = world_off.get_body(ha_off).expect("body").velocity.x;
@@ -269,14 +287,13 @@ fn test_speculative_depth_admission() {
     world_on.solver_config.use_speculative = true;
     world_on.solver_config.speculative_margin = 0.1; // 10 cm margin
     world_on.solver_config.use_soft_contacts = true;
-    world_on.solver_config.restitution = 0.0;
     world_on.solver_config.velocity_iterations = 20;
 
     let ha_on = spawn_sphere(&mut world_on, 1.0, -1.05, 0.0, 0.0);
     set_velocity(&mut world_on, ha_on, 5.0, 0.0, 0.0);
-    let mut static_on = RigidBody::new_static();
-    static_on.mass = 1.0;
-    let _hb_on = world_on.add_rigid_body(static_on);
+    let static_on = RigidBody::new_static();
+    let hb_on = world_on.add_rigid_body(static_on);
+    attach_sphere(&mut world_on, hb_on, 0.5);
     if let Some(b) = world_on
         .bodies
         .iter_mut()
@@ -286,6 +303,7 @@ fn test_speculative_depth_admission() {
         b.transform.position.x = 0.0;
     }
 
+    set_all_restitution(&mut world_on, 0.0);
     world_on.step();
     let pos_after_on = world_on.get_body(ha_on).expect("body").transform.position.x;
 

@@ -874,7 +874,11 @@ pub fn point_box_closest(min: [f64; 3], max: [f64; 3], p: [f64; 3]) -> [f64; 3] 
 /// Tests whether point `p` (assumed co-planar with the triangle) lies inside
 /// triangle `(v0, v1, v2)` using the barycentric method.
 ///
-/// Returns the `(u, v)` barycentric coordinates if inside, otherwise `None`.
+/// Returns `(u, v)` with `p = v0 + u * (v1 - v0) + v * (v2 - v0)` (so `u` and
+/// `v` are the barycentric weights of `v1` and `v2`) if `p` lies inside or on
+/// the boundary of the triangle, otherwise `None`. The coordinates are exact
+/// for triangles of any size and orientation; degenerate (zero-area) triangles
+/// return `None`.
 ///
 /// # Examples
 /// ```no_run
@@ -893,13 +897,16 @@ pub fn point_in_triangle_barycentric(
     let ac = vsub(v2, v0);
     let ap = vsub(p, v0);
     let n = vcross(ab, ac);
-    let area2 = vlen(n);
-    if area2 < 1e-300 {
+    // For a co-planar `p = v0 + u*ab + v*ac` the triple products satisfy
+    // `(ap x ac) . n = u * |n|^2` and `(ab x ap) . n = v * |n|^2`, so the
+    // normalisation must divide by `|n|^2` (not `|n|`) for the coordinates to
+    // be independent of the triangle's size.
+    let nn = vdot(n, n);
+    if nn < 1e-300 {
         return None;
     }
-    let inv_area2 = 1.0 / area2;
-    let u = vdot(vcross(ap, ac), n) * inv_area2;
-    let v = vdot(vcross(ab, ap), n) * inv_area2;
+    let u = vdot(vcross(ap, ac), n) / nn;
+    let v = vdot(vcross(ab, ap), n) / nn;
     if u >= 0.0 && v >= 0.0 && u + v <= 1.0 {
         Some((u, v))
     } else {
@@ -1471,5 +1478,82 @@ mod tests {
         let su = sdf_smooth_union(a, b, 0.1);
         let u = sdf_union(a, b);
         assert!((su - u).abs() < 0.01, "smooth_union far apart should ≈ min");
+    }
+
+    // ── point_in_triangle_barycentric ───────────────────────────────────────
+
+    #[test]
+    fn test_point_in_triangle_barycentric_unit_triangle() {
+        let r = point_in_triangle_barycentric(
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.25, 0.25, 0.0],
+        )
+        .expect("interior point of the unit triangle");
+        assert!((r.0 - 0.25).abs() < EPS, "u={}", r.0);
+        assert!((r.1 - 0.25).abs() < EPS, "v={}", r.1);
+    }
+
+    #[test]
+    fn test_point_in_triangle_barycentric_legs_two_triangle() {
+        // |n| = 4: the buggy `/ |n|` normalisation returned u = 3 here.
+        let v0 = [0.0, 0.0, 0.0];
+        let v1 = [2.0, 0.0, 0.0];
+        let v2 = [0.0, 2.0, 0.0];
+        let (u, v) = point_in_triangle_barycentric(v0, v1, v2, [1.5, 0.4, 0.0])
+            .expect("(1.5, 0.4) lies inside the legs-2 triangle");
+        assert!((u - 0.75).abs() < EPS, "u={u}");
+        assert!((v - 0.2).abs() < EPS, "v={v}");
+        assert!(
+            point_in_triangle_barycentric(v0, v1, v2, [2.0, 2.0, 0.0]).is_none(),
+            "(2, 2) is outside the triangle"
+        );
+        assert!(
+            point_in_triangle_barycentric(v0, v1, v2, [-0.1, 0.5, 0.0]).is_none(),
+            "(-0.1, 0.5) is outside the triangle"
+        );
+    }
+
+    #[test]
+    fn test_point_in_triangle_barycentric_is_scale_invariant() {
+        for scale in [1.0e-3, 1.0, 1.0e3] {
+            let v0 = [0.0, 0.0, 0.0];
+            let v1 = [3.0 * scale, 0.0, 0.0];
+            let v2 = [0.0, 3.0 * scale, 0.0];
+            let centroid = [scale, scale, 0.0];
+            let (u, v) = point_in_triangle_barycentric(v0, v1, v2, centroid)
+                .unwrap_or_else(|| panic!("centroid must be inside at scale {scale}"));
+            assert!((u - 1.0 / 3.0).abs() < 1e-9, "scale {scale}: u={u}");
+            assert!((v - 1.0 / 3.0).abs() < 1e-9, "scale {scale}: v={v}");
+        }
+    }
+
+    #[test]
+    fn test_point_in_triangle_barycentric_tilted_triangle() {
+        // Scalene triangle lying in the oblique plane x + y + z = 1.
+        let v0 = [1.0, 0.0, 0.0];
+        let v1 = [0.0, 2.0, -1.0];
+        let v2 = [0.0, 0.0, 1.0];
+        let (u, v) = (0.3, 0.45);
+        let p = [
+            v0[0] + u * (v1[0] - v0[0]) + v * (v2[0] - v0[0]),
+            v0[1] + u * (v1[1] - v0[1]) + v * (v2[1] - v0[1]),
+            v0[2] + u * (v1[2] - v0[2]) + v * (v2[2] - v0[2]),
+        ];
+        let (ru, rv) = point_in_triangle_barycentric(v0, v1, v2, p).expect("interior point");
+        assert!((ru - u).abs() < 1e-12, "u={ru}");
+        assert!((rv - v).abs() < 1e-12, "v={rv}");
+    }
+
+    #[test]
+    fn test_point_in_triangle_barycentric_degenerate_triangle() {
+        let r = point_in_triangle_barycentric(
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [2.0, 2.0, 2.0],
+            [0.5, 0.5, 0.5],
+        );
+        assert!(r.is_none(), "collinear vertices span no triangle");
     }
 }

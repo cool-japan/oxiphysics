@@ -8,7 +8,8 @@
 //! - [`CgBeadType`]: bead chemistry classification.
 //! - [`CgMolecule`]: collection of bonded beads with harmonic bonds and angles.
 //! - [`CgForceField`]: Lennard-Jones + electrostatic non-bonded interactions.
-//! - [`CgSimulation`]: NVT simulation with Langevin thermostat.
+//! - [`CgSimulation`]: NVT simulation with Langevin thermostat in an orthorhombic
+//!   periodic box (minimum-image forces, virial pressure, g(r), diffusion).
 //! - [`IterativeBoltzmannInversion`]: potential-of-mean-force from a target RDF.
 //! - [`MsIbi`]: multi-state iterative Boltzmann inversion.
 //!
@@ -16,7 +17,11 @@
 //! ----------
 //! Marrink, S. J. et al. (2007) *J. Phys. Chem. B* **111**, 7812–7824.
 
+use crate::MdError;
 use std::f64::consts::PI;
+
+/// Boltzmann constant in kJ mol⁻¹ K⁻¹ (`R = N_A k_B`, CODATA 2018).
+const KB_KJ_PER_MOL_K: f64 = 8.314_462_618e-3;
 
 // ---------------------------------------------------------------------------
 // Helper geometry
@@ -51,6 +56,25 @@ fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
 #[inline]
 fn norm3(v: [f64; 3]) -> f64 {
     dot3(v, v).sqrt()
+}
+
+/// Minimum-image convention for an orthorhombic periodic box: wrap every
+/// component of the separation `d` into `[-L/2, L/2]`.  An axis whose edge
+/// length is not positive and finite is treated as non-periodic.
+#[inline]
+fn minimum_image(d: [f64; 3], box_lengths: [f64; 3]) -> [f64; 3] {
+    let wrap = |x: f64, l: f64| {
+        if l.is_finite() && l > 0.0 {
+            x - l * (x / l).round()
+        } else {
+            x
+        }
+    };
+    [
+        wrap(d[0], box_lengths[0]),
+        wrap(d[1], box_lengths[1]),
+        wrap(d[2], box_lengths[2]),
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -312,7 +336,16 @@ fn bead_type_index(t: CgBeadType) -> usize {
 // CgSimulation
 // ---------------------------------------------------------------------------
 
-/// NVT coarse-grained simulation with Langevin thermostat.
+/// NVT coarse-grained simulation with Langevin thermostat in an orthorhombic
+/// periodic box.
+///
+/// Non-bonded pairs interact through the minimum image of their separation, and
+/// the box edge lengths [`CgSimulation::box_lengths`] define the volume used by
+/// [`CgSimulation::pressure`] and the number density used by
+/// [`CgSimulation::rdf`].  Bead positions are never wrapped back into the box, so
+/// they stay *unwrapped*: [`CgSimulation::diffusion_coefficient`] measures the
+/// mean-squared displacement from the positions captured at construction (or at
+/// the last [`CgSimulation::reset_displacement_origin`]) without periodic jumps.
 #[derive(Debug, Clone)]
 pub struct CgSimulation {
     /// All molecules in the simulation box.
@@ -327,22 +360,67 @@ pub struct CgSimulation {
     pub gamma: f64,
     /// Current simulation time \[ps\].
     pub time: f64,
+    /// Edge lengths \[Lx, Ly, Lz\] of the orthorhombic periodic box \[nm\].
+    pub box_lengths: [f64; 3],
+    /// Unwrapped bead positions (molecule order) at the displacement origin \[nm\].
+    initial_positions: Vec<[f64; 3]>,
+    /// Simulation time at which `initial_positions` was captured \[ps\].
+    origin_time: f64,
     /// Pseudo-random seed state (LCG, no external crate needed).
     lcg_state: u64,
 }
 
 impl CgSimulation {
-    /// Construct a simulation with given molecules, force field, temperature and dt.
-    pub fn new(molecules: Vec<CgMolecule>, ff: CgForceField, temp: f64, dt: f64) -> Self {
-        Self {
+    /// Construct a simulation with given molecules, force field, temperature, dt
+    /// and the edge lengths `box_lengths` \[nm\] of the periodic box.
+    ///
+    /// The bead positions at construction are recorded as the origin of the
+    /// mean-squared displacement used by [`CgSimulation::diffusion_coefficient`].
+    ///
+    /// # Errors
+    /// Returns [`MdError::General`] if an edge length is not finite and positive.
+    pub fn new(
+        molecules: Vec<CgMolecule>,
+        ff: CgForceField,
+        temp: f64,
+        dt: f64,
+        box_lengths: [f64; 3],
+    ) -> Result<Self, MdError> {
+        if box_lengths.iter().any(|l| !l.is_finite() || *l <= 0.0) {
+            return Err(MdError::General(format!(
+                "CgSimulation box edge lengths must be finite and positive, got {box_lengths:?}"
+            )));
+        }
+        let initial_positions = molecules
+            .iter()
+            .flat_map(|m| m.beads.iter().map(|b| b.pos))
+            .collect();
+        Ok(Self {
             molecules,
             ff,
             temp,
             dt,
             gamma: 1.0,
             time: 0.0,
+            box_lengths,
+            initial_positions,
+            origin_time: 0.0,
             lcg_state: 12345,
-        }
+        })
+    }
+
+    /// Volume `Lx · Ly · Lz` of the periodic box \[nm³\].
+    pub fn volume(&self) -> f64 {
+        self.box_lengths[0] * self.box_lengths[1] * self.box_lengths[2]
+    }
+
+    /// Record the current bead positions as the origin of the mean-squared
+    /// displacement and restart the elapsed-time clock of
+    /// [`CgSimulation::diffusion_coefficient`] at the current simulation time.
+    pub fn reset_displacement_origin(&mut self) {
+        let positions: Vec<[f64; 3]> = self.all_beads().iter().map(|b| b.pos).collect();
+        self.initial_positions = positions;
+        self.origin_time = self.time;
     }
 
     /// Advance the simulation by one time step (velocity Verlet + Langevin).
@@ -377,7 +455,7 @@ impl CgSimulation {
 
     /// Apply Langevin (Ornstein-Uhlenbeck) thermostat to all bead velocities.
     pub fn langevin_thermostat(&mut self) {
-        let kbt = 8.314e-3 * self.temp; // kJ mol⁻¹
+        let kbt = KB_KJ_PER_MOL_K * self.temp; // kJ mol⁻¹
         let alpha = (-self.gamma * self.dt).exp();
         // Pre-generate noise: count total velocity components
         let total_components: usize = self.molecules.iter().map(|m| m.beads.len() * 3).sum();
@@ -396,90 +474,133 @@ impl CgSimulation {
 
     /// Instantaneous pressure estimate via the virial theorem \[kJ mol⁻¹ nm⁻³\].
     ///
-    /// Uses the ideal-gas contribution plus the pairwise virial term.
+    /// `P = N k_B T / V - W / (3 V)` with `V = Lx · Ly · Lz` the volume of the
+    /// periodic box, `T` the target temperature and `W = Σ r dU/dr` the
+    /// configurational virial of the Lennard-Jones pairs (minimum-image
+    /// separations) and of the harmonic bonds.  The cosine-harmonic angle terms
+    /// depend only on the angle, which is invariant under a uniform rescaling of
+    /// the system, so they contribute nothing to the virial.
+    ///
+    /// Returns `0.0` for an empty system and `NaN` if the box volume is not
+    /// finite and positive.
     pub fn pressure(&self) -> f64 {
         let beads = self.all_beads();
         let n = beads.len();
         if n == 0 {
             return 0.0;
         }
-        // Estimate box volume from bead density (assume cubic, 1 bead / (0.5 nm)³)
-        let v = (n as f64) * 0.125; // nm³
-        let kbt = 8.314e-3 * self.temp;
-        let ideal = (n as f64) * kbt / v;
-        // Virial sum over pairs
+        let volume = self.volume();
+        if !volume.is_finite() || volume <= 0.0 {
+            return f64::NAN;
+        }
+        let kbt = KB_KJ_PER_MOL_K * self.temp;
+        let ideal = (n as f64) * kbt / volume;
+        // Σ r dU/dr over all pairs
         let mut virial = 0.0f64;
         for i in 0..n {
             for j in (i + 1)..n {
-                let rij = sub3(beads[i].pos, beads[j].pos);
+                let rij = minimum_image(sub3(beads[i].pos, beads[j].pos), self.box_lengths);
                 let r = norm3(rij).max(0.1);
                 let ti = bead_type_index(beads[i].type_);
                 let tj = bead_type_index(beads[j].type_);
                 let (eps, sigma) = self.ff.lj_params[ti][tj];
                 let sr = sigma / r;
                 let sr6 = sr.powi(6);
-                // dU/dr for LJ-12-6: 4ε(-12σ¹²/r¹³ + 6σ⁶/r⁷)
-                let dudr = 4.0 * eps * (-12.0 * sr6 * sr6 + 6.0 * sr6) / r;
-                virial += dudr * r;
+                // r dU/dr for LJ-12-6: 4ε(-12σ¹²/r¹² + 6σ⁶/r⁶)
+                virial += 4.0 * eps * (-12.0 * sr6 * sr6 + 6.0 * sr6);
             }
         }
-        ideal - virial / (3.0 * v)
+        // Harmonic bonds: r dU/dr = k (r - r0) r.  Molecules are never wrapped,
+        // so the intramolecular separation is the plain bead distance.
+        for mol in &self.molecules {
+            for &(i, j, r0, k) in &mol.bonds {
+                let r = dist3(mol.beads[i].pos, mol.beads[j].pos);
+                virial += k * (r - r0) * r;
+            }
+        }
+        ideal - virial / (3.0 * volume)
     }
 
     /// Compute the radial distribution function g(r) for all bead pairs.
     ///
-    /// Returns a vector of `(r [nm], g(r))` pairs.
+    /// Pair separations use the minimum image, histogrammed in bins of 0.02 nm
+    /// up to `min(2 nm, L_min / 2)` (beyond half the shortest box edge the
+    /// minimum-image shell is no longer complete).  Each bin is normalised by the
+    /// number of pairs an ideal gas of the same density would place in the
+    /// spherical shell, `N (N - 1) / 2 · V_shell / V`, with `V = Lx · Ly · Lz`,
+    /// so a uniform system gives `g(r) ≈ 1`.
+    ///
+    /// Returns a vector of `(r [nm], g(r))` pairs with `r` at the bin centre; `g`
+    /// is `0` for fewer than two beads, and the vector is empty when the box
+    /// volume or the usable range is not positive.
     pub fn rdf(&self) -> Vec<(f64, f64)> {
+        const BIN_WIDTH: f64 = 0.02;
+        const R_MAX_REQUESTED: f64 = 2.0;
         let beads = self.all_beads();
         let n = beads.len();
-        let r_max = 2.0f64;
-        let dr = 0.02f64;
-        let bins = (r_max / dr) as usize;
+        let volume = self.volume();
+        let shortest_edge = self
+            .box_lengths
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        let r_max = R_MAX_REQUESTED.min(0.5 * shortest_edge);
+        if !volume.is_finite() || volume <= 0.0 || !r_max.is_finite() || r_max <= 0.0 {
+            return Vec::new();
+        }
+        let bins = (r_max / BIN_WIDTH + 1e-9).floor() as usize;
         let mut hist = vec![0u64; bins];
-        let mut pair_count = 0u64;
         for i in 0..n {
             for j in (i + 1)..n {
-                let r = dist3(beads[i].pos, beads[j].pos);
-                if r < r_max {
-                    let bin = (r / dr) as usize;
-                    if bin < bins {
-                        hist[bin] += 1;
-                        pair_count += 1;
-                    }
+                let rij = minimum_image(sub3(beads[i].pos, beads[j].pos), self.box_lengths);
+                let bin = (norm3(rij) / BIN_WIDTH) as usize;
+                if bin < bins {
+                    hist[bin] += 1;
                 }
             }
         }
-        let rho = if n > 1 {
-            (n as f64) / ((n as f64) * 0.125)
-        } else {
-            1.0
-        };
+        let total_pairs = 0.5 * (n as f64) * (n as f64 - 1.0).max(0.0);
         (0..bins)
             .map(|k| {
-                let r = (k as f64 + 0.5) * dr;
-                let shell_vol = 4.0 * PI * r * r * dr;
-                let g = if pair_count > 0 && n > 1 {
-                    hist[k] as f64 / (pair_count as f64 / (n as f64) * rho * shell_vol)
+                let r_lo = k as f64 * BIN_WIDTH;
+                let r_hi = r_lo + BIN_WIDTH;
+                let shell_volume = 4.0 * PI / 3.0 * (r_hi.powi(3) - r_lo.powi(3));
+                let ideal_pairs = total_pairs * shell_volume / volume;
+                let g = if ideal_pairs > 0.0 {
+                    hist[k] as f64 / ideal_pairs
                 } else {
                     0.0
                 };
-                (r, g)
+                (0.5 * (r_lo + r_hi), g)
             })
             .collect()
     }
 
-    /// Estimate self-diffusion coefficient from mean-squared displacement.
+    /// Estimate the self-diffusion coefficient from the mean-squared displacement.
     ///
-    /// Uses current positions vs. a zero reference; returns D in nm² ps⁻¹.
+    /// Einstein relation `D = <|r(t) - r(0)|²> / (6 t)` with `r(0)` the bead
+    /// positions recorded at construction (or at the last
+    /// [`CgSimulation::reset_displacement_origin`]), `t` the time elapsed since
+    /// then and the average taken over all beads that have a recorded origin.
+    /// Positions are unwrapped, so periodic-boundary crossings do not
+    /// contribute spurious jumps.  Returns `D` in nm² ps⁻¹, or `0.0` if no time
+    /// has elapsed.
     pub fn diffusion_coefficient(&self) -> f64 {
-        let beads = self.all_beads();
-        if beads.is_empty() {
+        let elapsed = self.time - self.origin_time;
+        if elapsed <= 0.0 {
             return 0.0;
         }
-        // MSD from origin (for a single-frame estimate, returns RMS/6t)
-        let msd: f64 = beads.iter().map(|b| dot3(b.pos, b.pos)).sum::<f64>() / beads.len() as f64;
-        let t = self.time.max(1e-10);
-        msd / (6.0 * t)
+        let mut msd_sum = 0.0f64;
+        let mut count = 0usize;
+        for (bead, origin) in self.all_beads().iter().zip(self.initial_positions.iter()) {
+            let displacement = sub3(bead.pos, *origin);
+            msd_sum += dot3(displacement, displacement);
+            count += 1;
+        }
+        if count == 0 {
+            return 0.0;
+        }
+        msd_sum / (count as f64) / (6.0 * elapsed)
     }
 
     // -----------------------------------------------------------------------
@@ -510,7 +631,7 @@ impl CgSimulation {
         let beads: Vec<&CgBead> = self.all_beads();
         for i in 0..total {
             for j in (i + 1)..total {
-                let rij = sub3(beads[i].pos, beads[j].pos);
+                let rij = minimum_image(sub3(beads[i].pos, beads[j].pos), self.box_lengths);
                 let r = norm3(rij).max(0.1);
                 let ti = bead_type_index(beads[i].type_);
                 let tj = bead_type_index(beads[j].type_);
@@ -895,7 +1016,7 @@ mod tests {
         b.pos = [0.5, 0.5, 0.5];
         b.vel = [0.01, 0.0, 0.0];
         mol.beads.push(b);
-        CgSimulation::new(vec![mol], ff, 300.0, 0.02)
+        CgSimulation::new(vec![mol], ff, 300.0, 0.02, [5.0, 5.0, 5.0]).expect("valid box")
     }
 
     #[test]
@@ -920,11 +1041,12 @@ mod tests {
     }
 
     #[test]
-    fn test_sim_diffusion_coefficient() {
+    fn test_sim_diffusion_coefficient_zero_without_displacement() {
+        // The bead sits at (0.5, 0.5, 0.5), far from the coordinate origin, and has
+        // not moved: the old "distance from the origin" estimate was non-zero here.
         let mut sim = make_sim();
         sim.time = 1.0;
-        let d = sim.diffusion_coefficient();
-        assert!(d >= 0.0);
+        assert_eq!(sim.diffusion_coefficient(), 0.0);
     }
 
     #[test]
@@ -949,6 +1071,497 @@ mod tests {
             sim.step();
         }
         assert!((sim.time - 0.20).abs() < 1e-10);
+    }
+
+    // --- CgSimulation: periodic box, pressure, g(r), diffusion ---
+
+    use rand::rngs::StdRng;
+    use rand::{RngExt, SeedableRng};
+
+    /// `R = N_A k_B` in kJ mol⁻¹ K⁻¹ (CODATA 2018), independent of the module constant.
+    const R_KJ_MOL_K: f64 = 8.314_462_618e-3;
+
+    /// Force field with every Lennard-Jones well depth set to zero (an ideal gas).
+    fn ideal_gas_ff() -> CgForceField {
+        let mut ff = CgForceField::default_martini();
+        for row in &mut ff.lj_params {
+            for entry in row.iter_mut() {
+                entry.0 = 0.0;
+            }
+        }
+        ff
+    }
+
+    /// `n` single-bead molecules placed uniformly at random inside `box_lengths`.
+    fn uniform_gas(n: usize, box_lengths: [f64; 3], seed: u64) -> Vec<CgMolecule> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        (0..n)
+            .map(|idx| {
+                let mut mol = CgMolecule::new();
+                let mut bead = CgBead::new(format!("G{idx}"), CgBeadType::Apolar, 72.0, 0.0);
+                bead.pos = [
+                    rng.random_range(0.0..box_lengths[0]),
+                    rng.random_range(0.0..box_lengths[1]),
+                    rng.random_range(0.0..box_lengths[2]),
+                ];
+                mol.beads.push(bead);
+                mol
+            })
+            .collect()
+    }
+
+    /// Single-bead molecule with a velocity.
+    fn moving_bead(pos: [f64; 3], vel: [f64; 3]) -> CgMolecule {
+        let mut mol = CgMolecule::new();
+        let mut bead = CgBead::new("M", CgBeadType::Apolar, 72.0, 0.0);
+        bead.pos = pos;
+        bead.vel = vel;
+        mol.beads.push(bead);
+        mol
+    }
+
+    /// Two-bead system in a cubic box of edge 4 nm with beads at `x_a` and `x_b`
+    /// on the line y = z = 2 nm.
+    fn bead_pair_in_box(x_a: f64, x_b: f64) -> CgSimulation {
+        CgSimulation::new(
+            vec![
+                moving_bead([x_a, 2.0, 2.0], [0.0; 3]),
+                moving_bead([x_b, 2.0, 2.0], [0.0; 3]),
+            ],
+            CgForceField::default_martini(),
+            300.0,
+            0.02,
+            [4.0; 3],
+        )
+        .expect("valid box")
+    }
+
+    #[test]
+    fn test_sim_new_rejects_invalid_box() {
+        for bad in [
+            [0.0, 1.0, 1.0],
+            [1.0, -2.0, 1.0],
+            [1.0, 1.0, f64::NAN],
+            [f64::INFINITY, 1.0, 1.0],
+        ] {
+            let result = CgSimulation::new(
+                Vec::new(),
+                CgForceField::default_martini(),
+                300.0,
+                0.02,
+                bad,
+            );
+            assert!(
+                matches!(result, Err(MdError::General(_))),
+                "box {bad:?} must be rejected"
+            );
+        }
+        let ok = CgSimulation::new(
+            Vec::new(),
+            CgForceField::default_martini(),
+            300.0,
+            0.02,
+            [1.0, 2.0, 3.0],
+        )
+        .expect("valid box");
+        assert_eq!(ok.box_lengths, [1.0, 2.0, 3.0]);
+        assert!((ok.volume() - 6.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_sim_pressure_ideal_gas_is_n_kt_over_box_volume() {
+        // eps = 0: P = N k_B T / V with V = Lx Ly Lz of a non-cubic box.
+        let box_lengths = [4.0, 5.0, 6.0];
+        let n = 120;
+        let sim = CgSimulation::new(
+            uniform_gas(n, box_lengths, 7),
+            ideal_gas_ff(),
+            300.0,
+            0.02,
+            box_lengths,
+        )
+        .expect("valid box");
+        let expected = n as f64 * R_KJ_MOL_K * 300.0 / 120.0;
+        assert!(
+            ((sim.pressure() - expected) / expected).abs() < 1e-12,
+            "P = {} expected {expected}",
+            sim.pressure()
+        );
+    }
+
+    #[test]
+    fn test_sim_pressure_depends_on_box_not_on_bead_count_alone() {
+        // The same 60 beads in a box with doubled edges (8x the volume): the ideal-gas
+        // pressure drops by exactly 8; the fabricated "1 bead per 0.5 nm cube" volume
+        // gave the same pressure for both.
+        let small = [3.0, 3.0, 3.0];
+        let large = [6.0, 6.0, 6.0];
+        let beads = uniform_gas(60, small, 11);
+        let p_small = CgSimulation::new(beads.clone(), ideal_gas_ff(), 300.0, 0.02, small)
+            .expect("valid box")
+            .pressure();
+        let p_large = CgSimulation::new(beads, ideal_gas_ff(), 300.0, 0.02, large)
+            .expect("valid box")
+            .pressure();
+        assert!(
+            (p_small / p_large - 8.0).abs() < 1e-12,
+            "{p_small} / {p_large}"
+        );
+    }
+
+    #[test]
+    fn test_sim_pressure_of_empty_system_is_zero() {
+        let sim = CgSimulation::new(Vec::new(), ideal_gas_ff(), 300.0, 0.02, [2.0; 3])
+            .expect("valid box");
+        assert_eq!(sim.pressure(), 0.0);
+        assert!(sim.rdf().iter().all(|&(_, g)| g == 0.0));
+    }
+
+    #[test]
+    fn test_sim_degenerate_box_gives_nan_pressure_and_empty_rdf() {
+        let mut sim = make_sim();
+        sim.box_lengths = [0.0, 5.0, 5.0];
+        assert!(sim.pressure().is_nan());
+        assert!(sim.rdf().is_empty());
+    }
+
+    /// Total potential energy of the simulation, evaluated independently of the
+    /// force and virial code: minimum-image LJ over all pairs (with the same 0.1 nm
+    /// distance floor) plus the bonded energy of every molecule.
+    fn reference_potential_energy(sim: &CgSimulation) -> f64 {
+        let beads: Vec<&CgBead> = sim.molecules.iter().flat_map(|m| m.beads.iter()).collect();
+        let mut energy = 0.0;
+        for i in 0..beads.len() {
+            for j in (i + 1)..beads.len() {
+                let d = minimum_image(sub3(beads[i].pos, beads[j].pos), sim.box_lengths);
+                let r = norm3(d).max(0.1);
+                energy += sim.ff.lj_energy(
+                    bead_type_index(beads[i].type_),
+                    bead_type_index(beads[j].type_),
+                    r,
+                );
+            }
+        }
+        energy
+            + sim
+                .molecules
+                .iter()
+                .map(CgMolecule::bonded_energy)
+                .sum::<f64>()
+    }
+
+    /// The simulation with all positions and the box edges scaled by `s`.
+    fn scaled_copy(sim: &CgSimulation, s: f64) -> CgSimulation {
+        let mut out = sim.clone();
+        for mol in &mut out.molecules {
+            for bead in &mut mol.beads {
+                bead.pos = scale3(bead.pos, s);
+            }
+        }
+        out.box_lengths = scale3(sim.box_lengths, s);
+        out
+    }
+
+    /// Chains (bonded, bent, slightly stretched) and single beads on a jittered
+    /// 3 x 3 x 3 lattice of spacing 1.2 nm, in a 3.6 nm cubic box.
+    fn interacting_system() -> CgSimulation {
+        let mut rng = StdRng::seed_from_u64(2024);
+        let mut molecules = Vec::new();
+        let mut site = 0;
+        for ix in 0..3 {
+            for iy in 0..3 {
+                for iz in 0..3 {
+                    let origin = [
+                        1.2 * ix as f64 + 0.6,
+                        1.2 * iy as f64 + 0.6,
+                        1.2 * iz as f64 + 0.6,
+                    ];
+                    let mut mol = CgMolecule::new();
+                    if site % 5 == 0 {
+                        // Three-bead chain: bond lengths 0.50 and 0.43 (r0 = 0.47), angle 110 deg.
+                        let theta = 110.0_f64.to_radians();
+                        let positions = [
+                            [origin[0] - 0.50, origin[1], origin[2]],
+                            origin,
+                            [
+                                origin[0] + 0.43 * (PI - theta).cos(),
+                                origin[1] + 0.43 * (PI - theta).sin(),
+                                origin[2],
+                            ],
+                        ];
+                        for (idx, p) in positions.iter().enumerate() {
+                            let mut bead = CgBead::new(
+                                format!("C{site}_{idx}"),
+                                CgBeadType::Backbone,
+                                72.0,
+                                0.0,
+                            );
+                            bead.pos = *p;
+                            mol.beads.push(bead);
+                        }
+                        mol.bonds.push((0, 1, 0.47, 1250.0));
+                        mol.bonds.push((1, 2, 0.47, 1250.0));
+                        mol.angles.push((0, 1, 2, 95.0_f64.to_radians(), 25.0));
+                    } else {
+                        let mut bead =
+                            CgBead::new(format!("S{site}"), CgBeadType::Polar, 72.0, 0.0);
+                        bead.pos = [
+                            origin[0] + rng.random_range(-0.12..0.12),
+                            origin[1] + rng.random_range(-0.12..0.12),
+                            origin[2] + rng.random_range(-0.12..0.12),
+                        ];
+                        mol.beads.push(bead);
+                    }
+                    molecules.push(mol);
+                    site += 1;
+                }
+            }
+        }
+        CgSimulation::new(
+            molecules,
+            CgForceField::default_martini(),
+            300.0,
+            0.02,
+            [3.6; 3],
+        )
+        .expect("valid box")
+    }
+
+    #[test]
+    fn test_sim_pressure_virial_matches_energy_volume_derivative() {
+        // Configurational pressure -dU/dV under a uniform rescaling of positions and
+        // box; the LJ pair virial (minimum image) and the bond virial must reproduce it,
+        // and the angle terms must not contribute (they are scale invariant).
+        let sim = interacting_system();
+        let delta = 1e-6;
+        let u_plus = reference_potential_energy(&scaled_copy(&sim, 1.0 + delta));
+        let u_minus = reference_potential_energy(&scaled_copy(&sim, 1.0 - delta));
+        let volume = sim.volume();
+        let d_u_d_volume = (u_plus - u_minus) / (2.0 * delta * 3.0 * volume);
+        let n = sim.molecules.iter().map(|m| m.beads.len()).sum::<usize>() as f64;
+        let expected = n * R_KJ_MOL_K * 300.0 / volume - d_u_d_volume;
+        let got = sim.pressure();
+        assert!(
+            ((got - expected) / expected.abs().max(1.0)).abs() < 1e-6,
+            "virial pressure {got} vs -dU/dV estimate {expected}"
+        );
+        // The configurational part must actually matter in this test.
+        let ideal = n * R_KJ_MOL_K * 300.0 / volume;
+        assert!(
+            (got - ideal).abs() > 0.1 * ideal,
+            "virial contribution too small"
+        );
+    }
+
+    #[test]
+    fn test_sim_forces_use_minimum_image_across_the_boundary() {
+        // 0.45 nm apart through the periodic boundary (beads at x = 3.8 and x = 0.25,
+        // L = 4): the LJ pair is repulsive and must equal the interaction of the same
+        // pair placed 0.45 nm apart in the middle of the box.
+        let across = bead_pair_in_box(3.8, 0.25);
+        let inside = bead_pair_in_box(1.0, 1.45);
+        let f_across = across.compute_all_forces();
+        let f_inside = inside.compute_all_forces();
+        // Analytic LJ-12-6 repulsion for Apolar-Apolar at r = 0.45 nm.
+        let (eps, sigma) = across.ff.lj_params[2][2];
+        let sr6 = (sigma / 0.45_f64).powi(6);
+        let magnitude = 4.0 * eps * (12.0 * sr6 * sr6 - 6.0 * sr6) / 0.45;
+        assert!(
+            magnitude > 100.0,
+            "test geometry must be strongly repulsive"
+        );
+        // bead A (x = 3.8) is pushed away from B's image at x = 4.25, i.e. to -x.
+        assert!(
+            (f_across[0][0] + magnitude).abs() < 1e-8 * magnitude,
+            "{:?}",
+            f_across[0]
+        );
+        assert!(
+            (f_across[1][0] - magnitude).abs() < 1e-8 * magnitude,
+            "{:?}",
+            f_across[1]
+        );
+        for k in 0..2 {
+            for axis in 0..3 {
+                assert!(
+                    (f_across[k][axis] - f_inside[k][axis]).abs() < 1e-8 * magnitude,
+                    "bead {k} axis {axis}: {} vs {}",
+                    f_across[k][axis],
+                    f_inside[k][axis]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_sim_forces_are_invariant_under_lattice_translation_of_a_bead() {
+        let sim = interacting_system();
+        let reference = sim.compute_all_forces();
+        let mut shifted = sim.clone();
+        // Move one bead of the first single-bead molecule by whole box edges.
+        let target = shifted
+            .molecules
+            .iter_mut()
+            .find(|m| m.beads.len() == 1)
+            .expect("single-bead molecule");
+        target.beads[0].pos = add3(target.beads[0].pos, [3.6, -7.2, 3.6]);
+        let moved = shifted.compute_all_forces();
+        for (a, b) in reference.iter().zip(moved.iter()) {
+            for axis in 0..3 {
+                assert!(
+                    (a[axis] - b[axis]).abs() < 1e-7 * (1.0 + a[axis].abs()),
+                    "{a:?} vs {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_sim_rdf_of_uniform_random_gas_is_one() {
+        // 1000 uniformly random beads in a 8 x 6 x 5 nm box (density 4.17 nm^-3, far
+        // from the fabricated 8 nm^-3).  g(r) must be 1 within statistics up to L_min/2.
+        let box_lengths = [8.0, 6.0, 5.0];
+        let sim = CgSimulation::new(
+            uniform_gas(1000, box_lengths, 99),
+            ideal_gas_ff(),
+            300.0,
+            0.02,
+            box_lengths,
+        )
+        .expect("valid box");
+        let rdf = sim.rdf();
+        // L_min / 2 = 2.5 nm > 2 nm cap, so the histogram spans 100 bins up to 2 nm.
+        assert_eq!(rdf.len(), 100);
+        assert!((rdf[0].0 - 0.01).abs() < 1e-12);
+        for window in [(0.5, 1.0), (1.0, 1.5), (1.5, 2.0)] {
+            let values: Vec<f64> = rdf
+                .iter()
+                .filter(|&&(r, _)| r >= window.0 && r < window.1)
+                .map(|&(_, g)| g)
+                .collect();
+            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            assert!(
+                (mean - 1.0).abs() < 0.05,
+                "mean g(r) over [{}, {}) = {mean}",
+                window.0,
+                window.1
+            );
+        }
+        let wide: Vec<f64> = rdf
+            .iter()
+            .filter(|&&(r, _)| r >= 0.5)
+            .map(|&(_, g)| g)
+            .collect();
+        let wide_mean = wide.iter().sum::<f64>() / wide.len() as f64;
+        assert!(
+            (wide_mean - 1.0).abs() < 0.02,
+            "mean g(r) for r >= 0.5 nm: {wide_mean}"
+        );
+    }
+
+    #[test]
+    fn test_sim_rdf_range_is_limited_to_half_the_shortest_edge() {
+        let box_lengths = [1.0, 3.0, 3.0];
+        let sim = CgSimulation::new(
+            uniform_gas(40, box_lengths, 5),
+            ideal_gas_ff(),
+            300.0,
+            0.02,
+            box_lengths,
+        )
+        .expect("valid box");
+        let rdf = sim.rdf();
+        assert_eq!(rdf.len(), 25);
+        let (r_last, _) = rdf[rdf.len() - 1];
+        assert!(
+            r_last < 0.5,
+            "last bin centre {r_last} must stay below L_min / 2"
+        );
+    }
+
+    #[test]
+    fn test_sim_rdf_uses_minimum_image_and_exact_pair_normalisation() {
+        // Two beads 0.21 nm apart through the boundary of a 4 nm box: one pair in bin
+        // 10 ([0.20, 0.22) nm), normalised by N(N-1)/2 V_shell / V with N = 2.
+        let sim = bead_pair_in_box(3.89, 0.1);
+        let rdf = sim.rdf();
+        assert_eq!(rdf.len(), 100);
+        let shell_volume = 4.0 * PI / 3.0 * (0.22_f64.powi(3) - 0.20_f64.powi(3));
+        let expected = 64.0 / shell_volume;
+        for (k, &(r, g)) in rdf.iter().enumerate() {
+            if k == 10 {
+                assert!((r - 0.21).abs() < 1e-12);
+                assert!(
+                    ((g - expected) / expected).abs() < 1e-12,
+                    "g = {g}, expected {expected}"
+                );
+            } else {
+                assert_eq!(g, 0.0, "bin {k} must be empty");
+            }
+        }
+    }
+
+    #[test]
+    fn test_sim_diffusion_coefficient_measures_displacement_from_initial_positions() {
+        // Free flight (no forces, gamma = 0): every bead moves by v t, so
+        // D = <|v|^2> t / 6 irrespective of where the beads started.
+        let velocities = [[0.30, 0.0, 0.0], [0.0, -0.20, 0.10], [0.05, 0.05, -0.40]];
+        let starts = [[3.8, 1.5, 1.5], [3.5, 0.5, 3.0], [0.5, 3.5, 2.0]];
+        let molecules = starts
+            .iter()
+            .zip(velocities.iter())
+            .map(|(&p, &v)| moving_bead(p, v))
+            .collect();
+        let mut sim =
+            CgSimulation::new(molecules, ideal_gas_ff(), 300.0, 0.02, [4.0; 3]).expect("valid box");
+        sim.gamma = 0.0;
+        for _ in 0..100 {
+            sim.step();
+        }
+        let t = sim.time;
+        let mean_v2 = velocities
+            .iter()
+            .map(|v| v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+            .sum::<f64>()
+            / 3.0;
+        let expected = mean_v2 * t / 6.0;
+        let d = sim.diffusion_coefficient();
+        assert!(
+            ((d - expected) / expected).abs() < 1e-9,
+            "D = {d}, expected {expected}"
+        );
+        // Positions stay unwrapped: bead 0 left the 4 nm box through the +x face
+        // (3.8 + 0.3 nm/ps * 2 ps = 4.4 nm) and was not folded back.
+        assert!((sim.molecules[0].beads[0].pos[0] - 4.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_sim_reset_displacement_origin_restarts_the_estimate() {
+        let mut sim = CgSimulation::new(
+            vec![moving_bead([1.0, 1.0, 1.0], [0.2, 0.0, 0.0])],
+            ideal_gas_ff(),
+            300.0,
+            0.02,
+            [4.0; 3],
+        )
+        .expect("valid box");
+        sim.gamma = 0.0;
+        for _ in 0..25 {
+            sim.step();
+        }
+        assert!(sim.diffusion_coefficient() > 0.0);
+        sim.reset_displacement_origin();
+        assert_eq!(sim.diffusion_coefficient(), 0.0);
+        for _ in 0..25 {
+            sim.step();
+        }
+        // 0.5 ps since the reset at v = 0.2 nm/ps: D = v^2 t / 6.
+        let expected = 0.2 * 0.2 * 0.5 / 6.0;
+        let d = sim.diffusion_coefficient();
+        assert!(
+            ((d - expected) / expected).abs() < 1e-9,
+            "D = {d}, expected {expected}"
+        );
     }
 
     // --- IterativeBoltzmannInversion ---

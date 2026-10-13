@@ -30,7 +30,19 @@ pub struct Heightfield {
     pub spans: Vec<Vec<Span>>,
 }
 
+/// Upper bound on the number of heightfield columns (`width * height`).
+///
+/// Every column owns a `Vec<Span>` header, so a grid this large already needs
+/// well over a gigabyte; larger requests (typically caused by a tiny
+/// `cell_size` or a huge input extent) are rejected instead of overflowing.
+pub const MAX_HEIGHTFIELD_CELLS: usize = 1 << 26;
+
 impl Heightfield {
+    /// Create an empty heightfield of `width x height` columns.
+    ///
+    /// Returns an error when `width * height` overflows or exceeds
+    /// [`MAX_HEIGHTFIELD_CELLS`], or when the cell dimensions are not finite
+    /// and positive.
     pub fn new(
         width: usize,
         height: usize,
@@ -38,9 +50,22 @@ impl Heightfield {
         bmax: [f64; 3],
         cs: f64,
         ch: f64,
-    ) -> Self {
-        let n = width * height;
-        Self {
+    ) -> Result<Self, String> {
+        if !(cs.is_finite() && cs > 0.0 && ch.is_finite() && ch > 0.0) {
+            return Err(format!(
+                "cell size ({cs}) and cell height ({ch}) must be finite and > 0"
+            ));
+        }
+        let n = width
+            .checked_mul(height)
+            .filter(|&n| n <= MAX_HEIGHTFIELD_CELLS)
+            .ok_or_else(|| {
+                format!(
+                    "heightfield of {width} x {height} columns exceeds the limit of \
+                     {MAX_HEIGHTFIELD_CELLS} columns"
+                )
+            })?;
+        Ok(Self {
             width,
             height,
             bmin,
@@ -48,7 +73,7 @@ impl Heightfield {
             cs,
             ch,
             spans: vec![Vec::new(); n],
-        }
+        })
     }
 
     #[inline]
@@ -87,6 +112,9 @@ impl Heightfield {
 
 /// Rasterize a triangle soup into a heightfield.
 pub fn rasterize_triangles(tris: &[[f64; 9]], cfg: &RecastConfig) -> Result<Heightfield, String> {
+    if tris.iter().flatten().any(|c| !c.is_finite()) {
+        return Err("input triangles contain non-finite coordinates".to_string());
+    }
     // Compute bounding box over all vertices
     let mut bmin = [f64::INFINITY; 3];
     let mut bmax = [f64::NEG_INFINITY; 3];
@@ -103,22 +131,61 @@ pub fn rasterize_triangles(tris: &[[f64; 9]], cfg: &RecastConfig) -> Result<Heig
             }
         }
     }
+    if bmin.iter().chain(bmax.iter()).any(|c| !c.is_finite()) {
+        return Err("input triangle soup has no finite bounding box".to_string());
+    }
+    if !(cfg.cell_size.is_finite() && cfg.cell_size > 0.0) {
+        return Err(format!(
+            "cell_size must be finite and > 0, got {}",
+            cfg.cell_size
+        ));
+    }
+    if !(cfg.cell_height.is_finite() && cfg.cell_height > 0.0) {
+        return Err(format!(
+            "cell_height must be finite and > 0, got {}",
+            cfg.cell_height
+        ));
+    }
     // Small padding
     for ax in 0..3 {
         bmin[ax] -= cfg.cell_size;
         bmax[ax] += cfg.cell_size;
     }
 
-    let width = (((bmax[0] - bmin[0]) / cfg.cell_size).ceil() as usize).max(1);
-    let height = (((bmax[2] - bmin[2]) / cfg.cell_size).ceil() as usize).max(1);
+    let width = grid_dimension((bmax[0] - bmin[0]) / cfg.cell_size, "X")?;
+    let height = grid_dimension((bmax[2] - bmin[2]) / cfg.cell_size, "Z")?;
 
-    let mut hf = Heightfield::new(width, height, bmin, bmax, cfg.cell_size, cfg.cell_height);
+    // Span heights are stored as u16 voxel indices; reject vertical extents
+    // that would silently wrap.
+    let vertical_voxels = ((bmax[1] - bmin[1]) / cfg.cell_height).ceil();
+    if !vertical_voxels.is_finite() || vertical_voxels + 1.0 >= f64::from(u16::MAX) {
+        return Err(format!(
+            "vertical extent {} at cell_height {} needs {vertical_voxels} voxels, \
+             more than the u16 span range",
+            bmax[1] - bmin[1],
+            cfg.cell_height
+        ));
+    }
+
+    let mut hf = Heightfield::new(width, height, bmin, bmax, cfg.cell_size, cfg.cell_height)?;
     let slope_limit = cfg.agent_max_slope.to_radians().cos();
 
     for tri in tris {
         rasterize_one_triangle(tri, &mut hf, slope_limit);
     }
     Ok(hf)
+}
+
+/// Number of grid columns needed to cover `extent_in_cells` cells along one axis.
+fn grid_dimension(extent_in_cells: f64, axis: &str) -> Result<usize, String> {
+    let cells = extent_in_cells.ceil();
+    if !cells.is_finite() || cells > MAX_HEIGHTFIELD_CELLS as f64 {
+        return Err(format!(
+            "heightfield {axis} dimension of {cells} cells exceeds the limit of \
+             {MAX_HEIGHTFIELD_CELLS} columns"
+        ));
+    }
+    Ok((cells as usize).max(1))
 }
 
 fn rasterize_one_triangle(tri: &[f64; 9], hf: &mut Heightfield, slope_cos_limit: f64) {
@@ -242,4 +309,43 @@ fn triangle_y_range_in_column(
     let ymin = poly.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
     let ymax = poly.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
     Some((ymin, ymax))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_heightfield_new_rejects_overflowing_dimensions() {
+        let res = Heightfield::new(usize::MAX, 2, [0.0; 3], [1.0; 3], 0.3, 0.2);
+        assert!(res.is_err(), "width * height overflow must be an error");
+        let res = Heightfield::new(1 << 14, 1 << 13, [0.0; 3], [1.0; 3], 0.3, 0.2);
+        assert!(res.is_err(), "2^27 columns exceed MAX_HEIGHTFIELD_CELLS");
+        let hf = Heightfield::new(4, 3, [0.0; 3], [1.0; 3], 0.3, 0.2).expect("small grid");
+        assert_eq!(hf.spans.len(), 12);
+    }
+
+    #[test]
+    fn test_heightfield_new_rejects_bad_cell_dimensions() {
+        assert!(Heightfield::new(2, 2, [0.0; 3], [1.0; 3], 0.0, 0.2).is_err());
+        assert!(Heightfield::new(2, 2, [0.0; 3], [1.0; 3], 0.3, f64::NAN).is_err());
+    }
+
+    #[test]
+    fn test_rasterize_rejects_vertical_extent_beyond_u16() {
+        let cfg = RecastConfig::default();
+        // 1e5 m tall sliver at 0.2 m voxels needs 5e5 voxels > u16::MAX.
+        let tris = [[0.0, 0.0, 0.0, 1.0, 1.0e5, 0.0, 1.0, 0.0, 1.0]];
+        assert!(rasterize_triangles(&tris, &cfg).is_err());
+    }
+
+    #[test]
+    fn test_rasterize_rejects_zero_cell_size() {
+        let cfg = RecastConfig {
+            cell_size: 0.0,
+            ..Default::default()
+        };
+        let tris = [[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0]];
+        assert!(rasterize_triangles(&tris, &cfg).is_err());
+    }
 }

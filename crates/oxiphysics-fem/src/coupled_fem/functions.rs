@@ -150,23 +150,6 @@ mod tests {
         assert!((field.temperatures[field.idx(4, 0)] - 100.0).abs() < 1e-10);
     }
     #[test]
-    fn thermo_mech_coupling_step_changes_displacements() {
-        let mat = ThermoElasticMaterial::new(200e9, 0.3, 12e-6, 50.0, 500.0, 7850.0);
-        let mut coupler = ThermoMechanicalCoupling::new(5, 5, mat);
-        coupler.thermal.set_left_bc(600.0);
-        let change = coupler.staggered_step(0.01, 1e6);
-        assert!(change >= 0.0);
-    }
-    #[test]
-    fn thermo_mech_coupling_solve_converges() {
-        let mat = ThermoElasticMaterial::new(200e9, 0.3, 12e-6, 50.0, 500.0, 7850.0);
-        let mut coupler = ThermoMechanicalCoupling::new(5, 5, mat);
-        coupler.tol = 1e-3;
-        coupler.max_iter = 100;
-        let iters = coupler.solve(1e-4, 0.0);
-        assert!(iters <= 100);
-    }
-    #[test]
     fn ale_node_convective_velocity() {
         let mut node = AleNode::new(0.0, 0.0);
         node.fluid_velocity = [3.0, 1.0];
@@ -297,6 +280,110 @@ mod tests {
         }
         let e = cav.total_energy();
         assert!(e > 0.0, "energy should be positive after excitation");
+    }
+    fn gaussian_pulse_cavity(n_nodes: usize) -> AcousticCavity1D {
+        let mut cav = AcousticCavity1D::new(n_nodes, 1.0, 343.0, 1.225);
+        let width = 0.05_f64;
+        for i in 0..n_nodes {
+            let x = i as f64 * cav.h - 0.5;
+            cav.pressure[i] = 100.0 * (-(x * x) / (width * width)).exp();
+        }
+        cav
+    }
+    #[test]
+    fn acoustic_lax_wendroff_interior_step_is_stable() {
+        // Regression: the former forward-Euler/central update had amplification
+        // |G|² = 1 + r² sin²(kh) > 1 and blew up for every dt.
+        let mut cav = gaussian_pulse_cavity(101);
+        let r = 0.9;
+        let dt = r * cav.h / cav.c_sound;
+        let e0 = cav.total_energy();
+        assert!(e0 > 0.0);
+        let mut e_max = e0;
+        for _ in 0..2000 {
+            cav.step(dt);
+            e_max = e_max.max(cav.total_energy());
+        }
+        assert!(
+            e_max <= 1.05 * e0,
+            "energy grew from {e0:e} to {e_max:e} (unstable scheme)"
+        );
+        assert!(cav.pressure.iter().all(|p| p.is_finite()));
+    }
+    #[test]
+    fn acoustic_lax_wendroff_rigid_walls_stable_and_reflecting() {
+        let mut cav = gaussian_pulse_cavity(101);
+        let r = 0.9;
+        let dt = r * cav.h / cav.c_sound;
+        let e0 = cav.total_energy();
+        let mut e_max = e0;
+        for _ in 0..2000 {
+            cav.step_rigid_walls(dt);
+            e_max = e_max.max(cav.total_energy());
+            assert!(cav.velocity[0].abs() < 1e-300);
+            assert!(cav.velocity[100].abs() < 1e-300);
+        }
+        assert!(e_max <= 1.05 * e0, "energy grew from {e0:e} to {e_max:e}");
+        // Lax-Wendroff is weakly dissipative: a well-resolved pulse keeps most
+        // of its energy in a closed cavity.
+        assert!(cav.total_energy() > 0.3 * e0);
+    }
+    #[test]
+    fn acoustic_lax_wendroff_rigid_wall_pressure_doubling() {
+        // A centred pulse splits into two halves that reach the walls after
+        // t = 0.5 L / c; at a rigid wall incident + reflected waves add up, so
+        // the wall pressure approaches the full initial amplitude (2 × 50 Pa).
+        let mut cav = gaussian_pulse_cavity(201);
+        let r = 0.8;
+        let dt = r * cav.h / cav.c_sound;
+        let n_steps = (0.5 / (cav.c_sound * dt)).round() as usize;
+        let mut p_wall_max = 0.0_f64;
+        for _ in 0..n_steps + 20 {
+            cav.step_rigid_walls(dt);
+            p_wall_max = p_wall_max.max(cav.pressure[0]);
+        }
+        assert!(
+            (p_wall_max - 100.0).abs() < 10.0,
+            "peak wall pressure {p_wall_max} should be close to 100 Pa"
+        );
+    }
+    #[test]
+    fn acoustic_lax_wendroff_travelling_wave_speed() {
+        // A right-going simple wave (v = p / ρc) must translate at speed c.
+        let n = 401;
+        let mut cav = AcousticCavity1D::new(n, 4.0, 343.0, 1.225);
+        let z = cav.impedance();
+        let x0 = 1.0;
+        let width = 0.1;
+        for i in 0..n {
+            let x = i as f64 * cav.h - x0;
+            let p = 50.0 * (-(x * x) / (width * width)).exp();
+            cav.pressure[i] = p;
+            cav.velocity[i] = p / z;
+        }
+        let r = 0.5;
+        let dt = r * cav.h / cav.c_sound;
+        let n_steps = 400;
+        for _ in 0..n_steps {
+            cav.step(dt);
+        }
+        let travelled = cav.c_sound * dt * n_steps as f64;
+        let (i_peak, _) =
+            cav.pressure
+                .iter()
+                .enumerate()
+                .fold(
+                    (0, f64::NEG_INFINITY),
+                    |acc, (i, &p)| {
+                        if p > acc.1 { (i, p) } else { acc }
+                    },
+                );
+        let x_peak = i_peak as f64 * cav.h;
+        assert!(
+            (x_peak - (x0 + travelled)).abs() < 2.0 * cav.h,
+            "peak at {x_peak}, expected {}",
+            x0 + travelled
+        );
     }
     #[test]
     fn aitken_relaxation_initial_omega() {

@@ -90,6 +90,15 @@ pub fn sphere_plane(
 ///
 /// The AABB is defined by its minimum and maximum corner points.
 /// Returns `None` when the sphere does not reach the box.
+///
+/// `normal` points from the box towards the sphere centre (the outward
+/// normal of the box feature that is penetrated), `point_a` is the point of the
+/// sphere surface facing the box and `point_b` is the point of the box surface
+/// the sphere penetrates through, so `point_b - point_a == normal * depth`.
+///
+/// When the sphere centre lies inside the box the sphere leaves through the
+/// nearest face; `depth` is then `radius + d`, where `d` is the distance from the
+/// centre to that face, and `point_b` is the projection of the centre onto it.
 pub fn sphere_aabb(
     sphere_center: Vec3,
     radius: f64,
@@ -108,44 +117,40 @@ pub fn sphere_aabb(
         return None;
     }
     let dist = dist_sq.sqrt();
-    let depth = radius - dist;
-    let normal = if dist > 1e-10 {
-        diff / dist
+    let (normal, surface, depth) = if dist > 1e-10 {
+        (diff / dist, closest, radius - dist)
     } else {
-        // Sphere center is inside; push out through nearest face.
-        let dx = (sphere_center.x - aabb_min.x).min(aabb_max.x - sphere_center.x);
-        let dy = (sphere_center.y - aabb_min.y).min(aabb_max.y - sphere_center.y);
-        let dz = (sphere_center.z - aabb_min.z).min(aabb_max.z - sphere_center.z);
-        if dx <= dy && dx <= dz {
-            let sign = if sphere_center.x - aabb_min.x < aabb_max.x - sphere_center.x {
-                -1.0
-            } else {
-                1.0
-            };
-            Vec3::new(sign, 0.0, 0.0)
-        } else if dy <= dz {
-            let sign = if sphere_center.y - aabb_min.y < aabb_max.y - sphere_center.y {
-                -1.0
-            } else {
-                1.0
-            };
-            Vec3::new(0.0, sign, 0.0)
+        // Sphere center is inside; push out through the nearest face.
+        let to_min = sphere_center - aabb_min;
+        let to_max = aabb_max - sphere_center;
+        let face_dist = [
+            to_min.x.min(to_max.x),
+            to_min.y.min(to_max.y),
+            to_min.z.min(to_max.z),
+        ];
+        let axis = if face_dist[0] <= face_dist[1] && face_dist[0] <= face_dist[2] {
+            0
+        } else if face_dist[1] <= face_dist[2] {
+            1
         } else {
-            let sign = if sphere_center.z - aabb_min.z < aabb_max.z - sphere_center.z {
-                -1.0
-            } else {
-                1.0
-            };
-            Vec3::new(0.0, 0.0, sign)
-        }
+            2
+        };
+        let towards_min = to_min[axis] < to_max[axis];
+        let mut normal = Vec3::zeros();
+        normal[axis] = if towards_min { -1.0 } else { 1.0 };
+        let mut face_point = sphere_center;
+        face_point[axis] = if towards_min {
+            aabb_min[axis]
+        } else {
+            aabb_max[axis]
+        };
+        (normal, face_point, radius + face_dist[axis])
     };
-    let point_a = sphere_center - normal * radius;
-    let point_b = closest;
     Some(ContactResult {
         normal,
         depth,
-        point_a,
-        point_b,
+        point_a: sphere_center - normal * radius,
+        point_b: surface,
     })
 }
 
@@ -1414,15 +1419,76 @@ mod tests {
 
     #[test]
     fn test_sphere_aabb_inside() {
-        // Sphere entirely inside the AABB
+        // Sphere entirely inside the AABB: it has to travel the distance to the
+        // nearest face (1.0) plus its own radius (0.1) to clear the box.
+        let center = Vec3::new(0.0, 0.0, 0.0);
         let c = sphere_aabb(
-            Vec3::new(0.0, 0.0, 0.0),
+            center,
             0.1,
             Vec3::new(-1.0, -1.0, -1.0),
             Vec3::new(1.0, 1.0, 1.0),
         )
         .expect("Sphere inside AABB should produce contact");
-        assert!(c.depth > 0.0, "depth should be positive");
+        assert!((c.depth - 1.1).abs() < 1e-12, "depth={}", c.depth);
+        assert!((c.normal.norm() - 1.0).abs() < 1e-12);
+        // Witness on the sphere surface, witness on the box surface.
+        assert!(((c.point_a - center).norm() - 0.1).abs() < 1e-12);
+        assert!(
+            (c.point_b - center).norm() > 0.99,
+            "point_b={:?}",
+            c.point_b
+        );
+        assert!(
+            (c.point_b.x.abs() - 1.0).abs() < 1e-12
+                || (c.point_b.y.abs() - 1.0).abs() < 1e-12
+                || (c.point_b.z.abs() - 1.0).abs() < 1e-12,
+            "point_b={:?} must lie on a box face",
+            c.point_b
+        );
+        assert!((c.point_b - c.point_a - c.normal * c.depth).norm() < 1e-12);
+    }
+
+    #[test]
+    fn test_sphere_aabb_inside_off_centre_uses_nearest_face() {
+        // Centre 0.1 below the +y face of a [-1, 1]^3 box; sphere radius 0.3.
+        let center = Vec3::new(0.2, 0.9, -0.3);
+        let c = sphere_aabb(
+            center,
+            0.3,
+            Vec3::new(-1.0, -1.0, -1.0),
+            Vec3::new(1.0, 1.0, 1.0),
+        )
+        .expect("contact");
+        assert!((c.normal - Vec3::new(0.0, 1.0, 0.0)).norm() < 1e-12);
+        assert!((c.depth - 0.4).abs() < 1e-12, "depth={}", c.depth);
+        assert!((c.point_b - Vec3::new(0.2, 1.0, -0.3)).norm() < 1e-12);
+        assert!((c.point_a - Vec3::new(0.2, 0.6, -0.3)).norm() < 1e-12);
+        // Mirror image: nearest face is the -x face.
+        let c = sphere_aabb(
+            Vec3::new(-0.8, 0.1, 0.2),
+            0.25,
+            Vec3::new(-1.0, -1.0, -1.0),
+            Vec3::new(1.0, 1.0, 1.0),
+        )
+        .expect("contact");
+        assert!((c.normal - Vec3::new(-1.0, 0.0, 0.0)).norm() < 1e-12);
+        assert!((c.depth - 0.45).abs() < 1e-12, "depth={}", c.depth);
+        assert!((c.point_b - Vec3::new(-1.0, 0.1, 0.2)).norm() < 1e-12);
+    }
+
+    #[test]
+    fn test_sphere_aabb_outside_face_contact() {
+        let c = sphere_aabb(
+            Vec3::new(1.3, 0.0, 0.0),
+            0.5,
+            Vec3::new(-1.0, -1.0, -1.0),
+            Vec3::new(1.0, 1.0, 1.0),
+        )
+        .expect("contact");
+        assert!((c.depth - 0.2).abs() < 1e-12, "depth={}", c.depth);
+        assert!((c.normal - Vec3::new(1.0, 0.0, 0.0)).norm() < 1e-12);
+        assert!((c.point_a - Vec3::new(0.8, 0.0, 0.0)).norm() < 1e-12);
+        assert!((c.point_b - Vec3::new(1.0, 0.0, 0.0)).norm() < 1e-12);
     }
 
     // ── sphere vs cylinder ──────────────────────────────────────────────

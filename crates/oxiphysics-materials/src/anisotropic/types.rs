@@ -957,10 +957,15 @@ impl HashinFailureCriteria {
     }
     /// Matrix compression failure index (Hashin 1980 form).
     ///
-    /// `FI_mc = (σ22/(2S23))² + (Yc/(2S23) - 1)*(σ22/Yc) + (τ12/S12)²`
+    /// `FI_mc = (σ22/(2S23))² + [(Yc/(2S23))² - 1]·(σ22/Yc) + (τ12/S12)²`
+    ///
+    /// `sigma22` is the *signed* transverse stress (negative in compression);
+    /// the linear term relies on that sign, so the criterion is only
+    /// meaningful for `σ22 < 0`.  With `σ22 = -Yc` and `τ12 = 0` the index is
+    /// exactly 1.
     pub fn matrix_compression(&self, sigma22: f64, tau12: f64) -> f64 {
-        let a = (sigma22.abs() / (2.0 * self.s23)).powi(2);
-        let b = (self.yc / (2.0 * self.s23) - 1.0) * sigma22.abs() / self.yc;
+        let a = (sigma22 / (2.0 * self.s23)).powi(2);
+        let b = ((self.yc / (2.0 * self.s23)).powi(2) - 1.0) * sigma22 / self.yc;
         let c = (tau12 / self.s12).powi(2);
         a + b + c
     }

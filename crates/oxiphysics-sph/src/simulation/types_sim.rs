@@ -74,9 +74,27 @@ impl WcSphSim {
     pub fn tait_b(&self) -> f64 {
         self.rho0 * self.c0 * self.c0 / self.gamma
     }
+    /// Neighbour lists (indices `j ≠ i` with `|xᵢ − xⱼ| ≤ 2h`, boundary
+    /// particles included) for the cubic-spline support of this simulation.
+    ///
+    /// One list per step serves the density, pressure, viscosity and surface
+    /// tension sums; see [`density_step_with_neighbors`](Self::density_step_with_neighbors)
+    /// and [`force_step_with_neighbors`](Self::force_step_with_neighbors).
+    pub fn neighbor_lists(&self) -> Vec<Vec<usize>> {
+        self.particles.support_neighbor_lists(self.h)
+    }
     /// **Density step**: recompute ρ via SPH kernel summation.
+    ///
+    /// Builds its own neighbour lists; [`step`](Self::step) shares one list
+    /// between the density and force sums instead.
     pub fn density_step(&mut self) {
         self.particles.compute_sph_densities(self.h);
+    }
+    /// **Density step** from neighbour lists built by
+    /// [`neighbor_lists`](Self::neighbor_lists) for the current positions.
+    pub fn density_step_with_neighbors(&mut self, neighbors: &[Vec<usize>]) {
+        self.particles
+            .compute_sph_densities_with_neighbors(self.h, neighbors);
     }
     /// **Pressure step**: apply WCSPH Tait EOS.
     pub fn pressure_step(&mut self) {
@@ -85,13 +103,27 @@ impl WcSphSim {
     }
     /// **Force step**: clear, apply gravity, pressure forces, viscosity,
     /// and optionally surface tension.
+    ///
+    /// Builds its own neighbour lists; see
+    /// [`force_step_with_neighbors`](Self::force_step_with_neighbors).
     pub fn force_step(&mut self) {
+        let neighbors = self.neighbor_lists();
+        self.force_step_with_neighbors(&neighbors);
+    }
+    /// **Force step** from neighbour lists built by
+    /// [`neighbor_lists`](Self::neighbor_lists) for the current positions:
+    /// clear, apply gravity, pressure forces, viscosity and (when `sigma ≠ 0`)
+    /// the continuum surface force.  Every sum costs `O(N · k)` for `k`
+    /// neighbours per particle.
+    pub fn force_step_with_neighbors(&mut self, neighbors: &[Vec<usize>]) {
         self.particles.clear_accelerations();
         self.particles.apply_gravity(self.gravity);
-        self.particles.accumulate_pressure_acceleration(self.h);
-        self.particles.accumulate_morris_viscosity(self.h, self.mu);
+        self.particles
+            .accumulate_pressure_acceleration_with_neighbors(self.h, neighbors);
+        self.particles
+            .accumulate_morris_viscosity_with_neighbors(self.h, self.mu, neighbors);
         if self.sigma.abs() > 1e-30 {
-            self.accumulate_csf_surface_tension();
+            self.accumulate_csf_surface_tension(neighbors);
         }
     }
     /// **Integrate** with Euler (v += a*dt, r += v*dt).
@@ -99,11 +131,19 @@ impl WcSphSim {
         self.particles.integrate(dt);
         self.time += dt;
     }
-    /// **Full step**: density → pressure → forces → integrate.
-    pub fn step(&mut self, dt: f64) {
-        self.density_step();
+    /// One density → pressure → force evaluation at the current positions with
+    /// a single set of neighbour lists.
+    fn evaluate_forces(&mut self) {
+        let neighbors = self.neighbor_lists();
+        self.density_step_with_neighbors(&neighbors);
         self.pressure_step();
-        self.force_step();
+        self.force_step_with_neighbors(&neighbors);
+    }
+    /// **Full step**: density → pressure → forces → integrate.
+    ///
+    /// The neighbour lists are built once and shared by all pair sums.
+    pub fn step(&mut self, dt: f64) {
+        self.evaluate_forces();
         self.integrate(dt);
         let ke = self.kinetic_energy();
         let pe = self.potential_energy();
@@ -113,18 +153,14 @@ impl WcSphSim {
     /// **Full step** using leapfrog integrator for better energy conservation.
     pub fn step_leapfrog(&mut self, dt: f64) {
         self.particles.leapfrog_kick_drift(dt);
-        self.density_step();
-        self.pressure_step();
-        self.force_step();
+        self.evaluate_forces();
         self.particles.finish_verlet(dt);
         self.time += dt;
     }
     /// **Full step** using Velocity Verlet integrator.
     pub fn step_verlet(&mut self, dt: f64) {
         self.particles.integrate_verlet_half(dt);
-        self.density_step();
-        self.pressure_step();
-        self.force_step();
+        self.evaluate_forces();
         self.particles.finish_verlet(dt);
         self.time += dt;
     }
@@ -176,84 +212,101 @@ impl WcSphSim {
     }
     /// CSF surface tension force accumulation (colour-function proxy = density).
     ///
-    /// Adds `F_st = σ * κ * n̂ * mᵢ / ρᵢ` to accelerations.
-    fn accumulate_csf_surface_tension(&mut self) {
+    /// Brackbill-Kothe-Zemach continuum surface force with SPH operators over
+    /// the neighbour lists (cubic-spline support `2h`):
+    ///
+    /// 1. colour `cᵢ = ρᵢ/ρ₀` and its gradient
+    ///    `∇cᵢ = Σⱼ (mⱼ/ρⱼ)(cⱼ − cᵢ) ∇ᵢWᵢⱼ` (points towards larger `c`, i.e.
+    ///    into the fluid);
+    /// 2. unit normal `n̂ᵢ = ∇cᵢ/|∇cᵢ|` wherever `|∇cᵢ|` is non-negligible;
+    /// 3. curvature `κᵢ = −∇·n̂ᵢ = −Σⱼ (mⱼ/ρⱼ)(n̂ⱼ − n̂ᵢ)·∇ᵢWᵢⱼ`, positive for a
+    ///    convex fluid region (`2/R` on a sphere of radius `R`);
+    /// 4. acceleration `aᵢ += σ κᵢ ∇cᵢ / ρᵢ` for every fluid particle, which
+    ///    pulls convex surfaces inwards.
+    ///
+    /// Boundary particles take part in the sums but receive no acceleration.
+    fn accumulate_csf_surface_tension(&mut self, neighbors: &[Vec<usize>]) {
+        const NORMAL_EPS2: f64 = 1e-20;
         let n = self.particles.len();
         let h = self.h;
         let h2 = h * h;
         let sigma = self.sigma;
         let rho0 = self.rho0;
+        let positions = &self.particles.positions;
+        let densities = &self.particles.densities;
+        let masses = &self.particles.masses;
+        let colour: Vec<f64> = densities.iter().map(|&rho| rho.max(1e-14) / rho0).collect();
+        // Geometry of the pair (i, j) inside the support: the separation
+        // d = x_i − x_j and the weight V_j (dW/dr) / r, so that
+        // ∇_i W_ij = (dW/dr) d / r and V_j ∇_i W_ij = weight · d.
+        let pair_weight = |i: usize, j: usize| -> Option<([f64; 3], f64)> {
+            if j == i || j >= n {
+                return None;
+            }
+            let d = [
+                positions[i][0] - positions[j][0],
+                positions[i][1] - positions[j][1],
+                positions[i][2] - positions[j][2],
+            ];
+            let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            if r2 > 4.0 * h2 || r2 < 1e-28 {
+                return None;
+            }
+            let r = r2.sqrt();
+            let rho_j = densities[j].max(1e-14);
+            let dw = crate::particle::cubic_spline_gradient_pub(r, h);
+            Some((d, masses[j] / rho_j * dw / r))
+        };
+        // ∇c_i = Σ_j V_j (c_j − c_i) ∇_i W_ij
         let mut grad_c = vec![[0.0_f64; 3]; n];
-        for (i, gc_i) in grad_c.iter_mut().enumerate().take(n) {
-            let rho_i = self.particles.densities[i].max(1e-14);
-            let ci = rho_i / rho0;
-            for j in 0..n {
-                if i == j {
-                    continue;
+        for (i, g) in grad_c.iter_mut().enumerate() {
+            let Some(list) = neighbors.get(i) else {
+                continue;
+            };
+            for &j in list {
+                if let Some((d, weight)) = pair_weight(i, j) {
+                    let factor = weight * (colour[j] - colour[i]);
+                    g[0] += factor * d[0];
+                    g[1] += factor * d[1];
+                    g[2] += factor * d[2];
                 }
-                let dx = self.particles.positions[i][0] - self.particles.positions[j][0];
-                let dy = self.particles.positions[i][1] - self.particles.positions[j][1];
-                let dz = self.particles.positions[i][2] - self.particles.positions[j][2];
-                let r2 = dx * dx + dy * dy + dz * dz;
-                if r2 > 4.0 * h2 || r2 < 1e-28 {
-                    continue;
-                }
-                let r = r2.sqrt();
-                let rho_j = self.particles.densities[j].max(1e-14);
-                let cj = rho_j / rho0;
-                let dw = crate::particle::cubic_spline_gradient_pub(r, h);
-                let factor = self.particles.masses[j] / rho_j * (cj - ci) * dw / r;
-                gc_i[0] += factor * (-dx);
-                gc_i[1] += factor * (-dy);
-                gc_i[2] += factor * (-dz);
             }
         }
-        for i in 0..n {
+        let normals: Vec<Option<[f64; 3]>> = grad_c
+            .iter()
+            .map(|g| {
+                let mag2 = g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
+                if mag2 < NORMAL_EPS2 {
+                    None
+                } else {
+                    let mag = mag2.sqrt();
+                    Some([g[0] / mag, g[1] / mag, g[2] / mag])
+                }
+            })
+            .collect();
+        for (i, list) in neighbors.iter().enumerate().take(n) {
             if self.particles.is_boundary[i] {
                 continue;
             }
-            let gc_mag2 = grad_c[i][0] * grad_c[i][0]
-                + grad_c[i][1] * grad_c[i][1]
-                + grad_c[i][2] * grad_c[i][2];
-            if gc_mag2 < 1e-20 {
+            let Some(n_i) = normals[i] else {
                 continue;
-            }
-            let gc_mag = gc_mag2.sqrt();
-            let n_hat = [
-                grad_c[i][0] / gc_mag,
-                grad_c[i][1] / gc_mag,
-                grad_c[i][2] / gc_mag,
-            ];
-            let rho_i = self.particles.densities[i].max(1e-14);
+            };
+            // κ_i = −∇·n̂_i = −Σ_j V_j (n̂_j − n̂_i) · ∇_i W_ij
             let mut kappa = 0.0_f64;
-            for (j, gc_j) in grad_c.iter().enumerate().take(n) {
-                if i == j {
+            for &j in list {
+                let (Some((d, weight)), Some(n_j)) =
+                    (pair_weight(i, j), normals.get(j).copied().flatten())
+                else {
                     continue;
-                }
-                let dx = self.particles.positions[i][0] - self.particles.positions[j][0];
-                let dy = self.particles.positions[i][1] - self.particles.positions[j][1];
-                let dz = self.particles.positions[i][2] - self.particles.positions[j][2];
-                let r2 = dx * dx + dy * dy + dz * dz;
-                if r2 > 4.0 * h2 || r2 < 1e-28 {
-                    continue;
-                }
-                let r = r2.sqrt();
-                let rho_j = self.particles.densities[j].max(1e-14);
-                let gc_j_mag2 = gc_j[0] * gc_j[0] + gc_j[1] * gc_j[1] + gc_j[2] * gc_j[2];
-                if gc_j_mag2 < 1e-20 {
-                    continue;
-                }
-                let gc_j_mag = gc_j_mag2.sqrt();
-                let n_hat_j = [gc_j[0] / gc_j_mag, gc_j[1] / gc_j_mag, gc_j[2] / gc_j_mag];
-                let dw = crate::particle::cubic_spline_gradient_pub(r, h);
-                let dn_dot_r = (n_hat_j[0] - n_hat[0]) * (-dx)
-                    + (n_hat_j[1] - n_hat[1]) * (-dy)
-                    + (n_hat_j[2] - n_hat[2]) * (-dz);
-                kappa -= self.particles.masses[j] / rho_j * dn_dot_r * dw / r;
+                };
+                let dn_dot_d =
+                    (n_j[0] - n_i[0]) * d[0] + (n_j[1] - n_i[1]) * d[1] + (n_j[2] - n_i[2]) * d[2];
+                kappa -= weight * dn_dot_d;
             }
-            let force_scale = sigma * kappa * gc_mag / rho_i;
-            for (k, &nk) in n_hat.iter().enumerate() {
-                self.particles.accelerations[i][k] += force_scale * nk;
+            let rho_i = densities[i].max(1e-14);
+            let scale = sigma * kappa / rho_i;
+            for (k, &gk) in grad_c[i].iter().enumerate() {
+                self.particles.accelerations[i][k] += scale * gk;
             }
         }
     }

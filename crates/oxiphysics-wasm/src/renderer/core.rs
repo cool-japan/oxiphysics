@@ -642,8 +642,12 @@ mod tests {
     #[test]
     fn test_renderer_hints_from_engine_with_bodies() {
         let mut engine = WasmPhysicsEngine::new(0.0, -9.81, 0.0);
-        engine.add_dynamic_body(1.0, 0.0, 5.0, 0.0);
-        engine.add_static_body(0.0, 0.0, 0.0);
+        engine
+            .add_dynamic_body(1.0, 0.0, 5.0, 0.0)
+            .expect("add dynamic body");
+        engine
+            .add_static_body(0.0, 0.0, 0.0)
+            .expect("add static body");
         let hints = RendererHints::from_engine(&engine, true, true, false);
         assert_eq!(hints.active_body_count, 2);
         assert_eq!(hints.body_hints.len(), 2);
@@ -652,7 +656,9 @@ mod tests {
     #[test]
     fn test_renderer_hints_json_roundtrip() {
         let mut engine = WasmPhysicsEngine::new(0.0, -9.81, 0.0);
-        engine.add_dynamic_body(1.0, 1.0, 2.0, 3.0);
+        engine
+            .add_dynamic_body(1.0, 1.0, 2.0, 3.0)
+            .expect("add dynamic body");
         let hints = RendererHints::from_engine(&engine, true, true, true);
         let json = hints.to_json();
         let back = RendererHints::from_json(&json).expect("should deserialize");
@@ -662,7 +668,9 @@ mod tests {
     #[test]
     fn test_renderer_hints_aabbs_flat() {
         let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-        engine.add_dynamic_body(1.0, 1.0, 2.0, 3.0);
+        engine
+            .add_dynamic_body(1.0, 1.0, 2.0, 3.0)
+            .expect("add dynamic body");
         let hints = RendererHints::from_engine(&engine, true, false, false);
         let flat = hints.aabbs_flat();
         assert_eq!(flat.len(), 7);
@@ -671,11 +679,19 @@ mod tests {
     #[test]
     fn test_renderer_hints_contact_positions_flat() {
         let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-        let b0 = engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
-        let b1 = engine.add_dynamic_body(1.0, 1.5, 0.0, 0.0);
-        engine.add_sphere_collider(b0, 1.0);
-        engine.add_sphere_collider(b1, 1.0);
-        engine.step(1.0 / 60.0);
+        let b0 = engine
+            .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+            .expect("add dynamic body");
+        let b1 = engine
+            .add_dynamic_body(1.0, 1.5, 0.0, 0.0)
+            .expect("add dynamic body");
+        engine
+            .add_sphere_collider(b0, 1.0)
+            .expect("add sphere collider");
+        engine
+            .add_sphere_collider(b1, 1.0)
+            .expect("add sphere collider");
+        engine.step(1.0 / 60.0).expect("step");
         let hints = RendererHints::from_engine(&engine, false, false, true);
         assert_eq!(
             hints.contact_positions_flat().len(),
@@ -686,7 +702,9 @@ mod tests {
     #[test]
     fn test_renderer_hints_velocity_vectors_flat() {
         let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-        engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+        engine
+            .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+            .expect("add dynamic body");
         let hints = RendererHints::from_engine(&engine, false, true, false);
         assert_eq!(hints.velocity_vectors_flat().len(), 6);
     }
@@ -702,7 +720,9 @@ mod tests {
     #[test]
     fn test_build_draw_commands_with_body() {
         let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-        engine.add_dynamic_body(1.0, 1.0, 0.0, 0.0);
+        engine
+            .add_dynamic_body(1.0, 1.0, 0.0, 0.0)
+            .expect("add dynamic body");
         let hints = RendererHints::from_engine(&engine, true, true, false);
         let cmds = build_draw_commands(&hints, 10.0);
         assert!(!cmds.is_empty());
@@ -715,11 +735,19 @@ mod tests {
     #[test]
     fn test_build_draw_commands_contact_crosses() {
         let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-        let b0 = engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
-        let b1 = engine.add_dynamic_body(1.0, 1.5, 0.0, 0.0);
-        engine.add_sphere_collider(b0, 1.0);
-        engine.add_sphere_collider(b1, 1.0);
-        engine.step(1.0 / 60.0);
+        let b0 = engine
+            .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+            .expect("add dynamic body");
+        let b1 = engine
+            .add_dynamic_body(1.0, 1.5, 0.0, 0.0)
+            .expect("add dynamic body");
+        engine
+            .add_sphere_collider(b0, 1.0)
+            .expect("add sphere collider");
+        engine
+            .add_sphere_collider(b1, 1.0)
+            .expect("add sphere collider");
+        engine.step(1.0 / 60.0).expect("step");
         let hints = RendererHints::from_engine(&engine, true, true, true);
         let cmds = build_draw_commands(&hints, 10.0);
         let line_count = cmds
@@ -734,7 +762,9 @@ mod tests {
     #[test]
     fn test_renderer_hints_no_aabbs() {
         let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-        engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+        engine
+            .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+            .expect("add dynamic body");
         let hints = RendererHints::from_engine(&engine, false, false, false);
         for h in &hints.body_hints {
             assert!(h.aabb.is_none());
@@ -749,7 +779,9 @@ mod tests {
     #[test]
     fn test_renderer_hints_velocity_flat_matches_struct() {
         let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-        engine.add_dynamic_body(1.0, 1.0, 2.0, 3.0);
+        engine
+            .add_dynamic_body(1.0, 1.0, 2.0, 3.0)
+            .expect("add dynamic body");
         let hints = RendererHints::from_engine(&engine, false, true, false);
         let flat = hints.velocity_vectors_flat();
         // origin = position of body = [1, 2, 3]

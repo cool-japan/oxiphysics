@@ -6,6 +6,7 @@ use super::types::{
     ElementTypeStats, ExtendedQualityReport, FullQualityReport, MeshComparison, MeshQualityReport,
     QualityCheckResult, QualitySuggestion, QualityThresholds, TriangleMesh,
 };
+use std::collections::HashMap;
 
 #[inline]
 pub(super) fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -233,24 +234,101 @@ pub fn vertex_valence(mesh: &TriangleMesh) -> Vec<u32> {
     }
     valence
 }
-/// Remove duplicate vertices within the given tolerance, remapping triangle indices.
-pub fn remove_duplicate_vertices(mesh: &TriangleMesh, tolerance: f32) -> TriangleMesh {
-    let mut new_verts: Vec<[f32; 3]> = Vec::new();
-    let mut remap: Vec<u32> = Vec::with_capacity(mesh.vertices.len());
-    for v in &mesh.vertices {
-        let found = new_verts.iter().enumerate().find(|(_, u)| {
-            let dx = v[0] - u[0];
-            let dy = v[1] - u[1];
-            let dz = v[2] - u[2];
-            (dx * dx + dy * dy + dz * dz).sqrt() <= tolerance
-        });
-        if let Some((idx, _)) = found {
-            remap.push(idx as u32);
+/// Merge vertices that lie within `tol` of each other.
+///
+/// Returns the unique vertices, in order of first occurrence, and for every input
+/// vertex the index of the unique vertex it was merged into. A vertex joins the
+/// lowest-indexed unique vertex within `tol` (Euclidean distance, inclusive), exactly
+/// like a linear first-match scan, but in expected O(1) per vertex.
+///
+/// Candidates come from a uniform grid with cell size `tol`: every point within `tol`
+/// of `p` lies in the 27 cells around the cell of `p`. Cell keys are computed in `f64`
+/// and neighbour offsets saturate, so huge coordinates or tiny tolerances stay correct
+/// (they only make cells crowded).
+///
+/// When `tol` is zero, negative or NaN, vertices merge only if their coordinates are
+/// identical (`-0.0` equals `0.0`). Vertices with a non-finite coordinate never merge.
+pub(super) fn weld_vertices(verts: &[[f32; 3]], tol: f32) -> (Vec<[f32; 3]>, Vec<u32>) {
+    let mut unique: Vec<[f32; 3]> = Vec::new();
+    let mut remap: Vec<u32> = Vec::with_capacity(verts.len());
+    if tol.is_nan() || tol <= 0.0 {
+        let mut seen: HashMap<[u32; 3], u32> = HashMap::new();
+        for v in verts {
+            if v.iter().any(|c| !c.is_finite()) {
+                remap.push(unique.len() as u32);
+                unique.push(*v);
+                continue;
+            }
+            let key = v.map(|c| if c == 0.0 { 0 } else { c.to_bits() });
+            let next = unique.len() as u32;
+            let idx = *seen.entry(key).or_insert(next);
+            if idx == next {
+                unique.push(*v);
+            }
+            remap.push(idx);
+        }
+        return (unique, remap);
+    }
+    const NO_VERTEX: u32 = u32::MAX;
+    let cell = f64::from(tol);
+    let tol_sq = cell * cell;
+    let cell_of = |v: &[f32; 3]| -> [i64; 3] { v.map(|c| (f64::from(c) / cell).floor() as i64) };
+    // Most recently inserted unique vertex of every occupied cell; `chain[i]` links
+    // unique vertex `i` to the previous one in the same cell.
+    let mut heads: HashMap<[i64; 3], u32> = HashMap::new();
+    let mut chain: Vec<u32> = Vec::new();
+    for v in verts {
+        if v.iter().any(|c| !c.is_finite()) {
+            remap.push(unique.len() as u32);
+            unique.push(*v);
+            chain.push(NO_VERTEX);
+            continue;
+        }
+        let key = cell_of(v);
+        let mut best = NO_VERTEX;
+        for dx in -1i64..=1 {
+            for dy in -1i64..=1 {
+                for dz in -1i64..=1 {
+                    let neighbour = [
+                        key[0].saturating_add(dx),
+                        key[1].saturating_add(dy),
+                        key[2].saturating_add(dz),
+                    ];
+                    let mut cursor = heads.get(&neighbour).copied().unwrap_or(NO_VERTEX);
+                    while cursor != NO_VERTEX {
+                        if cursor < best {
+                            let u = unique[cursor as usize];
+                            let ex = f64::from(v[0]) - f64::from(u[0]);
+                            let ey = f64::from(v[1]) - f64::from(u[1]);
+                            let ez = f64::from(v[2]) - f64::from(u[2]);
+                            if ex * ex + ey * ey + ez * ez <= tol_sq {
+                                best = cursor;
+                            }
+                        }
+                        cursor = chain[cursor as usize];
+                    }
+                }
+            }
+        }
+        if best != NO_VERTEX {
+            remap.push(best);
         } else {
-            remap.push(new_verts.len() as u32);
-            new_verts.push(*v);
+            let idx = unique.len() as u32;
+            unique.push(*v);
+            chain.push(heads.insert(key, idx).unwrap_or(NO_VERTEX));
+            remap.push(idx);
         }
     }
+    (unique, remap)
+}
+/// Remove duplicate vertices within the given tolerance, remapping triangle indices.
+///
+/// A vertex is merged into the lowest-indexed kept vertex that lies within `tolerance`
+/// (Euclidean distance, inclusive); kept vertices retain their original order. With a
+/// zero, negative or NaN `tolerance` only vertices with identical coordinates are merged,
+/// and a vertex with a non-finite coordinate is never merged. Runs in expected linear time.
+pub fn remove_duplicate_vertices(mesh: &TriangleMesh, tolerance: f32) -> TriangleMesh {
+    let (new_verts, remap) = weld_vertices(&mesh.vertices, tolerance);
     let new_tris: Vec<[u32; 3]> = mesh
         .triangles
         .iter()
@@ -367,17 +445,8 @@ pub fn suggest_improvements(
             count: check.n_large_angle,
         });
     }
-    let n_verts = mesh.vertices.len();
-    let mut n_dupes = 0_usize;
-    for i in 0..n_verts {
-        for j in (i + 1)..n_verts {
-            let d = sub(mesh.vertices[i], mesh.vertices[j]);
-            if norm(d) < 1e-6 {
-                n_dupes += 1;
-                break;
-            }
-        }
-    }
+    let (unique, _) = weld_vertices(&mesh.vertices, 1e-6);
+    let n_dupes = mesh.vertices.len() - unique.len();
     if n_dupes > 0 {
         suggestions.push(QualitySuggestion::RemoveDuplicateVertices {
             estimated_duplicates: n_dupes,

@@ -187,7 +187,10 @@ pub fn so3_geodesic(r0: &So3, r1: &So3, t: f64) -> So3 {
 /// `u`, `v` – evaluation point.
 /// `h` – finite difference step size.
 ///
-/// Returns Christoffel symbols as a 2×2×2 array: `gamma[k][i][j]`.
+/// Returns Christoffel symbols of the second kind as a 2×2×2 array:
+/// `gamma[k][i][j]` = Γ^k_ij with index 0 ↔ u and index 1 ↔ v.  They are
+/// obtained from the first-kind symbols Γ_{ij,l} = r_ij · r_l by raising the
+/// last index with the inverse first fundamental form, Γ^k_ij = g^{kl} Γ_{ij,l}.
 pub fn christoffel_symbols_numerical<F>(r_fn: &F, u: f64, v: f64, h: f64) -> [[[f64; 2]; 2]; 2]
 where
     F: Fn(f64, f64) -> Vec3,
@@ -212,18 +215,16 @@ where
     );
     let g = RiemannianMetric::from_tangents(ru, rv);
     let (g11, g12, g22) = g.inverse();
-    let e_u = 2.0 * dot3(ruu, ru);
-    let e_v = 2.0 * dot3(ruv, ru);
-    let f_u = dot3(ruu, rv) + dot3(ruv, ru);
-    let f_v = dot3(ruv, rv) + dot3(rvv, ru);
-    let g_u = 2.0 * dot3(ruv, rv);
-    let g_v = 2.0 * dot3(rvv, rv);
-    let c111 = e_u / 2.0;
-    let c112 = e_v / 2.0;
-    let c121 = f_u - e_v / 2.0;
-    let c122 = g_u / 2.0;
-    let c221 = f_v - g_u / 2.0;
-    let c222 = g_v / 2.0;
+    // Christoffel symbols of the first kind of a parametrised surface:
+    // Γ_{ij,k} = r_{ij} · r_k.  Spelled out in terms of the fundamental form
+    // they are Γ_{11,1} = E_u/2, Γ_{11,2} = F_u - E_v/2, Γ_{12,1} = E_v/2,
+    // Γ_{12,2} = G_u/2, Γ_{22,1} = F_v - G_u/2 and Γ_{22,2} = G_v/2.
+    let c111 = dot3(ruu, ru);
+    let c112 = dot3(ruu, rv);
+    let c121 = dot3(ruv, ru);
+    let c122 = dot3(ruv, rv);
+    let c221 = dot3(rvv, ru);
+    let c222 = dot3(rvv, rv);
     let gamma_1_11 = g11 * c111 + g12 * c112;
     let gamma_1_12 = g11 * c121 + g12 * c122;
     let gamma_1_22 = g11 * c221 + g12 * c222;
@@ -338,49 +339,32 @@ where
     }
     integral
 }
-/// Compute matrix exponential of a 3×3 matrix via Cayley-Hamilton theorem.
+/// Compute the matrix exponential `exp(A)` of a general 3×3 matrix.
 ///
-/// For a general 3×3 matrix A, exp(A) = c₀I + c₁A + c₂A².
-/// Uses eigenvalue decomposition for numerical stability.
+/// The exponential is evaluated by the scaling-and-squaring method with Padé
+/// approximants (Higham; Al-Mohy & Higham) as implemented by
+/// `nalgebra::Matrix3::exp`.  The scaling exponent grows only like
+/// `log2(‖A‖)`, so matrices with large norm are handled to near full double
+/// precision: for example `exp(diag(50, 0, 0))` reproduces `diag(e^50, 1, 1)`
+/// and the exponential of a skew-symmetric matrix of any norm stays
+/// orthogonal to rounding level.
+///
+/// The result overflows to `±inf`/`NaN` exactly as `f64::exp` does once the
+/// true entries leave the representable range.  If any entry of `a` is not
+/// finite, every entry of the result is `NaN`.
 pub fn mat3_exp(a: Mat3) -> Mat3 {
-    let norm = mat3_frobenius_norm(a);
-    if norm < 1e-12 {
-        return mat3_identity();
+    if a.iter().flatten().any(|value| !value.is_finite()) {
+        return [[f64::NAN; 3]; 3];
     }
-    let s = (norm / (2.0_f64.ln())).ceil().max(0.0) as u32;
-    let scale = 1.0 / (2_u64.pow(s) as f64);
-    let a_scaled = mat3_scale(a, scale);
-    let a2 = mat3_mul(a_scaled, a_scaled);
-    let a4 = mat3_mul(a2, a2);
-    let a6 = mat3_mul(a4, a2);
-    let b = [1.0 / 720.0, 1.0 / 120.0, 1.0 / 24.0, 1.0 / 6.0, 0.5, 1.0];
-    let i = mat3_identity();
-    let u = mat3_add(
-        mat3_add(
-            mat3_scale(a6, b[0] * scale.powi(6)),
-            mat3_scale(a4, b[2] * scale.powi(4)),
-        ),
-        mat3_add(mat3_scale(a2, b[4] * scale.powi(2)), mat3_scale(i, 1.0)),
+    let matrix = nalgebra::Matrix3::new(
+        a[0][0], a[0][1], a[0][2], a[1][0], a[1][1], a[1][2], a[2][0], a[2][1], a[2][2],
     );
-    let v = mat3_add(
-        mat3_add(
-            mat3_scale(a6, b[1] * scale.powi(5)),
-            mat3_scale(a4, b[3] * scale.powi(3)),
-        ),
-        mat3_add(mat3_scale(a2, b[5] * scale.powi(1)), i),
-    );
-    let _ = (u, v, b);
-    let mut result = mat3_identity();
-    let mut term = mat3_identity();
-    for k in 1..=10u32 {
-        term = mat3_scale(mat3_mul(term, a_scaled), 1.0 / k as f64);
-        result = mat3_add(result, term);
-    }
-    let mut r = result;
-    for _ in 0..s {
-        r = mat3_mul(r, r);
-    }
-    r
+    let exp = matrix.exp();
+    [
+        [exp[(0, 0)], exp[(0, 1)], exp[(0, 2)]],
+        [exp[(1, 0)], exp[(1, 1)], exp[(1, 2)]],
+        [exp[(2, 0)], exp[(2, 1)], exp[(2, 2)]],
+    ]
 }
 /// Compute matrix logarithm of a rotation matrix (SO(3)) via Rodrigues formula.
 pub fn so3_log_matrix(r: Mat3) -> Mat3 {
@@ -1650,5 +1634,260 @@ mod tests {
     fn test_metric_determinant_4d() {
         let m = MetricTensorND::minkowski();
         assert!((m.determinant() - (-1.0)).abs() < 1e-12);
+    }
+    // ── mat3_exp (scaling exponent, accuracy, non-finite input) ──────────────
+    /// Independent reference: `exp(A)` by a long Taylor series (modest ‖A‖ only).
+    fn mat3_exp_taylor_reference(a: Mat3) -> Mat3 {
+        let mut result = mat3_identity();
+        let mut term = mat3_identity();
+        for k in 1..=80u32 {
+            term = mat3_scale(mat3_mul(term, a), 1.0 / f64::from(k));
+            result = mat3_add(result, term);
+        }
+        result
+    }
+    fn mat3_max_abs_diff(a: Mat3, b: Mat3) -> f64 {
+        a.iter()
+            .flatten()
+            .zip(b.iter().flatten())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0_f64, f64::max)
+    }
+    #[test]
+    fn test_mat3_exp_large_diagonal_does_not_overflow() {
+        // The old scaling exponent grew linearly with the norm: for ‖A‖ >= 44.4
+        // `2_u64.pow(s)` overflowed (panic in debug, NaN in release).
+        let e = mat3_exp([[50.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]);
+        let e50 = 50.0_f64.exp();
+        assert!(
+            ((e[0][0] - e50) / e50).abs() < 1e-10,
+            "exp(50) entry = {}, expected {e50}",
+            e[0][0]
+        );
+        assert!((e[1][1] - 1.0).abs() < 1e-10, "e[1][1] = {}", e[1][1]);
+        assert!((e[2][2] - 1.0).abs() < 1e-10, "e[2][2] = {}", e[2][2]);
+        for (i, j) in [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)] {
+            assert!(
+                e[i][j].abs() < 1e-8,
+                "off-diagonal e[{i}][{j}] = {}",
+                e[i][j]
+            );
+        }
+    }
+    #[test]
+    fn test_mat3_exp_large_skew_is_orthogonal_and_matches_rodrigues() {
+        // |ω| = 100: a very long rotation, norm of the generator ≈ 141.
+        let omega = [100.0 / 3.0_f64.sqrt(); 3];
+        let r = mat3_exp(skew3(omega));
+        let rrt = mat3_mul(r, mat3_transpose(r));
+        assert!(
+            mat3_max_abs_diff(rrt, mat3_identity()) < 1e-9,
+            "R Rᵀ deviates from I by {}",
+            mat3_max_abs_diff(rrt, mat3_identity())
+        );
+        assert!((mat3_det(r) - 1.0).abs() < 1e-9, "det = {}", mat3_det(r));
+        let rodrigues = So3::exp(omega).mat;
+        assert!(
+            mat3_max_abs_diff(r, rodrigues) < 1e-9,
+            "exp(skew) differs from Rodrigues by {}",
+            mat3_max_abs_diff(r, rodrigues)
+        );
+    }
+    #[test]
+    fn test_mat3_exp_general_matrix_matches_taylor_reference() {
+        let a = [[0.3, -0.7, 0.2], [1.1, 0.4, -0.5], [0.0, 0.9, -0.8]];
+        let e = mat3_exp(a);
+        let reference = mat3_exp_taylor_reference(a);
+        assert!(
+            mat3_max_abs_diff(e, reference) < 1e-12,
+            "diff to Taylor reference = {}",
+            mat3_max_abs_diff(e, reference)
+        );
+    }
+    #[test]
+    fn test_mat3_exp_inverse_property() {
+        let a = [[1.5, -2.0, 0.7], [0.3, 2.2, -1.4], [-0.9, 0.5, 1.1]];
+        let e = mat3_exp(a);
+        let e_inv = mat3_exp(mat3_scale(a, -1.0));
+        let prod = mat3_mul(e, e_inv);
+        assert!(
+            mat3_max_abs_diff(prod, mat3_identity()) < 1e-9,
+            "exp(A) exp(-A) deviates from I by {}",
+            mat3_max_abs_diff(prod, mat3_identity())
+        );
+    }
+    #[test]
+    fn test_mat3_exp_tiny_matrix_keeps_first_order_term() {
+        // A² = 0, so exp(A) = I + A exactly; the old `norm < 1e-12` shortcut
+        // returned the bare identity and dropped the linear term.
+        let a = [[0.0, 1e-14, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let e = mat3_exp(a);
+        assert!(
+            ((e[0][1] - 1e-14) / 1e-14).abs() < 1e-12,
+            "linear term lost: e[0][1] = {}",
+            e[0][1]
+        );
+        assert!((e[0][0] - 1.0).abs() < 1e-15);
+    }
+    #[test]
+    fn test_mat3_exp_non_finite_input_gives_nan() {
+        let infinite = mat3_exp([[f64::INFINITY, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]);
+        assert!(infinite.iter().flatten().all(|v| v.is_nan()));
+        let not_a_number = mat3_exp([[0.0, f64::NAN, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]);
+        assert!(not_a_number.iter().flatten().all(|v| v.is_nan()));
+    }
+    // ── christoffel_symbols_numerical (first-kind index placement) ───────────
+    #[test]
+    fn test_christoffel_numerical_polar_plane() {
+        // Polar coordinates r(u, v) = (v cos u, v sin u, 0): u is the angle and
+        // v the radius, so Γ^u_uv = 1/v and Γ^v_uu = -v; all else vanishes.
+        let r_fn = |u: f64, v: f64| [v * u.cos(), v * u.sin(), 0.0];
+        let (u, v) = (0.3, 2.0);
+        let gamma = christoffel_symbols_numerical(&r_fn, u, v, 1e-4);
+        assert!(
+            (gamma[0][0][1] - 1.0 / v).abs() < 1e-5,
+            "Γ^u_uv = {}, expected {}",
+            gamma[0][0][1],
+            1.0 / v
+        );
+        assert!(
+            (gamma[0][1][0] - 1.0 / v).abs() < 1e-5,
+            "Γ^u_vu = {}, expected {}",
+            gamma[0][1][0],
+            1.0 / v
+        );
+        assert!(
+            (gamma[1][0][0] + v).abs() < 1e-5,
+            "Γ^v_uu = {}, expected {}",
+            gamma[1][0][0],
+            -v
+        );
+        for (k, i, j) in [(0, 0, 0), (0, 1, 1), (1, 0, 1), (1, 1, 0), (1, 1, 1)] {
+            assert!(
+                gamma[k][i][j].abs() < 1e-5,
+                "Γ^{k}_{i}{j} = {} should vanish for the polar plane",
+                gamma[k][i][j]
+            );
+        }
+    }
+    #[test]
+    fn test_christoffel_numerical_unit_sphere() {
+        // r(u, v) = (sin u cos v, sin u sin v, cos u): u is the polar angle.
+        // Γ^u_vv = -sin u cos u and Γ^v_uv = cot u.
+        let r_fn = |u: f64, v: f64| [u.sin() * v.cos(), u.sin() * v.sin(), u.cos()];
+        let (u, v) = (0.9, 0.3);
+        let gamma = christoffel_symbols_numerical(&r_fn, u, v, 1e-4);
+        let expected_uvv = -u.sin() * u.cos();
+        let expected_vuv = u.cos() / u.sin();
+        assert!(
+            (gamma[0][1][1] - expected_uvv).abs() < 1e-5,
+            "Γ^u_vv = {}, expected {expected_uvv}",
+            gamma[0][1][1]
+        );
+        assert!(
+            (gamma[1][0][1] - expected_vuv).abs() < 1e-5,
+            "Γ^v_uv = {}, expected {expected_vuv}",
+            gamma[1][0][1]
+        );
+        assert!(gamma[0][0][0].abs() < 1e-5);
+        assert!(gamma[0][0][1].abs() < 1e-5);
+        assert!(gamma[1][0][0].abs() < 1e-5);
+        assert!(gamma[1][1][1].abs() < 1e-5);
+    }
+    #[test]
+    fn test_christoffel_numerical_skewed_parametrisation() {
+        // z = u v has F = u v != 0, r_uu = r_vv = 0 and r_uv = (0, 0, 1), so the
+        // only non-zero first-kind symbols are Γ_{12,1} = v and Γ_{12,2} = u.
+        // With D = 1 + u² + v²:  Γ^u_uv = v / D, Γ^v_uv = u / D, the rest 0.
+        let r_fn = |u: f64, v: f64| [u, v, u * v];
+        let (u, v) = (0.7, -0.4);
+        let d = 1.0 + u * u + v * v;
+        let gamma = christoffel_symbols_numerical(&r_fn, u, v, 1e-3);
+        assert!(
+            (gamma[0][0][1] - v / d).abs() < 1e-6,
+            "Γ^u_uv = {}, expected {}",
+            gamma[0][0][1],
+            v / d
+        );
+        assert!(
+            (gamma[0][1][0] - v / d).abs() < 1e-6,
+            "Γ^u_vu = {}, expected {}",
+            gamma[0][1][0],
+            v / d
+        );
+        assert!(
+            (gamma[1][0][1] - u / d).abs() < 1e-6,
+            "Γ^v_uv = {}, expected {}",
+            gamma[1][0][1],
+            u / d
+        );
+        for (k, i, j) in [(0, 0, 0), (0, 1, 1), (1, 0, 0), (1, 1, 1)] {
+            assert!(
+                gamma[k][i][j].abs() < 1e-6,
+                "Γ^{k}_{i}{j} = {} should vanish",
+                gamma[k][i][j]
+            );
+        }
+    }
+    #[test]
+    fn test_christoffel_numerical_matches_metric_connection() {
+        // Independent cross-check: the connection built from the metric
+        // components g = [[E, F], [F, G]] of z = u v must agree with the
+        // surface-based symbols.
+        let r_fn = |u: f64, v: f64| [u, v, u * v];
+        let metric_fn = |p: &[f64; MAX_DIM]| {
+            let mut g = [[0.0; MAX_DIM]; MAX_DIM];
+            g[0][0] = 1.0 + p[1] * p[1];
+            g[0][1] = p[0] * p[1];
+            g[1][0] = p[0] * p[1];
+            g[1][1] = 1.0 + p[0] * p[0];
+            g
+        };
+        let (u, v) = (-0.35, 0.8);
+        let surface = christoffel_symbols_numerical(&r_fn, u, v, 1e-3);
+        let conn = LeviCivitaConnection::from_metric_fn(&metric_fn, &[u, v, 0.0, 0.0], 2, 1e-5);
+        for (k, (surface_k, conn_k)) in surface.iter().zip(conn.christoffel.iter()).enumerate() {
+            for (i, (surface_i, conn_i)) in surface_k.iter().zip(conn_k.iter()).enumerate() {
+                for (j, (from_surface, from_metric)) in
+                    surface_i.iter().zip(conn_i.iter()).enumerate()
+                {
+                    assert!(
+                        (from_surface - from_metric).abs() < 1e-5,
+                        "Γ^{k}_{i}{j}: surface {from_surface} vs metric {from_metric}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn test_geodesic_curve_polar_plane_is_a_straight_line() {
+        // In polar coordinates r(u, v) = (v cos u, v sin u, 0) geodesics are the
+        // straight lines of the plane.  Start at (1, 0) heading tangentially
+        // (u' = 1, v' = 0): the exact geodesic is x = 1, y = s, i.e.
+        // u = atan(s), v = sqrt(1 + s²).  The swapped first-kind symbols bent
+        // this path into a curve that fell towards the origin (end point
+        // ≈ (0.46, 0.44) instead of (1, 1) after s = 1).
+        let r_fn = |u: f64, v: f64| [v * u.cos(), v * u.sin(), 0.0];
+        let ds = 0.01;
+        let steps = 100;
+        let curve = geodesic_curve(&r_fn, 0.0, 1.0, 1.0, 0.0, steps, ds);
+        assert_eq!(curve.len(), steps + 1);
+        for (k, &(u, v)) in curve.iter().enumerate() {
+            let x = v * u.cos();
+            assert!(
+                (x - 1.0).abs() < 2e-2,
+                "step {k}: x = {x} should stay on the line x = 1"
+            );
+        }
+        let (u_end, v_end) = curve[steps];
+        assert!(
+            (v_end * u_end.sin() - 1.0).abs() < 2e-2,
+            "arc length s = 1 along the line gives y = 1, got {}",
+            v_end * u_end.sin()
+        );
+        assert!(
+            (v_end - 2.0_f64.sqrt()).abs() < 2e-2,
+            "radius should grow to sqrt(2), got {v_end}"
+        );
     }
 }

@@ -532,6 +532,21 @@ pub fn backtracking_line_search(
     grad_dot: f64,
     cfg: BacktrackingConfig,
 ) -> f64 {
+    armijo_backtrack(f, x, direction, f0, grad_dot, cfg).0
+}
+/// Armijo backtracking that also reports the objective value at the accepted point.
+///
+/// Tries the step lengths `alpha0 * rho^k` for `k = 0..100`.  Returns
+/// `(alpha, Some(f(x + alpha * direction)))` for the first one that satisfies the
+/// sufficient-decrease condition, and `(alpha0 * rho^100, None)` when none does.
+fn armijo_backtrack(
+    f: impl Fn(&[f64]) -> f64,
+    x: &[f64],
+    direction: &[f64],
+    f0: f64,
+    grad_dot: f64,
+    cfg: BacktrackingConfig,
+) -> (f64, Option<f64>) {
     let BacktrackingConfig { alpha0, rho, c } = cfg;
     let mut alpha = alpha0;
     for _ in 0..100 {
@@ -540,12 +555,13 @@ pub fn backtracking_line_search(
             .zip(direction.iter())
             .map(|(xi, di)| xi + alpha * di)
             .collect();
-        if f(&x_new) <= f0 + c * alpha * grad_dot {
-            break;
+        let f_new = f(&x_new);
+        if f_new <= f0 + c * alpha * grad_dot {
+            return (alpha, Some(f_new));
         }
         alpha *= rho;
     }
-    alpha
+    (alpha, None)
 }
 /// Box-constrained minimization via projected gradient descent.
 ///
@@ -1361,11 +1377,78 @@ pub fn sgd_cosine_annealing(
         converged: gnorm < 1e-4,
     }
 }
-/// Full-memory BFGS (Broyden-Fletcher-Goldfarb-Shanno).
+/// Relative curvature threshold of the BFGS update: the pair `(s, y)` is used
+/// only when `s^T y > BFGS_CURVATURE_TOL * |s| * |y|`.
+const BFGS_CURVATURE_TOL: f64 = 1.0e-10;
+/// Returns `true` when the curvature condition `s^T y > 1e-10 |s| |y|` holds.
 ///
-/// Maintains an approximate Hessian inverse `H` (n×n matrix) updated with
-/// each iteration.  Falls back to gradient descent when curvature information
-/// is insufficient.
+/// The test is written so that a `NaN` input yields `false`.
+fn bfgs_curvature_condition_holds(s: &[f64], y: &[f64]) -> bool {
+    let sy: f64 = s.iter().zip(y.iter()).map(|(a, b)| a * b).sum();
+    let s_norm = s.iter().map(|v| v * v).sum::<f64>().sqrt();
+    let y_norm = y.iter().map(|v| v * v).sum::<f64>().sqrt();
+    sy > BFGS_CURVATURE_TOL * s_norm * y_norm
+}
+/// Applies the BFGS rank-two update to the inverse-Hessian approximation `h`
+/// (a symmetric `n x n` matrix stored as `n` rows) in place.
+///
+/// With the step `s = x_new - x`, the gradient change `y = g_new - g` and
+/// `rho = 1 / (s^T y)` the update is
+///
+/// `H+ = (I - rho s y^T) H (I - rho y s^T) + rho s s^T`
+/// `   = H - rho (H y s^T + s (H y)^T) + (rho^2 y^T H y + rho) s s^T`.
+///
+/// `H+` satisfies the secant equation `H+ y = s` and remains symmetric
+/// positive definite whenever `H` is and the curvature condition holds.
+///
+/// The update is applied only when `s^T y > 1e-10 |s| |y|`; otherwise `h` is
+/// left untouched.  Returns `true` when the update was applied, and `false`
+/// when it was skipped (curvature condition violated, `NaN` input, or
+/// dimensions of `h`, `s` and `y` that do not match).
+pub fn bfgs_update_inverse_hessian(h: &mut [Vec<f64>], s: &[f64], y: &[f64]) -> bool {
+    let n = s.len();
+    if y.len() != n || h.len() != n || h.iter().any(|row| row.len() != n) {
+        return false;
+    }
+    if !bfgs_curvature_condition_holds(s, y) {
+        return false;
+    }
+    let sy: f64 = s.iter().zip(y.iter()).map(|(a, b)| a * b).sum();
+    let rho = 1.0 / sy;
+    let hy: Vec<f64> = h
+        .iter()
+        .map(|row| row.iter().zip(y.iter()).map(|(hij, yj)| hij * yj).sum())
+        .collect();
+    let yhy: f64 = y.iter().zip(hy.iter()).map(|(yi, hyi)| yi * hyi).sum();
+    let ss_coeff = rho * rho * yhy + rho;
+    for (i, row) in h.iter_mut().enumerate() {
+        for (j, hij) in row.iter_mut().enumerate() {
+            *hij += ss_coeff * s[i] * s[j] - rho * (hy[i] * s[j] + s[i] * hy[j]);
+        }
+    }
+    true
+}
+/// Full-memory BFGS (Broyden-Fletcher-Goldfarb-Shanno) quasi-Newton minimiser.
+///
+/// Maintains an approximation `H` (`n x n`) of the inverse Hessian, refined after
+/// every step with the BFGS formula (see [`bfgs_update_inverse_hessian`]).  The
+/// search direction is `p = -H g` and the step length comes from an Armijo
+/// backtracking line search ([`backtracking_line_search`] settings).
+///
+/// * `H` starts as the identity and is rescaled to `(s^T y / y^T y) I` just
+///   before its first update (Nocedal & Wright, eq. 6.20), which puts the first
+///   curvature estimate on the scale of the problem.
+/// * A step whose pair `(s, y)` violates the curvature condition
+///   `s^T y > 1e-10 |s| |y|` (possible with a backtracking line search) is
+///   not used for an update, which keeps `H` positive definite.
+/// * If `p` is not a descent direction (`g^T p >= 0`), or the line search finds
+///   no sufficient decrease, `H` is reset to the identity (a steepest-descent
+///   step) and its scale is estimated again.  The run stops with
+///   `converged = false` when even a steepest-descent step cannot decrease `f`.
+///
+/// The objective is evaluated only inside the line search; the value at the
+/// accepted point is carried over to the next iteration and returned as
+/// `f_val`.  Convergence means `|g| < tol` at the returned point.
 pub fn bfgs(
     f: impl Fn(&[f64]) -> f64,
     grad: impl Fn(&[f64]) -> Vec<f64>,
@@ -1374,65 +1457,84 @@ pub fn bfgs(
     max_iter: usize,
 ) -> OptResult {
     let n = x0.len();
+    let identity = || -> Vec<Vec<f64>> {
+        (0..n)
+            .map(|i| {
+                let mut row = vec![0.0; n];
+                row[i] = 1.0;
+                row
+            })
+            .collect()
+    };
+    let norm = |v: &[f64]| v.iter().map(|c| c * c).sum::<f64>().sqrt();
     let mut x = x0;
-    let mut h: Vec<Vec<f64>> = (0..n)
-        .map(|i| {
-            let mut row = vec![0.0; n];
-            row[i] = 1.0;
-            row
-        })
-        .collect();
-    let mut converged = false;
+    let mut h = identity();
+    let mut rescale_pending = true;
+    let mut just_reset = true;
     let mut n_iter = 0u32;
+    let mut f_cur = f(&x);
     let mut g = grad(&x);
     for _ in 0..max_iter {
         n_iter += 1;
-        let gnorm: f64 = g.iter().map(|v| v * v).sum::<f64>().sqrt();
-        if gnorm < tol {
-            converged = true;
+        let gnorm = norm(&g);
+        if gnorm < tol || gnorm == 0.0 {
             break;
         }
-        let p: Vec<f64> = (0..n)
-            .map(|i| {
-                -h[i]
-                    .iter()
+        let mut p: Vec<f64> = h
+            .iter()
+            .map(|row| {
+                -row.iter()
                     .zip(g.iter())
                     .map(|(hij, gj)| hij * gj)
                     .sum::<f64>()
             })
             .collect();
-        let f0 = f(&x);
-        let gd: f64 = g.iter().zip(p.iter()).map(|(gi, pi)| gi * pi).sum();
-        let alpha = backtracking_line_search(&f, &x, &p, f0, gd, BacktrackingConfig::default());
+        let mut gd: f64 = g.iter().zip(p.iter()).map(|(gi, pi)| gi * pi).sum();
+        if gd.is_nan() || gd >= 0.0 {
+            h = identity();
+            rescale_pending = true;
+            just_reset = true;
+            p = g.iter().map(|gi| -gi).collect();
+            gd = -gnorm * gnorm;
+        }
+        let (alpha, accepted) =
+            armijo_backtrack(&f, &x, &p, f_cur, gd, BacktrackingConfig::default());
+        let Some(f_new) = accepted else {
+            if just_reset {
+                break;
+            }
+            h = identity();
+            rescale_pending = true;
+            just_reset = true;
+            continue;
+        };
         let x_new: Vec<f64> = (0..n).map(|i| x[i] + alpha * p[i]).collect();
         let g_new = grad(&x_new);
         let s: Vec<f64> = (0..n).map(|i| x_new[i] - x[i]).collect();
         let y: Vec<f64> = (0..n).map(|i| g_new[i] - g[i]).collect();
-        let sy: f64 = s.iter().zip(y.iter()).map(|(si, yi)| si * yi).sum();
-        if sy > 1e-15 {
-            let hy: Vec<f64> = (0..n)
-                .map(|i| {
-                    h[i].iter()
-                        .zip(y.iter())
-                        .map(|(hij, yj)| hij * yj)
-                        .sum::<f64>()
-                })
-                .collect();
-            let ythy: f64 = y.iter().zip(hy.iter()).map(|(yi, hyi)| yi * hyi).sum();
-            let rho_bfgs = 1.0 / sy;
-            for i in 0..n {
-                for j in 0..n {
-                    h[i][j] += rho_bfgs * s[i] * s[j] - (hy[i] * s[j] + s[i] * hy[j]) / ythy;
+        if bfgs_curvature_condition_holds(&s, &y) {
+            if rescale_pending {
+                let sy: f64 = s.iter().zip(y.iter()).map(|(a, b)| a * b).sum();
+                let yy: f64 = y.iter().map(|v| v * v).sum();
+                let scale = sy / yy;
+                h = identity();
+                for (i, row) in h.iter_mut().enumerate() {
+                    row[i] = scale;
                 }
+                rescale_pending = false;
             }
+            bfgs_update_inverse_hessian(&mut h, &s, &y);
         }
+        just_reset = false;
         x = x_new;
         g = g_new;
+        f_cur = f_new;
     }
-    let f_val = f(&x);
+    let final_gnorm = norm(&g);
+    let converged = final_gnorm < tol || final_gnorm == 0.0;
     OptResult {
         x,
-        f_val,
+        f_val: f_cur,
         n_iter,
         converged,
     }

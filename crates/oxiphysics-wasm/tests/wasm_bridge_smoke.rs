@@ -21,8 +21,12 @@ wasm_bindgen_test_configure!(run_in_browser);
 fn smoke_physics_engine() {
     let mut engine = oxiphysics_wasm::WasmPhysicsEngine::new(0.0, -9.81, 0.0);
     // Add a body and step — proves the full simulation path is reachable.
-    let body = engine.add_dynamic_body(1.0, 0.0, 10.0, 0.0);
-    engine.step(1.0 / 60.0);
+    let body = engine
+        .add_dynamic_body(1.0, 0.0, 10.0, 0.0)
+        .expect("a valid dynamic body is accepted");
+    engine
+        .step(1.0 / 60.0)
+        .expect("a positive time step is accepted");
     let pos = engine.get_position(body);
     // After one step under gravity the body should have moved downward.
     assert!(pos[1] < 10.0, "body should have fallen under gravity");

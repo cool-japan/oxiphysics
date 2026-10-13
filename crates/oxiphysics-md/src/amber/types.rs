@@ -205,14 +205,20 @@ impl AmberFF {
     /// Uses the *Still* GB model:
     ///
     /// ```text
-    /// E_GB = −½ · k_e · (1/ε_s − 1/ε_p) · Σ_{i,j} q_i q_j / f_{GB}(r_{ij}, R_i, R_j)
+    /// E_GB = −½ · k_e · (1/ε_p − 1/ε_s) · Σ_{i,j} q_i q_j / f_{GB}(r_{ij}, R_i, R_j)
     /// ```
     ///
-    /// where the GB function is:
+    /// where ε_p is the solute (interior) dielectric constant, ε_s the solvent
+    /// dielectric constant (ε_s > ε_p, so the prefactor is negative) and the
+    /// GB function is:
     ///
     /// ```text
     /// f_{GB} = √(r_{ij}² + R_i·R_j·exp(−r_{ij}²/(4·R_i·R_j)))
     /// ```
+    ///
+    /// The `i == j` terms give the Born self energy `−½ k_e (1/ε_p − 1/ε_s) q²/R`
+    /// of an isolated ion, so transferring any charge distribution from the
+    /// solute dielectric into the solvent is stabilising (negative energy).
     ///
     /// # Arguments
     /// * `atoms`     — slice of GB atom parameters (charge, Born radius, …)
@@ -225,7 +231,7 @@ impl AmberFF {
             return 0.0;
         }
         let p = &self.gb_params;
-        let prefactor = -0.5 * p.coulomb_k * (1.0 / p.eps_solvent - 1.0 / p.eps_solute);
+        let prefactor = -0.5 * p.coulomb_k * (1.0 / p.eps_solute - 1.0 / p.eps_solvent);
         let mut e_gb = 0.0_f64;
         for i in 0..n {
             for j in 0..n {
@@ -282,8 +288,11 @@ impl AmberFF {
     /// analytical approximation is used:
     ///
     /// ```text
-    /// E_neck = −½ · k_e · (1/ε_s − 1/ε_p) · Σ_{i<j} q_i q_j · neck(r_{ij}, R_i, R_j)
+    /// E_neck = −½ · k_e · (1/ε_p − 1/ε_s) · Σ_{i<j} q_i q_j · neck(r_{ij}, R_i, R_j)
     /// ```
+    ///
+    /// which uses the same (negative) dielectric prefactor as
+    /// [`AmberFF::compute_generalized_born`].
     ///
     /// where the neck function is:
     ///
@@ -309,7 +318,7 @@ impl AmberFF {
         const M_NECK: f64 = 0.3516;
         const N_NECK: f64 = 2.909;
         let p = &self.gb_params;
-        let prefactor = -0.5 * p.coulomb_k * (1.0 / p.eps_solvent - 1.0 / p.eps_solute);
+        let prefactor = -0.5 * p.coulomb_k * (1.0 / p.eps_solute - 1.0 / p.eps_solvent);
         let mut e_neck = 0.0_f64;
         for i in 0..n {
             for j in i + 1..n {

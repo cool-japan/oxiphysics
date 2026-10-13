@@ -405,16 +405,139 @@ mod tests {
             }
         }
     }
+    /// Deterministic pseudo-random value in (-1, 1) for test matrices.
+    fn lcg_unit(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    }
+    /// Dense symmetric (generally indefinite) test matrix of size `n`.
+    fn random_symmetric_dense(n: usize, seed: u64) -> Vec<f64> {
+        let mut state = seed;
+        let mut a = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..=i {
+                let v = lcg_unit(&mut state);
+                a[i * n + j] = v;
+                a[j * n + i] = v;
+            }
+        }
+        a
+    }
+    fn dense_to_csr(a: &[f64], n: usize) -> CsrMatrix {
+        let mut triplets = Vec::new();
+        for i in 0..n {
+            for j in 0..n {
+                if a[i * n + j] != 0.0 {
+                    triplets.push((i, j, a[i * n + j]));
+                }
+            }
+        }
+        CsrMatrix::from_triplets(n, n, &triplets)
+    }
+    fn true_residual(a: &[f64], x: &[f64], b: &[f64], n: usize) -> f64 {
+        let ax = dense_matvec(a, x, n);
+        b.iter()
+            .zip(ax.iter())
+            .map(|(bi, ai)| (bi - ai).powi(2))
+            .sum::<f64>()
+            .sqrt()
+    }
     #[test]
     fn minres_solves_spd() {
         let a = vec![4.0, 1.0, 1.0, 3.0];
         let b = vec![1.0, 2.0];
-        let (_x, stats) = minres_dense(&a, &b, 2, 100, 1e-12);
+        let (x, stats) = minres_dense(&a, &b, 2, 100, 1e-12);
+        assert!(stats.converged, "res = {}", stats.residual);
+        assert!((x[0] - 1.0 / 11.0).abs() < 1e-12, "x[0] = {}", x[0]);
+        assert!((x[1] - 7.0 / 11.0).abs() < 1e-12, "x[1] = {}", x[1]);
+        assert!(stats.residual < 1e-12);
+        assert!(stats.iterations <= 2, "iterations = {}", stats.iterations);
+    }
+    #[test]
+    fn minres_dense_scalar_system() {
+        let (x, stats) = minres_dense(&[4.0], &[2.0], 1, 10, 1e-12);
+        assert!(stats.converged);
+        assert!((x[0] - 0.5).abs() < 1e-14, "x = {}", x[0]);
+    }
+    #[test]
+    fn minres_dense_diagonal_system_is_solved_exactly() {
+        let a = vec![2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 5.0];
+        let b = vec![4.0, 9.0, 15.0];
+        let (x, stats) = minres_dense(&a, &b, 3, 50, 1e-12);
+        assert!(stats.converged);
+        for (xi, want) in x.iter().zip([2.0, 3.0, 3.0]) {
+            assert!((xi - want).abs() < 1e-12, "x = {x:?}");
+        }
+    }
+    #[test]
+    fn minres_dense_symmetric_indefinite_system() {
+        let a = vec![1.0, 2.0, 0.0, 2.0, -1.0, 1.0, 0.0, 1.0, -3.0];
+        let b = vec![1.0, 0.0, -1.0];
+        let reference = lu_solve(&a, &b, 3);
+        let (x, stats) = minres_dense(&a, &b, 3, 50, 1e-12);
+        assert!(stats.converged, "res = {}", stats.residual);
+        for i in 0..3 {
+            assert!(
+                (x[i] - reference[i]).abs() < 1e-10,
+                "x[{i}] = {} vs {}",
+                x[i],
+                reference[i]
+            );
+        }
+        assert!(true_residual(&a, &x, &b, 3) < 1e-10);
+    }
+    #[test]
+    fn minres_dense_larger_indefinite_systems_match_lu() {
+        for (n, seed) in [(8usize, 11u64), (20, 12), (40, 13)] {
+            let a = random_symmetric_dense(n, seed);
+            let mut state = seed + 1000;
+            let b: Vec<f64> = (0..n).map(|_| lcg_unit(&mut state)).collect();
+            let reference = lu_solve(&a, &b, n);
+            let (x, stats) = minres_dense(&a, &b, n, 20 * n, 1e-12);
+            assert!(stats.converged, "n = {n}: res = {}", stats.residual);
+            let err = x
+                .iter()
+                .zip(reference.iter())
+                .map(|(xi, ri)| (xi - ri).abs())
+                .fold(0.0_f64, f64::max);
+            let scale = reference.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
+            assert!(err < 1e-6 * scale, "n = {n}: max error {err}");
+        }
+    }
+    #[test]
+    fn minres_dense_reports_the_true_residual_and_unconverged_state() {
+        let n = 30;
+        let a = random_symmetric_dense(n, 5);
+        let mut state = 55;
+        let b: Vec<f64> = (0..n).map(|_| lcg_unit(&mut state)).collect();
+        let (x, stats) = minres_dense(&a, &b, n, 2, 1e-12);
         assert!(
-            stats.residual < 1e-6 || stats.converged,
-            "MINRES residual too large: res={}, converged={}",
-            stats.residual,
-            stats.converged
+            !stats.converged,
+            "two iterations cannot solve a 30x30 system"
+        );
+        assert_eq!(stats.iterations, 2);
+        let res = true_residual(&a, &x, &b, n);
+        assert!((stats.residual - res).abs() < 1e-12 * (1.0 + res));
+        assert!(stats.residual > 1e-6);
+    }
+    #[test]
+    fn minres_dense_zero_rhs_returns_zero() {
+        let (x, stats) = minres_dense(&[2.0, 1.0, 1.0, 2.0], &[0.0, 0.0], 2, 10, 1e-12);
+        assert!(stats.converged);
+        assert_eq!(stats.iterations, 0);
+        assert_eq!(x, vec![0.0, 0.0]);
+    }
+    #[test]
+    fn minres_dense_singular_consistent_system() {
+        // diag(1, 0) with b in the range: x = (1, 0), reached at the invariant subspace.
+        let a = vec![1.0, 0.0, 0.0, 0.0];
+        let (x, stats) = minres_dense(&a, &[1.0, 0.0], 2, 20, 1e-12);
+        assert!(stats.converged);
+        assert!(
+            (x[0] - 1.0).abs() < 1e-12 && x[1].abs() < 1e-12,
+            "x = {x:?}"
         );
     }
     #[test]
@@ -450,6 +573,139 @@ mod tests {
             r_norm < 2.0,
             "multigrid residual should be reduced: {r_norm}"
         );
+    }
+    /// Dense 1-D Poisson matrix `tridiag(-1, 2, -1)` of size `n`.
+    fn poisson_1d_dense(n: usize) -> Vec<f64> {
+        let mut a = vec![0.0_f64; n * n];
+        for i in 0..n {
+            a[i * n + i] = 2.0;
+            if i > 0 {
+                a[i * n + (i - 1)] = -1.0;
+            }
+            if i + 1 < n {
+                a[i * n + (i + 1)] = -1.0;
+            }
+        }
+        a
+    }
+    #[test]
+    fn multigrid_vcycle_beats_the_same_smoothing_without_coarse_correction() {
+        // One V(2,2) cycle on 1-D Poisson (n = 63): the coarse-grid correction
+        // must remove the smooth error that Gauss-Seidel alone cannot touch.
+        let n = 63;
+        let a = poisson_1d_dense(n);
+        let b = vec![1.0; n];
+        let x0 = vec![0.0; n];
+        let (x_mg, stats) = multigrid_vcycle_dense(&a, &b, &x0, n, 2, 2);
+        let gs = GaussSeidel::new(4, 1e-60, 1.0);
+        let x_gs = gs.solve(&a, &b, n);
+        let r_mg = true_residual(&a, &x_mg, &b, n);
+        let r_gs = true_residual(&a, &x_gs, &b, n);
+        assert!(
+            r_gs >= 5.0 * r_mg,
+            "V-cycle residual {r_mg} must be at least 5x below plain smoothing {r_gs}"
+        );
+        assert!((stats.residual - r_mg).abs() < 1e-12 * (1.0 + r_mg));
+        assert_eq!(stats.iterations, 4);
+    }
+    #[test]
+    fn multigrid_vcycle_keeps_the_pre_smoothed_and_corrected_iterate() {
+        // Post-smoothing with zero sweeps exposes the coarse-grid correction:
+        // it must lower the residual of the pre-smoothed iterate instead of
+        // being thrown away by a restart from zero.
+        let n = 31;
+        let a = poisson_1d_dense(n);
+        let b = vec![1.0; n];
+        let exact = lu_solve(&a, &b, n);
+        let x0 = vec![0.0; n];
+        let mut pre_only = x0.clone();
+        GaussSeidel::new(3, 1e-60, 1.0).smooth_in_place(&a, &b, n, &mut pre_only);
+        let (x_mg, _) = multigrid_vcycle_dense(&a, &b, &x0, n, 3, 0);
+        // The Galerkin correction is an A-orthogonal projection, so it is the
+        // energy norm of the error that must collapse.
+        let energy = |x: &[f64]| -> f64 {
+            let e: Vec<f64> = x.iter().zip(exact.iter()).map(|(xi, ei)| xi - ei).collect();
+            let ae = dense_matvec(&a, &e, n);
+            dot_slice(&e, &ae).sqrt()
+        };
+        let e_pre = energy(&pre_only);
+        let e_mg = energy(&x_mg);
+        assert!(e_mg < 0.15 * e_pre, "corrected {e_mg} vs smoothed {e_pre}");
+    }
+    #[test]
+    fn multigrid_vcycle_honours_the_initial_guess() {
+        let n = 15;
+        let a = poisson_1d_dense(n);
+        let b = vec![1.0; n];
+        let exact = lu_solve(&a, &b, n);
+        let (x, stats) = multigrid_vcycle_dense(&a, &b, &exact, n, 2, 2);
+        for i in 0..n {
+            assert!((x[i] - exact[i]).abs() < 1e-12, "i = {i}");
+        }
+        assert!(stats.converged);
+        assert!(stats.residual < 1e-12);
+    }
+    #[test]
+    fn multigrid_vcycle_repeated_cycles_converge() {
+        let n = 63;
+        let a = poisson_1d_dense(n);
+        let b = vec![1.0; n];
+        let reference = lu_solve(&a, &b, n);
+        let mut x = vec![0.0; n];
+        for _ in 0..12 {
+            let (next, _) = multigrid_vcycle_dense(&a, &b, &x, n, 2, 2);
+            x = next;
+        }
+        for i in 0..n {
+            assert!(
+                (x[i] - reference[i]).abs() < 1e-6,
+                "i = {i}: {} vs {}",
+                x[i],
+                reference[i]
+            );
+        }
+    }
+    #[test]
+    fn multigrid_vcycle_handles_even_and_tiny_systems() {
+        for n in [1usize, 2, 3, 4, 8, 16] {
+            let a = poisson_1d_dense(n);
+            let b = vec![1.0; n];
+            let (x, stats) = multigrid_vcycle_dense(&a, &b, &vec![0.0; n], n, 2, 2);
+            let res = true_residual(&a, &x, &b, n);
+            assert!(
+                res.is_finite() && res < (n as f64).sqrt(),
+                "n = {n}: res = {res}"
+            );
+            assert!((stats.residual - res).abs() < 1e-12 * (1.0 + res));
+        }
+    }
+    #[test]
+    fn gauss_seidel_smooth_in_place_continues_from_the_given_iterate() {
+        let n = 20;
+        let a = poisson_1d_dense(n);
+        let b = vec![1.0; n];
+        let two_sweeps = GaussSeidel::new(2, 1e-60, 1.0).solve(&a, &b, n);
+        let one_sweep = GaussSeidel::new(1, 1e-60, 1.0);
+        let mut x = vec![0.0; n];
+        one_sweep.smooth_in_place(&a, &b, n, &mut x);
+        one_sweep.smooth_in_place(&a, &b, n, &mut x);
+        for i in 0..n {
+            assert_eq!(x[i], two_sweeps[i], "i = {i}");
+        }
+        // Restarting from zero is not the same as continuing.
+        assert_ne!(one_sweep.solve(&a, &b, n), x);
+    }
+    #[test]
+    fn gauss_seidel_smooth_in_place_stops_at_the_fixed_point() {
+        let n = 10;
+        let a = poisson_1d_dense(n);
+        let b = vec![1.0; n];
+        let exact = lu_solve(&a, &b, n);
+        let mut x = exact.clone();
+        GaussSeidel::new(50, 1e-10, 1.0).smooth_in_place(&a, &b, n, &mut x);
+        for i in 0..n {
+            assert!((x[i] - exact[i]).abs() < 1e-12);
+        }
     }
     #[test]
     fn convergence_monitor_records_history() {
@@ -568,26 +824,61 @@ mod tests {
         let triplets = vec![(0, 0, 4.0), (0, 1, 1.0), (1, 0, 1.0), (1, 1, 3.0)];
         let a = CsrMatrix::from_triplets(2, 2, &triplets);
         let b = [1.0, 2.0];
-        let (_x, stats) = minres_sparse(&a, &b, 100, 1e-10);
-        assert!(
-            stats.residual < 1e-6 || stats.converged,
-            "MINRES sparse: res={}, converged={}",
-            stats.residual,
-            stats.converged
-        );
+        let (x, stats) = minres_sparse(&a, &b, 100, 1e-10);
+        assert!(stats.converged, "MINRES sparse: res={}", stats.residual);
+        assert!((x[0] - 1.0 / 11.0).abs() < 1e-10, "x[0] = {}", x[0]);
+        assert!((x[1] - 7.0 / 11.0).abs() < 1e-10, "x[1] = {}", x[1]);
     }
     #[test]
     fn minres_sparse_diagonal_system() {
         let triplets = vec![(0, 0, 2.0), (1, 1, 3.0), (2, 2, 5.0)];
         let a = CsrMatrix::from_triplets(3, 3, &triplets);
         let b = [4.0, 9.0, 15.0];
-        let (_x, stats) = minres_sparse(&a, &b, 200, 1e-8);
-        assert!(
-            stats.residual < 1.0 || stats.converged,
-            "MINRES diagonal: res={}, converged={}",
-            stats.residual,
-            stats.converged
-        );
+        let (x, stats) = minres_sparse(&a, &b, 200, 1e-8);
+        assert!(stats.converged, "MINRES diagonal: res={}", stats.residual);
+        for (xi, want) in x.iter().zip([2.0, 3.0, 3.0]) {
+            assert!((xi - want).abs() < 1e-8, "x = {x:?}");
+        }
+    }
+    #[test]
+    fn minres_sparse_symmetric_indefinite_system() {
+        let dense = vec![1.0, 2.0, 0.0, 2.0, -1.0, 1.0, 0.0, 1.0, -3.0];
+        let a = dense_to_csr(&dense, 3);
+        let b = [1.0, 0.0, -1.0];
+        let reference = lu_solve(&dense, &b, 3);
+        let (x, stats) = minres_sparse(&a, &b, 50, 1e-12);
+        assert!(stats.converged, "res = {}", stats.residual);
+        for i in 0..3 {
+            assert!((x[i] - reference[i]).abs() < 1e-10, "x = {x:?}");
+        }
+    }
+    #[test]
+    fn minres_sparse_matches_dense_on_random_indefinite_system() {
+        let n = 25;
+        let dense = random_symmetric_dense(n, 77);
+        let a = dense_to_csr(&dense, n);
+        let mut state = 78;
+        let b: Vec<f64> = (0..n).map(|_| lcg_unit(&mut state)).collect();
+        let (x_dense, _) = minres_dense(&dense, &b, n, 20 * n, 1e-12);
+        let (x_sparse, stats) = minres_sparse(&a, &b, 20 * n, 1e-12);
+        assert!(stats.converged, "res = {}", stats.residual);
+        for i in 0..n {
+            assert!(
+                (x_dense[i] - x_sparse[i]).abs() < 1e-9,
+                "i = {i}: {} vs {}",
+                x_dense[i],
+                x_sparse[i]
+            );
+        }
+        let res = true_residual(&dense, &x_sparse, &b, n);
+        assert!((stats.residual - res).abs() < 1e-12 * (1.0 + res));
+    }
+    #[test]
+    fn minres_sparse_scalar_system_is_exact() {
+        let a = CsrMatrix::from_triplets(1, 1, &[(0, 0, 4.0)]);
+        let (x, stats) = minres_sparse(&a, &[4.0], 5, 1e-12);
+        assert!(stats.converged);
+        assert!((x[0] - 1.0).abs() < 1e-14, "x = {}", x[0]);
     }
     #[test]
     fn gmres_sparse_solves_spd() {
@@ -665,6 +956,102 @@ mod tests {
             .sum::<f64>()
             .sqrt();
         assert!(r_norm < 1e-4, "AMG-PCG residual too large: {r_norm}");
+    }
+    /// 2-D five-point Laplacian on an `m × m` grid.
+    fn poisson_2d_csr(m: usize) -> CsrMatrix {
+        let mut triplets = Vec::new();
+        for iy in 0..m {
+            for ix in 0..m {
+                let row = iy * m + ix;
+                triplets.push((row, row, 4.0));
+                if ix > 0 {
+                    triplets.push((row, row - 1, -1.0));
+                }
+                if ix + 1 < m {
+                    triplets.push((row, row + 1, -1.0));
+                }
+                if iy > 0 {
+                    triplets.push((row, row - m, -1.0));
+                }
+                if iy + 1 < m {
+                    triplets.push((row, row + m, -1.0));
+                }
+            }
+        }
+        CsrMatrix::from_triplets(m * m, m * m, &triplets)
+    }
+    fn relative_residual(a: &CsrMatrix, x: &[f64], b: &[f64]) -> f64 {
+        let ax = a.mul_vec(x);
+        let r: f64 = b
+            .iter()
+            .zip(ax.iter())
+            .map(|(bi, ai)| (bi - ai).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        r / b.iter().map(|v| v * v).sum::<f64>().sqrt()
+    }
+    #[test]
+    fn amg_pcg_beats_jacobi_pcg_on_2d_poisson() {
+        let a = poisson_2d_csr(32);
+        let n = 32 * 32;
+        let b = vec![1.0; n];
+        let (x_amg, amg_stats) = amg_pcg(&a, &b, 200, 1e-8);
+        let (_, jacobi_stats) = pcg_solve(&a, &b, &jacobi_preconditioner(&a), 1000, 1e-8);
+        assert!(amg_stats.converged, "res = {}", amg_stats.residual);
+        assert!(jacobi_stats.converged);
+        assert!(
+            amg_stats.iterations * 3 < jacobi_stats.iterations,
+            "AMG-PCG took {} iterations, Jacobi-PCG {}",
+            amg_stats.iterations,
+            jacobi_stats.iterations
+        );
+        assert!(relative_residual(&a, &x_amg, &b) < 2e-8);
+    }
+    #[test]
+    fn amg_pcg_iteration_count_grows_slowly_with_problem_size() {
+        let small = amg_pcg(&poisson_2d_csr(32), &vec![1.0; 1024], 200, 1e-8).1;
+        let large = amg_pcg(&poisson_2d_csr(64), &vec![1.0; 4096], 200, 1e-8).1;
+        assert!(small.converged && large.converged);
+        // Jacobi-PCG needs about twice as many iterations when the mesh width
+        // doubles; the multilevel cycle must stay well below that growth.
+        assert!(
+            large.iterations * 2 <= small.iterations * 3,
+            "{} iterations for 32x32 vs {} for 64x64",
+            small.iterations,
+            large.iterations
+        );
+        assert!(large.iterations < 25);
+    }
+    #[test]
+    fn amg_pcg_falls_back_to_jacobi_for_semi_definite_systems() {
+        // Pure-Neumann 1-D Laplacian: singular, but consistent for a zero-sum rhs.
+        let n = 40;
+        let mut triplets = Vec::new();
+        for i in 0..n {
+            let diag = if i == 0 || i == n - 1 { 1.0 } else { 2.0 };
+            triplets.push((i, i, diag));
+            if i > 0 {
+                triplets.push((i, i - 1, -1.0));
+            }
+            if i + 1 < n {
+                triplets.push((i, i + 1, -1.0));
+            }
+        }
+        let a = CsrMatrix::from_triplets(n, n, &triplets);
+        let mut b = vec![0.0; n];
+        b[0] = 1.0;
+        b[n - 1] = -1.0;
+        let (x, stats) = amg_pcg(&a, &b, 500, 1e-10);
+        assert!(stats.converged, "res = {}", stats.residual);
+        assert!(relative_residual(&a, &x, &b) < 1e-9);
+    }
+    #[test]
+    fn amg_pcg_zero_rhs_returns_zero() {
+        let a = poisson_2d_csr(4);
+        let (x, stats) = amg_pcg(&a, &[0.0; 16], 10, 1e-8);
+        assert!(stats.converged);
+        assert_eq!(stats.iterations, 0);
+        assert!(x.iter().all(|&v| v == 0.0));
     }
     #[test]
     fn nested_iteration_solves_diagonal() {

@@ -372,7 +372,10 @@ impl CcdPipeline {
     /// O(n²) all-pairs tunnelling detection.
     ///
     /// Returns a list of [`CcdEvent`]s sorted by ascending TOI.
-    /// `ids` maps slice indices to user-defined body IDs stored in the event.
+    /// `ids` maps slice indices to user-defined body IDs stored in
+    /// [`CcdEvent::body_a`] / [`CcdEvent::body_b`]; a body without an entry in
+    /// `ids` is identified by its slice index.  The slice indices themselves
+    /// are always available as [`CcdEvent::index_a`] / [`CcdEvent::index_b`].
     pub fn detect_tunneling(&self, bodies: &[SweptBody], ids: &[usize]) -> Vec<CcdEvent> {
         let mut events = Vec::new();
         let n = bodies.len();
@@ -390,8 +393,10 @@ impl CcdPipeline {
                     ];
                     events.push(CcdEvent {
                         toi,
-                        body_a: ids[i],
-                        body_b: ids[j],
+                        body_a: ids.get(i).copied().unwrap_or(i),
+                        body_b: ids.get(j).copied().unwrap_or(j),
+                        index_a: i,
+                        index_b: j,
                         contact_normal: normal,
                         contact_point,
                     });
@@ -413,8 +418,14 @@ impl CcdPipeline {
 impl CcdPipeline {
     /// Run a full CCD pass: detect, resolve, and return statistics.
     ///
-    /// Advances all bodies to the earliest TOI, resolves the contact, then
-    /// continues until `dt` is consumed or no more events occur.
+    /// Advances all bodies to the earliest TOI of a *closing* pair, resolves
+    /// the contact, then continues until `dt` is consumed or no closing pair is
+    /// left.  Pairs that touch or overlap but are already separating are not
+    /// events: nothing needs resolving and the bodies keep moving.
+    ///
+    /// `ids` are the user-defined body IDs reported in the detected events;
+    /// the bodies to respond are always located by slice index, so the IDs may
+    /// be arbitrary, permuted, or shorter than `bodies`.
     pub fn run_with_stats(
         &self,
         bodies: &mut Vec<SweptBody>,
@@ -425,30 +436,31 @@ impl CcdPipeline {
         let integrator = SubstepIntegrator::new(1);
         let mut remaining = self.dt;
         let mut local_bodies = bodies.clone();
-        let local_ids = ids.to_vec();
-        let n = local_ids.len();
+        let n = local_bodies.len();
         stats.pairs_tested += n * n.saturating_sub(1) / 2;
         let mut iter_cap = 64usize;
         while remaining > 1e-10 && iter_cap > 0 {
             iter_cap -= 1;
             let sub_pipeline = CcdPipeline::new(remaining);
-            let events = sub_pipeline.detect_tunneling(&local_bodies, &local_ids);
-            if events.is_empty() {
+            let events = sub_pipeline.detect_tunneling(&local_bodies, ids);
+            let closing = events.into_iter().find(|ev| {
+                SubstepIntegrator::normal_speed(&local_bodies, ev).is_some_and(|vn| vn < 0.0)
+            });
+            let Some(ev) = closing else {
                 integrator.step_to_toi(&mut local_bodies, remaining);
                 stats.record_time(remaining);
                 break;
-            }
-            let ev = events[0].clone();
+            };
             stats.record_event(ev.toi);
             let advance = ev.toi.max(1e-8);
             integrator.step_to_toi(&mut local_bodies, advance);
-            integrator.resolve_event(&mut local_bodies, &ev, restitution);
-            stats.record_impulse();
+            if integrator.resolve_event(&mut local_bodies, &ev, restitution) {
+                stats.record_impulse();
+            }
             stats.record_time(advance);
             remaining -= advance;
         }
         *bodies = local_bodies;
-        let _ = local_ids;
         stats
     }
 }
@@ -470,10 +482,15 @@ pub struct TranslatedSupport<'a, S: ConvexSupport> {
 pub struct CcdEvent {
     /// Time of impact (seconds from current time).
     pub toi: f64,
-    /// Index into the body slice for the first body.
+    /// User-defined ID of the first body (an entry of the `ids` slice passed to
+    /// the detector, or its slice index when `ids` has no such entry).
     pub body_a: usize,
-    /// Index into the body slice for the second body.
+    /// User-defined ID of the second body.
     pub body_b: usize,
+    /// Index of the first body in the body slice.
+    pub index_a: usize,
+    /// Index of the second body in the body slice.
+    pub index_b: usize,
     /// Contact normal pointing from B toward A.
     pub contact_normal: [f64; 3],
     /// World-space contact point.
@@ -600,32 +617,55 @@ impl SubstepIntegrator {
             b.pos = b.position_at(toi);
         }
     }
+    /// Relative velocity of the event's two bodies along the contact normal
+    /// (`(v_a − v_b) · n`): negative while they approach, positive while they
+    /// separate.
+    ///
+    /// Returns `None` when the event refers to the same body twice or to a
+    /// slice index outside `bodies`.
+    pub fn normal_speed(bodies: &[SweptBody], event: &CcdEvent) -> Option<f64> {
+        let (ia, ib) = (event.index_a, event.index_b);
+        if ia == ib {
+            return None;
+        }
+        let a = bodies.get(ia)?;
+        let b = bodies.get(ib)?;
+        Some(dot(sub(a.vel, b.vel), event.contact_normal))
+    }
     /// Apply an impulsive response at the contact described by `event`.
     ///
-    /// Uses a simple coefficient-of-restitution impulse along the contact
-    /// normal.  Bodies with `inv_mass == 0` (static) are unaffected.
-    pub fn resolve_event(&self, bodies: &mut [SweptBody], event: &CcdEvent, restitution: f64) {
-        let idx_a = bodies.iter().position(|_| true).map(|_| event.body_a);
-        let idx_b = Some(event.body_b);
-        let (ia, ib) = match (idx_a, idx_b) {
-            (Some(a), Some(b)) if a < bodies.len() && b < bodies.len() => (a, b),
-            _ => return,
+    /// The bodies are addressed by their slice indices
+    /// ([`CcdEvent::index_a`] / [`CcdEvent::index_b`]), never by the
+    /// user-defined IDs.  Uses a simple coefficient-of-restitution impulse
+    /// along the contact normal.  Bodies with `inv_mass == 0` (static) are
+    /// unaffected.
+    ///
+    /// Returns `true` if an impulse was applied and `false` if the event was
+    /// skipped (bad indices, separating bodies, or two immovable bodies).
+    pub fn resolve_event(
+        &self,
+        bodies: &mut [SweptBody],
+        event: &CcdEvent,
+        restitution: f64,
+    ) -> bool {
+        let Some(vn) = Self::normal_speed(bodies, event) else {
+            return false;
         };
-        let n = event.contact_normal;
-        let rel_vel = sub(bodies[ia].vel, bodies[ib].vel);
-        let vn = dot(rel_vel, n);
         if vn >= 0.0 {
-            return;
+            return false;
         }
+        let (ia, ib) = (event.index_a, event.index_b);
+        let n = event.contact_normal;
         let inv_a = bodies[ia].inv_mass;
         let inv_b = bodies[ib].inv_mass;
         let denom = inv_a + inv_b;
         if denom < 1e-30 {
-            return;
+            return false;
         }
         let j = -(1.0 + restitution) * vn / denom;
         let impulse = scale(n, j);
         bodies[ia].vel = add(bodies[ia].vel, scale(impulse, inv_a));
         bodies[ib].vel = sub(bodies[ib].vel, scale(impulse, inv_b));
+        true
     }
 }

@@ -746,9 +746,26 @@ pub fn von_mises_stress(stress: &[[f64; 3]; 3]) -> f64 {
 }
 /// Compute the SPH approximation of the deformation gradient for particle `i`.
 ///
-/// F ≈ Σⱼ (xⱼ − xᵢ) ⊗ ∇W · (Xⱼ − Xᵢ)  (simplified version assuming unit kernel correction)
+/// The estimate is the first-order consistent (moving-least-squares) fit
 ///
-/// Returns the identity matrix when there are no neighbours within range,
+/// `F_i = A_i · B_i⁻¹`
+///
+/// with
+///
+/// `A_i = Σⱼ Vⱼ W_ij (xⱼ − xᵢ) ⊗ (Xⱼ − Xᵢ)` and
+/// `B_i = Σⱼ Vⱼ W_ij (Xⱼ − Xᵢ) ⊗ (Xⱼ − Xᵢ)`,
+///
+/// where `W_ij = W(|Xⱼ − Xᵢ|, hᵢ)` is evaluated in the reference configuration
+/// and `Vⱼ = mⱼ/ρⱼ`. It is the weighted least-squares solution of
+/// `xⱼ − xᵢ ≈ F (Xⱼ − Xᵢ)` over the kernel neighbours of `i`. The moment matrix
+/// `B_i` normalises the kernel sum (without it the sum has units of m² and an
+/// undeformed lattice would give `F ≈ h² I` instead of `I`); the result is exact
+/// for every affine motion `x = F X + c` irrespective of the neighbour
+/// distribution, and is the identity for an undeformed body.
+///
+/// Returns the identity matrix when there are no neighbours within range, or
+/// when the neighbour stencil is degenerate (`B_i` numerically singular, e.g.
+/// all neighbours collinear or coplanar so that `F` is not determined),
 /// consistent with an undeformed reference configuration.
 ///
 /// # Arguments
@@ -767,7 +784,9 @@ pub fn deformation_gradient_sph(
     let xi = pi.position;
     let xi_ref = pi.ref_position;
     let h = pi.h;
-    let mut f = [[0.0f64; 3]; 3];
+    // A = Σ V W Δx ⊗ ΔX (current ⊗ reference), B = Σ V W ΔX ⊗ ΔX (moment matrix).
+    let mut a = [[0.0f64; 3]; 3];
+    let mut b = [[0.0f64; 3]; 3];
     let mut has_neighbour = false;
     for (j, pj) in particles.iter().enumerate() {
         if j == i {
@@ -787,17 +806,26 @@ pub fn deformation_gradient_sph(
         }
         has_neighbour = true;
         let dx: [f64; 3] = [xj[0] - xi[0], xj[1] - xi[1], xj[2] - xi[2]];
-        let vol_j = pj.mass / pj.density.max(1e-30);
+        let weight = w * pj.mass / pj.density.max(1e-30);
         for row in 0..3 {
             for col in 0..3 {
-                f[row][col] += dx[row] * rij_ref[col] * w * vol_j;
+                a[row][col] += dx[row] * rij_ref[col] * weight;
+                b[row][col] += rij_ref[row] * rij_ref[col] * weight;
             }
         }
     }
     if !has_neighbour {
         return IDENTITY3;
     }
-    f
+    // `mat_inv` silently returns the identity for a singular matrix, so reject a
+    // numerically singular moment matrix explicitly (scale-invariant test: the
+    // determinant against the cube of the mean eigenvalue).
+    let mean_eigenvalue = mat_trace(b) / 3.0;
+    let det_b = mat_det(b);
+    if det_b.is_nan() || det_b.abs() <= 1e-12 * mean_eigenvalue.abs().powi(3) {
+        return IDENTITY3;
+    }
+    mat_mul(a, mat_inv(b))
 }
 /// Hourglass stabilisation correction for particle `i`.
 ///
@@ -1070,11 +1098,179 @@ mod tests_elastic_solver {
         }
     }
     #[test]
-    fn test_deformation_gradient_single_particle_is_zero() {
+    fn test_deformation_gradient_single_particle_is_identity() {
         let particles = vec![ElasticParticle::new(
             [0.0; 3], 1e-3, 7800.0, 0.05, 200e9, 0.3,
         )];
         let f = deformation_gradient_sph(&particles, 0, cubic_kernel);
+        assert_eq!(f, IDENTITY3);
+    }
+    /// Cubic lattice of `n³` steel particles with spacing `dx`; reference and
+    /// current positions coincide. The smoothing length is `1.3 dx` (kernel
+    /// support `2.6 dx`), so even corner particles see non-coplanar neighbours.
+    fn lattice_particles(n: usize, dx: f64) -> Vec<ElasticParticle> {
+        let density = 7800.0;
+        let mass = density * dx * dx * dx;
+        let h = 1.3 * dx;
+        let mut particles = Vec::with_capacity(n * n * n);
+        for ix in 0..n {
+            for iy in 0..n {
+                for iz in 0..n {
+                    particles.push(ElasticParticle::new(
+                        [ix as f64 * dx, iy as f64 * dx, iz as f64 * dx],
+                        mass,
+                        density,
+                        h,
+                        200e9,
+                        0.3,
+                    ));
+                }
+            }
+        }
+        particles
+    }
+    /// Move every particle by the affine motion `x = F X + c`.
+    fn apply_affine_motion(particles: &mut [ElasticParticle], f: [[f64; 3]; 3], c: [f64; 3]) {
+        for p in particles.iter_mut() {
+            let x = mat_vec(f, p.ref_position);
+            p.position = [x[0] + c[0], x[1] + c[1], x[2] + c[2]];
+        }
+    }
+    /// Largest entry-wise difference between two 3×3 matrices.
+    fn max_abs_difference(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> f64 {
+        let mut worst = 0.0f64;
+        for i in 0..3 {
+            for j in 0..3 {
+                worst = worst.max((a[i][j] - b[i][j]).abs());
+            }
+        }
+        worst
+    }
+    /// Deterministic pseudo-random numbers in `[0, 1)` (64-bit LCG).
+    fn lcg_unit(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*state >> 11) as f64) / ((1u64 << 53) as f64)
+    }
+    /// An undeformed body has `F = I` everywhere, boundary particles included.
+    /// (The un-normalised kernel sum gave `≈ h² I` instead.)
+    #[test]
+    fn test_deformation_gradient_undeformed_lattice_is_identity() {
+        let particles = lattice_particles(5, 0.01);
+        for i in 0..particles.len() {
+            let f = deformation_gradient_sph(&particles, i, cubic_kernel);
+            let err = max_abs_difference(f, IDENTITY3);
+            assert!(err < 1e-10, "particle {i}: F = {f:?}, |F - I| = {err:e}");
+        }
+    }
+    /// Uniaxial stretch `x = diag(1.1, 1, 1) X` is recovered exactly.
+    #[test]
+    fn test_deformation_gradient_uniaxial_stretch_is_recovered() {
+        let mut particles = lattice_particles(5, 0.01);
+        let stretch = [[1.1, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        apply_affine_motion(&mut particles, stretch, [0.0; 3]);
+        for i in 0..particles.len() {
+            let f = deformation_gradient_sph(&particles, i, cubic_kernel);
+            let err = max_abs_difference(f, stretch);
+            assert!(err < 1e-10, "particle {i}: F = {f:?}, error {err:e}");
+        }
+    }
+    /// A general affine motion (stretch, shear, rotation and a rigid
+    /// translation) is reproduced exactly: the estimate is first-order
+    /// consistent.
+    #[test]
+    fn test_deformation_gradient_general_affine_motion_is_recovered() {
+        let mut particles = lattice_particles(5, 0.01);
+        let f_true = [
+            [1.05, 0.20, -0.03],
+            [-0.10, 0.92, 0.07],
+            [0.04, -0.06, 1.12],
+        ];
+        apply_affine_motion(&mut particles, f_true, [0.3, -0.2, 0.1]);
+        for i in 0..particles.len() {
+            let f = deformation_gradient_sph(&particles, i, cubic_kernel);
+            let err = max_abs_difference(f, f_true);
+            assert!(err < 1e-9, "particle {i}: F = {f:?}, error {err:e}");
+        }
+    }
+    /// A rigid rotation gives `F = R` (orthogonal, `det F = 1`).
+    #[test]
+    fn test_deformation_gradient_rigid_rotation_is_orthogonal() {
+        let mut particles = lattice_particles(5, 0.01);
+        let (s, c) = 30.0_f64.to_radians().sin_cos();
+        let rotation = [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]];
+        apply_affine_motion(&mut particles, rotation, [1.0, 2.0, 3.0]);
+        let centre = particles.len() / 2;
+        let f = deformation_gradient_sph(&particles, centre, cubic_kernel);
+        assert!(max_abs_difference(f, rotation) < 1e-10, "F = {f:?}");
+        assert!((mat_det(f) - 1.0).abs() < 1e-10, "det F = {}", mat_det(f));
+    }
+    /// The moment-matrix normalisation makes the estimate exact for irregular
+    /// particle distributions, with non-uniform masses and densities.
+    #[test]
+    fn test_deformation_gradient_exact_for_irregular_particles() {
+        let dx = 0.01;
+        let mut particles = lattice_particles(5, dx);
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        for p in particles.iter_mut() {
+            for coordinate in p.ref_position.iter_mut() {
+                *coordinate += 0.2 * dx * (lcg_unit(&mut state) - 0.5);
+            }
+            p.mass *= 0.5 + lcg_unit(&mut state);
+            p.density *= 0.8 + 0.4 * lcg_unit(&mut state);
+        }
+        let f_true = [[0.95, 0.10, 0.00], [0.00, 1.08, -0.05], [0.02, 0.00, 1.01]];
+        apply_affine_motion(&mut particles, f_true, [0.0, 0.1, 0.0]);
+        for i in 0..particles.len() {
+            let f = deformation_gradient_sph(&particles, i, cubic_kernel);
+            let err = max_abs_difference(f, f_true);
+            assert!(err < 1e-9, "particle {i}: F = {f:?}, error {err:e}");
+        }
+    }
+    /// `F` is a ratio of two kernel sums, so scaling the kernel by a constant
+    /// must not change it.
+    #[test]
+    fn test_deformation_gradient_independent_of_kernel_scale() {
+        let mut particles = lattice_particles(5, 0.01);
+        let f_true = [[1.02, 0.03, 0.0], [0.0, 0.98, 0.01], [0.0, 0.0, 1.04]];
+        apply_affine_motion(&mut particles, f_true, [0.0; 3]);
+        let centre = particles.len() / 2;
+        let reference = deformation_gradient_sph(&particles, centre, cubic_kernel);
+        let scaled =
+            deformation_gradient_sph(&particles, centre, |r, h| 1.0e6 * cubic_kernel(r, h));
+        assert!(max_abs_difference(reference, scaled) < 1e-9);
+        assert!(max_abs_difference(reference, f_true) < 1e-10);
+    }
+    /// When the neighbour stencil does not determine `F` (all neighbours in
+    /// one plane or on one line) the moment matrix is singular and the
+    /// documented fallback, the identity, is returned.
+    #[test]
+    fn test_deformation_gradient_degenerate_stencil_returns_identity() {
+        let dx = 0.01;
+        let h = 1.3 * dx;
+        let make = |x: f64, y: f64| ElasticParticle::new([x, y, 0.0], 1e-3, 7800.0, h, 200e9, 0.3);
+        // Coplanar sheet.
+        let mut sheet = Vec::new();
+        for ix in 0..4 {
+            for iy in 0..4 {
+                sheet.push(make(ix as f64 * dx, iy as f64 * dx));
+            }
+        }
+        let stretch = [[1.2, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        apply_affine_motion(&mut sheet, stretch, [0.0; 3]);
+        let f = deformation_gradient_sph(&sheet, 5, cubic_kernel);
+        assert_eq!(f, IDENTITY3);
+        // Collinear pair.
+        let mut pair = vec![make(0.0, 0.0), make(dx, 0.0)];
+        apply_affine_motion(&mut pair, stretch, [0.0; 3]);
+        assert_eq!(deformation_gradient_sph(&pair, 0, cubic_kernel), IDENTITY3);
+    }
+    /// An index outside the particle list returns the identity.
+    #[test]
+    fn test_deformation_gradient_out_of_range_index_is_identity() {
+        let particles = lattice_particles(3, 0.01);
+        let f = deformation_gradient_sph(&particles, particles.len(), cubic_kernel);
         assert_eq!(f, IDENTITY3);
     }
 }

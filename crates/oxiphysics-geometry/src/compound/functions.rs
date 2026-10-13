@@ -157,7 +157,7 @@ mod tests {
     use crate::sphere::Sphere;
     use oxiphysics_core::Real;
     use oxiphysics_core::Transform;
-    use oxiphysics_core::math::Vec3;
+    use oxiphysics_core::math::{Vec3, quat_from_axis_angle};
     use std::f64::consts::PI;
     use std::sync::Arc;
     #[test]
@@ -213,6 +213,111 @@ mod tests {
             iyy,
             expected_iyy
         );
+    }
+    /// A single box child rotated by 90° about z must report the inertia of
+    /// the box with its x and y half-extents swapped (the child tensor lives
+    /// in the child frame and has to be rotated into the compound frame).
+    #[test]
+    fn test_compound_inertia_rotated_child_90_degrees_swaps_axes() {
+        let mass = 7.0_f64;
+        let rotated: Arc<dyn Shape> = Arc::new(BoxShape::new(Vec3::new(1.0, 2.0, 3.0)));
+        let rotation = quat_from_axis_angle(&Vec3::new(0.0, 0.0, 1.0), PI / 2.0);
+        let compound = Compound::new(vec![(Transform::new(Vec3::zeros(), rotation), rotated)]);
+        let swapped = BoxShape::new(Vec3::new(2.0, 1.0, 3.0));
+        let got = compound.inertia_tensor(mass);
+        let expected = swapped.inertia_tensor(mass);
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (got[(i, j)] - expected[(i, j)]).abs() < 1e-12,
+                    "I[{i}][{j}] = {} expected {}",
+                    got[(i, j)],
+                    expected[(i, j)]
+                );
+            }
+        }
+    }
+
+    /// A 45° rotation about z mixes the x and y principal moments, which
+    /// produces the product of inertia `I_xy = (I_xx - I_yy) / 2`.
+    #[test]
+    fn test_compound_inertia_rotated_child_45_degrees_has_product_of_inertia() {
+        let mass = 7.0_f64;
+        let local: Arc<dyn Shape> = Arc::new(BoxShape::new(Vec3::new(1.0, 2.0, 3.0)));
+        let rotation = quat_from_axis_angle(&Vec3::new(0.0, 0.0, 1.0), PI / 4.0);
+        let compound = Compound::new(vec![(
+            Transform::new(Vec3::zeros(), rotation),
+            local.clone(),
+        )]);
+        let got = compound.inertia_tensor(mass);
+        let local_tensor = local.inertia_tensor(mass);
+        let expected_xy = 0.5 * (local_tensor[(0, 0)] - local_tensor[(1, 1)]);
+        assert!(expected_xy.abs() > 1.0, "test box must be anisotropic");
+        assert!(
+            (got[(0, 1)] - expected_xy).abs() < 1e-12,
+            "I_xy = {} expected {}",
+            got[(0, 1)],
+            expected_xy
+        );
+        assert!((got[(1, 0)] - expected_xy).abs() < 1e-12);
+        // Rotation about z leaves the z moment and the trace unchanged.
+        assert!((got[(2, 2)] - local_tensor[(2, 2)]).abs() < 1e-12);
+        assert!((got.trace() - local_tensor.trace()).abs() < 1e-12);
+    }
+
+    /// Rigidly rotating the whole compound by `R0` must rotate its inertia
+    /// tensor as `R0 * I * R0^T`.  This holds only if every child tensor is
+    /// rotated together with its child transform.
+    #[test]
+    fn test_compound_inertia_is_rotation_equivariant() {
+        let mass = 12.0_f64;
+        let shapes: Vec<Arc<dyn Shape>> = vec![
+            Arc::new(BoxShape::new(Vec3::new(1.0, 0.4, 0.25))),
+            Arc::new(BoxShape::new(Vec3::new(0.3, 0.9, 0.6))),
+            Arc::new(Sphere::new(0.5)),
+        ];
+        let child_rotations = [
+            quat_from_axis_angle(&Vec3::new(1.0, 0.0, 0.0), 0.4),
+            quat_from_axis_angle(&Vec3::new(0.0, 1.0, 1.0), -0.9),
+            quat_from_axis_angle(&Vec3::new(1.0, 1.0, 1.0), 1.3),
+        ];
+        let child_positions = [
+            Vec3::new(0.5, 0.0, 0.2),
+            Vec3::new(-1.0, 0.7, 0.1),
+            Vec3::new(0.2, -0.8, 0.9),
+        ];
+        let base_children: Vec<(Transform, Arc<dyn Shape>)> = (0..3)
+            .map(|i| {
+                (
+                    Transform::new(child_positions[i], child_rotations[i]),
+                    shapes[i].clone(),
+                )
+            })
+            .collect();
+        let base = Compound::new(base_children);
+        let r0 = quat_from_axis_angle(&Vec3::new(1.0, 2.0, 3.0), 0.7);
+        let rotated_children: Vec<(Transform, Arc<dyn Shape>)> = (0..3)
+            .map(|i| {
+                (
+                    Transform::new(r0 * child_positions[i], r0 * child_rotations[i]),
+                    shapes[i].clone(),
+                )
+            })
+            .collect();
+        let rotated = Compound::new(rotated_children);
+        let r0_mat = r0.to_rotation_matrix().into_inner();
+        let expected = r0_mat * base.inertia_tensor(mass) * r0_mat.transpose();
+        let got = rotated.inertia_tensor(mass);
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (got[(i, j)] - expected[(i, j)]).abs() < 1e-9,
+                    "I[{i}][{j}] = {} expected {}",
+                    got[(i, j)],
+                    expected[(i, j)]
+                );
+            }
+        }
     }
     /// Compound with box at origin and sphere at (5,0,0); ray from (10,0,0) toward -x → hits sphere first (TOI≈4)
     #[test]

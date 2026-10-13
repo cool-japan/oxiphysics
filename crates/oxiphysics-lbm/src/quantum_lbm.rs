@@ -9,7 +9,8 @@
 //! methods including:
 //!
 //! - [`QuantumLbmParams`] — physical parameters for quantum LBM
-//! - [`GrossPitaevskiiLbm`] — GP equation via LBM for superfluid BEC
+//! - [`GrossPitaevskiiLbm`] — 1-D Gross-Pitaevskii equation for a superfluid BEC
+//!   (Strang split-step Fourier integrator, exactly number conserving)
 //! - [`QuantumVortex`] — quantized vortex with Biot-Savart velocity field
 //! - [`VortexDynamics`] — multi-vortex Biot-Savart interactions
 //! - [`SuperfluidLbm`] — two-fluid model (superfluid + normal components)
@@ -23,6 +24,8 @@
 //! - Gross, E.P. (1961). *Nuovo Cimento*, 20, 454.
 //! - Pitaevskii, L.P. (1961). *Sov. Phys. JETP*, 13, 451.
 
+use crate::error::Error;
+use oxifft::Complex;
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -165,15 +168,44 @@ impl QuantumLbmParams {
 // GrossPitaevskiiLbm
 // ---------------------------------------------------------------------------
 
-/// LBM solver for the Gross-Pitaevskii equation.
+/// Wrap a phase difference into `(-π, π]`.
+fn wrap_phase(delta: f64) -> f64 {
+    delta - 2.0 * PI * (delta / (2.0 * PI)).round()
+}
+
+/// Solver for the one-dimensional Gross-Pitaevskii (GP) equation
 ///
-/// Evolves a complex wavefunction ψ(x) = A(x)·exp(iθ(x)) on a 1-D lattice
-/// using a D1Q3 velocity set.  The density is ρ = |ψ|² and the superfluid
-/// velocity is v_s = ħ∇θ/m.
+/// ```text
+/// i ħ ∂ψ/∂t = [ -ħ²/(2m) ∂²/∂x² + V(x) + g |ψ|² ] ψ
+/// ```
 ///
-/// The collision step uses BGK relaxation toward a quantum equilibrium that
-/// incorporates the quantum pressure (Bohm potential) and nonlinear interaction
-/// g|ψ|².
+/// on a periodic lattice of `nx` sites with spacing `dx`.
+///
+/// The condensate wavefunction ψ(x) = A(x)·exp(iθ(x)) is stored as the
+/// amplitude `A` and the phase `θ` (wrapped to `(-π, π]`).  The density is
+/// ρ = |ψ|² and the superfluid velocity is v_s = ħ∇θ/m.
+///
+/// # Time integration
+///
+/// One [`step`](Self::step) is a second-order Strang split-step Fourier step,
+///
+/// ```text
+/// ψ ← exp(-i W dt/2ħ) · IFFT[ exp(-i ħ k² dt/2m) · FFT[ ψ ] ] · exp(-i W dt/2ħ),
+/// W = V + g|ψ|²,
+/// ```
+///
+/// where the potential/interaction half-steps are exact phase rotations (they
+/// leave |ψ|² unchanged) and the kinetic step is exact in Fourier space.  Every
+/// factor is unitary, so the particle number `N = Σ|ψ|² dx` is conserved to
+/// rounding error, a uniform condensate evolves exactly as
+/// `θ(t) = -g ρ t / ħ`, and the scheme is unconditionally stable; the error is
+/// `O(dt²)` and the spatial discretisation is spectrally accurate for fields
+/// resolved by the lattice.  The FFTs come from `oxifft`.
+///
+/// The type name is historical: an earlier version relaxed a D1Q3 lattice
+/// Boltzmann distribution whose moments were inconsistent with the GP equation
+/// and therefore did not solve it.  No lattice populations are involved any
+/// more.
 #[derive(Debug, Clone)]
 pub struct GrossPitaevskiiLbm {
     /// Number of lattice sites.
@@ -182,76 +214,47 @@ pub struct GrossPitaevskiiLbm {
     pub amplitude: Vec<f64>,
     /// Phase θ(x) at each site (radians).
     pub phase: Vec<f64>,
-    /// D1Q3 distribution functions f\[site\]\[direction\].
-    pub f: Vec<[f64; 3]>,
-    /// Physical parameters.
+    /// Physical parameters (ħ, particle mass m and contact coupling g).
     pub params: QuantumLbmParams,
-    /// BGK relaxation time τ.
-    pub tau: f64,
     /// Lattice spacing Δx.
     pub dx: f64,
     /// Time step Δt.
     pub dt: f64,
-    /// External potential V(x).
+    /// External potential V(x), one value per site.
     pub potential: Vec<f64>,
 }
 
 impl GrossPitaevskiiLbm {
-    /// Create a new GP-LBM lattice with uniform density and zero phase.
+    /// Create a new lattice with uniform unit density, zero phase and no
+    /// external potential.
     ///
     /// # Arguments
     /// * `nx`     – number of lattice sites
-    /// * `params` – quantum parameters
-    /// * `tau`    – BGK relaxation time (lattice units)
+    /// * `params` – quantum parameters (ħ, m, g)
     /// * `dx`     – lattice spacing
     /// * `dt`     – time step
-    pub fn new(nx: usize, params: QuantumLbmParams, tau: f64, dx: f64, dt: f64) -> Self {
-        let amplitude = vec![1.0; nx];
-        let phase = vec![0.0; nx];
-        let f = vec![[1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0]; nx];
-        let potential = vec![0.0; nx];
+    pub fn new(nx: usize, params: QuantumLbmParams, dx: f64, dt: f64) -> Self {
         Self {
             nx,
-            amplitude,
-            phase,
-            f,
+            amplitude: vec![1.0; nx],
+            phase: vec![0.0; nx],
             params,
-            tau,
             dx,
             dt,
-            potential,
+            potential: vec![0.0; nx],
         }
     }
 
     /// Set the wavefunction from amplitude and phase arrays.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either array does not have `nx` entries.
     pub fn set_wavefunction(&mut self, amplitude: Vec<f64>, phase: Vec<f64>) {
         assert_eq!(amplitude.len(), self.nx);
         assert_eq!(phase.len(), self.nx);
         self.amplitude = amplitude;
         self.phase = phase;
-        self.initialize_distributions();
-    }
-
-    /// Initialize D1Q3 distributions from current amplitude/phase.
-    pub fn initialize_distributions(&mut self) {
-        for i in 0..self.nx {
-            let rho = self.amplitude[i] * self.amplitude[i];
-            let cs = 1.0 / 3.0_f64.sqrt();
-            // velocity from phase gradient (finite difference)
-            let im = if i == 0 { self.nx - 1 } else { i - 1 };
-            let ip = if i == self.nx - 1 { 0 } else { i + 1 };
-            let dphi = (self.phase[ip] - self.phase[im]) / (2.0 * self.dx);
-            let u = self.params.hbar / self.params.mass * dphi;
-            let w = [1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0];
-            let e = [-cs, 0.0, cs];
-            let cs2 = cs * cs;
-            for q in 0..3 {
-                let eu = e[q] * u;
-                self.f[i][q] = rho
-                    * w[q]
-                    * (1.0 + eu / cs2 + eu * eu / (2.0 * cs2 * cs2) - u * u / (2.0 * cs2));
-            }
-        }
     }
 
     /// Return density ρ(x) = |ψ(x)|².
@@ -259,14 +262,22 @@ impl GrossPitaevskiiLbm {
         self.amplitude.iter().map(|a| a * a).collect()
     }
 
-    /// Return superfluid velocity v_s = ħ∇θ/m.
+    /// Return the superfluid velocity v_s = ħ∇θ/m.
+    ///
+    /// The phase gradient is the central difference of the phase with every
+    /// difference wrapped into `(-π, π]`, so the 2π jumps of a wrapped phase
+    /// do not create spurious velocities.  It is exact for phase differences
+    /// below π between next-nearest sites, i.e. for fields resolved by the
+    /// lattice.
     pub fn superfluid_velocity(&self) -> Vec<f64> {
-        (0..self.nx)
+        let n = self.nx;
+        let prefactor = self.params.hbar / self.params.mass;
+        (0..n)
             .map(|i| {
-                let im = if i == 0 { self.nx - 1 } else { i - 1 };
-                let ip = if i == self.nx - 1 { 0 } else { i + 1 };
-                let dphi = (self.phase[ip] - self.phase[im]) / (2.0 * self.dx);
-                self.params.hbar / self.params.mass * dphi
+                let im = (i + n - 1) % n;
+                let ip = (i + 1) % n;
+                let dphi = wrap_phase(self.phase[ip] - self.phase[im]) / (2.0 * self.dx);
+                prefactor * dphi
             })
             .collect()
     }
@@ -276,80 +287,169 @@ impl GrossPitaevskiiLbm {
         self.amplitude.iter().map(|a| a * a * self.dx).sum()
     }
 
-    /// Perform one GP-LBM time step: collision + streaming.
-    pub fn step(&mut self) {
-        let nx = self.nx;
-        let tau = self.tau;
-        let cs = 1.0 / 3.0_f64.sqrt();
-        let cs2 = cs * cs;
+    /// Complex wavefunction ψ = A·exp(iθ) at every site.
+    fn wavefunction(&self) -> Vec<Complex<f64>> {
+        self.amplitude
+            .iter()
+            .zip(&self.phase)
+            .map(|(&a, &theta)| Complex::from_polar(a, theta))
+            .collect()
+    }
+
+    /// Angular wavenumber k_j of Fourier mode `j` of an `nx`-point transform
+    /// (negative for the upper half of the spectrum).
+    fn wavenumber(&self, j: usize) -> f64 {
+        let n = self.nx;
+        let signed = if j <= n / 2 {
+            j as f64
+        } else {
+            j as f64 - n as f64
+        };
+        2.0 * PI * signed / (n as f64 * self.dx)
+    }
+
+    /// Check that the lattice is well formed and the parameters are physical.
+    fn validate(&self) -> Result<(), Error> {
+        if self.nx == 0 {
+            return Err(Error::InvalidGridDimensions { nx: 0, ny: 1 });
+        }
+        for (field, len) in [
+            ("amplitude", self.amplitude.len()),
+            ("phase", self.phase.len()),
+            ("potential", self.potential.len()),
+        ] {
+            if len != self.nx {
+                return Err(Error::ComponentCountMismatch {
+                    expected: self.nx,
+                    found: len,
+                    field: field.to_string(),
+                });
+            }
+        }
+        for (name, value) in [
+            ("hbar", self.params.hbar),
+            ("mass", self.params.mass),
+            ("dx", self.dx),
+        ] {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(Error::ParameterOutOfBounds {
+                    name: name.to_string(),
+                    value,
+                    min: f64::MIN_POSITIVE,
+                    max: f64::MAX,
+                });
+            }
+        }
+        for (name, value) in [("dt", self.dt), ("coupling", self.params.coupling)] {
+            if !value.is_finite() {
+                return Err(Error::ParameterOutOfBounds {
+                    name: name.to_string(),
+                    value,
+                    min: f64::MIN,
+                    max: f64::MAX,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Multiply ψ by `exp(-i (V + g|ψ|²) dt / (2ħ))`, half of the
+    /// potential/interaction phase rotation of a Strang step.
+    fn apply_potential_half_step(&self, psi: &mut [Complex<f64>]) {
+        let scale = 0.5 * self.dt / self.params.hbar;
         let g = self.params.coupling;
-        let hbar = self.params.hbar;
-        let mass = self.params.mass;
-        let dx = self.dx;
-
-        // 1. Collision: relax toward quantum equilibrium
-        let rho: Vec<f64> = self.amplitude.iter().map(|a| a * a).collect();
-        let vel = self.superfluid_velocity();
-
-        let mut f_post = self.f.clone();
-        for i in 0..nx {
-            let ri = rho[i].max(1e-30);
-            let u = vel[i];
-            // quantum pressure correction: -ħ² ∇²√ρ / (2m√ρ)
-            let im = if i == 0 { nx - 1 } else { i - 1 };
-            let ip = if i == nx - 1 { 0 } else { i + 1 };
-            let sqrt_rho = ri.sqrt();
-            let sqrt_rho_m = rho[im].sqrt();
-            let sqrt_rho_p = rho[ip].sqrt();
-            let lap_sqrt_rho = (sqrt_rho_p - 2.0 * sqrt_rho + sqrt_rho_m) / (dx * dx);
-            let q_pressure = -hbar * hbar / (2.0 * mass) * lap_sqrt_rho / sqrt_rho.max(1e-30);
-            // effective chemical potential
-            let mu = g * ri + self.potential[i] + q_pressure;
-            // equilibrium including interaction and quantum potential
-            let w = [1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0];
-            let e = [-cs, 0.0, cs];
-            let mut feq = [0.0f64; 3];
-            for q in 0..3 {
-                let eu = e[q] * u;
-                feq[q] = ri
-                    * w[q]
-                    * (1.0 + eu / cs2 + eu * eu / (2.0 * cs2 * cs2) - u * u / (2.0 * cs2))
-                    + w[q] * mu / (cs2); // quantum/interaction correction
-            }
-            // Normalize feq to conserve mass
-            let feq_sum: f64 = feq.iter().sum();
-            if feq_sum > 1e-30 {
-                for fq in feq.iter_mut() {
-                    *fq *= ri / feq_sum;
-                }
-            }
-            for (q, f_post_iq) in f_post[i].iter_mut().enumerate() {
-                *f_post_iq = self.f[i][q] - (self.f[i][q] - feq[q]) / tau;
-            }
+        for (z, &v) in psi.iter_mut().zip(&self.potential) {
+            let w = v + g * z.norm_sqr();
+            *z = *z * Complex::cis(-w * scale);
         }
+    }
 
-        // 2. Streaming (periodic)
-        let e_idx: [isize; 3] = [-1, 0, 1];
-        let mut f_new = vec![[0.0f64; 3]; nx];
-        for (i, f_new_i) in f_new.iter_mut().enumerate() {
-            for (q, f_new_iq) in f_new_i.iter_mut().enumerate() {
-                let src = ((i as isize - e_idx[q]).rem_euclid(nx as isize)) as usize;
-                *f_new_iq = f_post[src][q];
-            }
-        }
-        self.f = f_new;
+    /// Advance the wavefunction by one time step `dt` (see the type docs).
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::InvalidGridDimensions`] for an empty lattice,
+    /// * [`Error::ComponentCountMismatch`] if `amplitude`, `phase` or
+    ///   `potential` do not have `nx` entries,
+    /// * [`Error::ParameterOutOfBounds`] if ħ, m or Δx are not positive and
+    ///   finite, or Δt / g are not finite.
+    ///
+    /// The state is not modified when an error is returned.
+    pub fn try_step(&mut self) -> Result<(), Error> {
+        self.validate()?;
+        let mut psi = self.wavefunction();
 
-        // 3. Update amplitude and phase from moments
-        for i in 0..nx {
-            let new_rho: f64 = self.f[i].iter().sum::<f64>().max(0.0);
-            self.amplitude[i] = new_rho.sqrt();
-            // momentum moment → velocity → phase gradient → update phase
-            let j: f64 = self.f[i][2] - self.f[i][0]; // f[+] - f[-]
-            let u_new = if new_rho > 1e-30 { j / new_rho } else { 0.0 };
-            // forward-Euler phase update: dθ/dt = m·v·dx → Δθ ≈ (m/ħ)·u·dt
-            let dtheta = mass / hbar * u_new * self.dt;
-            self.phase[i] = (self.phase[i] + dtheta) % (2.0 * PI);
+        // Half step of the potential and the mean-field interaction.
+        self.apply_potential_half_step(&mut psi);
+
+        // Kinetic step: exact free propagation in Fourier space.
+        let mut spectrum = oxifft::fft(&psi);
+        let kinetic_scale = 0.5 * self.params.hbar * self.dt / self.params.mass;
+        for (j, c) in spectrum.iter_mut().enumerate() {
+            let k = self.wavenumber(j);
+            *c = *c * Complex::cis(-kinetic_scale * k * k);
         }
+        psi = oxifft::ifft(&spectrum);
+
+        // Second half step, with the density after the kinetic step.
+        self.apply_potential_half_step(&mut psi);
+
+        for ((a, theta), z) in self
+            .amplitude
+            .iter_mut()
+            .zip(self.phase.iter_mut())
+            .zip(&psi)
+        {
+            *a = z.norm();
+            *theta = z.arg();
+        }
+        Ok(())
+    }
+
+    /// Advance the wavefunction by one time step.
+    ///
+    /// Equivalent to [`try_step`](Self::try_step); an invalid configuration
+    /// leaves the state untouched.
+    pub fn step(&mut self) {
+        // The configuration error, if any, is reported by `try_step`.
+        let _ = self.try_step();
+    }
+
+    /// Total energy
+    /// `E = ∫ [ ħ²/(2m)|∂ₓψ|² + V|ψ|² + (g/2)|ψ|⁴ ] dx`.
+    ///
+    /// The gradient term is evaluated spectrally.  `E` is conserved by the
+    /// exact dynamics; the split-step integrator keeps it constant up to
+    /// `O(dt²)` oscillations.  Returns `0.0` for an empty lattice.
+    pub fn total_energy(&self) -> f64 {
+        let n = self.nx;
+        if n == 0 || self.potential.len() != n {
+            return 0.0;
+        }
+        let psi = self.wavefunction();
+        let spectrum = oxifft::fft(&psi);
+        // Parseval: Σ_j |∂ₓψ_j|² Δx = (Δx/N) Σ_k k² |ψ̂_k|².
+        let gradient: f64 = spectrum
+            .iter()
+            .enumerate()
+            .map(|(j, c)| {
+                let k = self.wavenumber(j);
+                k * k * c.norm_sqr()
+            })
+            .sum::<f64>()
+            * self.dx
+            / n as f64;
+        let kinetic = 0.5 * self.params.hbar * self.params.hbar / self.params.mass * gradient;
+        let local: f64 = psi
+            .iter()
+            .zip(&self.potential)
+            .map(|(z, &v)| {
+                let rho = z.norm_sqr();
+                (v + 0.5 * self.params.coupling * rho) * rho
+            })
+            .sum::<f64>()
+            * self.dx;
+        kinetic + local
     }
 }
 
@@ -1140,62 +1240,53 @@ mod tests {
     }
 
     // ---- GrossPitaevskiiLbm -----------------------------------------------
+    // (the physics regression tests live in `gp_tests.rs`)
 
     #[test]
     fn test_gp_lbm_new() {
         let p = QuantumLbmParams::new(1.0, 1.0, 1.0, 0.1);
-        let gp = GrossPitaevskiiLbm::new(16, p, 0.6, 1.0, 0.1);
+        let gp = GrossPitaevskiiLbm::new(16, p, 1.0, 0.1);
         assert_eq!(gp.nx, 16);
         assert_eq!(gp.amplitude.len(), 16);
+        assert_eq!(gp.phase.len(), 16);
+        assert_eq!(gp.potential.len(), 16);
     }
 
     #[test]
     fn test_gp_density_from_amplitude() {
         let p = QuantumLbmParams::new(1.0, 1.0, 1.0, 0.1);
-        let mut gp = GrossPitaevskiiLbm::new(8, p, 0.6, 1.0, 0.1);
+        let mut gp = GrossPitaevskiiLbm::new(8, p, 1.0, 0.1);
         gp.amplitude = vec![2.0; 8];
         let rho = gp.density();
         assert!(rho.iter().all(|&r| (r - 4.0).abs() < 1e-12));
     }
 
     #[test]
-    fn test_gp_total_number_conserved_approx() {
-        // The total number should remain approximately constant after a step
+    fn test_gp_total_number_conserved() {
+        // The split-step scheme is unitary: N is conserved to rounding error.
         let p = QuantumLbmParams::new(1.0, 1.0, 1.0, 0.001);
-        let mut gp = GrossPitaevskiiLbm::new(32, p, 0.6, 1.0, 0.01);
+        let mut gp = GrossPitaevskiiLbm::new(32, p, 1.0, 0.01);
         let n0 = gp.total_number();
         gp.step();
         let n1 = gp.total_number();
-        // Allow 10% variation due to BGK approximation
-        assert!((n1 - n0).abs() / n0.max(1e-30) < 0.1);
+        assert!((n1 - n0).abs() / n0 < 1e-13, "{n0} -> {n1}");
     }
 
     #[test]
     fn test_gp_step_runs() {
         let p = QuantumLbmParams::new(1.0, 1.0, 1.0, 0.1);
-        let mut gp = GrossPitaevskiiLbm::new(16, p, 0.6, 1.0, 0.01);
+        let mut gp = GrossPitaevskiiLbm::new(16, p, 1.0, 0.01);
         gp.step();
         assert!(gp.amplitude.iter().all(|a| a.is_finite()));
+        assert!(gp.phase.iter().all(|a| a.is_finite()));
     }
 
     #[test]
     fn test_gp_superfluid_velocity_zero_for_uniform_phase() {
         let p = QuantumLbmParams::new(1.0, 1.0, 1.0, 0.1);
-        let gp = GrossPitaevskiiLbm::new(16, p, 0.6, 1.0, 0.01);
+        let gp = GrossPitaevskiiLbm::new(16, p, 1.0, 0.01);
         let v = gp.superfluid_velocity();
         assert!(v.iter().all(|&vi| vi.abs() < 1e-12));
-    }
-
-    #[test]
-    fn test_gp_distributions_sum_to_density() {
-        let p = QuantumLbmParams::new(1.0, 1.0, 1.0, 0.1);
-        let mut gp = GrossPitaevskiiLbm::new(8, p, 0.6, 1.0, 0.01);
-        gp.initialize_distributions();
-        for i in 0..gp.nx {
-            let s: f64 = gp.f[i].iter().sum();
-            let rho = gp.amplitude[i] * gp.amplitude[i];
-            assert!((s - rho).abs() < 1e-10);
-        }
     }
 
     // ---- QuantumVortex ----------------------------------------------------
@@ -1511,3 +1602,6 @@ mod tests {
         assert!(qp.fisher_information() < 1e-14);
     }
 }
+
+#[cfg(test)]
+mod gp_tests;

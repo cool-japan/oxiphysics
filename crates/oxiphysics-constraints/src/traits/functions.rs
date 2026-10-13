@@ -3,6 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use oxiphysics_core::BodyHandle;
+use oxiphysics_core::math::Vec3;
 use oxiphysics_rigid::RigidBodySet;
 
 use super::types::{ConstraintKind, ConstraintPriority, ErrorNorm, SolverHints};
@@ -13,6 +14,17 @@ use super::types::{ConstraintKind, ConstraintPriority, ErrorNorm, SolverHints};
 /// 1. **Prepare**: precompute Jacobians, effective masses, and bias terms.
 /// 2. **Solve velocity**: apply impulses to correct velocity errors.
 /// 3. **Solve position**: apply pseudo-impulses to correct positional drift.
+///
+/// The remaining methods are optional hooks with neutral defaults that the
+/// [PGS solvers](crate::pgs_solver) honour:
+/// [`is_active`](Constraint::is_active) excludes a constraint from a solve,
+/// [`residual`](Constraint::residual) reports how far the iteration is from
+/// its fixed point, [`post_solve`](Constraint::post_solve) runs once after the
+/// velocity iterations, [`solve_velocity_relaxed`](Constraint::solve_velocity_relaxed)
+/// supports successive over-relaxation, and
+/// [`apply_warm_start`](Constraint::apply_warm_start) /
+/// [`accumulated_impulses`](Constraint::accumulated_impulses) carry impulses
+/// from frame to frame.
 ///
 /// # Thread Safety
 ///
@@ -41,21 +53,107 @@ pub trait Constraint {
     }
     /// Returns `true` if the constraint is currently active (not sleeping/disabled).
     ///
-    /// Inactive constraints are skipped by the solver.
+    /// Inactive constraints are skipped by the solver: the PGS solvers call
+    /// none of [`prepare`](Constraint::prepare), the velocity and position
+    /// solves or [`post_solve`](Constraint::post_solve) on them.
     fn is_active(&self) -> bool {
         true
     }
-    /// Called by the solver after all velocity iterations have converged.
+    /// Called by the solver once after all velocity iterations of a solve.
     ///
     /// Can be used to update internal state (e.g. accumulated impulses for
     /// warm-starting the next frame).
     fn post_solve(&mut self) {}
-    /// Returns the current residual (velocity-error magnitude) after the last
-    /// [`solve_velocity`](Constraint::solve_velocity) call.
+    /// Size of the velocity-level update applied by the most recent
+    /// [`solve_velocity`](Constraint::solve_velocity) call, in m/s (rad/s for
+    /// angular rows).
     ///
-    /// Used by the solver to check global convergence.  Default returns 0.0.
+    /// This is the change the Gauss-Seidel iteration made to the solution: it
+    /// is zero when the constraint is at its fixed point (satisfied, or its
+    /// impulse is clamped at a bound) and shrinks towards zero as the
+    /// iteration converges.  The PGS solvers sum it over all constraints to
+    /// decide when to stop iterating.
+    ///
+    /// A constraint that does not track its update leaves the default of
+    /// `0.0`; the solvers then measure the change of the constrained bodies'
+    /// velocities across the `solve_velocity` call instead.
     fn residual(&self) -> f64 {
         0.0
+    }
+    /// Velocity-level solve with a successive over-relaxation (SOR) factor.
+    ///
+    /// `omega = 1` is the plain Gauss-Seidel update of
+    /// [`solve_velocity`](Constraint::solve_velocity); `omega > 1`
+    /// over-relaxes and `omega < 1` under-relaxes the impulse update.  Returns
+    /// the size of the update, as [`residual`](Constraint::residual) does.
+    ///
+    /// Relaxation has to scale the *unclamped* impulse update before the
+    /// accumulated impulse is projected onto its bounds; relaxing the velocity
+    /// change after projection can push an impulse outside its bounds (for
+    /// example a pulling contact impulse).  A constraint therefore has to
+    /// override this method to be over-relaxed, as
+    /// [`ContactConstraint`](crate::ContactConstraint) does.
+    ///
+    /// The default implementation is exact for under-relaxation
+    /// (`0 < omega < 1`), which keeps any feasible impulse feasible, by
+    /// blending the velocities of the dynamic bodies between their values
+    /// before and after `solve_velocity`.  For every other `omega` it applies
+    /// the plain update.  The blend happens outside the constraint, so a
+    /// constraint that keeps its own accumulated impulse (for clamping or
+    /// breaking) records the unrelaxed update and should override this method
+    /// to keep that state in step with what was applied to the bodies.
+    fn solve_velocity_relaxed(&mut self, bodies: &mut RigidBodySet, dt: f64, omega: f64) -> f64 {
+        if !(omega > 0.0 && omega < 1.0) {
+            self.solve_velocity(bodies, dt);
+            return self.residual();
+        }
+        let handles = self.body_handles();
+        let before: Vec<(Vec3, Vec3)> = handles
+            .iter()
+            .map(|&h| {
+                bodies.get(h).map_or((Vec3::zeros(), Vec3::zeros()), |b| {
+                    (b.velocity, b.angular_velocity)
+                })
+            })
+            .collect();
+        self.solve_velocity(bodies, dt);
+        for (i, (&handle, &(v_before, w_before))) in handles.iter().zip(before.iter()).enumerate() {
+            if handles[..i].contains(&handle) {
+                continue;
+            }
+            if let Some(body) = bodies.get_mut(handle)
+                && body.inverse_mass > 0.0
+            {
+                body.velocity = v_before + (body.velocity - v_before) * omega;
+                body.angular_velocity = w_before + (body.angular_velocity - w_before) * omega;
+            }
+        }
+        self.residual() * omega
+    }
+    /// Seed the accumulated impulses of this constraint from `impulses` and
+    /// apply them to the bodies (solver warm starting).
+    ///
+    /// `impulses` holds one entry per constraint row, in the order of
+    /// [`accumulated_impulses`](Constraint::accumulated_impulses); missing
+    /// entries count as zero, so an empty slice resets the constraint to a
+    /// cold start.  Implementations must apply the corresponding `+Jᵀλ` to the
+    /// first body and `-Jᵀλ` to the second (linear and angular part), so the
+    /// warm start conserves momentum, and must not apply it a second time in
+    /// the first [`solve_velocity`](Constraint::solve_velocity) call after
+    /// [`prepare`](Constraint::prepare).  Called by the solver after
+    /// `prepare`.
+    ///
+    /// The default does nothing: constraints without accumulated impulses have
+    /// nothing to warm start.
+    fn apply_warm_start(&mut self, _bodies: &mut RigidBodySet, _impulses: &[f64]) {}
+    /// The accumulated impulse of every constraint row (for example
+    /// `[normal, tangent1, tangent2]` for a contact), to be stored by the
+    /// solver and passed back to
+    /// [`apply_warm_start`](Constraint::apply_warm_start) on the next frame.
+    ///
+    /// The default returns an empty vector.
+    fn accumulated_impulses(&self) -> Vec<f64> {
+        Vec::new()
     }
 }
 /// Extension trait for constraints that drive a DOF toward a target.

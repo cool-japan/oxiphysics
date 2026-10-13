@@ -12,13 +12,22 @@ use oxiphysics_core::math::Vec3;
 pub fn cubic_spline_gradient_pub(r: f64, h: f64) -> f64 {
     cubic_spline_gradient(r, h)
 }
-/// Cubic-spline gradient magnitude: dW/dr (unnormalized, 3-D).
+/// Cubic-spline gradient magnitude `dW/dr` of [`cubic_spline_kernel`] (3-D).
+///
+/// With `q = r / h` and the kernel normalisation `σ = 1 / (π h³)`:
+///
+/// * `0 ≤ q ≤ 1`: `dW/dr = (σ / h) · (−3 q + 2.25 q²)`
+/// * `1 < q ≤ 2`: `dW/dr = (σ / h) · (−0.75 (2 − q)²)`
+/// * `q > 2`: `0`
+///
+/// The prefactor is therefore `1 / (π h⁴)`; the vector gradient with respect to
+/// the position of particle `i` is `∇ᵢWᵢⱼ = (dW/dr) · (xᵢ − xⱼ) / r`.
 pub fn cubic_spline_gradient(r: f64, h: f64) -> f64 {
     let q = r / h;
     if q > 2.0 {
         return 0.0;
     }
-    let sigma = 3.0 / (2.0 * std::f64::consts::PI * h.powi(4));
+    let sigma = 1.0 / (std::f64::consts::PI * h.powi(4));
     if q <= 1.0 {
         sigma * (-3.0 * q + 2.25 * q * q)
     } else {

@@ -401,7 +401,48 @@ impl DcdWriter {
 
 // ── DcdReader ────────────────────────────────────────────────────────────────
 
+/// Payload size of the CHARMM DCD header record: `CORD` plus twenty 4-byte fields.
+const DCD_HEADER_RECORD_LEN: usize = 84;
+
+/// Read a little-endian `i32` at `offset`, or `None` if it lies outside `buf`.
+fn dcd_read_i32(buf: &[u8], offset: usize) -> Option<i32> {
+    let end = offset.checked_add(4)?;
+    let bytes: [u8; 4] = buf.get(offset..end)?.try_into().ok()?;
+    Some(i32::from_le_bytes(bytes))
+}
+
+/// Read a non-negative little-endian `i32` at `offset` as a `usize`.
+///
+/// Negative values are rejected instead of being reinterpreted as huge lengths.
+fn dcd_read_len(buf: &[u8], offset: usize) -> Option<usize> {
+    let value = u32::try_from(dcd_read_i32(buf, offset)?).ok()?;
+    usize::try_from(value).ok()
+}
+
+/// Locate the payload of the Fortran record whose leading length marker sits
+/// at `offset`.
+///
+/// Returns `(payload_start, payload_len, next_record_offset)`.  The trailing
+/// length marker must repeat the leading one and the whole record must lie
+/// inside `buf`, otherwise `None` is returned.
+fn dcd_record(buf: &[u8], offset: usize) -> Option<(usize, usize, usize)> {
+    let payload_len = dcd_read_len(buf, offset)?;
+    let payload_start = offset.checked_add(4)?;
+    let payload_end = payload_start.checked_add(payload_len)?;
+    if dcd_read_len(buf, payload_end)? != payload_len {
+        return None;
+    }
+    let next_record = payload_end.checked_add(4)?;
+    Some((payload_start, payload_len, next_record))
+}
+
 /// Reader for CHARMM DCD trajectory files (pure byte-slice, no I/O).
+///
+/// The reader understands the layout produced by [`DcdWriter`]: a `CORD`
+/// header record, a title record, an `NATOM` record and then, per frame, three
+/// Fortran records holding the X, Y and Z arrays.  All offsets and lengths read
+/// from the buffer are validated, so malformed or truncated input yields
+/// `None` instead of a panic.
 #[derive(Debug)]
 pub struct DcdReader {
     buf: Vec<u8>,
@@ -417,43 +458,39 @@ pub struct DcdReader {
 
 impl DcdReader {
     /// Parse the DCD header from `buf` and return a reader, or `None` on error.
+    ///
+    /// `None` is returned when the header is not a well-formed `CORD` header
+    /// (record length other than 84, mismatching record markers, negative
+    /// counts), when the atom count is zero, or when the buffer is too short to
+    /// hold the `NFILE` frames announced in the header.
     pub fn parse_header(buf: Vec<u8>) -> Option<Self> {
-        if buf.len() < 8 {
+        // Record 1: "CORD" followed by NFILE and the remaining header fields.
+        let (header_start, header_len, title_offset) = dcd_record(&buf, 0)?;
+        let nfile_offset = header_start.checked_add(4)?;
+        if header_len != DCD_HEADER_RECORD_LEN || buf.get(header_start..nfile_offset)? != b"CORD" {
             return None;
         }
-        // Fortran record: 4-byte length prefix
-        let rec_len = i32::from_le_bytes(buf[0..4].try_into().ok()?) as usize;
-        if buf.len() < 4 + rec_len + 4 {
+        let n_frames = dcd_read_len(&buf, nfile_offset)?;
+        // Record 2: title block (skipped, validated through its record markers).
+        let (_, _, natom_offset) = dcd_record(&buf, title_offset)?;
+        // Record 3: NATOM.
+        let (natom_start, natom_len, frames_start) = dcd_record(&buf, natom_offset)?;
+        if natom_len != 4 {
             return None;
         }
-        let hdr = &buf[4..4 + rec_len];
-        if &hdr[0..4] != b"CORD" {
+        let n_atoms = dcd_read_len(&buf, natom_start)?;
+        if n_atoms == 0 {
             return None;
         }
-        let n_frames = i32::from_le_bytes(hdr[4..8].try_into().ok()?) as usize;
-        // Skip to end of first Fortran record
-        let mut offset = 4 + rec_len + 4;
-        // Skip TITLE record
-        if offset + 4 > buf.len() {
+        // Each frame: three coordinate arrays, each wrapped in a Fortran record.
+        let coord_block = n_atoms.checked_mul(4)?.checked_add(8)?;
+        let frame_size = coord_block.checked_mul(3)?;
+        let frames_end = n_frames
+            .checked_mul(frame_size)?
+            .checked_add(frames_start)?;
+        if frames_end > buf.len() {
             return None;
         }
-        let title_len = i32::from_le_bytes(buf[offset..offset + 4].try_into().ok()?) as usize;
-        offset += 4 + title_len + 4;
-        // NATOM record
-        if offset + 4 > buf.len() {
-            return None;
-        }
-        let natom_len = i32::from_le_bytes(buf[offset..offset + 4].try_into().ok()?) as usize;
-        offset += 4;
-        if natom_len < 4 || offset + 4 > buf.len() {
-            return None;
-        }
-        let n_atoms = i32::from_le_bytes(buf[offset..offset + 4].try_into().ok()?) as usize;
-        offset += natom_len + 4;
-        let frames_start = offset;
-        // Each frame: 3 coord arrays, each with Fortran record wrapper
-        let coord_block = 4 + n_atoms * 4 + 4; // len_prefix + data + len_suffix
-        let frame_size = 3 * coord_block;
         Some(Self {
             buf,
             n_atoms,
@@ -463,30 +500,36 @@ impl DcdReader {
         })
     }
 
+    /// Read one Fortran record holding `n_atoms` `f32` values at `offset`.
+    fn read_coord_record(&self, offset: usize) -> Option<Vec<f32>> {
+        let (payload_start, payload_len, _) = dcd_record(&self.buf, offset)?;
+        if payload_len != self.n_atoms.checked_mul(4)? {
+            return None;
+        }
+        let payload = self
+            .buf
+            .get(payload_start..payload_start.checked_add(payload_len)?)?;
+        payload
+            .chunks_exact(4)
+            .map(|chunk| <[u8; 4]>::try_from(chunk).ok().map(f32::from_le_bytes))
+            .collect()
+    }
+
     /// Read the coordinates for frame `frame_idx` (0-based).
     ///
-    /// Returns `(x, y, z)` each as `Vec`f32`, or `None` if out of range.
+    /// Returns `(x, y, z)` each as `Vec`f32`, or `None` if the frame is out of
+    /// range or its records are truncated or inconsistent.
     pub fn read_frame(&self, frame_idx: usize) -> Option<(Vec<f32>, Vec<f32>, Vec<f32>)> {
         if frame_idx >= self.n_frames {
             return None;
         }
-        let start = self.frames_start + frame_idx * self.frame_size;
-        let read_coord = |offset: usize| -> Option<Vec<f32>> {
-            let _rec_len =
-                i32::from_le_bytes(self.buf[offset..offset + 4].try_into().ok()?) as usize;
-            let data_start = offset + 4;
-            let mut coords = Vec::with_capacity(self.n_atoms);
-            for i in 0..self.n_atoms {
-                let o = data_start + i * 4;
-                let v = f32::from_le_bytes(self.buf[o..o + 4].try_into().ok()?);
-                coords.push(v);
-            }
-            Some(coords)
-        };
-        let coord_block = 4 + self.n_atoms * 4 + 4;
-        let x = read_coord(start)?;
-        let y = read_coord(start + coord_block)?;
-        let z = read_coord(start + 2 * coord_block)?;
+        let coord_block = self.n_atoms.checked_mul(4)?.checked_add(8)?;
+        let start = frame_idx
+            .checked_mul(self.frame_size)?
+            .checked_add(self.frames_start)?;
+        let x = self.read_coord_record(start)?;
+        let y = self.read_coord_record(start.checked_add(coord_block)?)?;
+        let z = self.read_coord_record(start.checked_add(coord_block.checked_mul(2)?)?)?;
         Some((x, y, z))
     }
 }
@@ -967,6 +1010,122 @@ mod tests {
         let reader = DcdReader::parse_header(buf).unwrap();
         assert_eq!(reader.n_frames, 0);
         assert!(reader.read_frame(0).is_none());
+    }
+
+    // ── DcdReader malformed-input tests ───────────────────────────────────
+
+    /// Build a valid DCD buffer with `n_frames` frames of `n_atoms` atoms.
+    fn make_dcd(n_atoms: usize, n_frames: usize) -> Vec<u8> {
+        let mut writer = DcdWriter::new(n_atoms, 0.002);
+        for frame in 0..n_frames {
+            let x: Vec<f32> = (0..n_atoms).map(|i| (frame * 10 + i) as f32).collect();
+            let y: Vec<f32> = x.iter().map(|v| v + 0.5).collect();
+            let z: Vec<f32> = x.iter().map(|v| v + 0.25).collect();
+            writer.write_frame(&x, &y, &z);
+        }
+        writer.finalize()
+    }
+
+    // Byte offsets inside a buffer produced by `DcdWriter`.
+    const DCD_NFILE_AT: usize = 8;
+    const DCD_HEADER_TRAILER_AT: usize = 4 + 84;
+    const DCD_NATOM_AT: usize = 2 * (4 + 84 + 4) + 4;
+
+    #[test]
+    fn dcd_parse_header_8_zero_bytes_returns_none() {
+        assert!(DcdReader::parse_header(vec![0u8; 8]).is_none());
+        assert!(DcdReader::parse_header(vec![0u8; 12]).is_none());
+        assert!(DcdReader::parse_header(vec![0u8; 200]).is_none());
+        assert!(DcdReader::parse_header(vec![0xFFu8; 200]).is_none());
+    }
+
+    #[test]
+    fn dcd_read_frame_truncated_returns_none() {
+        let full = make_dcd(3, 2);
+        let frame_size = 3 * (4 + 3 * 4 + 4);
+        let cut = full.len() - frame_size / 2;
+
+        // The header announces two frames, but the second one is cut in half.
+        assert!(DcdReader::parse_header(full[..cut].to_vec()).is_none());
+
+        // Even if the reader state claims more frames than the buffer holds,
+        // read_frame must return None instead of slicing out of bounds.
+        let intact = DcdReader::parse_header(full.clone()).unwrap();
+        let broken = DcdReader {
+            buf: full[..cut].to_vec(),
+            n_atoms: intact.n_atoms,
+            n_frames: intact.n_frames,
+            frames_start: intact.frames_start,
+            frame_size: intact.frame_size,
+        };
+        let (x0, _, _) = broken.read_frame(0).unwrap();
+        assert_eq!(x0, vec![0.0, 1.0, 2.0]);
+        assert!(broken.read_frame(1).is_none());
+        assert!(broken.read_frame(2).is_none());
+        assert!(broken.read_frame(usize::MAX).is_none());
+    }
+
+    #[test]
+    fn dcd_parse_header_rejects_corrupt_header_fields() {
+        let valid = make_dcd(2, 1);
+        assert!(DcdReader::parse_header(valid.clone()).is_some());
+
+        let patched = |at: usize, value: i32| {
+            let mut buf = valid.clone();
+            buf[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            DcdReader::parse_header(buf)
+        };
+        assert!(patched(DCD_NFILE_AT, -1).is_none(), "negative NFILE");
+        assert!(
+            patched(DCD_NFILE_AT, i32::MAX).is_none(),
+            "NFILE beyond buffer"
+        );
+        assert!(patched(0, 80).is_none(), "record length other than 84");
+        assert!(patched(0, -84).is_none(), "negative record length");
+        assert!(
+            patched(0, i32::MAX).is_none(),
+            "record length beyond buffer"
+        );
+        assert!(
+            patched(DCD_HEADER_TRAILER_AT, 83).is_none(),
+            "mismatching trailer"
+        );
+        assert!(patched(DCD_NATOM_AT, 0).is_none(), "zero atoms");
+        assert!(patched(DCD_NATOM_AT, -3).is_none(), "negative atoms");
+        assert!(
+            patched(DCD_NATOM_AT, i32::MAX).is_none(),
+            "atoms beyond buffer"
+        );
+
+        let mut bad_magic = valid.clone();
+        bad_magic[4..8].copy_from_slice(b"XORD");
+        assert!(DcdReader::parse_header(bad_magic).is_none());
+    }
+
+    #[test]
+    fn dcd_every_truncation_and_byte_corruption_is_handled() {
+        let valid = make_dcd(2, 2);
+        for len in 0..valid.len() {
+            assert!(
+                DcdReader::parse_header(valid[..len].to_vec()).is_none(),
+                "prefix of {len} bytes must be rejected"
+            );
+        }
+        for at in 0..valid.len().min(220) {
+            for fill in [0x00u8, 0x7F, 0xFF] {
+                let mut corrupt = valid.clone();
+                corrupt[at] = fill;
+                if let Some(reader) = DcdReader::parse_header(corrupt) {
+                    for frame in 0..=reader.n_frames {
+                        if let Some((x, y, z)) = reader.read_frame(frame) {
+                            assert_eq!(x.len(), reader.n_atoms);
+                            assert_eq!(y.len(), reader.n_atoms);
+                            assert_eq!(z.len(), reader.n_atoms);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // ── XtcEncoder tests ─────────────────────────────────────────────────

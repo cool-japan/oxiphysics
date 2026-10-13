@@ -20,6 +20,7 @@
 //! - **Erosion and deposition** models
 //! - **Residence time distribution** analysis
 
+use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -240,12 +241,31 @@ pub fn stokes_drag_coefficient(re_p: f64) -> f64 {
     24.0 / re_p
 }
 
-/// Compute the Schiller-Naumann drag coefficient (valid for Re < 1000).
+/// Particle Reynolds number above which the drag coefficient is held at the
+/// constant Newton-regime value ([`NEWTON_REGIME_DRAG_COEFFICIENT`]).
+pub const SCHILLER_NAUMANN_RE_LIMIT: f64 = 1000.0;
+
+/// Constant drag coefficient of a sphere in the Newton regime
+/// (`Re_p >= 1000`), `C_D = 0.44`.
+pub const NEWTON_REGIME_DRAG_COEFFICIENT: f64 = 0.44;
+
+/// Compute the Schiller-Naumann drag coefficient.
 ///
-/// C_D = (24/Re) * (1 + 0.15 * Re^0.687)
+/// ```text
+/// C_D = (24/Re) * (1 + 0.15 * Re^0.687)     Re <  1000
+/// C_D = 0.44                                Re >= 1000   (Newton regime)
+/// ```
+///
+/// The correlation is only valid for `Re < 1000`; beyond that the coefficient
+/// is held at the Newton-regime plateau (the two branches agree to within 0.5 %
+/// at `Re = 1000`) instead of being extrapolated, which would make the
+/// coefficient fall without bound.
 pub fn schiller_naumann_drag_coefficient(re_p: f64) -> f64 {
     if re_p < 1e-10 {
         return 24.0 / 1e-10;
+    }
+    if re_p >= SCHILLER_NAUMANN_RE_LIMIT {
+        return NEWTON_REGIME_DRAG_COEFFICIENT;
     }
     (24.0 / re_p) * (1.0 + 0.15 * re_p.powf(0.687))
 }
@@ -271,6 +291,15 @@ pub fn stokes_drag_force(
 
 /// Compute the drag force using the Schiller-Naumann correlation.
 ///
+/// ```text
+/// F = 1/2 * C_D(Re_p) * rho_f * A * |u_rel| * u_rel,    A = pi d^2 / 4
+/// ```
+///
+/// so the force magnitude scales with the square of the slip speed for a
+/// fixed `C_D`, and reduces to the Stokes force `3 pi mu d u_rel` in the
+/// limit `Re_p -> 0`.  `u_rel = fluid_vel - particle_vel`; the force is
+/// directed along `u_rel`.
+///
 /// Returns the drag force vector `[fx, fy, fz]`.
 pub fn drag_force_schiller_naumann(
     fluid_vel: &[f64; 3],
@@ -291,7 +320,8 @@ pub fn drag_force_schiller_naumann(
     let re_p = particle_reynolds_number(rel_mag, diameter, nu);
     let cd = schiller_naumann_drag_coefficient(re_p);
     let area = PI * diameter * diameter / 4.0;
-    let f_mag = 0.5 * cd * rho_f * area * rel_mag;
+    // |F| = 1/2 C_D rho_f A |u_rel|^2
+    let f_mag = 0.5 * cd * rho_f * area * rel_mag * rel_mag;
     [
         f_mag * rel[0] / rel_mag,
         f_mag * rel[1] / rel_mag,
@@ -375,16 +405,24 @@ pub fn magnus_force(
 // Buoyancy force
 // ---------------------------------------------------------------------------
 
-/// Compute the buoyancy force on a submerged particle.
+/// Compute the net gravitational-buoyant force on a submerged particle.
 ///
-/// F_buoy = (rho_p - rho_f) * V_p * g
+/// ```text
+/// F = (rho_p - rho_f) * V_p * g
+/// ```
+///
+/// This is the particle weight `rho_p V_p g` minus the Archimedes buoyancy
+/// `rho_f V_p g`, so it is the only body-force term a Lagrangian tracker needs
+/// besides the fluid-particle drag.  `g` is the gravitational acceleration
+/// vector stored in [`FluidParams::gravity`]: a particle denser than the fluid
+/// is pushed along `g` (it sinks), a lighter one against `g` (it rises).
 pub fn buoyancy_force(particle: &LagrangianParticle, fluid: &FluidParams) -> [f64; 3] {
     let vol = particle.volume();
     let delta_rho = particle.density - fluid.rho_f;
     [
-        -delta_rho * vol * fluid.gravity[0],
-        -delta_rho * vol * fluid.gravity[1],
-        -delta_rho * vol * fluid.gravity[2],
+        delta_rho * vol * fluid.gravity[0],
+        delta_rho * vol * fluid.gravity[1],
+        delta_rho * vol * fluid.gravity[2],
     ]
 }
 
@@ -397,7 +435,9 @@ pub fn buoyancy_force(particle: &LagrangianParticle, fluid: &FluidParams) -> [f6
 pub struct DemParams {
     /// Normal spring stiffness.
     pub kn: f64,
-    /// Tangential spring stiffness.
+    /// Tangential spring stiffness, used by the history-based contact model
+    /// ([`soft_sphere_collision_with_history`]); the stateless
+    /// [`soft_sphere_collision`] has no tangential displacement memory.
     pub kt: f64,
     /// Normal damping coefficient.
     pub cn: f64,
@@ -421,6 +461,22 @@ impl DemParams {
 }
 
 /// Compute the contact force between two particles using soft-sphere DEM.
+///
+/// With `n` the unit vector from `p1` to `p2`, `delta` the overlap and
+/// `v_rel = v1 - v2` the relative velocity, the normal approach rate is
+/// `v_n = v_rel . n` (positive while the spheres move towards each other) and
+/// the tangential slip velocity is `v_t = v_rel - v_n n`.
+///
+/// * Normal: a linear spring-dashpot, `F_n = max(0, kn delta + cn v_n)`,
+///   pushing `p1` along `-n` and `p2` along `+n`.  The dashpot increases the
+///   repulsion while the spheres approach and reduces it while they separate,
+///   so the coefficient of restitution is below one.
+/// * Tangential: viscous friction `ct |v_t|` capped by the Coulomb limit
+///   `mu_friction F_n`.  It acts on `p1` against its own slip direction
+///   (`-v_t / |v_t|`) and on `p2` with the opposite sign.  The stateless
+///   contact has no tangential displacement memory, so `kt` is not used here.
+///
+/// The two returned forces are equal and opposite (Newton's third law).
 ///
 /// Returns `(force_on_p1, force_on_p2)` as `([f64; 3], [f64; 3])`.
 pub fn soft_sphere_collision(
@@ -451,8 +507,9 @@ pub fn soft_sphere_collision(
     ];
     let vn = rel_vel[0] * normal[0] + rel_vel[1] * normal[1] + rel_vel[2] * normal[2];
 
-    // Normal force: spring + damping
-    let fn_mag = params.kn * overlap - params.cn * vn;
+    // Normal force: spring + dashpot.  `vn > 0` means the spheres approach each
+    // other, which must *increase* the repulsion.
+    let fn_mag = params.kn * overlap + params.cn * vn;
     let fn_mag = fn_mag.max(0.0); // Only repulsive
 
     // Tangential velocity
@@ -463,20 +520,21 @@ pub fn soft_sphere_collision(
     ];
     let vt_mag = (vt[0].powi(2) + vt[1].powi(2) + vt[2].powi(2)).sqrt();
 
-    // Tangential force (limited by friction)
-    let ft_mag = (params.kt * overlap + params.ct * vt_mag).min(params.mu_friction * fn_mag);
+    // Tangential force: viscous friction limited by the Coulomb cone.
+    let ft_mag = (params.ct * vt_mag).min(params.mu_friction * fn_mag);
 
     let mut force1 = [0.0; 3];
     let mut force2 = [0.0; 3];
     for i in 0..3 {
-        let fn_i = fn_mag * normal[i];
+        // Friction on p1 opposes the slip of p1 relative to p2.
         let ft_i = if vt_mag > 1e-30 {
-            -ft_mag * vt[i] / vt_mag
+            ft_mag * vt[i] / vt_mag
         } else {
             0.0
         };
-        force1[i] = -(fn_i + ft_i);
-        force2[i] = fn_i + ft_i;
+        // Repulsion pushes p1 away from p2 (along -n).
+        force1[i] = -fn_mag * normal[i] - ft_i;
+        force2[i] = -force1[i];
     }
 
     (force1, force2)
@@ -502,6 +560,194 @@ pub fn compute_dem_collisions(particles: &mut [LagrangianParticle], params: &Dem
             }
         }
     }
+    for (p, pf) in particles.iter_mut().zip(forces.iter()) {
+        for (fk, &pfk) in p.force.iter_mut().zip(pf.iter()) {
+            *fk += pfk;
+        }
+    }
+}
+
+/// Tangential spring state of every pair contact of a DEM system
+/// (Cundall-Strack contact history).
+///
+/// Each active contact stores the accumulated tangential displacement `xi`
+/// of the contact point; it is keyed by the pair of
+/// [`LagrangianParticle::id`] values, which therefore have to be unique.
+#[derive(Debug, Clone, Default)]
+pub struct DemContactHistory {
+    springs: BTreeMap<(usize, usize), [f64; 3]>,
+}
+
+impl DemContactHistory {
+    /// Create an empty contact history.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of contacts currently carrying a tangential spring.
+    pub fn len(&self) -> usize {
+        self.springs.len()
+    }
+
+    /// Whether no contact currently carries a tangential spring.
+    pub fn is_empty(&self) -> bool {
+        self.springs.is_empty()
+    }
+
+    /// Forget every stored contact.
+    pub fn clear(&mut self) {
+        self.springs.clear();
+    }
+
+    /// Accumulated tangential displacement of the contact between the
+    /// particles with ids `id_a` and `id_b`, or `None` if they are not in
+    /// contact.  The order of the ids does not matter.
+    pub fn tangential_displacement(&self, id_a: usize, id_b: usize) -> Option<[f64; 3]> {
+        self.springs.get(&Self::key(id_a, id_b)).copied()
+    }
+
+    fn key(id_a: usize, id_b: usize) -> (usize, usize) {
+        if id_a <= id_b {
+            (id_a, id_b)
+        } else {
+            (id_b, id_a)
+        }
+    }
+}
+
+/// Contact force between two particles with a Cundall-Strack tangential
+/// spring.
+///
+/// The normal force is identical to [`soft_sphere_collision`].  The tangential
+/// force on `p1` is `-(kt xi + ct v_t)`, where `xi` is the tangential
+/// displacement accumulated over the lifetime of the contact (`xi += v_t dt`
+/// each step, re-projected onto the current contact plane because the contact
+/// normal rotates).  Its magnitude is limited by the Coulomb cone
+/// `mu_friction F_n`; when the limit is hit the spring is truncated so that
+/// the stored displacement is consistent with the capped force (sliding).
+///
+/// `spring` is the stored displacement of this contact; it is reset to zero
+/// when the particles are not touching.
+///
+/// Returns `(force_on_p1, force_on_p2)`, equal and opposite.
+pub fn soft_sphere_collision_with_history(
+    p1: &LagrangianParticle,
+    p2: &LagrangianParticle,
+    params: &DemParams,
+    dt: f64,
+    spring: &mut [f64; 3],
+) -> ([f64; 3], [f64; 3]) {
+    let dx = [
+        p2.pos[0] - p1.pos[0],
+        p2.pos[1] - p1.pos[1],
+        p2.pos[2] - p1.pos[2],
+    ];
+    let dist = (dx[0].powi(2) + dx[1].powi(2) + dx[2].powi(2)).sqrt();
+    let contact_dist = p1.radius() + p2.radius();
+
+    if dist >= contact_dist || dist < 1e-30 {
+        *spring = [0.0; 3];
+        return ([0.0; 3], [0.0; 3]);
+    }
+
+    let overlap = contact_dist - dist;
+    let normal = [dx[0] / dist, dx[1] / dist, dx[2] / dist];
+    let rel_vel = [
+        p1.vel[0] - p2.vel[0],
+        p1.vel[1] - p2.vel[1],
+        p1.vel[2] - p2.vel[2],
+    ];
+    let vn = rel_vel[0] * normal[0] + rel_vel[1] * normal[1] + rel_vel[2] * normal[2];
+    let fn_mag = (params.kn * overlap + params.cn * vn).max(0.0);
+
+    let vt = [
+        rel_vel[0] - vn * normal[0],
+        rel_vel[1] - vn * normal[1],
+        rel_vel[2] - vn * normal[2],
+    ];
+
+    // Keep the stored displacement in the (rotated) tangent plane, then
+    // integrate the slip of this step.
+    let xi_n = spring[0] * normal[0] + spring[1] * normal[1] + spring[2] * normal[2];
+    for k in 0..3 {
+        spring[k] += -xi_n * normal[k] + vt[k] * dt;
+    }
+
+    let mut ft = [0.0_f64; 3];
+    for k in 0..3 {
+        ft[k] = -(params.kt * spring[k] + params.ct * vt[k]);
+    }
+    let ft_mag = (ft[0] * ft[0] + ft[1] * ft[1] + ft[2] * ft[2]).sqrt();
+    let ft_max = params.mu_friction * fn_mag;
+    if ft_mag > ft_max {
+        // Coulomb sliding: cap the force and shorten the spring accordingly.
+        let scale = if ft_mag > 1e-300 {
+            ft_max / ft_mag
+        } else {
+            0.0
+        };
+        for k in 0..3 {
+            ft[k] *= scale;
+            spring[k] = if params.kt > 0.0 {
+                -(ft[k] + params.ct * vt[k]) / params.kt
+            } else {
+                0.0
+            };
+        }
+    }
+
+    let mut force1 = [0.0_f64; 3];
+    let mut force2 = [0.0_f64; 3];
+    for k in 0..3 {
+        force1[k] = -fn_mag * normal[k] + ft[k];
+        force2[k] = -force1[k];
+    }
+    (force1, force2)
+}
+
+/// Check all particle pairs for collisions with Cundall-Strack tangential
+/// springs and accumulate the contact forces.
+///
+/// `history` carries the tangential springs from one call to the next; the
+/// entries of pairs that are no longer touching are dropped.  `dt` is the time
+/// step that will be used to integrate the particles.
+pub fn compute_dem_collisions_with_history(
+    particles: &mut [LagrangianParticle],
+    params: &DemParams,
+    history: &mut DemContactHistory,
+    dt: f64,
+) {
+    let n = particles.len();
+    let mut forces = vec![[0.0_f64; 3]; n];
+    let mut next = BTreeMap::new();
+    for i in 0..n {
+        if !particles[i].active {
+            continue;
+        }
+        for j in (i + 1)..n {
+            if !particles[j].active {
+                continue;
+            }
+            let key = DemContactHistory::key(particles[i].id, particles[j].id);
+            let mut spring = history.springs.get(&key).copied().unwrap_or([0.0; 3]);
+            let (f1, f2) = soft_sphere_collision_with_history(
+                &particles[i],
+                &particles[j],
+                params,
+                dt,
+                &mut spring,
+            );
+            let touching = f1 != [0.0; 3] || f2 != [0.0; 3] || spring != [0.0; 3];
+            if touching {
+                next.insert(key, spring);
+            }
+            for k in 0..3 {
+                forces[i][k] += f1[k];
+                forces[j][k] += f2[k];
+            }
+        }
+    }
+    history.springs = next;
     for (p, pf) in particles.iter_mut().zip(forces.iter()) {
         for (fk, &pfk) in p.force.iter_mut().zip(pf.iter()) {
             *fk += pfk;
@@ -961,7 +1207,11 @@ pub fn verlet_step(p: &mut LagrangianParticle, old_force: &[f64; 3], dt: f64) {
 
 /// Track all particles for one time step in a 2D velocity field.
 ///
-/// Applies Stokes drag and gravity, then advances with Euler integration.
+/// Applies Stokes drag and the net gravitational-buoyant force
+/// ([`buoyancy_force`]), then advances with Euler integration.  In a quiescent
+/// fluid the particle velocity therefore relaxes to the Stokes settling
+/// velocity `(rho_p - rho_f) g d^2 / (18 mu)` with the time constant
+/// `rho_p d^2 / (18 mu)`.
 pub fn track_particles_2d(
     particles: &mut [LagrangianParticle],
     field: &VelocityField2D,
@@ -984,7 +1234,7 @@ pub fn track_particles_2d(
             *fk += dk;
         }
 
-        // Buoyancy + gravity
+        // Net weight minus buoyancy
         let buoy = buoyancy_force(p, fluid);
         for (fk, &bk) in p.force.iter_mut().zip(buoy.iter()) {
             *fk += bk;
@@ -1064,6 +1314,9 @@ pub fn mass_loading_ratio(particles: &[LagrangianParticle], rho_f: f64, domain_v
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod physics_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1178,6 +1431,8 @@ mod tests {
         let drag =
             drag_force_schiller_naumann(&[1.0, 0.0, 0.0], &[0.0, 0.0, 0.0], 0.01, 1000.0, 1e-6);
         assert!(drag[0] > 0.0);
+        assert!(drag[1].abs() < 1e-15);
+        assert!(drag[2].abs() < 1e-15);
     }
 
     // --- Saffman lift tests ---
@@ -1234,12 +1489,26 @@ mod tests {
         let p = LagrangianParticle::new([0.0; 3], 0.01, 2500.0, 0);
         let fluid = FluidParams::new(1000.0, 1e-6, [0.0, -9.81, 0.0]);
         let f = buoyancy_force(&p, &fluid);
-        // Heavier particle -> buoyancy should push upward (opposing gravity)
-        // delta_rho = 2500-1000 > 0, F = -delta_rho*V*g => Fy = +delta_rho*V*9.81
+        // Heavier particle: the net weight (weight minus Archimedes buoyancy)
+        // points along gravity, i.e. downwards, with magnitude
+        // (rho_p - rho_f) * V * g.
+        assert!(f[1] < 0.0, "a heavy particle must be pushed along gravity");
+        let expected = (2500.0 - 1000.0) * p.volume() * 9.81;
         assert!(
-            f[1] > 0.0,
-            "buoyancy should oppose gravity for heavy particle"
+            (f[1] + expected).abs() < 1e-12 * expected,
+            "net force {} != -{expected}",
+            f[1]
         );
+        assert_eq!(f[0], 0.0);
+        assert_eq!(f[2], 0.0);
+    }
+
+    #[test]
+    fn test_buoyancy_lighter_particle_rises() {
+        let p = LagrangianParticle::new([0.0; 3], 0.01, 500.0, 0);
+        let fluid = FluidParams::new(1000.0, 1e-6, [0.0, -9.81, 0.0]);
+        let f = buoyancy_force(&p, &fluid);
+        assert!(f[1] > 0.0, "a light particle must rise against gravity");
     }
 
     // --- DEM collision tests ---

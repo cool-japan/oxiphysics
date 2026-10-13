@@ -175,10 +175,12 @@ pub struct CifAtomSite {
     /// Site occupancy (0–1).
     pub occupancy: f64,
 }
-/// Simplified reader for VASP CHGCAR files.
+/// Reader for VASP CHGCAR files.
 ///
 /// The CHGCAR format is a POSCAR block followed by a charge density grid.
-/// The charge density is stored as ρ × Volume (in electrons).
+/// The charge density is stored as ρ × Volume (in electrons).  Only the first
+/// grid (the total charge density) is read; the augmentation occupancies and the
+/// magnetisation grids of spin-polarised runs that follow it are ignored.
 #[derive(Debug, Clone)]
 pub struct ChgcarFile {
     /// Structure part of the CHGCAR.
@@ -190,100 +192,153 @@ pub struct ChgcarFile {
 }
 impl ChgcarFile {
     /// Parse a CHGCAR file from text.
+    ///
+    /// The file is a POSCAR block, a grid-dimension line `nx ny nz` and then
+    /// `nx * ny * nz` values (`rho * volume`, x index fastest).  Exactly that
+    /// many values are read; anything after them (augmentation occupancies,
+    /// the magnetisation block of a spin-polarised run) is ignored.
+    ///
+    /// # Errors
+    ///
+    /// * [`MolVizError::MissingSection`] when the grid-dimension line is
+    ///   absent (for example a plain POSCAR).
+    /// * [`MolVizError::ParseError`] when the dimension line or a data value
+    ///   is not numeric.
+    /// * [`MolVizError::DimensionMismatch`] when a dimension is zero, the grid
+    ///   size overflows, or the file holds fewer values than the grid needs.
     pub fn parse(content: &str) -> Result<Self> {
+        let poscar = PoscarFile::parse(content)?;
+        let species_lines = usize::from(!poscar.species.is_empty());
+        let selective_lines = usize::from(poscar.selective_dynamics);
+        // comment, scale, three lattice rows, [species], counts,
+        // [selective dynamics], coordinate mode, then one line per atom.
+        let poscar_lines = 7 + species_lines + selective_lines + poscar.n_atoms();
         let lines: Vec<&str> = content.lines().collect();
-        let poscar_lines = {
-            let mut n_atoms = 0usize;
-            let mut has_selective = false;
-            for (i, line) in lines.iter().enumerate() {
-                let t = line.trim();
-                if i == 6 && t.chars().next().is_some_and(|c| c.is_alphabetic()) {
-                    continue;
-                }
-                if i == 6 || i == 7 {
-                    let counts: Vec<usize> = t
-                        .split_whitespace()
-                        .filter_map(|s| s.parse().ok())
-                        .collect();
-                    if !counts.is_empty() {
-                        n_atoms = counts.iter().sum();
-                    }
-                }
-                if (i == 7 || i == 8) && (t.starts_with('S') || t.starts_with('s')) {
-                    has_selective = true;
-                }
-                if i > 8 {
-                    break;
-                }
-            }
-            let coord_offset = if has_selective { 9 } else { 8 };
-            coord_offset + n_atoms
-        };
-        let mut search = poscar_lines;
-        while search < lines.len() && !lines[search].trim().is_empty() {
-            search += 1;
-        }
-        let poscar_end = search;
-        let poscar_text: String = lines[..poscar_end].join("\n");
-        let poscar = PoscarFile::parse(&poscar_text)?;
-        let mut grid_idx = poscar_end + 1;
-        while grid_idx < lines.len() && lines[grid_idx].trim().is_empty() {
+        let mut grid_idx = poscar_lines;
+        while lines.get(grid_idx).is_some_and(|l| l.trim().is_empty()) {
             grid_idx += 1;
         }
-        let grid_dims = if grid_idx < lines.len() {
-            let gdline = lines[grid_idx].trim();
-            let gd: Vec<usize> = gdline
-                .split_whitespace()
-                .filter_map(|s| s.parse().ok())
-                .collect();
-            [
-                gd.first().copied().unwrap_or(1),
-                gd.get(1).copied().unwrap_or(1),
-                gd.get(2).copied().unwrap_or(1),
-            ]
-        } else {
-            [1, 1, 1]
-        };
-        let expected = grid_dims[0] * grid_dims[1] * grid_dims[2];
-        let mut charge = Vec::with_capacity(expected);
-        let start = grid_idx + 1;
-        for line in lines[start..].iter() {
-            let t = line.trim();
-            if t.is_empty() {
+        let dims_line = lines
+            .get(grid_idx)
+            .ok_or_else(|| MolVizError::MissingSection {
+                section: "CHGCAR grid dimensions".to_string(),
+            })?;
+        let dim_tokens: Vec<&str> = dims_line.split_whitespace().collect();
+        if dim_tokens.len() != 3 {
+            return Err(MolVizError::ParseError {
+                message: format!(
+                    "CHGCAR grid dimension line must hold exactly 3 integers, got '{}'",
+                    dims_line.trim()
+                ),
+            });
+        }
+        let mut grid_dims = [0usize; 3];
+        for (slot, tok) in grid_dims.iter_mut().zip(&dim_tokens) {
+            *slot = tok.parse().map_err(|_| MolVizError::ParseError {
+                message: format!("bad CHGCAR grid dimension '{tok}'"),
+            })?;
+        }
+        if grid_dims.contains(&0) {
+            return Err(MolVizError::DimensionMismatch {
+                message: format!("CHGCAR grid dimensions {grid_dims:?} contain a zero"),
+            });
+        }
+        let expected = grid_dims[0]
+            .checked_mul(grid_dims[1])
+            .and_then(|n| n.checked_mul(grid_dims[2]))
+            .ok_or_else(|| MolVizError::DimensionMismatch {
+                message: format!("CHGCAR grid dimensions {grid_dims:?} overflow"),
+            })?;
+        // Never trust the header for the allocation size: a valid file needs
+        // at least two bytes (digit plus separator) per value.
+        let mut charge = Vec::with_capacity(expected.min(content.len() / 2 + 1));
+        for line in lines.iter().skip(grid_idx + 1) {
+            if charge.len() == expected {
                 break;
             }
-            if t.starts_with("augmentation") || t.starts_with("AUGMENTATION") {
+            let t = line.trim();
+            if t.is_empty() {
+                continue;
+            }
+            if t.get(..12)
+                .is_some_and(|p| p.eq_ignore_ascii_case("augmentation"))
+            {
                 break;
             }
             for tok in t.split_whitespace() {
-                if let Ok(v) = tok.parse::<f64>() {
-                    charge.push(v);
-                }
+                let v = parse_vasp_real(tok).ok_or_else(|| MolVizError::ParseError {
+                    message: format!("bad CHGCAR density value '{tok}'"),
+                })?;
+                charge.push(v);
+            }
+            if charge.len() > expected {
+                return Err(MolVizError::DimensionMismatch {
+                    message: format!(
+                        "CHGCAR grid {grid_dims:?} needs {expected} values but the data block holds more"
+                    ),
+                });
             }
         }
-        charge.resize(expected, 0.0);
+        if charge.len() != expected {
+            return Err(MolVizError::DimensionMismatch {
+                message: format!(
+                    "CHGCAR grid {grid_dims:?} needs {expected} values but only {} were found",
+                    charge.len()
+                ),
+            });
+        }
         Ok(ChgcarFile {
             poscar,
             grid_dims,
             charge,
         })
     }
-    /// Return the charge density at grid point (ix, iy, iz) divided by the cell volume.
-    /// Gives electron density in e/Å³.
-    pub fn density(&self, ix: usize, iy: usize, iz: usize) -> f64 {
-        let [_nx, ny, nz] = self.grid_dims;
-        let idx = ix * ny * nz + iy * nz + iz;
-        if idx < self.charge.len() {
-            let vol = lattice_volume(self.poscar.lattice);
-            if vol > 1e-12 {
-                self.charge[idx] / vol
-            } else {
-                0.0
-            }
+    /// Return the charge density at grid point `(ix, iy, iz)` divided by the
+    /// cell volume, i.e. the electron density in e/Å³.
+    ///
+    /// The grid is stored with the x index fastest, so the flat index is
+    /// `ix + nx * (iy + ny * iz)`.  Returns `None` when the point lies outside
+    /// the grid, when the stored data is shorter than the grid, or when the
+    /// cell volume is degenerate.
+    pub fn density(&self, ix: usize, iy: usize, iz: usize) -> Option<f64> {
+        let [nx, ny, nz] = self.grid_dims;
+        if ix >= nx || iy >= ny || iz >= nz {
+            return None;
+        }
+        let idx = ny
+            .checked_mul(iz)
+            .and_then(|v| v.checked_add(iy))
+            .and_then(|v| v.checked_mul(nx))
+            .and_then(|v| v.checked_add(ix))?;
+        let rho_volume = *self.charge.get(idx)?;
+        let vol = lattice_volume(self.poscar.lattice);
+        if vol > 1e-12 {
+            Some(rho_volume / vol)
         } else {
-            0.0
+            None
         }
     }
+}
+/// Parse one real number of a VASP volumetric file.
+///
+/// Fortran `E` formatting drops the exponent letter when the exponent has
+/// three digits (`0.1234-100` means `0.1234E-100`); VASP emits such values in
+/// vacuum regions, so they are repaired before parsing.
+fn parse_vasp_real(token: &str) -> Option<f64> {
+    if let Ok(v) = token.parse::<f64>() {
+        return Some(v);
+    }
+    let bytes = token.as_bytes();
+    let sign_pos = 1 + bytes.iter().skip(1).position(|&b| b == b'+' || b == b'-')?;
+    let before = *bytes.get(sign_pos - 1)?;
+    if !(before.is_ascii_digit() || before == b'.') {
+        return None;
+    }
+    let mut repaired = String::with_capacity(token.len() + 1);
+    repaired.push_str(token.get(..sign_pos)?);
+    repaired.push('E');
+    repaired.push_str(token.get(sign_pos..)?);
+    repaired.parse().ok()
 }
 /// Errors that may arise during molecular I/O.
 #[derive(Debug)]

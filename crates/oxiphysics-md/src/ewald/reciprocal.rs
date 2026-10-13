@@ -7,6 +7,7 @@ use oxifft;
 
 use super::params::{COULOMB_K, EwaldParams, erfc_approx};
 use super::summation::EwaldSummation;
+use crate::error::MdError;
 
 // ---------------------------------------------------------------------------
 // BSplineChargeSpreading (smooth PME helper)
@@ -382,92 +383,241 @@ impl StructureFactor {
 // EwaldForceIntegrator — integrate MD step with Ewald electrostatics
 // ---------------------------------------------------------------------------
 
+/// Conversion factor from an acceleration in `kJ mol^-1 A^-1 amu^-1` to
+/// `A ps^-2`.
+///
+/// `1 kJ mol^-1 A^-1 amu^-1 = 1e3 J / (1e-3 kg * 1e-10 m) = 1e10 m s^-2
+/// = 1e10 * 1e10 A / (1e12 ps)^2 = 100 A ps^-2`.  The same factor converts a
+/// kinetic energy `m v^2 / 2` in `amu A^2 ps^-2` to `kJ mol^-1` when divided
+/// into it.
+pub const KJMOL_A_AMU_TO_A_PS2: f64 = 100.0;
+
+/// Forces evaluated for one configuration, together with everything they
+/// depend on, so that a later step can tell whether they are still valid.
+#[derive(Debug, Clone)]
+struct ForceCache {
+    /// Ewald setup (splitting parameter, cutoffs, dielectric constant, box,
+    /// `k_max`) the forces were computed with.
+    ewald: EwaldSummation,
+    /// Positions the forces were computed at (A).
+    positions: Vec<[f64; 3]>,
+    /// Partial charges the forces were computed with (e).
+    charges: Vec<f64>,
+    /// Total Ewald forces (kJ mol^-1 A^-1).
+    forces: Vec<[f64; 3]>,
+}
+
+impl ForceCache {
+    /// Whether the cached forces belong to exactly this configuration and setup.
+    fn matches(&self, ewald: &EwaldSummation, positions: &[[f64; 3]], charges: &[f64]) -> bool {
+        self.ewald.params.alpha == ewald.params.alpha
+            && self.ewald.params.r_cutoff == ewald.params.r_cutoff
+            && self.ewald.params.k_cutoff == ewald.params.k_cutoff
+            && self.ewald.params.epsilon_r == ewald.params.epsilon_r
+            && self.ewald.box_lengths == ewald.box_lengths
+            && self.ewald.k_max == ewald.k_max
+            && self.positions.as_slice() == positions
+            && self.charges.as_slice() == charges
+    }
+}
+
 /// Utility for running a short velocity-Verlet MD loop with Ewald forces.
 ///
-/// Operates on plain `[f64;3]` arrays with no external dependencies.
+/// Operates on plain `[f64;3]` arrays with no external dependencies.  The
+/// forces are the full Ewald forces (real space plus reciprocal space, see
+/// [`EwaldSummation::compute_forces_full`]), the same ones whose energy
+/// [`EwaldForceIntegrator::step`] reports, so the dynamics conserve the
+/// returned potential energy plus the kinetic energy.
+///
+/// # Units
+/// * positions: A, velocities: A ps^-1, time step: ps,
+/// * charges: e, masses: amu,
+/// * energies: kJ mol^-1, forces: kJ mol^-1 A^-1.
+///
+/// Accelerations `F / m` are converted with [`KJMOL_A_AMU_TO_A_PS2`].
+#[derive(Debug, Clone)]
 pub struct EwaldForceIntegrator {
     /// Ewald summation parameters.
     pub ewald: EwaldSummation,
     /// Time step (ps).
     pub dt: f64,
+    /// Forces at the end of the previous step, reused as the first half-kick of
+    /// the next one when the configuration has not been touched in between.
+    cache: Option<ForceCache>,
+    /// Number of full Ewald force evaluations performed so far.
+    force_evaluations: usize,
 }
 
 impl EwaldForceIntegrator {
     /// Create a new integrator.
-    pub fn new(ewald: EwaldSummation, dt: f64) -> Self {
-        assert!(dt > 0.0, "dt must be positive");
-        Self { ewald, dt }
+    ///
+    /// # Errors
+    /// Returns an error if `dt` is not a positive finite number or if any box
+    /// length of `ewald` is not a positive finite number.
+    pub fn new(ewald: EwaldSummation, dt: f64) -> Result<Self, MdError> {
+        let integrator = Self {
+            ewald,
+            dt,
+            cache: None,
+            force_evaluations: 0,
+        };
+        integrator.validate_setup()?;
+        Ok(integrator)
     }
 
-    /// Perform one velocity-Verlet step with Ewald electrostatic forces.
+    /// Check that the time step and the periodic box can be integrated with.
+    fn validate_setup(&self) -> Result<(), MdError> {
+        if !(self.dt.is_finite() && self.dt > 0.0) {
+            return Err(MdError::General(format!(
+                "Ewald integrator time step must be positive and finite, got {}",
+                self.dt
+            )));
+        }
+        if let Some(l) = self
+            .ewald
+            .box_lengths
+            .iter()
+            .find(|l| !(l.is_finite() && **l > 0.0))
+        {
+            return Err(MdError::General(format!(
+                "Ewald integrator box lengths must be positive and finite, got {l}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Number of full Ewald force evaluations performed so far.
+    ///
+    /// A run of `n` steps from a fresh integrator costs `n + 1` evaluations:
+    /// one for the initial forces and one per step at the new positions.
+    pub fn force_evaluations(&self) -> usize {
+        self.force_evaluations
+    }
+
+    /// Forget the cached forces, forcing the next step to recompute them.
+    ///
+    /// The cache is keyed on the positions, charges and Ewald setup, so this
+    /// is only needed to force a re-evaluation (for example when comparing
+    /// timings); stale forces are never reused.
+    pub fn invalidate_cache(&mut self) {
+        self.cache = None;
+    }
+
+    /// Kinetic energy `sum_i m_i |v_i|^2 / 2` in kJ mol^-1 for velocities in
+    /// A ps^-1 and masses in amu.
+    pub fn kinetic_energy(velocities: &[[f64; 3]], masses: &[f64]) -> f64 {
+        let twice_ke: f64 = velocities
+            .iter()
+            .zip(masses)
+            .map(|(v, &m)| m * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]))
+            .sum();
+        0.5 * twice_ke / KJMOL_A_AMU_TO_A_PS2
+    }
+
+    /// Total Ewald energy (kJ mol^-1) and forces (kJ mol^-1 A^-1) at the given
+    /// configuration, counting the evaluation.
+    fn evaluate(&mut self, positions: &[[f64; 3]], charges: &[f64]) -> (f64, Vec<[f64; 3]>) {
+        self.force_evaluations += 1;
+        self.ewald.compute_forces_full(positions, charges)
+    }
+
+    /// Add `0.5 * dt * F / m` (converted to A ps^-1) to every velocity.
+    fn half_kick(&self, velocities: &mut [[f64; 3]], forces: &[[f64; 3]], masses: &[f64]) {
+        let scale = 0.5 * self.dt * KJMOL_A_AMU_TO_A_PS2;
+        for ((v, f), &m) in velocities.iter_mut().zip(forces).zip(masses) {
+            let factor = scale / m;
+            for a in 0..3 {
+                v[a] += factor * f[a];
+            }
+        }
+    }
+
+    /// Perform one velocity-Verlet step with the full Ewald forces.
     ///
     /// # Arguments
-    /// * `positions`  - current atom positions (updated in place, Å).
-    /// * `velocities` - current atom velocities (updated in place, Å ps⁻¹).
+    /// * `positions`  - current atom positions (updated in place and wrapped into
+    ///   the periodic box, A).
+    /// * `velocities` - current atom velocities (updated in place, A ps^-1).
     /// * `charges`    - atom partial charges (e).
     /// * `masses`     - atom masses (amu).
     ///
     /// # Returns
-    /// The potential energy (kJ mol⁻¹) at the new configuration.
+    /// The potential energy (kJ mol^-1) at the new configuration.
+    ///
+    /// # Errors
+    /// Returns an error if the slices differ in length, a mass is not positive
+    /// and finite, or the integrator's time step or box became invalid.  The
+    /// inputs are left untouched in that case.
     pub fn step(
-        &self,
+        &mut self,
         positions: &mut [[f64; 3]],
         velocities: &mut [[f64; 3]],
         charges: &[f64],
         masses: &[f64],
-    ) -> f64 {
+    ) -> Result<f64, MdError> {
+        self.validate_setup()?;
         let n = positions.len();
-        // Initial forces at current positions
-        let mut forces = self.ewald.real_space_forces(positions, charges);
+        if velocities.len() != n || charges.len() != n || masses.len() != n {
+            return Err(MdError::General(format!(
+                "Ewald integrator input lengths differ: {n} positions, {} velocities, \
+                 {} charges, {} masses",
+                velocities.len(),
+                charges.len(),
+                masses.len()
+            )));
+        }
+        if let Some(m) = masses.iter().find(|m| !(m.is_finite() && **m > 0.0)) {
+            return Err(MdError::General(format!(
+                "Ewald integrator masses must be positive and finite, got {m}"
+            )));
+        }
 
-        // Half-step velocity update
-        for i in 0..n {
-            let inv_m = 1.0 / masses[i];
+        // Forces at the current positions: reuse the ones computed at the end of
+        // the previous step when nothing has moved since.
+        let forces_now = match self.cache.take() {
+            Some(cache) if cache.matches(&self.ewald, positions, charges) => cache.forces,
+            _ => self.evaluate(positions, charges).1,
+        };
+
+        // First half-kick, then drift with periodic wrapping.
+        self.half_kick(velocities, &forces_now, masses);
+        for (r, v) in positions.iter_mut().zip(velocities.iter()) {
             for a in 0..3 {
-                velocities[i][a] += 0.5 * self.dt * forces[i][a] * inv_m;
+                r[a] = (r[a] + self.dt * v[a]).rem_euclid(self.ewald.box_lengths[a]);
             }
         }
 
-        // Full-step position update
-        for i in 0..n {
-            for a in 0..3 {
-                positions[i][a] += self.dt * velocities[i][a];
-                // PBC wrap
-                let l = self.ewald.box_lengths[a];
-                positions[i][a] = positions[i][a].rem_euclid(l);
-            }
-        }
+        // Forces and energy at the new positions, second half-kick.
+        let (energy, forces_new) = self.evaluate(positions, charges);
+        self.half_kick(velocities, &forces_new, masses);
 
-        // New forces
-        forces = self.ewald.real_space_forces(positions, charges);
-        let energy = self.ewald.total_energy(positions, charges);
-
-        // Second half-step velocity update
-        for i in 0..n {
-            let inv_m = 1.0 / masses[i];
-            for a in 0..3 {
-                velocities[i][a] += 0.5 * self.dt * forces[i][a] * inv_m;
-            }
-        }
-
-        energy
+        self.cache = Some(ForceCache {
+            ewald: self.ewald.clone(),
+            positions: positions.to_vec(),
+            charges: charges.to_vec(),
+            forces: forces_new,
+        });
+        Ok(energy)
     }
 
-    /// Run for `n_steps` and record total energy at each step.
+    /// Run for `n_steps` and record the potential energy after each step.
+    ///
+    /// # Errors
+    /// Propagates any error of [`Self::step`]; the energies recorded before the
+    /// failing step are discarded.
     pub fn run(
-        &self,
+        &mut self,
         positions: &mut [[f64; 3]],
         velocities: &mut [[f64; 3]],
         charges: &[f64],
         masses: &[f64],
         n_steps: usize,
-    ) -> Vec<f64> {
+    ) -> Result<Vec<f64>, MdError> {
         let mut energies = Vec::with_capacity(n_steps);
         for _ in 0..n_steps {
-            let e = self.step(positions, velocities, charges, masses);
-            energies.push(e);
+            energies.push(self.step(positions, velocities, charges, masses)?);
         }
-        energies
+        Ok(energies)
     }
 }
 
@@ -959,7 +1109,7 @@ mod tests {
     fn test_ewald_force_integrator_step_advances_positions() {
         let params = EwaldParams::new(8.0);
         let ewald = EwaldSummation::with_k_max(params, [20.0, 20.0, 20.0], 2);
-        let integrator = EwaldForceIntegrator::new(ewald, 0.001);
+        let mut integrator = EwaldForceIntegrator::new(ewald, 0.001).unwrap();
 
         let mut positions = vec![[2.0, 10.0, 10.0], [8.0, 10.0, 10.0]];
         let mut velocities = vec![[0.5, 0.0, 0.0], [-0.5, 0.0, 0.0]];
@@ -967,7 +1117,9 @@ mod tests {
         let masses = vec![1.0, 1.0];
 
         let pos0_x = positions[0][0];
-        integrator.step(&mut positions, &mut velocities, &charges, &masses);
+        integrator
+            .step(&mut positions, &mut velocities, &charges, &masses)
+            .unwrap();
         assert!(
             (positions[0][0] - pos0_x).abs() > 1e-12,
             "positions should change after step"
@@ -978,18 +1130,272 @@ mod tests {
     fn test_ewald_force_integrator_run_returns_energies() {
         let params = EwaldParams::new(8.0);
         let ewald = EwaldSummation::with_k_max(params, [20.0, 20.0, 20.0], 2);
-        let integrator = EwaldForceIntegrator::new(ewald, 0.001);
+        let mut integrator = EwaldForceIntegrator::new(ewald, 0.001).unwrap();
 
         let mut positions = vec![[2.0, 10.0, 10.0], [8.0, 10.0, 10.0]];
         let mut velocities = vec![[0.1, 0.0, 0.0], [-0.1, 0.0, 0.0]];
         let charges = vec![1.0, -1.0];
         let masses = vec![1.0, 1.0];
 
-        let energies = integrator.run(&mut positions, &mut velocities, &charges, &masses, 5);
+        let energies = integrator
+            .run(&mut positions, &mut velocities, &charges, &masses, 5)
+            .unwrap();
         assert_eq!(energies.len(), 5);
         for e in &energies {
             assert!(e.is_finite(), "energy should be finite");
         }
+    }
+
+    // ------------------------------------------------------------------
+    // EwaldForceIntegrator: full forces, unit factor, energy conservation
+    // ------------------------------------------------------------------
+
+    /// Ewald engine for the integrator tests: a 20 A box with alpha = 0.3 so that
+    /// the reciprocal-space forces are a large share of the total.
+    fn integrator_ewald() -> EwaldSummation {
+        let alpha = 0.3;
+        let params = EwaldParams {
+            alpha,
+            r_cutoff: 9.0,
+            k_cutoff: 2.0 * std::f64::consts::PI * alpha,
+            epsilon_r: 1.0,
+        };
+        EwaldSummation::with_k_max(params, [20.0, 20.0, 20.0], 6)
+    }
+
+    /// Initial condition of a small ionic test system.
+    struct IonSystem {
+        positions: Vec<[f64; 3]>,
+        velocities: Vec<[f64; 3]>,
+        charges: Vec<f64>,
+        masses: Vec<f64>,
+    }
+
+    /// Na+/Cl- pair centred in the box, separated by `r` along x, with relative
+    /// velocity `v_rel` along y and zero total momentum.
+    fn nacl_pair(r: f64, v_rel: f64) -> IonSystem {
+        let (m_na, m_cl) = (22.989_769, 35.45);
+        let m_tot = m_na + m_cl;
+        IonSystem {
+            positions: vec![[10.0 - 0.5 * r, 10.0, 10.0], [10.0 + 0.5 * r, 10.0, 10.0]],
+            velocities: vec![
+                [0.0, v_rel * m_cl / m_tot, 0.0],
+                [0.0, -v_rel * m_na / m_tot, 0.0],
+            ],
+            charges: vec![1.0, -1.0],
+            masses: vec![m_na, m_cl],
+        }
+    }
+
+    #[test]
+    fn test_ewald_force_integrator_rejects_invalid_setup() {
+        for dt in [0.0, -0.001, f64::NAN, f64::INFINITY] {
+            assert!(
+                EwaldForceIntegrator::new(integrator_ewald(), dt).is_err(),
+                "dt = {dt} must be rejected"
+            );
+        }
+        let mut bad_box = integrator_ewald();
+        bad_box.box_lengths = [20.0, 0.0, 20.0];
+        assert!(EwaldForceIntegrator::new(bad_box, 0.001).is_err());
+        assert!(EwaldForceIntegrator::new(integrator_ewald(), 0.001).is_ok());
+    }
+
+    #[test]
+    fn test_ewald_force_integrator_rejects_inconsistent_inputs_without_touching_them() {
+        let mut integrator = EwaldForceIntegrator::new(integrator_ewald(), 0.001).unwrap();
+        let IonSystem {
+            mut positions,
+            mut velocities,
+            charges,
+            masses,
+        } = nacl_pair(5.0, 10.0);
+        let positions_before = positions.clone();
+        let velocities_before = velocities.clone();
+
+        // Length mismatch.
+        assert!(
+            integrator
+                .step(&mut positions, &mut velocities, &charges[..1], &masses)
+                .is_err()
+        );
+        // Non-positive and non-finite masses.
+        for bad in [0.0, -1.0, f64::NAN] {
+            let masses_bad = vec![22.99, bad];
+            assert!(
+                integrator
+                    .step(&mut positions, &mut velocities, &charges, &masses_bad)
+                    .is_err(),
+                "mass {bad} must be rejected"
+            );
+        }
+        assert_eq!(positions, positions_before);
+        assert_eq!(velocities, velocities_before);
+        assert_eq!(integrator.force_evaluations(), 0);
+    }
+
+    #[test]
+    fn test_ewald_force_integrator_kick_uses_full_forces_and_the_unit_factor() {
+        // Cation and anion 3 A apart, released from rest.  After one step the
+        // velocity of atom 0 is a = 100 * F / m times dt, with F the *full* Ewald
+        // force (real + reciprocal); real-space forces alone are only ~65 % of it.
+        let dt = 0.001;
+        let ewald = integrator_ewald();
+        let IonSystem {
+            mut positions,
+            mut velocities,
+            charges,
+            masses,
+        } = nacl_pair(3.0, 0.0);
+        let (_, forces) = ewald.compute_forces_full(&positions, &charges);
+        let real_only = ewald.real_space_forces(&positions, &charges);
+
+        let mut integrator = EwaldForceIntegrator::new(ewald, dt).unwrap();
+        integrator
+            .step(&mut positions, &mut velocities, &charges, &masses)
+            .unwrap();
+
+        let expected = KJMOL_A_AMU_TO_A_PS2 * dt * forces[0][0] / masses[0];
+        let v0 = velocities[0][0];
+        assert!(
+            ((v0 - expected) / expected).abs() < 1.0e-3,
+            "v0 = {v0}, expected {expected} (= 100 dt F / m)"
+        );
+        let real_only_expected = KJMOL_A_AMU_TO_A_PS2 * dt * real_only[0][0] / masses[0];
+        assert!(
+            v0 > 1.3 * real_only_expected,
+            "velocity {v0} does not include the reciprocal-space force \
+             (real-space only would give {real_only_expected})"
+        );
+        // Momentum is conserved by the equal and opposite forces.
+        let p: f64 = velocities.iter().zip(&masses).map(|(v, m)| m * v[0]).sum();
+        assert!(p.abs() < 1.0e-9, "total x momentum {p}");
+    }
+
+    #[test]
+    fn test_ewald_force_integrator_conserves_energy_for_a_nacl_orbit() {
+        // Bound Na+/Cl- pair on a near-circular orbit at r = 5 A: the circular
+        // relative speed satisfies mu v^2 / 100 = K / r  (kJ mol^-1).
+        let dt = 0.001;
+        let r0 = 5.0;
+        let mu = 22.989_769 * 35.45 / (22.989_769 + 35.45);
+        let v_circular = (KJMOL_A_AMU_TO_A_PS2 * COULOMB_K / (mu * r0)).sqrt();
+        let IonSystem {
+            mut positions,
+            mut velocities,
+            charges,
+            masses,
+        } = nacl_pair(r0, v_circular);
+
+        let mut integrator = EwaldForceIntegrator::new(integrator_ewald(), dt).unwrap();
+        let potential0 = integrator.ewald.total_energy(&positions, &charges);
+        let total0 = potential0 + EwaldForceIntegrator::kinetic_energy(&velocities, &masses);
+        assert!(total0 < -50.0, "bound pair expected, E = {total0}");
+
+        let mut max_drift = 0.0_f64;
+        let (mut r_min, mut r_max) = (f64::INFINITY, 0.0_f64);
+        for step in 0..1000 {
+            let potential = integrator
+                .step(&mut positions, &mut velocities, &charges, &masses)
+                .unwrap();
+            let total = potential + EwaldForceIntegrator::kinetic_energy(&velocities, &masses);
+            max_drift = max_drift.max(((total - total0) / total0).abs());
+            let dx = positions[1][0] - positions[0][0];
+            let dy = positions[1][1] - positions[0][1];
+            let dz = positions[1][2] - positions[0][2];
+            let r = (dx * dx + dy * dy + dz * dz).sqrt();
+            r_min = r_min.min(r);
+            r_max = r_max.max(r);
+            assert!(total.is_finite(), "non-finite energy at step {step}");
+        }
+        assert!(
+            max_drift < 1.0e-4,
+            "relative total-energy drift {max_drift} over 1000 steps"
+        );
+        // The pair really did orbit (stays bound, away from the singularity).
+        assert!(r_min > 3.0 && r_max < 7.5, "r in [{r_min}, {r_max}]");
+    }
+
+    #[test]
+    fn test_ewald_force_integrator_reuses_forces_between_steps() {
+        let IonSystem {
+            mut positions,
+            mut velocities,
+            charges,
+            masses,
+        } = nacl_pair(5.0, 20.0);
+        let mut integrator = EwaldForceIntegrator::new(integrator_ewald(), 0.001).unwrap();
+        for _ in 0..10 {
+            integrator
+                .step(&mut positions, &mut velocities, &charges, &masses)
+                .unwrap();
+        }
+        // One initial evaluation plus one per step, not two per step.
+        assert_eq!(integrator.force_evaluations(), 11);
+
+        // The cached run reproduces the run that recomputes every force exactly.
+        let IonSystem {
+            positions: mut p_a,
+            velocities: mut v_a,
+            ..
+        } = nacl_pair(5.0, 20.0);
+        let IonSystem {
+            positions: mut p_b,
+            velocities: mut v_b,
+            ..
+        } = nacl_pair(5.0, 20.0);
+        let mut cached = EwaldForceIntegrator::new(integrator_ewald(), 0.001).unwrap();
+        let mut fresh = EwaldForceIntegrator::new(integrator_ewald(), 0.001).unwrap();
+        for _ in 0..25 {
+            cached.step(&mut p_a, &mut v_a, &charges, &masses).unwrap();
+            fresh.invalidate_cache();
+            fresh.step(&mut p_b, &mut v_b, &charges, &masses).unwrap();
+        }
+        assert_eq!(p_a, p_b);
+        assert_eq!(v_a, v_b);
+        assert_eq!(fresh.force_evaluations(), 50);
+    }
+
+    #[test]
+    fn test_ewald_force_integrator_never_reuses_stale_forces() {
+        let IonSystem {
+            mut positions,
+            mut velocities,
+            charges,
+            masses,
+        } = nacl_pair(5.0, 20.0);
+        let mut integrator = EwaldForceIntegrator::new(integrator_ewald(), 0.001).unwrap();
+        integrator
+            .step(&mut positions, &mut velocities, &charges, &masses)
+            .unwrap();
+
+        // Move an atom between steps (as a barostat or a user would): the cached
+        // forces belong to the old configuration and must be recomputed.
+        let mut moved_positions = positions.clone();
+        moved_positions[0][1] += 0.8;
+        let mut moved_velocities = velocities.clone();
+        let mut reference_positions = moved_positions.clone();
+        let mut reference_velocities = velocities.clone();
+        let mut reference = EwaldForceIntegrator::new(integrator_ewald(), 0.001).unwrap();
+
+        integrator
+            .step(
+                &mut moved_positions,
+                &mut moved_velocities,
+                &charges,
+                &masses,
+            )
+            .unwrap();
+        reference
+            .step(
+                &mut reference_positions,
+                &mut reference_velocities,
+                &charges,
+                &masses,
+            )
+            .unwrap();
+        assert_eq!(moved_positions, reference_positions);
+        assert_eq!(moved_velocities, reference_velocities);
     }
 
     #[test]

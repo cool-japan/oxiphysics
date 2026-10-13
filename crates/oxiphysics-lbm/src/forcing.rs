@@ -565,10 +565,14 @@ impl OscillatingForce {
 
 /// Boussinesq approximation: thermal buoyancy forcing.
 ///
-/// `F = rho * beta * (T - T_ref) * g`
+/// `F = -rho * beta * (T - T_ref) * g`
 ///
 /// where beta is the thermal expansion coefficient, T is the local
-/// temperature, T_ref is the reference temperature, and g is gravity.
+/// temperature, T_ref is the reference temperature, and g is the gravitational
+/// acceleration *vector* (pointing downward, e.g. `[0, -9.81, 0]`).  Fluid
+/// warmer than `T_ref` is lighter than the reference density, so the force
+/// opposes gravity (upward for downward-pointing `g`); colder fluid is pushed
+/// along gravity.
 #[derive(Debug, Clone, Copy)]
 pub struct BoussinesqForcing {
     /// Thermal expansion coefficient beta (1/K).
@@ -590,12 +594,15 @@ impl BoussinesqForcing {
     }
 
     /// Compute the buoyancy force at local temperature `t_local` and density `rho`.
+    ///
+    /// Returns `-rho * beta * (t_local - t_ref) * g` for all three components,
+    /// i.e. an upward force on fluid warmer than `t_ref` when `g` points down.
     pub fn force_at(&self, rho: f64, t_local: f64) -> [f64; 3] {
         let delta_t = t_local - self.t_ref;
         [
-            rho * self.beta * delta_t * self.gravity[0],
-            rho * self.beta * delta_t * self.gravity[1],
-            rho * self.beta * delta_t * self.gravity[2],
+            -rho * self.beta * delta_t * self.gravity[0],
+            -rho * self.beta * delta_t * self.gravity[1],
+            -rho * self.beta * delta_t * self.gravity[2],
         ]
     }
 
@@ -1002,23 +1009,67 @@ mod tests {
         }
     }
 
-    /// BoussinesqForcing: upward for T > T_ref with gravity pointing down.
+    /// BoussinesqForcing: hot fluid (T > T_ref) is pushed up against gravity,
+    /// cold fluid (T < T_ref) is pushed down, F = -rho * beta * (T - T_ref) * g.
     #[test]
     fn test_boussinesq_buoyancy_direction() {
         let bf = BoussinesqForcing::new(1e-3, 300.0, [0.0, -9.81, 0.0]);
-        let f = bf.force_at(1.0, 310.0);
-        // delta_T = 10 > 0, gravity[1] = -9.81 → force[1] = rho*beta*10*(-9.81) < 0
-        // Wait — buoyancy is upward for hot fluid, but F = rho*beta*(T-Tref)*g
-        // where g = [0, -9.81, 0], so F[1] = 1.0 * 1e-3 * 10 * (-9.81) = -0.0981
-        // This is actually downward. Boussinesq approximation: the buoyancy force
-        // opposes gravity when T > T_ref. The sign convention depends on the formulation.
-        // In standard Boussinesq: F_buoyancy = -rho * beta * (T - T_ref) * g_vec
-        // Our implementation: F = rho * beta * delta_t * g directly.
-        // With g = [0, -9.81, 0] and delta_T > 0, F[1] < 0 (additional downward force).
-        // This is a body-force coupling; the sign is correct for the implementation.
+        let hot = bf.force_at(1.0, 310.0);
+        // F_y = -1 * 1e-3 * 10 * (-9.81) = +0.0981 (upward)
+        assert!(hot[1] > 0.0, "hot fluid must rise, F_y = {}", hot[1]);
         assert!(
-            f[1] < 0.0,
-            "Force should be negative (downward) in this convention"
+            (hot[1] - 0.0981).abs() < 1e-12,
+            "F_y = {}, expected 0.0981",
+            hot[1]
+        );
+        assert_eq!(hot[0], 0.0);
+        assert_eq!(hot[2], 0.0);
+        let cold = bf.force_at(1.0, 290.0);
+        assert!(cold[1] < 0.0, "cold fluid must sink, F_y = {}", cold[1]);
+        assert!(
+            (cold[1] + 0.0981).abs() < 1e-12,
+            "F_y = {}, expected -0.0981",
+            cold[1]
+        );
+    }
+
+    /// BoussinesqForcing: the force is -rho*beta*dT*g for every component and
+    /// scales linearly with density.
+    #[test]
+    fn test_boussinesq_force_vector_and_density_scaling() {
+        let bf = BoussinesqForcing::new(2e-3, 300.0, [0.5, -9.81, 1.5]);
+        let f1 = bf.force_at(1.0, 305.0);
+        let f2 = bf.force_at(2.0, 305.0);
+        let expected = [-2e-3 * 5.0 * 0.5, -2e-3 * 5.0 * -9.81, -2e-3 * 5.0 * 1.5];
+        for k in 0..3 {
+            assert!(
+                (f1[k] - expected[k]).abs() < 1e-12,
+                "component {k}: {} vs {}",
+                f1[k],
+                expected[k]
+            );
+            assert!(
+                (f2[k] - 2.0 * f1[k]).abs() < 1e-12,
+                "component {k} must scale with rho"
+            );
+        }
+    }
+
+    /// BoussinesqForcing::apply_guo_d3q19 injects the (hot, upward) buoyancy
+    /// momentum with the right sign: (1 - 1/(2 tau)) * F_y > 0 for hot fluid.
+    #[test]
+    fn test_boussinesq_guo_injects_upward_momentum_for_hot_fluid() {
+        let bf = BoussinesqForcing::new(1e-3, 300.0, [0.0, -9.81, 0.0]);
+        let mut f = [0.0f64; 19];
+        bf.apply_guo_d3q19(&mut f, 1.0, [0.0, 0.0, 0.0], 310.0, 1.0);
+        let mut momentum_y = 0.0;
+        for (i, &fi) in f.iter().enumerate() {
+            momentum_y += fi * D3Q19_VELOCITIES[i][1] as f64;
+        }
+        let expected = 0.5 * 0.0981;
+        assert!(
+            (momentum_y - expected).abs() < 1e-12,
+            "injected momentum {momentum_y}, expected {expected}"
         );
     }
 

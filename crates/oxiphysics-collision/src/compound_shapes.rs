@@ -334,7 +334,11 @@ impl PrimitiveShape {
         }
     }
 
-    /// Approximate volume of this primitive.
+    /// Volume of this primitive.
+    ///
+    /// For [`PrimitiveShape::ConvexHull`] this is the volume of the convex hull
+    /// of the vertices; it is zero when the vertices do not span three
+    /// dimensions (fewer than four points, or all coplanar).
     pub fn volume(&self) -> f64 {
         let pi = std::f64::consts::PI;
         match self {
@@ -342,14 +346,7 @@ impl PrimitiveShape {
             PrimitiveShape::Box(he) => 8.0 * he[0] * he[1] * he[2],
             PrimitiveShape::Capsule(r, hh) => pi * r * r * 2.0 * hh + 4.0 / 3.0 * pi * r * r * r,
             PrimitiveShape::Cylinder(r, hh) => pi * r * r * 2.0 * hh,
-            PrimitiveShape::ConvexHull(verts) => {
-                // Approximate using bounding box
-                let mut aabb = Aabb3::empty();
-                for &v in verts {
-                    aabb.include_point(v);
-                }
-                aabb.volume()
-            }
+            PrimitiveShape::ConvexHull(verts) => hull_volume(verts),
         }
     }
 }
@@ -465,162 +462,11 @@ pub fn compute_compound_aabb(compound: &CompoundShape) -> Aabb3 {
 // ConvexDecomposition
 // ---------------------------------------------------------------------------
 
-/// Approximate convex decomposition (VHACD-inspired).
-///
-/// Iteratively splits a mesh into approximately convex parts using
-/// a concavity-based splitting strategy.
-#[derive(Debug, Clone)]
-pub struct ConvexDecomposition {
-    /// Maximum number of convex hulls.
-    pub max_hulls: usize,
-    /// Maximum concavity threshold.
-    pub max_concavity: f64,
-    /// Resolution for voxelization.
-    pub resolution: usize,
-    /// Output convex hulls.
-    pub hulls: Vec<Vec<[f64; 3]>>,
-}
-
-impl ConvexDecomposition {
-    /// Create a new convex decomposition.
-    pub fn new(max_hulls: usize, max_concavity: f64, resolution: usize) -> Self {
-        Self {
-            max_hulls,
-            max_concavity,
-            resolution,
-            hulls: Vec::new(),
-        }
-    }
-
-    /// Decompose a mesh into convex parts.
-    ///
-    /// Uses iterative splitting based on approximate concavity.
-    pub fn decompose(&mut self, vertices: &[[f64; 3]], indices: &[[usize; 3]]) {
-        self.hulls.clear();
-        if vertices.is_empty() || indices.is_empty() {
-            return;
-        }
-
-        // Start with the whole mesh as one part
-        let mut parts: Vec<Vec<usize>> = vec![(0..vertices.len()).collect()];
-        let mut output_hulls = Vec::new();
-
-        while !parts.is_empty() && output_hulls.len() < self.max_hulls {
-            let part = parts.remove(0);
-            let hull_verts: Vec<[f64; 3]> = part.iter().map(|&i| vertices[i]).collect();
-            let concavity = Self::estimate_concavity(&hull_verts);
-
-            if concavity < self.max_concavity || part.len() < 6 {
-                output_hulls.push(hull_verts);
-            } else if parts.len() + output_hulls.len() < self.max_hulls * 2 {
-                // Split into two parts
-                let (left, right) = Self::split_part(&part, vertices);
-                if !left.is_empty() {
-                    parts.push(left);
-                }
-                if !right.is_empty() {
-                    parts.push(right);
-                }
-            } else {
-                output_hulls.push(hull_verts);
-            }
-        }
-
-        // Remaining unprocessed parts
-        for part in parts {
-            let hull_verts: Vec<[f64; 3]> = part.iter().map(|&i| vertices[i]).collect();
-            output_hulls.push(hull_verts);
-        }
-
-        let _ = indices;
-        self.hulls = output_hulls;
-    }
-
-    /// Estimate concavity as max distance between convex hull and original mesh.
-    fn estimate_concavity(verts: &[[f64; 3]]) -> f64 {
-        if verts.len() < 4 {
-            return 0.0;
-        }
-        let hull = Self::simple_convex_hull(verts);
-        let mut max_d = 0.0f64;
-        for &v in verts {
-            let d = Self::point_to_hull_distance(v, &hull);
-            max_d = max_d.max(d);
-        }
-        max_d
-    }
-
-    /// Simple convex hull approximation (just bounding box corners).
-    fn simple_convex_hull(verts: &[[f64; 3]]) -> Vec<[f64; 3]> {
-        let mut aabb = Aabb3::empty();
-        for &v in verts {
-            aabb.include_point(v);
-        }
-        vec![
-            aabb.min,
-            aabb.max,
-            [aabb.min[0], aabb.max[1], aabb.min[2]],
-            [aabb.max[0], aabb.min[1], aabb.max[2]],
-        ]
-    }
-
-    /// Approximate distance from point to convex hull (AABB-based).
-    fn point_to_hull_distance(p: [f64; 3], hull: &[[f64; 3]]) -> f64 {
-        let mut aabb = Aabb3::empty();
-        for &v in hull {
-            aabb.include_point(v);
-        }
-        // Distance to inside of AABB (zero if inside)
-        let dx = 0.0f64.max(aabb.min[0] - p[0]).max(p[0] - aabb.max[0]);
-        let dy = 0.0f64.max(aabb.min[1] - p[1]).max(p[1] - aabb.max[1]);
-        let dz = 0.0f64.max(aabb.min[2] - p[2]).max(p[2] - aabb.max[2]);
-        (dx * dx + dy * dy + dz * dz).sqrt()
-    }
-
-    /// Split a set of vertex indices at the median of the longest axis.
-    fn split_part(indices: &[usize], vertices: &[[f64; 3]]) -> (Vec<usize>, Vec<usize>) {
-        if indices.is_empty() {
-            return (vec![], vec![]);
-        }
-        let verts: Vec<[f64; 3]> = indices.iter().map(|&i| vertices[i]).collect();
-        let mut aabb = Aabb3::empty();
-        for &v in &verts {
-            aabb.include_point(v);
-        }
-
-        // Find longest axis
-        let extents = [
-            aabb.max[0] - aabb.min[0],
-            aabb.max[1] - aabb.min[1],
-            aabb.max[2] - aabb.min[2],
-        ];
-        let axis = if extents[0] >= extents[1] && extents[0] >= extents[2] {
-            0
-        } else if extents[1] >= extents[2] {
-            1
-        } else {
-            2
-        };
-        let mid = 0.5 * (aabb.min[axis] + aabb.max[axis]);
-
-        let left: Vec<usize> = indices
-            .iter()
-            .copied()
-            .filter(|&i| vertices[i][axis] <= mid)
-            .collect();
-        let right: Vec<usize> = indices
-            .iter()
-            .copied()
-            .filter(|&i| vertices[i][axis] > mid)
-            .collect();
-        (left, right)
-    }
-
-    /// Number of output hulls.
-    pub fn num_hulls(&self) -> usize {
-        self.hulls.len()
-    }
-}
+mod convex_decomposition;
+pub use convex_decomposition::ConvexDecomposition;
+use convex_decomposition::{hull_vertices, hull_volume};
+#[cfg(test)]
+mod test_support;
 
 /// Merge multiple convex hulls into one (free function).
 pub fn merge_hulls(hulls: &[Vec<[f64; 3]>]) -> Vec<[f64; 3]> {
@@ -1278,6 +1124,15 @@ pub enum CollisionMeshMode {
     ConvexDecomposition,
 }
 
+/// Maximum number of hulls for imported meshes in decomposition mode.
+const DECOMPOSITION_MAX_HULLS: usize = 16;
+
+/// Concavity threshold (mesh units) for imported meshes in decomposition mode.
+const DECOMPOSITION_MAX_CONCAVITY: f64 = 0.01;
+
+/// Surface sampling subdivisions for imported meshes in decomposition mode.
+const DECOMPOSITION_SAMPLING: usize = 4;
+
 /// Collision mesh imported from vertex/index data.
 ///
 /// Can operate in triangle mesh, convex hull, or convex decomposition mode.
@@ -1312,7 +1167,11 @@ impl ImportedCollisionMesh {
                 convex_hull = Self::compute_convex_hull(&vertices);
             }
             CollisionMeshMode::ConvexDecomposition => {
-                let mut decomp = ConvexDecomposition::new(16, 0.01, 64);
+                let mut decomp = ConvexDecomposition::new(
+                    DECOMPOSITION_MAX_HULLS,
+                    DECOMPOSITION_MAX_CONCAVITY,
+                    DECOMPOSITION_SAMPLING,
+                );
                 decomp.decompose(&vertices, &indices);
                 decomposed_hulls = decomp.hulls;
             }
@@ -1328,37 +1187,16 @@ impl ImportedCollisionMesh {
         }
     }
 
-    /// Compute convex hull (simplified: use all points, filter redundant).
+    /// Compute the convex hull of the mesh vertices.
+    ///
+    /// Returns the corner points of the exact convex hull (QuickHull); vertices
+    /// inside the hull or in the interior of one of its faces or edges are
+    /// dropped. When the vertices do not span three dimensions (fewer than four
+    /// points, or all coplanar) there is no volumetric hull and all distinct
+    /// vertices are kept, which keeps [`ImportedCollisionMesh::support`] exact.
+    /// Non-finite vertices are ignored.
     fn compute_convex_hull(verts: &[[f64; 3]]) -> Vec<[f64; 3]> {
-        // Simplified: return extremal points in 6 directions
-        if verts.is_empty() {
-            return Vec::new();
-        }
-        let mut hull = Vec::new();
-        let dirs = [
-            [1.0_f64, 0.0, 0.0],
-            [-1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, -1.0, 0.0],
-            [0.0, 0.0, 1.0],
-            [0.0, 0.0, -1.0],
-        ];
-        for d in &dirs {
-            let best = verts.iter().max_by(|a, b| {
-                dot3(**a, *d)
-                    .partial_cmp(&dot3(**b, *d))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            if let Some(v) = best {
-                hull.push(*v);
-            }
-        }
-        hull.dedup_by(|a, b| {
-            (a[0] - b[0]).abs() < 1e-10
-                && (a[1] - b[1]).abs() < 1e-10
-                && (a[2] - b[2]).abs() < 1e-10
-        });
-        hull
+        hull_vertices(verts)
     }
 
     /// Get AABB.
@@ -1456,6 +1294,7 @@ pub fn shape_volume(shape: &ShapeProxy, resolution: usize) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use super::test_support::{cube_mesh, extrude_polygon, icosahedron, icosphere, signed_volume};
     use super::*;
 
     fn make_unit_sphere() -> PrimitiveShape {
@@ -1734,9 +1573,10 @@ mod tests {
         ];
         let idxs = vec![[0, 1, 2], [0, 1, 3]];
         let mesh = ImportedCollisionMesh::new(verts, idxs, CollisionMeshMode::ConvexHull);
-        assert!(
-            !mesh.convex_hull.is_empty(),
-            "convex hull should be computed"
+        assert_eq!(
+            mesh.convex_hull.len(),
+            4,
+            "all four tetrahedron corners are hull vertices"
         );
     }
 
@@ -1750,20 +1590,212 @@ mod tests {
 
     #[test]
     fn test_convex_decomposition_basic() {
-        let verts = vec![
+        let (verts, idxs) = cube_mesh(0.5, [0.5; 3]);
+        let mut decomp = ConvexDecomposition::new(4, 0.1, 32);
+        decomp.decompose(&verts, &idxs);
+        assert_eq!(decomp.num_hulls(), 1, "a cube is already convex");
+        assert_eq!(decomp.hulls[0].len(), 8);
+    }
+
+    #[test]
+    fn test_imported_mesh_convex_hull_keeps_every_extreme_vertex() {
+        // All 12 vertices of an icosahedron (and all 42 of the subdivided
+        // icosphere) are extreme points; the old six-direction filter kept at
+        // most six of them, so a sphere mesh collided as an octahedron.
+        for (mesh, expected) in [(icosahedron(1.0), 12), (icosphere(1.0), 42)] {
+            let imported =
+                ImportedCollisionMesh::new(mesh.0.clone(), mesh.1, CollisionMeshMode::ConvexHull);
+            assert_eq!(imported.convex_hull.len(), expected);
+            for v in &mesh.0 {
+                assert!(
+                    imported
+                        .convex_hull
+                        .iter()
+                        .any(|h| norm3(sub3(*h, *v)) < 1e-12),
+                    "vertex {v:?} missing from the hull"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_convex_hull_does_not_depend_on_the_vertex_order() {
+        // A sorted icosphere is the classic input on which an order-sensitive
+        // hull builder produced an open, self-overlapping surface.
+        let mesh = icosphere(2.0);
+        let expected = signed_volume(&mesh);
+        let mut sorted = mesh.0.clone();
+        sorted.sort_by(|a, b| {
+            a[0].total_cmp(&b[0])
+                .then(a[1].total_cmp(&b[1]))
+                .then(a[2].total_cmp(&b[2]))
+        });
+        let mut reversed = sorted.clone();
+        reversed.reverse();
+        for vertices in [mesh.0.clone(), sorted, reversed] {
+            let shape = PrimitiveShape::ConvexHull(vertices.clone());
+            assert!(
+                (shape.volume() - expected).abs() < 1e-9 * expected,
+                "volume {} vs {expected}",
+                shape.volume()
+            );
+            let imported =
+                ImportedCollisionMesh::new(vertices, Vec::new(), CollisionMeshMode::ConvexHull);
+            assert_eq!(imported.convex_hull.len(), 42);
+        }
+    }
+
+    #[test]
+    fn test_imported_mesh_hull_drops_interior_and_face_points() {
+        let (mut verts, idxs) = cube_mesh(1.0, [0.0; 3]);
+        verts.push([0.0, 0.0, 0.0]); // interior
+        verts.push([1.0, 0.0, 0.0]); // centre of the +x face
+        verts.push([0.3, -0.2, 1.0]); // inside the +z face
+        let mesh = ImportedCollisionMesh::new(verts, idxs, CollisionMeshMode::ConvexHull);
+        assert_eq!(mesh.convex_hull.len(), 8);
+    }
+
+    #[test]
+    fn test_imported_mesh_hull_ignores_duplicated_vertices() {
+        // Meshes exported with one vertex per face corner repeat every cube
+        // corner three times; the duplicates must not change the hull.
+        let (corners, _) = cube_mesh(1.0, [0.0; 3]);
+        let mut verts = Vec::new();
+        for corner in &corners {
+            verts.extend([*corner; 3]);
+        }
+        let mesh =
+            ImportedCollisionMesh::new(verts.clone(), Vec::new(), CollisionMeshMode::ConvexHull);
+        assert_eq!(mesh.convex_hull.len(), 8);
+        let volume = PrimitiveShape::ConvexHull(verts).volume();
+        assert!((volume - 8.0).abs() < 1e-9, "hull volume {volume}");
+    }
+
+    #[test]
+    fn test_imported_mesh_support_matches_brute_force() {
+        let (verts, idxs) = icosphere(2.0);
+        let mesh = ImportedCollisionMesh::new(verts.clone(), idxs, CollisionMeshMode::ConvexHull);
+        let mut seed = 12345_u64;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) as f64 / (1u64 << 31) as f64 * 2.0 - 1.0
+        };
+        let mut directions = vec![[1.0, 1.0, 1.0]];
+        for _ in 0..50 {
+            directions.push([next(), next(), next()]);
+        }
+        for d in directions {
+            let best = verts
+                .iter()
+                .map(|v| dot3(*v, d))
+                .fold(f64::NEG_INFINITY, f64::max);
+            let support = mesh.support(d);
+            assert!(
+                (dot3(support, d) - best).abs() < 1e-12,
+                "support is not extremal along {d:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_imported_mesh_flat_hull_keeps_all_points() {
+        let quad = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let mesh = ImportedCollisionMesh::new(
+            quad.clone(),
+            vec![[0, 1, 2], [0, 2, 3]],
+            CollisionMeshMode::ConvexHull,
+        );
+        assert_eq!(mesh.convex_hull.len(), 4);
+        let support = mesh.support([1.0, 1.0, 0.0]);
+        assert!((support[0] - 1.0).abs() < 1e-12 && (support[1] - 1.0).abs() < 1e-12);
+
+        // Fewer than four points, duplicates and non-finite points.
+        let degenerate = vec![
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [f64::NAN, 0.0, 0.0],
+        ];
+        let mesh =
+            ImportedCollisionMesh::new(degenerate, Vec::new(), CollisionMeshMode::ConvexHull);
+        assert_eq!(mesh.convex_hull, vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]);
+        let empty =
+            ImportedCollisionMesh::new(Vec::new(), Vec::new(), CollisionMeshMode::ConvexHull);
+        assert!(empty.convex_hull.is_empty());
+    }
+
+    #[test]
+    fn test_imported_mesh_decomposition_mode_splits_concave_mesh() {
+        let l_shape = [
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 2.0],
+            [0.0, 2.0],
+        ];
+        let (verts, idxs) = extrude_polygon(&l_shape, 1.0);
+        let mesh = ImportedCollisionMesh::new(verts, idxs, CollisionMeshMode::ConvexDecomposition);
+        assert_eq!(mesh.decomposed_hulls.len(), 2);
+        let volume: f64 = mesh
+            .decomposed_hulls
+            .iter()
+            .map(|h| PrimitiveShape::ConvexHull(h.clone()).volume())
+            .sum();
+        assert!((volume - 3.0).abs() < 1e-6, "volume {volume}");
+    }
+
+    #[test]
+    fn test_convex_hull_primitive_volume_is_the_hull_volume() {
+        let cube = PrimitiveShape::ConvexHull(cube_mesh(1.0, [0.0; 3]).0);
+        assert!((cube.volume() - 8.0).abs() < 1e-9);
+
+        let tetra = PrimitiveShape::ConvexHull(vec![
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
             [0.0, 1.0, 0.0],
             [0.0, 0.0, 1.0],
+        ]);
+        // The bounding box would give 1.
+        assert!((tetra.volume() - 1.0 / 6.0).abs() < 1e-12);
+
+        let octahedron = PrimitiveShape::ConvexHull(vec![
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+        ]);
+        // The bounding box would give 8.
+        assert!((octahedron.volume() - 4.0 / 3.0).abs() < 1e-12);
+
+        let flat = PrimitiveShape::ConvexHull(vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
             [1.0, 1.0, 0.0],
-            [1.0, 0.0, 1.0],
-            [0.0, 1.0, 1.0],
-            [1.0, 1.0, 1.0],
-        ];
-        let idxs = vec![[0, 1, 2]];
-        let mut decomp = ConvexDecomposition::new(4, 0.1, 32);
-        decomp.decompose(&verts, &idxs);
-        assert!(decomp.num_hulls() > 0, "should produce at least one hull");
+            [0.0, 1.0, 0.0],
+        ]);
+        assert_eq!(flat.volume(), 0.0);
+        assert_eq!(PrimitiveShape::ConvexHull(Vec::new()).volume(), 0.0);
+    }
+
+    #[test]
+    fn test_compound_total_volume_uses_hull_volume() {
+        let mut compound = CompoundShape::new();
+        compound.add_child(
+            PrimitiveShape::ConvexHull(cube_mesh(1.0, [0.0; 3]).0),
+            LocalTransform::identity(),
+        );
+        compound.add_child(PrimitiveShape::Box([1.0; 3]), LocalTransform::identity());
+        assert!((compound.total_volume() - 16.0).abs() < 1e-9);
     }
 
     #[test]

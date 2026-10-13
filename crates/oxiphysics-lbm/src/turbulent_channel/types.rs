@@ -3,8 +3,8 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::{
-    B_LL, BB, CX, CY, KAPPA_VK, W9, Y_PLUS_LOG_UPPER, Y_PLUS_TRANSITION, equilibrium_d2q9,
-    moments_d2q9,
+    B_LL, BB, CX, CY, KAPPA_VK, MIRROR_Y, W9, Y_PLUS_LOG_UPPER, Y_PLUS_TRANSITION,
+    equilibrium_d2q9, law_of_the_wall_u_plus, moments_d2q9, wall_friction_velocity,
 };
 
 /// D2Q9 LBM solver for turbulent channel flow with wall model.
@@ -467,7 +467,20 @@ impl TurbulentChannelParams {
     /// * `re_tau`     — target friction Reynolds number
     /// * `half_width` — channel half-width in lattice nodes
     pub fn new(re_tau: f64, half_width: f64) -> Self {
-        let u_tau = 0.01_f64;
+        Self::with_friction_velocity(re_tau, half_width, 0.01)
+    }
+    /// Construct the parameter set for a prescribed friction velocity.
+    ///
+    /// ν follows from `Re_τ = u_τ h / ν`.  The lattice Mach number scales
+    /// with `u_τ` (the centreline velocity of a channel is roughly
+    /// `18 u_τ`), so a smaller `u_τ` keeps coarse, high-Reynolds-number runs
+    /// incompressible.
+    ///
+    /// # Arguments
+    /// * `re_tau`     — target friction Reynolds number
+    /// * `half_width` — channel half-width in lattice nodes
+    /// * `u_tau`      — friction velocity (lattice units)
+    pub fn with_friction_velocity(re_tau: f64, half_width: f64, u_tau: f64) -> Self {
         let nu = u_tau * half_width / re_tau;
         let bulk_velocity = u_tau * ((1.0 / KAPPA_VK) * re_tau.ln() + 3.0);
         Self {
@@ -837,41 +850,95 @@ impl ReynoldsStressTensor {
         if k < 1e-30 { 0.0 } else { self.uv.abs() / k }
     }
 }
-/// Coarse-grid LBM channel flow with log-law wall function boundary.
+/// Coarse-grid LBM channel flow with a log-law wall function.
 ///
-/// The first interior node is treated as the "wall" node at y⁺ ≈ y_plus_first,
-/// and the wall shear stress is computed via the log-law rather than resolved.
+/// The near-wall layer is *modelled*, not resolved.  The lattice has `ny`
+/// rows: rows `0` and `ny − 1` are solid wall rows that are not simulated,
+/// and the fluid occupies rows `1 ..= ny − 2`.  Each wall is the plane
+/// half-way between a solid row and the first fluid row, so the centre of the
+/// first fluid row lies [`WallFunctionLbm::y_first`] `= 1/2` lattice unit from
+/// the wall and the channel half-width is `(ny − 2) / 2`.
+///
+/// * **Wall boundary** – populations that would leave the fluid are reflected
+///   specularly, `(c_x, c_y) → (c_x, −c_y)`.  The lattice walls are free-slip
+///   and exert no tangential drag of their own.
+/// * **Wall shear stress** – after every streaming step the tangential
+///   velocity `u₁` of the first fluid row is fed to the law of the wall (see
+///   [`wall_friction_velocity`]): `|u₁| = u_τ u⁺(y₁ u_τ / ν)`.  The wall shear
+///   stress `τ_w = ρ u_τ²` is applied to that row as a force density
+///   `−sign(u₁) τ_w / Δy` (`Δy = 1`) in the next collision, through the Guo
+///   forcing scheme.  This force is the *only* wall friction in the model.
+/// * **Interior** – BGK collision with the molecular viscosity plus a
+///   mixing-length eddy viscosity `ν_t = l_m² |∂u/∂y|`,
+///   `l_m = min(κ d, 0.09 h)` (Escudier), where `d` is the distance to the
+///   nearest wall and `h` the half-width.  Next to the wall `∂u/∂y` is taken
+///   from the law of the wall.
+/// * **Driving** – a constant body force per unit mass, `body_force =
+///   u_τ² / h`, acts on every fluid row (Guo forcing).  In the steady state
+///   the momentum balance `ρ F h = τ_w` then yields `u_τ = params.u_tau`, which
+///   is what the wall model must reproduce.
+///
+/// The model is meant for a first fluid row inside the log layer
+/// (`y₁⁺ ≳ 30`); for resolved walls use [`DnsDrivenLbm`] or
+/// [`ReynoldsAveragedLbm`].
 #[derive(Debug, Clone)]
 pub struct WallFunctionLbm {
     /// Streamwise lattice size.
     pub nx: usize,
-    /// Wall-normal lattice size (coarse grid).
+    /// Wall-normal lattice size, including the two solid wall rows.
     pub ny: usize,
-    /// Physical parameters.
+    /// Physical parameters (`half_width = (ny − 2) / 2`).
     pub params: TurbulentChannelParams,
-    /// Distribution functions.
+    /// Distribution functions, `f_dist[(i * ny + j) * 9 + q]`.
     pub f_dist: Vec<f64>,
-    /// Velocity field.
+    /// Velocity field of the last collision (Guo velocity); zero in the solid rows.
     pub u: Vec<[f64; 2]>,
-    /// Density field.
+    /// Density field of the last collision; one in the solid rows.
     pub rho: Vec<f64>,
-    /// y⁺ at the first interior node (used by the wall function).
+    /// y⁺ of the first fluid row at the design friction velocity,
+    /// `y_first · u_τ / ν`.
     pub y_plus_first: f64,
-    /// Body force.
+    /// Constant body force per unit mass (lattice units), `u_τ² / h`.
     pub body_force: f64,
+    /// Distance of the first fluid row's centre from the wall (`1/2`).
+    pub y_first: f64,
+    /// Streamwise wall-shear force density that the next collision applies to
+    /// the first fluid row at each wall: index `2 i` is the lower wall
+    /// (row `1`) and `2 i + 1` the upper wall (row `ny − 2`) of column `i`.
+    pub wall_force: Vec<f64>,
+    /// Friction velocity `u_τ` computed by the wall model for the entries of
+    /// [`WallFunctionLbm::wall_force`] (same indexing).
+    pub wall_u_tau: Vec<f64>,
+    /// Mixing-length eddy viscosity at every node (zero in the solid rows).
+    pub nu_t: Vec<f64>,
 }
 impl WallFunctionLbm {
-    /// Create a new wall-function LBM solver.
+    /// Create a new wall-function LBM solver with the standard low-Mach
+    /// friction velocity `u_τ = 0.01`.
     ///
     /// # Arguments
     /// * `nx`     — streamwise lattice size
-    /// * `ny`     — wall-normal lattice size (coarse)
-    /// * `re_tau` — friction Reynolds number
+    /// * `ny`     — wall-normal lattice size, including the two solid wall rows
+    /// * `re_tau` — friction Reynolds number `u_τ h / ν`
     pub fn new(nx: usize, ny: usize, re_tau: f64) -> Self {
-        let half_width = ny as f64 / 2.0;
-        let params = TurbulentChannelParams::new(re_tau, half_width);
-        let dy = (ny as f64 - 1.0).max(1.0);
-        let y_first = half_width / dy;
+        Self::with_friction_velocity(nx, ny, re_tau, 0.01)
+    }
+    /// Create a wall-function LBM solver for a prescribed friction velocity.
+    ///
+    /// `u_tau` sets the lattice Mach number (the centreline velocity is
+    /// roughly `18 u_τ`) and, through `ν = u_τ h / Re_τ`, the viscosity; the
+    /// body force is chosen such that the steady-state momentum balance gives
+    /// exactly this friction velocity.
+    ///
+    /// # Arguments
+    /// * `nx`     — streamwise lattice size
+    /// * `ny`     — wall-normal lattice size, including the two solid wall rows
+    /// * `re_tau` — friction Reynolds number `u_τ h / ν`
+    /// * `u_tau`  — target friction velocity (lattice units)
+    pub fn with_friction_velocity(nx: usize, ny: usize, re_tau: f64, u_tau: f64) -> Self {
+        let half_width = (ny.saturating_sub(2) as f64 / 2.0).max(0.5);
+        let params = TurbulentChannelParams::with_friction_velocity(re_tau, half_width, u_tau);
+        let y_first = 0.5;
         let y_plus_first = params.y_plus(y_first);
         let body_force = params.u_tau * params.u_tau / half_width;
         let n = nx * ny;
@@ -890,98 +957,221 @@ impl WallFunctionLbm {
             rho: vec![1.0; n],
             y_plus_first,
             body_force,
+            y_first,
+            wall_force: vec![0.0; 2 * nx],
+            wall_u_tau: vec![0.0; 2 * nx],
+            nu_t: vec![0.0; n],
         }
     }
-    /// Compute y⁺ at a wall-normal node j.
-    pub fn y_plus_at(&self, j: usize) -> f64 {
-        let ny = self.ny;
-        let y = j.min(ny - 1 - j) as f64;
-        self.params.y_plus(y)
-    }
-    /// Wall shear stress from log-law: τ_w = ρ·ν·u / (δ_ν·u⁺(y⁺)).
+    /// Distance of row `j` from the nearest wall (lattice units).
     ///
-    /// Given the tangential velocity `u_tan` at y⁺, return τ_w.
+    /// The first fluid row is `y_first` from the wall, every further row one
+    /// lattice unit more.  The solid rows `0` and `ny − 1` return 0.
+    pub fn wall_distance(&self, j: usize) -> f64 {
+        if j == 0 || j + 1 >= self.ny {
+            return 0.0;
+        }
+        j.min(self.ny - 1 - j) as f64 - 1.0 + self.y_first
+    }
+    /// Compute y⁺ at a wall-normal row j (design friction velocity).
+    pub fn y_plus_at(&self, j: usize) -> f64 {
+        self.params.y_plus(self.wall_distance(j))
+    }
+    /// Mixing length `l_m = min(κ d, 0.09 h)` at row `j` (0 in the solid rows).
+    pub fn mixing_length(&self, j: usize) -> f64 {
+        let d = self.wall_distance(j);
+        (KAPPA_VK * d).min(0.09 * self.params.half_width)
+    }
+    /// Wall shear stress per unit density from the log-law: `τ_w / ρ = u_τ²`.
+    ///
+    /// Given the tangential velocity `u_tan` at y⁺, `u_τ = u_tan / u⁺(y⁺)`.
     pub fn wall_shear_from_log_law(&self, u_tan: f64, y_plus: f64) -> f64 {
-        let u_plus = if y_plus < Y_PLUS_TRANSITION {
-            y_plus
-        } else {
-            (1.0 / KAPPA_VK) * y_plus.ln() + B_LL
-        };
+        let u_plus = law_of_the_wall_u_plus(y_plus);
         if u_plus < 1e-30 {
             return 0.0;
         }
         let u_tau = u_tan / u_plus;
         u_tau * u_tau
     }
-    /// Apply wall-function correction at the near-wall nodes.
+    /// Evaluate the wall model for the next collision.
     ///
-    /// Adjusts the velocity at j=1 and j=ny-2 to match the log-law.
+    /// For the first fluid row at each wall the tangential velocity of the
+    /// current populations gives the friction velocity through the law of the
+    /// wall ([`wall_friction_velocity`], matching height
+    /// [`WallFunctionLbm::y_first`]).  The wall shear stress `τ_w = ρ u_τ²`
+    /// is stored as the force density `−sign(u) τ_w` (the cell is one lattice
+    /// unit high) in [`WallFunctionLbm::wall_force`], and `u_τ` in
+    /// [`WallFunctionLbm::wall_u_tau`]; [`WallFunctionLbm::collide`] applies
+    /// it through the Guo scheme.  [`WallFunctionLbm::step`] calls this after
+    /// every streaming step.
     pub fn apply_wall_function(&mut self) {
         let nx = self.nx;
         let ny = self.ny;
-        let y_plus = self.y_plus_first;
-        let u_plus = if y_plus < Y_PLUS_TRANSITION {
-            y_plus
-        } else {
-            (1.0 / KAPPA_VK) * y_plus.ln() + B_LL
-        };
-        let u_tau = self.params.u_tau;
-        let u_wall = u_plus * u_tau;
-        for i in 0..nx {
-            let idx_bot = i * ny + 1;
-            let idx_top = i * ny + (ny - 2);
-            self.u[idx_bot][0] = u_wall;
-            self.u[idx_top][0] = u_wall;
+        self.wall_force.clear();
+        self.wall_force.resize(2 * nx, 0.0);
+        self.wall_u_tau.clear();
+        self.wall_u_tau.resize(2 * nx, 0.0);
+        if ny < 3 {
+            return;
         }
-    }
-    /// Perform one LBM step with wall function.
-    pub fn step(&mut self) {
-        let nx = self.nx;
-        let ny = self.ny;
         let nu = self.params.nu;
-        let tau = 3.0 * nu + 0.5;
-        let omega = 1.0 / tau;
-        let bf = self.body_force;
         for i in 0..nx {
-            for j in 0..ny {
-                let idx = i * ny + j;
-                let base = idx * 9;
-                let (rho, mut ux, uy) = moments_d2q9(&self.f_dist, base);
-                if j > 0 && j < ny - 1 {
-                    ux += bf;
-                }
-                self.rho[idx] = rho;
-                self.u[idx] = [ux, uy];
-                for q in 0..9 {
-                    let feq = equilibrium_d2q9(rho, ux, uy, q);
-                    self.f_dist[base + q] += omega * (feq - self.f_dist[base + q]);
+            for (side, j) in [(0usize, 1usize), (1, ny - 2)] {
+                let (rho, ux, _) = moments_d2q9(&self.f_dist, (i * ny + j) * 9);
+                let u_tau = wall_friction_velocity(ux, self.y_first, nu);
+                self.wall_u_tau[2 * i + side] = u_tau;
+                if u_tau > 0.0 {
+                    self.wall_force[2 * i + side] = -ux.signum() * rho * u_tau * u_tau;
                 }
             }
         }
-        let mut f_new = vec![0.0f64; nx * ny * 9];
+    }
+    /// Update the eddy viscosity of every fluid node.
+    ///
+    /// `ν_t = l_m² |∂u/∂y|` with `l_m` from [`WallFunctionLbm::mixing_length`].
+    /// Between two fluid rows `∂u/∂y` is the central difference of the
+    /// streamwise velocity.  In the first row at a wall it is the gradient of
+    /// the law of the wall, `u_τ / (κ d)`, with the friction velocity of
+    /// [`WallFunctionLbm::apply_wall_function`]; inside the viscous sublayer
+    /// (`y⁺ ≤` [`Y_PLUS_TRANSITION`]) the stress is molecular and `ν_t = 0`.
+    pub fn update_eddy_viscosity(&mut self) {
+        let nx = self.nx;
+        let ny = self.ny;
+        let n = nx * ny;
+        if self.nu_t.len() != n {
+            self.nu_t = vec![0.0; n];
+        }
+        if ny < 3 {
+            return;
+        }
+        let nu = self.params.nu;
         for i in 0..nx {
-            for j in 0..ny {
+            for j in 1..ny - 1 {
+                let l_m = self.mixing_length(j);
+                let gradient = if j == 1 || j == ny - 2 {
+                    let side = usize::from(j != 1);
+                    let u_tau = self.wall_u_tau.get(2 * i + side).copied().unwrap_or(0.0);
+                    let d = self.wall_distance(j);
+                    if d * u_tau / nu > Y_PLUS_TRANSITION {
+                        u_tau / (KAPPA_VK * d)
+                    } else {
+                        0.0
+                    }
+                } else {
+                    let (_, u_above, _) = moments_d2q9(&self.f_dist, (i * ny + j + 1) * 9);
+                    let (_, u_below, _) = moments_d2q9(&self.f_dist, (i * ny + j - 1) * 9);
+                    0.5 * (u_above - u_below)
+                };
+                self.nu_t[i * ny + j] = l_m * l_m * gradient.abs();
+            }
+        }
+    }
+    /// BGK collision of the fluid rows with Guo forcing.
+    ///
+    /// The relaxation time follows from the molecular plus eddy viscosity of
+    /// each node (the stored [`WallFunctionLbm::nu_t`], as last set by
+    /// [`WallFunctionLbm::update_eddy_viscosity`]).  The force density is the
+    /// driving force `ρ · body_force`
+    /// plus, in the first fluid row at each wall, the stored wall-shear force
+    /// ([`WallFunctionLbm::wall_force`]).  With the Guo scheme the force adds
+    /// exactly `F` to the momentum per step, whatever the relaxation time, and
+    /// the stored velocity is the half-force-corrected one.
+    pub fn collide(&mut self) {
+        let nx = self.nx;
+        let ny = self.ny;
+        if ny < 3 {
+            return;
+        }
+        let nu = self.params.nu;
+        for i in 0..nx {
+            for j in 1..ny - 1 {
+                let idx = i * ny + j;
+                let base = idx * 9;
+                let (rho, ux_raw, uy) = moments_d2q9(&self.f_dist, base);
+                if rho <= 0.0 {
+                    continue;
+                }
+                let mut fx = rho * self.body_force;
+                if j == 1 {
+                    fx += self.wall_force.get(2 * i).copied().unwrap_or(0.0);
+                }
+                if j == ny - 2 {
+                    fx += self.wall_force.get(2 * i + 1).copied().unwrap_or(0.0);
+                }
+                let ux = ux_raw + 0.5 * fx / rho;
+                let nu_eff = nu + self.nu_t.get(idx).copied().unwrap_or(0.0);
+                let omega = 1.0 / (3.0 * nu_eff + 0.5);
+                let guo = 1.0 - 0.5 * omega;
+                self.rho[idx] = rho;
+                self.u[idx] = [ux, uy];
+                for q in 0..9 {
+                    let cx = CX[q] as f64;
+                    let cy = CY[q] as f64;
+                    let feq = equilibrium_d2q9(rho, ux, uy, q);
+                    let source = W9[q] * (3.0 * (cx - ux) + 9.0 * (cx * ux + cy * uy) * cx) * fx;
+                    self.f_dist[base + q] += omega * (feq - self.f_dist[base + q]) + guo * source;
+                }
+            }
+        }
+    }
+    /// Stream the fluid rows: periodic in x, free-slip (specular) walls.
+    ///
+    /// A population that would enter a solid row is reflected at the wall,
+    /// `(c_x, c_y) → (c_x, −c_y)`, and arrives at `x + c_x` in the same row.
+    /// Mass and streamwise momentum are conserved exactly; the solid rows are
+    /// left untouched.
+    pub fn stream(&mut self) {
+        let nx = self.nx;
+        let ny = self.ny;
+        if ny < 3 || nx == 0 {
+            return;
+        }
+        let mut f_new = self.f_dist.clone();
+        for i in 0..nx {
+            for j in 1..ny - 1 {
                 let base = (i * ny + j) * 9;
                 for q in 0..9 {
-                    let nj = j as i32 + CY[q];
-                    if nj < 0 || nj >= ny as i32 {
-                        f_new[(i * ny + j) * 9 + BB[q]] = self.f_dist[base + q];
+                    let ni = (i as i64 + i64::from(CX[q])).rem_euclid(nx as i64) as usize;
+                    let nj = j as i64 + i64::from(CY[q]);
+                    let (dst_j, dst_q) = if nj < 1 || nj > (ny - 2) as i64 {
+                        (j, MIRROR_Y[q])
                     } else {
-                        let ni = (i as i32 + CX[q]).rem_euclid(nx as i32) as usize;
-                        let dst = (ni * ny + nj as usize) * 9 + q;
-                        f_new[dst] = self.f_dist[base + q];
-                    }
+                        (nj as usize, q)
+                    };
+                    f_new[(ni * ny + dst_j) * 9 + dst_q] = self.f_dist[base + q];
                 }
             }
         }
         self.f_dist = f_new;
+    }
+    /// Perform one LBM step with wall function.
+    ///
+    /// Eddy viscosity update, collision (body force and stored wall-shear
+    /// force), streaming with free-slip walls, and finally the wall model on
+    /// the new populations ([`WallFunctionLbm::apply_wall_function`]).
+    pub fn step(&mut self) {
+        self.update_eddy_viscosity();
+        self.collide();
+        self.stream();
         self.apply_wall_function();
     }
-    /// Friction velocity computed from force balance.
+    /// Design friction velocity from the force balance `u_τ = √(F h)`.
+    ///
+    /// The steady state of [`WallFunctionLbm::step`] reproduces it; compare
+    /// with [`WallFunctionLbm::model_friction_velocity`].
     pub fn friction_velocity(&self) -> f64 {
         let h = self.params.half_width;
         let tau_w = self.body_force * h;
         (tau_w).sqrt()
+    }
+    /// Mean friction velocity currently computed by the wall model at the
+    /// two walls (0 before the first call of
+    /// [`WallFunctionLbm::apply_wall_function`]).
+    pub fn model_friction_velocity(&self) -> f64 {
+        if self.wall_u_tau.is_empty() {
+            return 0.0;
+        }
+        self.wall_u_tau.iter().sum::<f64>() / self.wall_u_tau.len() as f64
     }
     /// Bulk velocity.
     pub fn bulk_velocity(&self) -> f64 {
@@ -990,7 +1180,7 @@ impl WallFunctionLbm {
         let mut sum = 0.0;
         let mut count = 0usize;
         for i in 0..nx {
-            for j in 1..ny - 1 {
+            for j in 1..ny.saturating_sub(1) {
                 sum += self.u[i * ny + j][0];
                 count += 1;
             }

@@ -19,6 +19,8 @@
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::f64::consts::PI;
 
+use crate::heat_method;
+
 // ---------------------------------------------------------------------------
 // Vector math helpers (no nalgebra)
 // ---------------------------------------------------------------------------
@@ -485,20 +487,29 @@ pub fn geodesic_path(mesh: &DiscreteMesh, source: usize, target: usize) -> Optio
 
 /// Heat-method geodesic distance solver.
 ///
-/// Approximates smooth geodesic distances by:
-/// 1. Diffusing a heat impulse for a short time `t`.
-/// 2. Computing the gradient of the heat field.
-/// 3. Normalising and divergence-computing to recover distance.
+/// Approximates smooth geodesic distances (Crane, Weischedel & Wardetzky 2013) by:
+/// 1. integrating the heat flow `du/dt = Δu` from an impulse at the source
+///    vertices for the diffusion time `t` with backward Euler,
+///    `(M + dt·L) u⁺ = M u`, where `L` is the cotangent stiffness matrix and `M`
+///    the lumped mixed-Voronoi vertex area matrix (so the result does not depend
+///    on the mesh scale);
+/// 2. taking the normalised negative gradient `X = -∇u / |∇u|` of the heat field
+///    on every triangle;
+/// 3. solving the Poisson equation `L φ = ∇·X` (the divergence integrated over
+///    both triangles at each edge) with a Jacobi-preconditioned conjugate-gradient
+///    solver, and shifting `φ` so that its minimum is zero.
 ///
-/// This implementation uses an explicit Euler diffusion step and the
-/// cotangent Laplacian.
+/// Disconnected components that contain no source are unreachable and get
+/// `f64::INFINITY`.  The cost is a few sparse solves, linear in the number of
+/// triangles for a fixed number of iterations.
 #[derive(Debug, Clone)]
 pub struct HeatMethodSolver {
     /// The underlying mesh.
     pub mesh: DiscreteMesh,
-    /// Diffusion time parameter; typically `h^2` where `h` is mean edge length.
+    /// Total diffusion time `t`; typically `h^2` where `h` is the mean edge length.
     pub diffusion_time: f64,
-    /// Number of explicit Euler steps for heat diffusion.
+    /// Number of equal backward-Euler sub-steps the diffusion time is split into
+    /// (at least one; one step is the scheme of the original paper).
     pub num_steps: usize,
 }
 
@@ -521,99 +532,42 @@ impl HeatMethodSolver {
 
     /// Compute approximate geodesic distances from `sources`.
     ///
-    /// Returns distances for each vertex; values are normalised so that the
-    /// minimum source distance is zero.
+    /// Returns distances for each vertex; values are shifted so that the minimum
+    /// over every component containing a source is zero.  If the distances cannot
+    /// be computed (a source or a triangle index outside the mesh, a failed
+    /// linear solve) every vertex gets `f64::INFINITY`; use
+    /// [`try_compute`](Self::try_compute) to learn why.
     pub fn compute(&self, sources: &[usize]) -> Vec<f64> {
-        let n = self.mesh.num_vertices();
-        // Step 1: initialise heat at sources
-        let mut u = vec![0.0f64; n];
-        for &s in sources {
-            u[s] = 1.0;
-        }
-        // Step 2: explicit Euler heat diffusion u_(t+1) = u_t + dt * L * u_t
-        let laplacian = self.mesh.cotan_laplacian();
-        let dt = self.diffusion_time / self.num_steps as f64;
-        for _ in 0..self.num_steps {
-            let mut lu = vec![0.0f64; n];
-            for &(i, j, w) in &laplacian {
-                lu[i] += w * u[j];
-            }
-            for i in 0..n {
-                u[i] += dt * lu[i];
-            }
-        }
-        // Step 3: compute gradient of u per face, normalise
-        let nf = self.mesh.num_faces();
-        let mut face_grad: Vec<[f64; 3]> = vec![[0.0; 3]; nf];
-        for (fi, t) in self.mesh.triangles.iter().enumerate() {
-            let [i, j, k] = *t;
-            let pi = self.mesh.vertices[i];
-            let pj = self.mesh.vertices[j];
-            let pk = self.mesh.vertices[k];
-            let area = tri_area(pi, pj, pk).max(1e-14);
-            let fn_ = normalize3(cross3(sub3(pj, pi), sub3(pk, pi)));
-            // Gradient: sum_corner u_corner * (N x e_opposite) / (2 * area)
-            let grad_i = scale3(cross3(fn_, sub3(pk, pj)), u[i] / (2.0 * area));
-            let grad_j = scale3(cross3(fn_, sub3(pi, pk)), u[j] / (2.0 * area));
-            let grad_k = scale3(cross3(fn_, sub3(pj, pi)), u[k] / (2.0 * area));
-            face_grad[fi] = add3(add3(grad_i, grad_j), grad_k);
-        }
-        // Step 4: normalise gradients (flip sign — points away from source)
-        let face_grad_norm: Vec<[f64; 3]> = face_grad
-            .iter()
-            .map(|&g| {
-                let l = len3(g);
-                if l < 1e-14 {
-                    [0.0; 3]
-                } else {
-                    scale3(g, -1.0 / l)
-                }
-            })
-            .collect();
-        // Step 5: compute divergence of normalised gradient at each vertex
-        let mut div = vec![0.0f64; n];
-        for (fi, t) in self.mesh.triangles.iter().enumerate() {
-            let [i, j, k] = *t;
-            let pi = self.mesh.vertices[i];
-            let pj = self.mesh.vertices[j];
-            let pk = self.mesh.vertices[k];
-            let x = face_grad_norm[fi];
-            let cot_i = cotan_at(pj, pi, pk);
-            let cot_j = cotan_at(pi, pj, pk);
-            let cot_k = cotan_at(pi, pk, pj);
-            div[i] += 0.5 * (cot_k * dot3(x, sub3(pj, pi)) + cot_j * dot3(x, sub3(pk, pi)));
-            div[j] += 0.5 * (cot_i * dot3(x, sub3(pk, pj)) + cot_k * dot3(x, sub3(pi, pj)));
-            div[k] += 0.5 * (cot_j * dot3(x, sub3(pi, pk)) + cot_i * dot3(x, sub3(pj, pk)));
-        }
-        // Step 6: solve Poisson Lφ = div (simple Gauss-Seidel iterations)
-        let mut phi = div.clone();
-        let diag: Vec<f64> = {
-            let mut d = vec![0.0f64; n];
-            for &(i, j, w) in &laplacian {
-                if i == j {
-                    d[i] = w;
-                }
-            }
-            d
+        self.try_compute(sources)
+            .unwrap_or_else(|_| vec![f64::INFINITY; self.mesh.num_vertices()])
+    }
+
+    /// Compute approximate geodesic distances from `sources`.
+    ///
+    /// A non-positive or non-finite `diffusion_time` is replaced by the squared
+    /// mean edge length.  See the type documentation for the algorithm.
+    ///
+    /// # Errors
+    /// * [`crate::Error::IndexOutOfBounds`] if a source is not a vertex of the mesh;
+    /// * [`crate::Error::InvalidMesh`] for a non-finite vertex or a triangle that
+    ///   references a missing vertex;
+    /// * [`crate::Error::ConvergenceFailure`] if an iterative solve does not converge.
+    pub fn try_compute(&self, sources: &[usize]) -> crate::Result<Vec<f64>> {
+        let usable_time = self.diffusion_time.is_finite() && self.diffusion_time > 0.0;
+        let t = if usable_time {
+            self.diffusion_time
+        } else {
+            heat_method::edge_length_statistics(&self.mesh.vertices, &self.mesh.triangles)
+                .map_or(1.0, |(mean, _)| mean * mean)
         };
-        for _ in 0..200 {
-            for vi in 0..n {
-                if diag[vi].abs() < 1e-14 {
-                    continue;
-                }
-                let mut s = div[vi];
-                for &(ri, rj, rw) in &laplacian {
-                    if ri == vi && rj != vi {
-                        s -= rw * phi[rj];
-                    }
-                }
-                phi[vi] = s / diag[vi];
-            }
-        }
-        // Shift so minimum is zero
-        let min_phi = phi.iter().cloned().fold(f64::INFINITY, f64::min);
-        phi.iter_mut().for_each(|x| *x -= min_phi);
-        phi
+        let solution = heat_method::solve(
+            &self.mesh.vertices,
+            &self.mesh.triangles,
+            sources,
+            t,
+            self.num_steps,
+        )?;
+        Ok(heat_method::distances_from_min_shift(&solution, sources))
     }
 }
 
@@ -1583,6 +1537,112 @@ mod tests {
         for &d in &dist {
             assert!(d >= -1e-6, "heat distance negative: {d}");
         }
+    }
+
+    fn mesh_from(raw: (Vec<[f64; 3]>, Vec<[usize; 3]>)) -> DiscreteMesh {
+        DiscreteMesh::new(raw.0, raw.1)
+    }
+
+    #[test]
+    fn test_heat_method_flat_grid_matches_euclidean_distance() {
+        let m = mesh_from(crate::test_meshes::flat_grid(20, 20, 1.0));
+        let source = 10 * 21 + 10;
+        let c = m.vertices[source];
+        let solver = HeatMethodSolver::new(m, -1.0, 1);
+        let d = solver.compute(&[source]);
+        assert!(d[source].abs() < 1e-9);
+        let (mut sum, mut count, mut worst) = (0.0_f64, 0usize, 0.0_f64);
+        for (v, &dv) in d.iter().enumerate() {
+            let exact = dist3(solver.mesh.vertices[v], c);
+            if exact >= 3.0 {
+                let rel = (dv - exact).abs() / exact;
+                sum += rel;
+                count += 1;
+                worst = worst.max(rel);
+            }
+        }
+        let mean = sum / count as f64;
+        assert!(mean < 0.04, "mean relative error {mean}");
+        assert!(worst < 0.10, "worst relative error {worst}");
+    }
+
+    #[test]
+    fn test_heat_method_sphere_antipode_is_pi() {
+        let m = mesh_from(crate::test_meshes::icosphere(4));
+        assert!(m.num_vertices() >= 2000);
+        let solver = HeatMethodSolver::new(m, -1.0, 1);
+        let d = solver.compute(&[0]);
+        // Vertex 3 of the icosahedron is the antipode of vertex 0.
+        assert!(
+            (d[3] - PI).abs() < 0.03 * PI,
+            "antipode distance {} vs pi",
+            d[3]
+        );
+    }
+
+    #[test]
+    fn test_heat_method_is_independent_of_mesh_scale() {
+        let raw = crate::test_meshes::icosphere(2);
+        let scale = 12.5;
+        let scaled = (
+            raw.0
+                .iter()
+                .map(|p| [p[0] * scale, p[1] * scale, p[2] * scale])
+                .collect::<Vec<_>>(),
+            raw.1.clone(),
+        );
+        let small = HeatMethodSolver::new(mesh_from(raw), -1.0, 3).compute(&[4]);
+        let large = HeatMethodSolver::new(mesh_from(scaled), -1.0, 3).compute(&[4]);
+        for (a, b) in small.iter().zip(large.iter()) {
+            assert!(
+                (a * scale - b).abs() < 1e-6 * (1.0 + b.abs()),
+                "{a} * {scale} vs {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_heat_method_ten_thousand_vertices_is_fast() {
+        let m = mesh_from(crate::test_meshes::icosphere(5));
+        assert_eq!(m.num_vertices(), 10242);
+        let solver = HeatMethodSolver::new(m, -1.0, 1);
+        let start = std::time::Instant::now();
+        let d = solver.compute(&[0]);
+        let elapsed = start.elapsed().as_secs_f64();
+        assert!(elapsed < 20.0, "10k-vertex heat solve took {elapsed:.2} s");
+        assert!(d.iter().all(|x| x.is_finite()));
+        assert!((d[3] - PI).abs() < 0.03 * PI, "antipode {}", d[3]);
+    }
+
+    #[test]
+    fn test_heat_method_reports_invalid_sources() {
+        let m = ico();
+        let n = m.num_vertices();
+        let solver = HeatMethodSolver::new(m, -1.0, 2);
+        assert!(matches!(
+            solver.try_compute(&[n]),
+            Err(crate::Error::IndexOutOfBounds { .. })
+        ));
+        let d = solver.compute(&[n + 3]);
+        assert_eq!(d.len(), n);
+        assert!(d.iter().all(|x| x.is_infinite()));
+    }
+
+    #[test]
+    fn test_heat_method_unreachable_component_is_infinite() {
+        let (mut vertices, mut faces) = crate::test_meshes::flat_grid(4, 4, 1.0);
+        let offset = vertices.len();
+        let (v2, f2) = crate::test_meshes::flat_grid(4, 4, 1.0);
+        vertices.extend(v2.iter().map(|p| [p[0] + 50.0, p[1], p[2]]));
+        faces.extend(
+            f2.iter()
+                .map(|t| [t[0] + offset, t[1] + offset, t[2] + offset]),
+        );
+        let solver = HeatMethodSolver::new(DiscreteMesh::new(vertices, faces), -1.0, 1);
+        let d = solver.compute(&[0]);
+        assert!(d[..offset].iter().all(|x| x.is_finite()));
+        assert!(d[offset..].iter().all(|x| x.is_infinite()));
+        assert!(solver.compute(&[]).iter().all(|x| x.is_infinite()));
     }
 
     // --- Euler characteristic ---

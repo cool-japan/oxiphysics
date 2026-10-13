@@ -325,8 +325,14 @@ pub fn sdf_torus(p: [f64; 3], center: [f64; 3], r_major: f64, r_minor: f64) -> f
 
 /// Polynomial smooth-minimum of `d1` and `d2` with blend radius `k`.
 ///
-/// `k == 0` degenerates to `min(d1, d2)`.  Larger values produce a softer
-/// blend between the two surfaces.
+/// With `h = clamp(0.5 + 0.5·(d2 − d1)/k, 0, 1)` the result is
+/// `mix(d2, d1, h) − k·h·(1 − h) = d2·(1 − h) + d1·h − k·h·(1 − h)`.
+///
+/// * `k <= 0` degenerates to `min(d1, d2)`.
+/// * When `|d1 − d2| >= k` the blend factor clamps to `0` or `1` and the
+///   result is exactly `min(d1, d2)`.
+/// * Inside the blend band the result lies below `min(d1, d2)` by at most
+///   `k / 4` (reached at `d1 == d2`), i.e. the blend only ever adds material.
 ///
 /// Reference: Inigo Quilez — <https://iquilezles.org/articles/smin/>
 pub fn sdf_smooth_union(d1: f64, d2: f64, k: f64) -> f64 {
@@ -334,7 +340,7 @@ pub fn sdf_smooth_union(d1: f64, d2: f64, k: f64) -> f64 {
         return d1.min(d2);
     }
     let h = (0.5 + 0.5 * (d2 - d1) / k).clamp(0.0, 1.0);
-    d1 * (1.0 - h) + d2 * h - k * h * (1.0 - h)
+    d2 * (1.0 - h) + d1 * h - k * h * (1.0 - h)
 }
 
 /// Estimate the surface normal at `p` using central differences on `sdf`.
@@ -453,16 +459,68 @@ mod tests {
     }
 
     #[test]
-    fn test_smooth_union_approaches_min_for_large_k() {
-        // Far-apart values with large k: both clamped, result approaches min
-        let d1 = 0.0_f64;
-        let d2 = 100.0_f64;
-        let result = sdf_smooth_union(d1, d2, 1.0);
-        // h should clamp to 1.0, result = d1*0 + d2*1 - 0 = d2? No:
-        // h = clamp(0.5 + 0.5*(100-0)/1.0) = clamp(50.5) = 1.0
-        // result = d1*(1-1) + d2*1 - k*1*0 = 100
-        // But this is max; expected is min. Let's just check it's <= max(d1,d2)
-        assert!(result <= d2 + 1e-9);
+    fn test_smooth_union_equals_min_when_gap_exceeds_k() {
+        // |d1 - d2| >= k: the blend factor clamps and the result is exactly min.
+        let result = sdf_smooth_union(0.0, 100.0, 1.0);
+        assert!(
+            (result - 0.0).abs() < 1e-12,
+            "got {result}, expected d1 = 0"
+        );
+        let swapped = sdf_smooth_union(100.0, 0.0, 1.0);
+        assert!(
+            (swapped - 0.0).abs() < 1e-12,
+            "got {swapped}, expected d2 = 0"
+        );
+        // Gap exactly equal to k is still outside the open blend band.
+        let edge = sdf_smooth_union(2.0, 3.0, 1.0);
+        assert!((edge - 2.0).abs() < 1e-12, "got {edge}, expected 2.0");
+    }
+
+    #[test]
+    fn test_smooth_union_never_exceeds_min_on_grid() {
+        // d1, d2 in [-5, 5] step 0.25, k in {0.1, 1.0}:
+        //   min - k/4 <= smooth_union <= min, with equality to min outside the band.
+        for &k in &[0.1_f64, 1.0] {
+            for i in 0..=40 {
+                for j in 0..=40 {
+                    let d1 = -5.0 + 0.25 * i as f64;
+                    let d2 = -5.0 + 0.25 * j as f64;
+                    let result = sdf_smooth_union(d1, d2, k);
+                    let reference = d1.min(d2);
+                    assert!(
+                        result <= reference + 1e-12,
+                        "smooth union {result} exceeds min {reference} (d1={d1}, d2={d2}, k={k})"
+                    );
+                    assert!(
+                        result >= reference - 0.25 * k - 1e-12,
+                        "smooth union {result} dips more than k/4 below min {reference} \
+                         (d1={d1}, d2={d2}, k={k})"
+                    );
+                    if (d1 - d2).abs() >= k {
+                        assert!(
+                            (result - reference).abs() < 1e-12,
+                            "outside the blend band the result must equal min: \
+                             {result} vs {reference} (d1={d1}, d2={d2}, k={k})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_smooth_union_matches_quadratic_closed_form() {
+        // Inside the band the polynomial smooth-min equals
+        //   min(d1, d2) - (k - |d1 - d2|)^2 / (4k).
+        let k = 0.8_f64;
+        for &(d1, d2) in &[(0.0_f64, 0.3_f64), (1.0, 0.7), (-0.2, 0.1), (2.0, 2.0)] {
+            let expected = d1.min(d2) - (k - (d1 - d2).abs()).powi(2) / (4.0 * k);
+            let result = sdf_smooth_union(d1, d2, k);
+            assert!(
+                (result - expected).abs() < 1e-12,
+                "d1={d1}, d2={d2}: got {result}, expected {expected}"
+            );
+        }
     }
 
     #[test]

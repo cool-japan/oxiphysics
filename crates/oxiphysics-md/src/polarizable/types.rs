@@ -723,6 +723,11 @@ impl Swm4NdpParams {
         self.q_drude * self.q_drude / self.k_drude
     }
 }
+/// Boltzmann constant in amu · Å² · ps⁻² · K⁻¹, the unit system of
+/// [`DrudeExtLagrangian`] (masses in amu, velocities in Å ps⁻¹, times in ps):
+/// 8.314 462 618 15 × 10⁻³ kJ mol⁻¹ K⁻¹ × 100 amu Å² ps⁻² per kJ mol⁻¹
+/// (1 kJ mol⁻¹ = 100 amu Å² ps⁻²).
+pub(crate) const KB_AMU_ANGSTROM_PS: f64 = 0.831_446_261_815_324;
 /// Extended-Lagrangian Drude integrator with dual thermostat.
 ///
 /// The real atoms are coupled to a thermostat at temperature T_real,
@@ -800,17 +805,29 @@ impl DrudeExtLagrangian {
     }
     /// Apply Langevin thermostat kick to Drude velocities (Ornstein–Uhlenbeck step).
     ///
-    /// Uses the analytical O-U propagator: v → v exp(-γ dt) + √(k_B T_D / m) √(1-exp(-2γ dt)) ξ.
+    /// Uses the analytical O-U propagator:
+    /// v → v exp(-γ dt) + √(k_B T_D / m) √(1-exp(-2γ dt)) ξ with `ξ ~ N(0, 1)`,
+    /// so that every Drude velocity component has the stationary variance
+    /// `k_B T_D / m`.  Velocities are in Å ps⁻¹, masses in amu, `dt` in ps and
+    /// `gamma_drude` in ps⁻¹, so `k_B` enters in amu Å² ps⁻² K⁻¹
+    /// (0.831 446 …, i.e. 100 × its value in kJ mol⁻¹ K⁻¹).  The noise is
+    /// drawn from the thread-local generator; use
+    /// [`DrudeExtLagrangian::langevin_drude_kick_with_rng`] for a reproducible
+    /// (seeded) stream.
     pub fn langevin_drude_kick(&mut self, dt: f64) {
-        const KB_MD: f64 = 8.314_462_618e-3;
+        let mut rng = rand::rng();
+        self.langevin_drude_kick_with_rng(dt, &mut rng);
+    }
+    /// Same as [`DrudeExtLagrangian::langevin_drude_kick`] but draws the
+    /// standard normal noise from the supplied generator.
+    pub fn langevin_drude_kick_with_rng<R: rand::Rng + ?Sized>(&mut self, dt: f64, rng: &mut R) {
         let decay = (-self.gamma_drude * dt).exp();
-        let noise_scale_sq = 1.0 - decay * decay;
+        let noise_scale_sq = (1.0 - decay * decay).max(0.0);
         for i in 0..self.n_pairs {
-            let sigma = (KB_MD * self.t_drude / self.drude_mass[i] * noise_scale_sq).sqrt();
-            let mut rng = rand::rng();
-            use rand::RngExt;
+            let sigma =
+                (KB_AMU_ANGSTROM_PS * self.t_drude / self.drude_mass[i] * noise_scale_sq).sqrt();
             for v in &mut self.drude_vel[i] {
-                let xi: f64 = rng.random_range(-1.0_f64..1.0_f64);
+                let xi = crate::gaussian_noise::standard_normal(rng);
                 *v = decay * *v + sigma * xi;
             }
         }

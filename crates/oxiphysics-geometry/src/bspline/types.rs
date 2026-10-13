@@ -2,7 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use super::functions::{solve_3x_systems, solve_linear_system_row};
+use super::functions::solve_3x_systems;
+use crate::{Error, Result};
 
 /// A rational B-spline (NURBS) curve in 3D space.
 ///
@@ -584,33 +585,59 @@ impl BsplineFitting {
         params[n - 1] = 1.0;
         params
     }
-    /// Select interior knots by averaging (Piegl-Tiller method).
+    /// Select the interior knots of a clamped knot vector from the data
+    /// parameters (Piegl & Tiller, *The NURBS Book*, section 9.2).
     ///
-    /// Produces n_ctrl − p − 1 interior knots.
+    /// Produces `n_ctrl - degree - 1` interior knots between `degree + 1`
+    /// repeated 0 and 1 end knots, so the returned vector has
+    /// `n_ctrl + degree + 1` entries.
+    ///
+    /// * When `params.len() == n_ctrl` (interpolation) the knots are the
+    ///   averages `u_{p+j} = (t_j + … + t_{j+p-1}) / p` (equation 9.8).  This
+    ///   placement satisfies the Schoenberg–Whitney conditions with comfortable
+    ///   margins, so the collocation matrix is nonsingular and well conditioned
+    ///   for any degree.
+    /// * Otherwise (least squares) the knots follow equations 9.68 and 9.69,
+    ///   `u_{p+j} = (1 - α) t_{i-1} + α t_i` with `i = ⌊j d⌋`, `α = j d - i`
+    ///   and `d = len / (n_ctrl - p)`, which puts at least one parameter in
+    ///   every knot span so that `Nᵀ N` is nonsingular.
+    ///
+    /// The function does not panic for inconsistent arguments (such as fewer
+    /// parameters than control points); it then falls back to evenly spaced
+    /// interior knots.
     pub fn select_knots_by_averaging(params: &[f64], n_ctrl: usize, degree: usize) -> KnotVector {
         let n = params.len();
         let p = degree;
         let m = n_ctrl + p;
         let mut knots = vec![0.0_f64; m + 1];
+        for val in knots[n_ctrl..=m].iter_mut() {
+            *val = 1.0;
+        }
         for val in knots[..=p].iter_mut() {
             *val = 0.0;
         }
-        for val in knots[(m - p)..=m].iter_mut() {
-            *val = 1.0;
-        }
-        let n_interior = n_ctrl - p - 1;
+        let n_interior = n_ctrl.saturating_sub(p + 1);
         if n_interior > 0 {
-            let d = n as f64 / n_ctrl as f64;
-            for j in 1..=n_interior {
-                let i_float = j as f64 * d;
-                let i_floor = i_float as usize;
-                let alpha = i_float - i_floor as f64;
-                let t_avg = if i_floor + 1 < n {
-                    params[i_floor] * (1.0 - alpha) + params[i_floor + 1] * alpha
-                } else {
-                    params[n - 1]
-                };
-                knots[p + j] = t_avg.clamp(0.0, 1.0);
+            if p >= 1 && n == n_ctrl {
+                for j in 1..=n_interior {
+                    let sum: f64 = params[j..j + p].iter().sum();
+                    knots[p + j] = sum / p as f64;
+                }
+            } else if n >= n_ctrl && n_ctrl > p {
+                let d = n as f64 / (n_ctrl - p) as f64;
+                for j in 1..=n_interior {
+                    let jd = j as f64 * d;
+                    let i = (jd.floor() as usize).clamp(1, n - 1);
+                    let alpha = jd - i as f64;
+                    knots[p + j] = (1.0 - alpha) * params[i - 1] + alpha * params[i];
+                }
+            } else {
+                for j in 1..=n_interior {
+                    knots[p + j] = j as f64 / (n_interior + 1) as f64;
+                }
+            }
+            for knot in knots[p + 1..p + 1 + n_interior].iter_mut() {
+                *knot = knot.clamp(0.0, 1.0);
             }
         }
         for i in 1..knots.len() {
@@ -623,31 +650,60 @@ impl BsplineFitting {
     /// Perform least-squares B-spline fitting to a set of points.
     ///
     /// Uses chord-length parameterization and averaging knot selection.
-    /// Solves the normal equations Q^T Q P = Q^T D.
-    pub fn fit(&mut self, points: &[[f64; 3]]) {
+    ///
+    /// * When `points.len() == n_ctrl` the fit is an exact interpolation: the
+    ///   collocation system `N P = Q` is solved so the curve passes through
+    ///   every data point at its chord-length parameter.
+    /// * When `points.len() > n_ctrl` the normal equations `Nᵀ N P = Nᵀ Q`
+    ///   are solved (least squares).
+    ///
+    /// On success `self.curve` holds the fitted curve; on error it is reset to
+    /// `None`.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::TooFewPoints`] when fewer than `max(degree + 1, 2)` points
+    ///   are given.
+    /// * [`Error::OutOfRange`] when `n_ctrl` is below `degree + 1` or exceeds
+    ///   the number of data points (the system would be under-determined).
+    /// * [`Error::General`] when a coordinate is not finite or when the linear
+    ///   system is singular (for example because consecutive data points
+    ///   coincide, which makes two chord-length parameters equal).
+    pub fn fit(&mut self, points: &[[f64; 3]]) -> Result<()> {
+        self.curve = None;
         let n_pts = points.len();
         let n_ctrl = self.n_ctrl;
         let p = self.degree;
-        if n_pts < 2 || n_ctrl < p + 1 {
-            self.curve = Some(BsplineCurve::clamped(
-                1,
-                vec![points[0], *points.last().unwrap_or(&points[0])],
+        let min_points = (p + 1).max(2);
+        if n_pts < min_points {
+            return Err(Error::too_few_points(min_points, n_pts));
+        }
+        if p == 0 {
+            return Err(Error::out_of_range("degree", 0.0, 1.0, (n_pts - 1) as f64));
+        }
+        if n_ctrl < p + 1 || n_ctrl > n_pts {
+            return Err(Error::out_of_range(
+                "n_ctrl",
+                n_ctrl as f64,
+                (p + 1) as f64,
+                n_pts as f64,
             ));
-            return;
+        }
+        if let Some(bad) = points.iter().position(|q| q.iter().any(|c| !c.is_finite())) {
+            return Err(Error::general(format!(
+                "data point {bad} has a non-finite coordinate"
+            )));
         }
         let params = Self::chord_length_parameterization(points);
         let kv = Self::select_knots_by_averaging(&params, n_ctrl, p);
         let basis = BsplineBasis::new(p, kv.clone(), n_ctrl);
-        if n_pts == n_ctrl {
+        let ctrl_pts = if n_pts == n_ctrl {
             let mut a = vec![vec![0.0_f64; n_ctrl]; n_ctrl];
             for (row, &t) in params.iter().enumerate() {
                 let row_vals = basis.eval_all(t);
                 a[row][..n_ctrl].copy_from_slice(&row_vals[..n_ctrl]);
             }
-            let ctrl_pts: Vec<[f64; 3]> = (0..n_ctrl)
-                .map(|i| solve_linear_system_row(&a, points, i, n_ctrl))
-                .collect();
-            self.curve = Some(BsplineCurve::new(p, kv, ctrl_pts));
+            solve_3x_systems(&a, points, n_ctrl)?
         } else {
             let mut n_mat = vec![vec![0.0_f64; n_ctrl]; n_pts];
             for (row, &t) in params.iter().enumerate() {
@@ -656,19 +712,20 @@ impl BsplineFitting {
             }
             let mut ata = vec![vec![0.0_f64; n_ctrl]; n_ctrl];
             let mut atd = vec![[0.0_f64; 3]; n_ctrl];
-            for row in 0..n_pts {
+            for (n_row, point) in n_mat.iter().zip(points.iter()) {
                 for col_j in 0..n_ctrl {
                     for col_k in 0..n_ctrl {
-                        ata[col_j][col_k] += n_mat[row][col_j] * n_mat[row][col_k];
+                        ata[col_j][col_k] += n_row[col_j] * n_row[col_k];
                     }
                     for d in 0..3 {
-                        atd[col_j][d] += n_mat[row][col_j] * points[row][d];
+                        atd[col_j][d] += n_row[col_j] * point[d];
                     }
                 }
             }
-            let ctrl_pts: Vec<[f64; 3]> = solve_3x_systems(&ata, &atd, n_ctrl);
-            self.curve = Some(BsplineCurve::new(p, kv, ctrl_pts));
-        }
+            solve_3x_systems(&ata, &atd, n_ctrl)?
+        };
+        self.curve = Some(BsplineCurve::new(p, kv, ctrl_pts));
+        Ok(())
     }
     /// Return the fitted residual (sum of squared distances from points to curve).
     pub fn residual(&self, points: &[[f64; 3]]) -> f64 {

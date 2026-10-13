@@ -19,6 +19,10 @@ use std::collections::HashMap;
 
 const PI: f64 = std::f64::consts::PI;
 
+/// Smallest separation (Å) used by [`compute_vdw_force`]; closer pairs are
+/// clamped to this distance so the vdW energy and force stay finite.
+pub const VDW_MIN_DISTANCE: f64 = 1e-10;
+
 // ── CharmmBondParams ──────────────────────────────────────────────────────────
 
 /// Harmonic bond parameters for CHARMM.
@@ -519,19 +523,26 @@ pub fn compute_improper_force(psi: f64, params: &CharmmImproperParams) -> (f64, 
 ///
 /// This form has a minimum of −ε at r = Rmin.
 ///
-/// Returns `(energy, force_magnitude)` where a positive `force_magnitude`
-/// means the force along the interatomic vector is repulsive.
+/// Returns `(energy, force_magnitude)` where `force_magnitude = −dV/dr` is the
+/// force along the interatomic vector: positive means repulsive (`r < Rmin`),
+/// negative means attractive (`r > Rmin`) and it vanishes at `r = Rmin`.
+///
+/// Separations below [`VDW_MIN_DISTANCE`] are clamped to that value, so the
+/// returned energy and force stay finite for (unphysically) overlapping atoms.
 pub fn compute_vdw_force(r: f64, epsilon: f64, rmin: f64) -> (f64, f64) {
-    if r < 1e-10 {
-        return (f64::MAX, f64::MAX);
-    }
+    let r = if r < VDW_MIN_DISTANCE {
+        VDW_MIN_DISTANCE
+    } else {
+        r
+    };
     let ratio = rmin / r;
     let r6 = ratio.powi(6);
     let r12 = r6 * r6;
     let energy = epsilon * (r12 - 2.0 * r6);
     // dV/dr = ε * (-12·Rmin^12/r^13 + 12·Rmin^6/r^7)
-    //       = 12·ε/r * (-(Rmin/r)^12 + (Rmin/r)^6)
-    let force_mag = 12.0 * epsilon / r * (r6 - r12); // positive → repulsive
+    //       = 12·ε/r * ((Rmin/r)^6 - (Rmin/r)^12)
+    // so the repulsive-positive force magnitude is -dV/dr.
+    let force_mag = 12.0 * epsilon / r * (r12 - r6);
     (energy, force_mag)
 }
 
@@ -639,10 +650,11 @@ pub fn compute_angle_forces(
             let u_hat = [u[0] / u_norm, u[1] / u_norm, u[2] / u_norm];
             let v_hat = [v[0] / v_norm, v[1] / v_norm, v[2] / v_norm];
 
-            // dV/dri = (dV/dθ) * (dθ/dri)
-            // dθ/dri = -(v_hat - cos_t * u_hat) / (u_norm * sin_t)
-            let scale_i = f_angular / (u_norm * sin_t);
-            let scale_k = f_angular / (v_norm * sin_t);
+            // F_i = -dV/dri = f_angular * (dθ/dri) with f_angular = -dV/dθ and
+            // dθ/dri = -(v_hat - cos_t * u_hat) / (u_norm * sin_t), hence the
+            // leading minus sign (the force restores the angle towards θ₀).
+            let scale_i = -f_angular / (u_norm * sin_t);
+            let scale_k = -f_angular / (v_norm * sin_t);
 
             let fi = [
                 scale_i * (v_hat[0] - cos_t * u_hat[0]),
@@ -1236,6 +1248,83 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_vdw_force_is_repulsive_inside_rmin() {
+        let (epsilon, rmin) = (0.07, 4.0);
+        let (_, force) = compute_vdw_force(0.8 * rmin, epsilon, rmin);
+        assert!(
+            force > 0.0,
+            "force at 0.8 Rmin must be repulsive (positive), got {force}"
+        );
+    }
+
+    #[test]
+    fn test_vdw_force_is_attractive_outside_rmin() {
+        let (epsilon, rmin) = (0.07, 4.0);
+        let (_, force) = compute_vdw_force(1.5 * rmin, epsilon, rmin);
+        assert!(
+            force < 0.0,
+            "force at 1.5 Rmin must be attractive (negative), got {force}"
+        );
+    }
+
+    #[test]
+    fn test_vdw_force_vanishes_at_rmin() {
+        let (epsilon, rmin) = (0.07, 4.0);
+        let (_, force) = compute_vdw_force(rmin, epsilon, rmin);
+        assert!(
+            force.abs() < 1e-12,
+            "force at Rmin must vanish, got {force}"
+        );
+    }
+
+    #[test]
+    fn test_vdw_force_matches_negative_energy_gradient() {
+        let (epsilon, rmin) = (0.07, 4.0);
+        let r = 1.2 * rmin;
+        let h = 1e-6;
+        let (e_plus, _) = compute_vdw_force(r + h, epsilon, rmin);
+        let (e_minus, _) = compute_vdw_force(r - h, epsilon, rmin);
+        let numeric = -(e_plus - e_minus) / (2.0 * h);
+        let (_, force) = compute_vdw_force(r, epsilon, rmin);
+        assert!(
+            (force - numeric).abs() <= 1e-6 * numeric.abs(),
+            "analytic force {force} must equal -dV/dr = {numeric}"
+        );
+    }
+
+    #[test]
+    fn test_vdw_force_known_value_at_one_and_a_half_rmin() {
+        // At r = 1.5 Rmin: (Rmin/r)^6 = 1/11.390625 and (Rmin/r)^12 = its square,
+        // so -dV/dr = 12 eps / r * (x^2 - x) with x = (2/3)^6.
+        let (epsilon, rmin) = (0.2, 3.0);
+        let r = 4.5;
+        let x = (2.0_f64 / 3.0).powi(6);
+        let expected = 12.0 * epsilon / r * (x * x - x);
+        let (_, force) = compute_vdw_force(r, epsilon, rmin);
+        assert!(
+            (force - expected).abs() < 1e-14,
+            "force {force} vs hand value {expected}"
+        );
+        assert!(force < 0.0);
+    }
+
+    #[test]
+    fn test_vdw_force_stays_finite_for_overlapping_atoms() {
+        for r in [0.0, 1e-14, -1.0, VDW_MIN_DISTANCE] {
+            let (energy, force) = compute_vdw_force(r, 0.1, 3.5);
+            assert!(
+                energy.is_finite() && force.is_finite(),
+                "r = {r}: energy {energy} and force {force} must be finite"
+            );
+            assert!(force > 0.0, "overlapping atoms must repel, got {force}");
+        }
+        let (e_clamped, f_clamped) = compute_vdw_force(VDW_MIN_DISTANCE, 0.1, 3.5);
+        let (e_zero, f_zero) = compute_vdw_force(0.0, 0.1, 3.5);
+        assert_eq!(e_clamped, e_zero);
+        assert_eq!(f_clamped, f_zero);
+    }
+
     // ── CharmmForceField ──────────────────────────────────────────────────────
 
     #[test]
@@ -1354,6 +1443,173 @@ mod tests {
             energy.abs() < 1e-10,
             "Energy at equilibrium should be zero, got {energy}"
         );
+    }
+
+    /// Build a generic (non-planar-aligned) i-j-k geometry with the requested
+    /// opening angle and arm lengths, in a rotated and translated frame.
+    fn bent_triple(theta: f64, len_u: f64, len_v: f64) -> Vec<[f64; 3]> {
+        let rj = [0.3, -0.2, 0.5];
+        let u_hat = norm_vec([1.0, 0.35, -0.25]);
+        let seed = [0.2, 1.0, 0.1];
+        let w_raw = cross3(u_hat, seed);
+        let w_hat = norm_vec(w_raw);
+        let v_hat = [
+            theta.cos() * u_hat[0] + theta.sin() * w_hat[0],
+            theta.cos() * u_hat[1] + theta.sin() * w_hat[1],
+            theta.cos() * u_hat[2] + theta.sin() * w_hat[2],
+        ];
+        vec![
+            [
+                rj[0] + len_u * u_hat[0],
+                rj[1] + len_u * u_hat[1],
+                rj[2] + len_u * u_hat[2],
+            ],
+            rj,
+            [
+                rj[0] + len_v * v_hat[0],
+                rj[1] + len_v * v_hat[1],
+                rj[2] + len_v * v_hat[2],
+            ],
+        ]
+    }
+
+    fn norm_vec(a: [f64; 3]) -> [f64; 3] {
+        let n = norm3(a);
+        [a[0] / n, a[1] / n, a[2] / n]
+    }
+
+    /// Central finite-difference force `-dE/dx` on every atom.
+    fn numeric_angle_forces(
+        positions: &[[f64; 3]],
+        angle_list: &[(usize, usize, usize, CharmmAngleParams)],
+        h: f64,
+    ) -> Vec<[f64; 3]> {
+        let mut out = vec![[0.0; 3]; positions.len()];
+        for atom in 0..positions.len() {
+            for d in 0..3 {
+                let mut plus = positions.to_vec();
+                let mut minus = positions.to_vec();
+                plus[atom][d] += h;
+                minus[atom][d] -= h;
+                let (e_plus, _) = compute_angle_forces(&plus, angle_list);
+                let (e_minus, _) = compute_angle_forces(&minus, angle_list);
+                out[atom][d] = -(e_plus - e_minus) / (2.0 * h);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn test_angle_forces_match_finite_difference_opened_angle() {
+        let theta = 130.0_f64.to_radians();
+        let theta0 = 109.5_f64.to_radians();
+        let positions = bent_triple(theta, 1.1, 0.95);
+        assert!((compute_angle(&positions, 0, 1, 2) - theta).abs() < 1e-12);
+        let angle_list = vec![(
+            0usize,
+            1usize,
+            2usize,
+            CharmmAngleParams::simple(50.0, theta0),
+        )];
+
+        let (energy, forces) = compute_angle_forces(&positions, &angle_list);
+        let expected_energy = 50.0 * (theta - theta0).powi(2);
+        assert!(
+            (energy - expected_energy).abs() < 1e-10,
+            "energy {energy} vs {expected_energy}"
+        );
+
+        let numeric = numeric_angle_forces(&positions, &angle_list, 1e-6);
+        for atom in 0..3 {
+            let scale = norm3(numeric[atom]).max(1e-12);
+            for d in 0..3 {
+                assert!(
+                    (forces[atom][d] - numeric[atom][d]).abs() <= 1e-5 * scale,
+                    "atom {atom} component {d}: analytic {} vs numeric {}",
+                    forces[atom][d],
+                    numeric[atom][d]
+                );
+            }
+        }
+        for d in 0..3 {
+            let net = forces[0][d] + forces[1][d] + forces[2][d];
+            assert!(net.abs() < 1e-12, "net force component {d} = {net}");
+        }
+    }
+
+    #[test]
+    fn test_angle_forces_match_finite_difference_closed_angle() {
+        let theta = 85.0_f64.to_radians();
+        let theta0 = 109.5_f64.to_radians();
+        let positions = bent_triple(theta, 1.4, 1.0);
+        let angle_list = vec![(
+            0usize,
+            1usize,
+            2usize,
+            CharmmAngleParams::simple(50.0, theta0),
+        )];
+        let (_, forces) = compute_angle_forces(&positions, &angle_list);
+        let numeric = numeric_angle_forces(&positions, &angle_list, 1e-6);
+        for atom in 0..3 {
+            let scale = norm3(numeric[atom]).max(1e-12);
+            for d in 0..3 {
+                assert!(
+                    (forces[atom][d] - numeric[atom][d]).abs() <= 1e-5 * scale,
+                    "atom {atom} component {d}: analytic {} vs numeric {}",
+                    forces[atom][d],
+                    numeric[atom][d]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_angle_forces_are_restoring() {
+        // Opened angle (130° > 109.5°): moving along the force must close it.
+        let theta0 = 109.5_f64.to_radians();
+        let params = CharmmAngleParams::simple(50.0, theta0);
+        let angle_list = vec![(0usize, 1usize, 2usize, params)];
+        for theta in [130.0_f64.to_radians(), 90.0_f64.to_radians()] {
+            let positions = bent_triple(theta, 1.1, 1.1);
+            let (e0, forces) = compute_angle_forces(&positions, &angle_list);
+            let step = 1e-4;
+            let moved: Vec<[f64; 3]> = positions
+                .iter()
+                .zip(forces.iter())
+                .map(|(p, f)| [p[0] + step * f[0], p[1] + step * f[1], p[2] + step * f[2]])
+                .collect();
+            let (e1, _) = compute_angle_forces(&moved, &angle_list);
+            let theta_after = compute_angle(&moved, 0, 1, 2);
+            assert!(
+                e1 < e0,
+                "theta = {theta}: stepping along the force must lower the energy ({e0} -> {e1})"
+            );
+            assert!(
+                (theta_after - theta0).abs() < (theta - theta0).abs(),
+                "theta = {theta}: angle must move towards theta0, got {theta_after}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_angle_forces_with_urey_bradley_match_finite_difference() {
+        let theta0 = 109.5_f64.to_radians();
+        let params = CharmmAngleParams::new(50.0, theta0, 30.0, 1.8);
+        let angle_list = vec![(0usize, 1usize, 2usize, params)];
+        let positions = bent_triple(125.0_f64.to_radians(), 1.2, 1.0);
+        let (_, forces) = compute_angle_forces(&positions, &angle_list);
+        let numeric = numeric_angle_forces(&positions, &angle_list, 1e-6);
+        for atom in 0..3 {
+            let scale = norm3(numeric[atom]).max(1e-12);
+            for d in 0..3 {
+                assert!(
+                    (forces[atom][d] - numeric[atom][d]).abs() <= 1e-5 * scale,
+                    "atom {atom} component {d}: analytic {} vs numeric {}",
+                    forces[atom][d],
+                    numeric[atom][d]
+                );
+            }
+        }
     }
 
     // ── CMAP tests ─────────────────────────────────────────────────────────────

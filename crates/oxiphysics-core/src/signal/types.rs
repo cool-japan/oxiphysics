@@ -4,6 +4,7 @@
 
 use super::functions::*;
 use crate::complex::Complex;
+use crate::error::PhysicsError;
 use std::f64::consts::PI;
 
 /// Supported window functions for spectral analysis.
@@ -254,6 +255,19 @@ impl BiquadCoeff {
     pub fn new(b0: f64, b1: f64, b2: f64, a1: f64, a2: f64) -> Self {
         Self { b0, b1, b2, a1, a2 }
     }
+    /// Magnitude `|H(e^{jω})|` of the transfer function at the normalised
+    /// angular frequency `omega` (radians per sample, `ω = 2π f / fs`).
+    pub fn magnitude_response(&self, omega: f64) -> f64 {
+        let z1 = Complex::from_polar(1.0, -omega);
+        let z2 = z1 * z1;
+        let numerator = Complex::new(self.b0, 0.0)
+            + Complex::new(self.b1, 0.0) * z1
+            + Complex::new(self.b2, 0.0) * z2;
+        let denominator = Complex::new(1.0, 0.0)
+            + Complex::new(self.a1, 0.0) * z1
+            + Complex::new(self.a2, 0.0) * z2;
+        (numerator.norm_sq() / denominator.norm_sq()).sqrt()
+    }
 }
 /// A higher-level signal processor that bundles STFT-based spectral analysis,
 /// Mel filterbank computation, and full autocorrelation functions.
@@ -431,10 +445,18 @@ impl KalmanFilter1D {
         self.x
     }
 }
-/// Second-order Butterworth band-pass filter using cascaded biquad sections.
+/// Butterworth band-pass filter realised as a cascade of biquad sections.
 ///
-/// Designed via bilinear transform. Cascades `order` biquad sections, each
-/// targeting the band `[f_low, f_high]`.
+/// The analogue Butterworth low-pass prototype of order `N` (left-half-plane
+/// poles `exp(iπ(2k + N + 1) / (2N))`, `k < N`) is mapped to a band-pass by
+/// the substitution `s → (s² + w0²) / (s · bw)`, where `w_low` and `w_high`
+/// are the pre-warped band edges `w = 2 fs tan(π f / fs)`,
+/// `w0 = √(w_low · w_high)` and `bw = w_high − w_low`.  The resulting `2N`
+/// poles are paired with their complex conjugates into `N` real second-order
+/// sections and discretised with the bilinear transform; every section has its
+/// zeros at `z = ±1` and is scaled to unit gain at the centre frequency, so the
+/// cascade has gain `1/√2` (−3 dB) exactly at `f_low` and `f_high`, and gain 1
+/// at the centre frequency `fs/π · atan(w0 / (2 fs))`.
 pub struct ButterworthBandpass {
     /// Biquad sections (cascaded).
     pub(super) sections: Vec<IirFilter>,
@@ -447,35 +469,130 @@ impl ButterworthBandpass {
     /// * `f_low`    - Lower 3-dB cutoff frequency in Hz.
     /// * `f_high`   - Upper 3-dB cutoff frequency in Hz.
     /// * `sample_rate` - Sampling frequency in Hz.
+    ///
+    /// An `order` of 0 is treated as 1.  This constructor is infallible: if
+    /// the specification is invalid (it must satisfy
+    /// `0 < f_low < f_high < sample_rate / 2` with finite values) the result is
+    /// an empty cascade that passes its input through unchanged.  Use
+    /// [`try_new`](Self::try_new) to detect invalid specifications.
     pub fn new(order: usize, f_low: f64, f_high: f64, sample_rate: f64) -> Self {
-        let mut sections = Vec::new();
-        let fs = sample_rate;
-        let order = order.max(1);
-        let w_low = 2.0 * fs * (PI * f_low / fs).tan();
-        let w_high = 2.0 * fs * (PI * f_high / fs).tan();
-        let bw = w_high - w_low;
-        let w0 = (w_low * w_high).sqrt();
-        for k in 0..order {
-            let theta = PI * (2 * k + 1) as f64 / (2 * order) as f64;
-            let alpha = bw / (2.0 * w0) * theta.sin();
-            let w_c = 2.0 * PI * ((f_low + f_high) / 2.0) / fs;
-            let q = (w0 / bw) * theta.sin();
-            let r = (-PI * (f_high - f_low) / (q * fs)).exp();
-            let cos_wc = w_c.cos();
-            let sin_wc = w_c.sin();
-            let bw_rad = 2.0 * PI * (f_high - f_low) / fs;
-            let alpha_bw = sin_wc * (bw_rad / 2.0).sinh().min(0.5 * alpha).max(0.01);
-            let b0 = alpha_bw;
-            let b1 = 0.0;
-            let b2 = -alpha_bw;
-            let a0 = 1.0 + alpha_bw;
-            let a1 = -2.0 * cos_wc;
-            let a2 = 1.0 - alpha_bw;
-            let _ = r;
-            let coeff = BiquadCoeff::new(b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0);
-            sections.push(IirFilter::new(coeff));
+        Self::try_new(order.max(1), f_low, f_high, sample_rate).unwrap_or(Self {
+            sections: Vec::new(),
+        })
+    }
+    /// Design a Butterworth band-pass filter, validating the specification.
+    ///
+    /// See the type-level documentation for the design procedure.
+    ///
+    /// # Errors
+    /// * [`PhysicsError::InvalidInput`] if `order` is zero, `sample_rate` is not
+    ///   positive and finite, or the band edges do not satisfy
+    ///   `0 < f_low < f_high < sample_rate / 2`.
+    /// * [`PhysicsError::NumericalDivergence`] if a section cannot be
+    ///   normalised (non-finite or vanishing centre gain).
+    pub fn try_new(
+        order: usize,
+        f_low: f64,
+        f_high: f64,
+        sample_rate: f64,
+    ) -> Result<Self, PhysicsError> {
+        let invalid = |field: &str, reason: String| PhysicsError::InvalidInput {
+            field: field.to_string(),
+            reason,
+        };
+        if order == 0 {
+            return Err(invalid(
+                "order",
+                "filter order must be at least 1".to_string(),
+            ));
         }
-        Self { sections }
+        if !(sample_rate.is_finite() && sample_rate > 0.0) {
+            return Err(invalid(
+                "sample_rate",
+                format!("must be positive and finite, got {sample_rate}"),
+            ));
+        }
+        if !(f_low.is_finite() && f_low > 0.0) {
+            return Err(invalid(
+                "f_low",
+                format!("must be positive and finite, got {f_low}"),
+            ));
+        }
+        if !(f_high.is_finite() && f_high < 0.5 * sample_rate) {
+            return Err(invalid(
+                "f_high",
+                format!(
+                    "must be below the Nyquist frequency {}, got {f_high}",
+                    0.5 * sample_rate
+                ),
+            ));
+        }
+        if f_low >= f_high {
+            return Err(invalid(
+                "f_low",
+                format!("must be below f_high = {f_high}, got {f_low}"),
+            ));
+        }
+        let k = 2.0 * sample_rate;
+        let w_low = k * (PI * f_low / sample_rate).tan();
+        let w_high = k * (PI * f_high / sample_rate).tan();
+        let w0 = (w_low * w_high).sqrt();
+        let bw = w_high - w_low;
+        // Digital centre frequency (rad/sample) that the analogue w0 maps to.
+        let omega0 = 2.0 * (w0 / k).atan();
+        // Analogue denominators s² + c1·s + c0 of the 2N band-pass poles, paired
+        // into N real quadratics.
+        let mut quadratics: Vec<(f64, f64)> = Vec::with_capacity(order);
+        for idx in 0..order / 2 {
+            // Prototype pole in the upper half-plane; its conjugate is implied.
+            let theta = PI * (2 * idx + order + 1) as f64 / (2 * order) as f64;
+            let p_bw = Complex::new(theta.cos() * bw, theta.sin() * bw);
+            // Roots of s² − p·bw·s + w0².
+            let disc = (p_bw * p_bw - Complex::new(4.0 * w0 * w0, 0.0)).sqrt();
+            for sign in [1.0, -1.0] {
+                let root = (p_bw + disc * Complex::new(sign, 0.0)) * Complex::new(0.5, 0.0);
+                quadratics.push((-2.0 * root.re, root.norm_sq()));
+            }
+        }
+        if order % 2 == 1 {
+            // The real prototype pole p = −1 gives s² + bw·s + w0².
+            quadratics.push((bw, w0 * w0));
+        }
+        let mut sections = Vec::with_capacity(order);
+        for (c1, c0) in quadratics {
+            // Bilinear transform s = K (z − 1)/(z + 1) of  s / (s² + c1 s + c0).
+            let d0 = k * k + c1 * k + c0;
+            let a1 = (2.0 * c0 - 2.0 * k * k) / d0;
+            let a2 = (k * k - c1 * k + c0) / d0;
+            let b0 = k / d0;
+            let raw = BiquadCoeff::new(b0, 0.0, -b0, a1, a2);
+            let centre_gain = raw.magnitude_response(omega0);
+            if !(centre_gain.is_finite() && centre_gain > 0.0) {
+                return Err(PhysicsError::NumericalDivergence {
+                    message: format!(
+                        "Butterworth band-pass section has centre gain {centre_gain} for \
+                         order {order}, band [{f_low}, {f_high}] Hz at {sample_rate} Hz"
+                    ),
+                });
+            }
+            let scale = 1.0 / centre_gain;
+            sections.push(IirFilter::new(BiquadCoeff::new(
+                raw.b0 * scale,
+                0.0,
+                raw.b2 * scale,
+                a1,
+                a2,
+            )));
+        }
+        Ok(Self { sections })
+    }
+    /// Magnitude `|H|` of the whole cascade at `frequency_hz` for the given sample rate.
+    pub fn magnitude_response(&self, frequency_hz: f64, sample_rate_hz: f64) -> f64 {
+        let omega = 2.0 * PI * frequency_hz / sample_rate_hz;
+        self.sections
+            .iter()
+            .map(|section| section.coeff.magnitude_response(omega))
+            .product()
     }
     /// Apply the band-pass filter to a signal in-place (cascade of biquads).
     pub fn apply(&mut self, signal: &[f64]) -> Vec<f64> {
@@ -729,7 +846,8 @@ impl IirFilter {
 pub struct ButterworthLowPass {
     /// Cascade of biquad sections.
     pub(super) sections: Vec<IirFilter>,
-    /// Optional first-order section for odd filter orders.
+    /// Optional first-order section for odd filter orders, as `(b0, b1, a1)` with
+    /// the difference equation `y[n] = b0·x[n] + b1·x[n−1] + a1·y[n−1]`.
     pub(super) first_order: Option<(f64, f64, f64)>,
     /// First-order delay state.
     pub(super) fo_state: (f64, f64),
@@ -738,7 +856,9 @@ impl ButterworthLowPass {
     /// Design an nth-order Butterworth low-pass filter.
     ///
     /// # Arguments
-    /// * `order` — Filter order (1..=8 supported).
+    /// * `order` — Filter order; every `order >= 1` is realised as biquad
+    ///   sections plus one first-order section for odd orders (an order of 0
+    ///   yields a pass-through filter).
     /// * `cutoff_hz` — Cutoff frequency in Hz.
     /// * `sample_rate_hz` — Sample rate in Hz.
     pub fn new(order: usize, cutoff_hz: f64, sample_rate_hz: f64) -> Self {
@@ -749,7 +869,6 @@ impl ButterworthLowPass {
         for k in 0..n_pairs {
             let theta = PI * (2 * (k + 1) + order - 1) as f64 / (2 * order) as f64;
             let re = theta.cos();
-            let im = theta.sin();
             let a_s2 = 1.0 / (wc * wc);
             let a_s1 = -2.0 * re / wc;
             let k_bl = 2.0 * sample_rate_hz;
@@ -762,12 +881,12 @@ impl ButterworthLowPass {
             let ia2 = (a_s2 * k2 - a_s1 * k_bl + 1.0) / d;
             let coeff = BiquadCoeff::new(b0, b1, b2, ia1, ia2);
             sections.push(IirFilter::new(coeff));
-            let _ = im;
         }
         let first_order = if has_odd {
+            // Bilinear transform of wc / (s + wc):
+            //   y[n] = α x[n] + α x[n−1] + (1 − 2α) y[n−1],  α = wc / (wc + 2 fs).
             let alpha = wc / (wc + 2.0 * sample_rate_hz);
-            let a1 = 1.0 - 2.0 * alpha;
-            Some((alpha, alpha, -a1))
+            Some((alpha, alpha, 1.0 - 2.0 * alpha))
         } else {
             None
         };
@@ -776,6 +895,22 @@ impl ButterworthLowPass {
             first_order,
             fo_state: (0.0, 0.0),
         }
+    }
+    /// Magnitude `|H|` of the whole cascade at `frequency_hz` for the given sample rate.
+    pub fn magnitude_response(&self, frequency_hz: f64, sample_rate_hz: f64) -> f64 {
+        let omega = 2.0 * PI * frequency_hz / sample_rate_hz;
+        let mut gain: f64 = self
+            .sections
+            .iter()
+            .map(|section| section.coeff.magnitude_response(omega))
+            .product();
+        if let Some((b0, b1, a1)) = self.first_order {
+            let z1 = Complex::from_polar(1.0, -omega);
+            let numerator = Complex::new(b0, 0.0) + Complex::new(b1, 0.0) * z1;
+            let denominator = Complex::new(1.0, 0.0) - Complex::new(a1, 0.0) * z1;
+            gain *= (numerator.norm_sq() / denominator.norm_sq()).sqrt();
+        }
+        gain
     }
     /// Reset all internal filter states.
     pub fn reset(&mut self) {

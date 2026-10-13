@@ -42,9 +42,10 @@ pub enum AbaDerivativeError {
         /// Zero-based pivot index where factorisation failed.
         index: usize,
     },
-    /// Input slice length did not match `model.total_dof()`.
+    /// Input slice length did not match the model (`model.total_nq()` for
+    /// `q`, `model.total_dof()` for `q_dot` / `tau`).
     DimensionMismatch {
-        /// Expected length (`model.total_dof()`).
+        /// Expected length.
         expected: usize,
         /// Actual length supplied.
         got: usize,
@@ -72,6 +73,8 @@ impl std::error::Error for AbaDerivativeError {}
 /// All three are `n×n` row-major (`n = model.total_dof()`):
 /// `dqdd_dq[i][j] = ∂q̈_i/∂q_j`, `dqdd_dqd[i][j] = ∂q̈_i/∂q̇_j`,
 /// `dqdd_dtau[i][j] = ∂q̈_i/∂τ_j` (the latter equals `M(q)^{-1}`).
+/// For quaternion-parameterised joints `∂/∂q` is taken in the tangent space
+/// (see [`crate::rnea_derivatives::RneaDerivatives`]).
 #[derive(Debug, Clone)]
 pub struct AbaDerivatives {
     /// ∂q̈/∂q  (n×n).
@@ -142,21 +145,18 @@ fn cholesky_solve_vec(l: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
 /// Returns an `n×n` symmetric matrix (`n = model.total_dof()`). Each column is
 /// obtained by solving `M·x = e_j` for the `j`-th unit vector.
 ///
-/// `model` is taken by `&mut` because [`compute_mass_matrix_crba`] requires
-/// mutable access to the model.
-///
 /// # Errors
 /// Returns [`AbaDerivativeError::DimensionMismatch`] if `q.len()` differs from
-/// `model.total_dof()`, or [`AbaDerivativeError::NotPositiveDefinite`] if the
+/// `model.total_nq()`, or [`AbaDerivativeError::NotPositiveDefinite`] if the
 /// mass matrix is not SPD within tolerance.
 pub fn mass_matrix_inverse(
-    model: &mut ArticulatedModel,
+    model: &ArticulatedModel,
     q: &[f64],
 ) -> Result<Vec<Vec<f64>>, AbaDerivativeError> {
     let n = model.total_dof();
-    if q.len() != n {
+    if q.len() != model.total_nq() {
         return Err(AbaDerivativeError::DimensionMismatch {
-            expected: n,
+            expected: model.total_nq(),
             got: q.len(),
         });
     }
@@ -187,21 +187,18 @@ fn invert_from_factor(l: &[Vec<f64>], n: usize) -> Vec<Vec<f64>> {
 /// Internally: q̈ = aba(q,q̇,τ); M = CRBA(q); ∂RNEA evaluated at (q,q̇,q̈);
 /// then a Cholesky factorisation of M is reused for all 2n+ n solves.
 ///
-/// `model` is taken by `&mut` because [`compute_mass_matrix_crba`] requires
-/// mutable access to the model.
-///
 /// # Errors
 /// Returns [`AbaDerivativeError`] if dimensions mismatch or `M` is not SPD.
 pub fn aba_derivatives(
-    model: &mut ArticulatedModel,
+    model: &ArticulatedModel,
     q: &[f64],
     q_dot: &[f64],
     tau: &[f64],
 ) -> Result<AbaDerivatives, AbaDerivativeError> {
     let n = model.total_dof();
-    if q.len() != n {
+    if q.len() != model.total_nq() {
         return Err(AbaDerivativeError::DimensionMismatch {
-            expected: n,
+            expected: model.total_nq(),
             got: q.len(),
         });
     }
@@ -502,25 +499,25 @@ mod tests {
 
     #[test]
     fn test_dqdd_dtau_equals_minv_pendulum() {
-        let mut model = build_pendulum(1.5, 0.8, 9.81);
+        let model = build_pendulum(1.5, 0.8, 9.81);
         let q = [0.6];
         let qd = [0.4];
         let tau = [0.2];
 
-        let m = compute_mass_matrix_crba(&mut model, &q);
-        let derivs = aba_derivatives(&mut model, &q, &qd, &tau).expect("SPD pendulum");
+        let m = compute_mass_matrix_crba(&model, &q);
+        let derivs = aba_derivatives(&model, &q, &qd, &tau).expect("SPD pendulum");
         // 1×1: ∂q̈/∂τ == 1/M[0][0].
         assert_close(derivs.dqdd_dtau[0][0], 1.0 / m[0][0], 1e-10, "1/M[0][0]");
     }
 
     #[test]
     fn test_dqdd_dtau_matches_fd_two_link() {
-        let mut model = build_two_link(1.2, 0.9, 0.5, 0.4, 9.81);
+        let model = build_two_link(1.2, 0.9, 0.5, 0.4, 9.81);
         let q = [0.3, -0.5];
         let qd = [0.2, 0.7];
         let tau = [0.15, -0.25];
 
-        let derivs = aba_derivatives(&mut model, &q, &qd, &tau).expect("SPD two-link");
+        let derivs = aba_derivatives(&model, &q, &qd, &tau).expect("SPD two-link");
         let fd = fd_aba_dtau(&model, &q, &qd, &tau, 1e-6);
         let worst = max_abs_diff(&derivs.dqdd_dtau, &fd);
         assert!(worst < 1e-6, "∂q̈/∂τ vs FD: worst |Δ|={worst:.3e}");
@@ -528,12 +525,12 @@ mod tests {
 
     #[test]
     fn test_dqdd_dtau_symmetry_two_link() {
-        let mut model = build_two_link(1.2, 0.9, 0.5, 0.4, 9.81);
+        let model = build_two_link(1.2, 0.9, 0.5, 0.4, 9.81);
         let q = [0.3, -0.5];
         let qd = [0.2, 0.7];
         let tau = [0.15, -0.25];
 
-        let derivs = aba_derivatives(&mut model, &q, &qd, &tau).expect("SPD two-link");
+        let derivs = aba_derivatives(&model, &q, &qd, &tau).expect("SPD two-link");
         // M^{-1} is symmetric.
         assert_close(
             derivs.dqdd_dtau[0][1],
@@ -547,16 +544,16 @@ mod tests {
 
     #[test]
     fn test_dqdd_dq_equals_minv_dtaudq_two_link() {
-        let mut model = build_two_link(1.2, 0.9, 0.5, 0.4, 9.81);
+        let model = build_two_link(1.2, 0.9, 0.5, 0.4, 9.81);
         let q = [0.3, -0.5];
         let qd = [0.2, 0.7];
         let tau = [0.15, -0.25];
 
-        let derivs = aba_derivatives(&mut model, &q, &qd, &tau).expect("SPD two-link");
+        let derivs = aba_derivatives(&model, &q, &qd, &tau).expect("SPD two-link");
 
         // Independently: q̈ = aba; M^{-1}; ∂τ/∂q at q̈; then −M^{-1}·∂τ/∂q.
         let q_ddot = aba(&model, &q, &qd, &tau);
-        let minv = mass_matrix_inverse(&mut model, &q).expect("SPD inverse");
+        let minv = mass_matrix_inverse(&model, &q).expect("SPD inverse");
         let rnea_d = rnea_derivatives(&model, &q, &qd, &q_ddot);
         let expected = neg_matmul(&minv, &rnea_d.dtau_dq);
 
@@ -566,12 +563,12 @@ mod tests {
 
     #[test]
     fn test_dqdd_dq_matches_fd_two_link() {
-        let mut model = build_two_link(1.2, 0.9, 0.5, 0.4, 9.81);
+        let model = build_two_link(1.2, 0.9, 0.5, 0.4, 9.81);
         let q = [0.3, -0.5];
         let qd = [0.2, 0.7];
         let tau = [0.15, -0.25];
 
-        let derivs = aba_derivatives(&mut model, &q, &qd, &tau).expect("SPD two-link");
+        let derivs = aba_derivatives(&model, &q, &qd, &tau).expect("SPD two-link");
 
         // Try 1e-6 first; the FD of forward dynamics passes at this tolerance.
         let fd_q = fd_aba_dq(&model, &q, &qd, &tau, 1e-6);
@@ -587,12 +584,12 @@ mod tests {
 
     #[test]
     fn test_seven_dof_dqdd_dtau_vs_fd() {
-        let mut model = build_seven_dof();
+        let model = build_seven_dof();
         let q = [0.2, -0.4, 0.6, -0.1, 0.3, -0.5, 0.15];
         let qd = [0.1, 0.2, -0.3, 0.4, -0.2, 0.1, 0.25];
         let tau = [0.05, -0.1, 0.2, -0.15, 0.1, -0.05, 0.12];
 
-        let derivs = aba_derivatives(&mut model, &q, &qd, &tau).expect("SPD 7-DoF");
+        let derivs = aba_derivatives(&model, &q, &qd, &tau).expect("SPD 7-DoF");
         let fd = fd_aba_dtau(&model, &q, &qd, &tau, 1e-6);
         let worst = max_abs_diff(&derivs.dqdd_dtau, &fd);
         assert!(worst < 1e-5, "7-DoF ∂q̈/∂τ vs FD: worst |Δ|={worst:.3e}");

@@ -12,6 +12,8 @@
 
 use std::collections::HashMap;
 
+use crate::kernel::{SphKernel, WendlandC2Kernel, WendlandC4Kernel};
+
 // ---------------------------------------------------------------------------
 // Helper math
 // ---------------------------------------------------------------------------
@@ -58,34 +60,23 @@ fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 
 /// Evaluate the Wendland C2 kernel W(r, h).
 ///
-/// W(r, h) = (21/(2π h³)) * (1 - q/2)^4 * (2q + 1)  for q = r/h ≤ 2
+/// W(r, h) = (21/(16π h³)) * (1 - q/2)^4 * (2q + 1)  for q = r/h < 2
 ///         = 0 otherwise
 ///
-/// where q = r/h, normalised for 3D.
+/// The support radius is `2h` and the kernel is normalised in 3-D, i.e.
+/// `∫ W dV = 1` over the support sphere. This is the canonical
+/// `21/(2π H³)` Wendland constant written for the support radius `H = 2h`;
+/// it delegates to [`WendlandC2Kernel`] so there is a single definition of the
+/// kernel in the crate.
 pub fn wendland_c2_kernel(r: f64, h: f64) -> f64 {
-    let q = r / h;
-    if q >= 2.0 {
-        return 0.0;
-    }
-    let factor = 21.0 / (2.0 * std::f64::consts::PI * h * h * h);
-    let t = 1.0 - 0.5 * q;
-    factor * t.powi(4) * (2.0 * q + 1.0)
+    WendlandC2Kernel.w(r, h)
 }
 
 /// Evaluate the Wendland C2 kernel gradient magnitude dW/dr.
 ///
 /// Returns the scalar dW/dr for use in vector gradient: ∇W = (dW/dr) * r_hat.
 pub fn wendland_c2_gradient_mag(r: f64, h: f64) -> f64 {
-    let q = r / h;
-    if q >= 2.0 || r < 1e-15 {
-        return 0.0;
-    }
-    let factor = 21.0 / (2.0 * std::f64::consts::PI * h * h * h);
-    let t = 1.0 - 0.5 * q;
-    // d/dr [(1 - q/2)^4 * (2q+1)] = 4*(1-q/2)^3*(-1/(2h))*(2q+1) + (1-q/2)^4 * 2/h
-    let dt_dr = -0.5 / h;
-
-    factor * (4.0 * t.powi(3) * dt_dr * (2.0 * q + 1.0) + t.powi(4) * 2.0 / h)
+    WendlandC2Kernel.grad_w(r, h)
 }
 
 /// Evaluate the Wendland C2 kernel gradient vector ∇W.
@@ -104,30 +95,18 @@ pub fn wendland_c2_gradient(r_vec: [f64; 3], h: f64) -> [f64; 3] {
 
 /// Evaluate the Wendland C4 kernel W(r, h).
 ///
-/// W(r, h) = (495/(32π h³)) * (1 - q/2)^6 * (35q²/12 + 3q + 1) for q ≤ 2
+/// W(r, h) = (495/(256π h³)) * (1 - q/2)^6 * (35q²/12 + 3q + 1) for q = r/h < 2
 ///         = 0 otherwise
+///
+/// The support radius is `2h` and the kernel is normalised in 3-D
+/// (`∫ W dV = 1`); it delegates to [`WendlandC4Kernel`].
 pub fn wendland_c4_kernel(r: f64, h: f64) -> f64 {
-    let q = r / h;
-    if q >= 2.0 {
-        return 0.0;
-    }
-    let factor = 495.0 / (32.0 * std::f64::consts::PI * h * h * h);
-    let t = 1.0 - 0.5 * q;
-    factor * t.powi(6) * (35.0 * q * q / 12.0 + 3.0 * q + 1.0)
+    WendlandC4Kernel.w(r, h)
 }
 
 /// Evaluate the Wendland C4 kernel gradient magnitude dW/dr.
 pub fn wendland_c4_gradient_mag(r: f64, h: f64) -> f64 {
-    let q = r / h;
-    if q >= 2.0 || r < 1e-15 {
-        return 0.0;
-    }
-    let factor = 495.0 / (32.0 * std::f64::consts::PI * h * h * h);
-    let t = 1.0 - 0.5 * q;
-    let dt_dr = -0.5 / h;
-    let poly = 35.0 * q * q / 12.0 + 3.0 * q + 1.0;
-    let dpoly_dr = (35.0 * 2.0 * q / 12.0 + 3.0) / h;
-    factor * (6.0 * t.powi(5) * dt_dr * poly + t.powi(6) * dpoly_dr)
+    WendlandC4Kernel.grad_w(r, h)
 }
 
 /// Evaluate the Wendland C4 kernel gradient vector ∇W.
@@ -209,7 +188,9 @@ pub struct DfsphParticle {
     pub pressure: f64,
     /// DFSPH α coefficient (for pressure solve).
     pub alpha: f64,
-    /// Velocity divergence ∇·v_i (1/s).
+    /// Density-change rate over density `Dρ_i/Dt / ρ_i` (1/s): the negative of
+    /// the velocity divergence `∇·v_i`, positive where the particle is being
+    /// compressed.
     pub divergence: f64,
     /// Density error ρ_i - ρ₀ relative to rest density.
     pub density_error: f64,
@@ -613,9 +594,13 @@ impl PressureSolveIter {
     ///
     /// 1. Predict the density from the **current** velocity field,
     ///    `ρ*_i = ρ_i + dt · Σ_j m_j (v_i − v_j) · ∇W_ij`.
-    /// 2. Form the per-particle stiffness
-    ///    `κ_i = ω · (ρ*_i − ρ₀) · ρ₀ / (dt² α_i)` (written into `pressures`
-    ///    so the caller can inspect it; clamped to be non-negative).
+    /// 2. Form the per-particle stiffness (a pressure, in Pa)
+    ///    `κ_i = ω · max(ρ*_i − ρ₀, 0) · ρ_i · α_i / dt²` (written into
+    ///    `pressures` so the caller can inspect it; non-negative). With
+    ///    `α_i = ρ_i / (|Σ_j m_j ∇W_ij|² + Σ_j |m_j ∇W_ij|²)` the factor
+    ///    `ρ_i α_i / dt²` is the inverse of the diagonal response of `ρ*_i` to its
+    ///    own pressure, so a full step (`ω = 1`) removes the particle's own
+    ///    density error to first order.
     /// 3. Project the velocity field with the symmetric pressure acceleration
     ///    `v_i -= dt · Σ_j m_j (κ_i/ρ_i² + κ_j/ρ_j²) ∇W_ij`.
     ///
@@ -625,9 +610,13 @@ impl PressureSolveIter {
     /// pressure). This mirrors the divergence-free sibling
     /// [`DivergenceSolveIter::iterate`].
     ///
-    /// Returns the mean absolute relative predicted-density error
-    /// `mean_i |ρ*_i − ρ₀| / ρ₀` evaluated before the projection, so a caller
-    /// can use the return value as a convergence criterion.
+    /// Returns the mean compressive relative predicted-density error
+    /// `mean_i max(ρ*_i − ρ₀, 0) / ρ₀` over the fluid particles, evaluated
+    /// before the projection, so a caller can use the return value as a
+    /// convergence criterion. Only compression is counted because a positive
+    /// pressure cannot repair an under-dense particle (for example one on a
+    /// free surface, whose kernel sum is truncated); counting it would keep the
+    /// criterion above any tolerance forever.
     pub fn iterate(
         &self,
         particles: &[DfsphParticle],
@@ -640,6 +629,7 @@ impl PressureSolveIter {
         let n = particles.len();
         let density_obj = WcSphDensity::new(self.kernel.clone(), self.h);
         let mut mean_error = 0.0f64;
+        let mut fluid_count = 0usize;
 
         // 1./2. Predict the density from the live velocity field and turn the
         //       residual density error into the per-particle stiffness κ.
@@ -669,19 +659,20 @@ impl PressureSolveIter {
                 }
             }
 
-            // Predicted density and its relative error against rest density.
+            // Predicted density and its compressive error against rest density.
             let rho_star = rho_i + dt * drho_dt;
-            let density_error = (rho_star - self.rho0) / self.rho0;
-            mean_error += density_error.abs();
+            let compression = (rho_star - self.rho0).max(0.0);
+            mean_error += compression / self.rho0;
+            fluid_count += 1;
 
-            // Stiffness: κ_i = ω (ρ*_i − ρ₀) ρ₀ / (dt² α_i); only compresses
+            // Stiffness: κ_i = ω max(ρ*_i − ρ₀, 0) ρ_i α_i / dt²; only compresses
             // (non-negative), so expansion is left to the divergence solve.
             let alpha_i = alphas.get(i).copied().unwrap_or(0.0);
             if alpha_i.abs() < 1e-20 {
                 *pressure_i = 0.0;
                 continue;
             }
-            let kappa = self.omega * density_error * self.rho0 / (dt * dt * alpha_i);
+            let kappa = self.omega * compression * rho_i * alpha_i / (dt * dt);
             *pressure_i = kappa.max(0.0);
         }
 
@@ -719,7 +710,7 @@ impl PressureSolveIter {
             }
         }
 
-        mean_error / n.max(1) as f64
+        mean_error / fluid_count.max(1) as f64
     }
 }
 
@@ -756,9 +747,12 @@ impl DivergenceSolveIter {
         }
     }
 
-    /// Compute velocity divergence ∇·v_i.
+    /// Compute the density-change rate over density of particle `i`,
+    /// `Dρ_i/Dt / ρ_i = (1/ρ_i) Σ_j m_j (v_i − v_j) · ∇W_ij`.
     ///
-    /// ∇·v_i = Σ_j (m_j/ρ_j) (v_j - v_i) · ∇W_ij
+    /// This is the **negative** of the velocity divergence `∇·v_i`: it is
+    /// positive where the particle is being compressed and negative where it is
+    /// expanding, the sign convention [`iterate`](Self::iterate) works with.
     pub fn velocity_divergence(
         &self,
         pos_i: [f64; 3],
@@ -781,7 +775,30 @@ impl DivergenceSolveIter {
 
     /// Perform one divergence correction iteration.
     ///
-    /// Returns mean absolute divergence error (1/s).
+    /// This is the DFSPH divergence-free (DF) step of Bender & Koschier
+    /// (2015, 2017):
+    ///
+    /// 1. Evaluate the density-change rate of the **current** `velocities`,
+    ///    `div_i = (1/ρ_i) Σ_j m_j (v_i − v_j) · ∇W_ij` (`= Dρ_i/Dt / ρ_i`,
+    ///    positive in compression, i.e. the negative of `∇·v`). The
+    ///    `divergence` field of the particles is not read, so repeated calls
+    ///    re-measure what the previous call left behind instead of re-applying a
+    ///    stale correction.
+    /// 2. Form the per-particle stiffness (a pressure, in Pa)
+    ///    `κ_i = max(div_i, 0) · ρ_i² · α_i / dt`, with
+    ///    `α_i = ρ_i / (|Σ_j m_j ∇W_ij|² + Σ_j |m_j ∇W_ij|²)`. The factor
+    ///    `ρ_i² α_i / dt` inverts the diagonal response of `Dρ_i/Dt` to its own
+    ///    pressure. Only compression is corrected, as in the reference DFSPH
+    ///    solver: a positive pressure cannot repair an expanding particle, and
+    ///    a negative one would pull particles together (tensile clumping); the
+    ///    two-sided diagonally preconditioned Jacobi iteration is also unstable
+    ///    on compact clusters (it diverges already at `ω = 0.3` on a compressed
+    ///    5×5×5 block).
+    /// 3. Project the velocities with the ω-relaxed symmetric pressure
+    ///    acceleration `v_i -= ω · dt · Σ_j m_j (κ_i/ρ_i² + κ_j/ρ_j²) ∇W_ij`.
+    ///
+    /// Returns the mean compressive divergence `mean_i max(div_i, 0)` (1/s) of
+    /// the fluid particles, evaluated before the projection.
     pub fn iterate(
         &self,
         particles: &[DfsphParticle],
@@ -793,24 +810,45 @@ impl DivergenceSolveIter {
         let n = particles.len();
         let density_obj = WcSphDensity::new(self.kernel.clone(), self.h);
         let mut mean_div = 0.0f64;
+        let mut fluid_count = 0usize;
         let mut kappas = vec![0.0f64; n];
 
-        // Compute kappa from divergence
+        // 1./2. Divergence of the live velocity field and the stiffness κ it implies.
         for (i, (p_i, kappa)) in particles.iter().zip(kappas.iter_mut()).enumerate() {
             if p_i.is_boundary {
                 continue;
             }
-            let alpha_i = alphas[i];
+            let rho_i = p_i.density;
+            if rho_i <= 1e-15 {
+                continue;
+            }
+            let mut drho_dt = 0.0f64;
+            if let Some(neighbors) = neighbor_lists.get(i) {
+                for &j in neighbors {
+                    if j == i || j >= n {
+                        continue;
+                    }
+                    let p_j = &particles[j];
+                    if p_j.density <= 1e-15 {
+                        continue;
+                    }
+                    let g = density_obj.eval_gradient(sub3(p_i.position, p_j.position));
+                    let v_ij = sub3(velocities[i], velocities[j]);
+                    drho_dt += p_j.mass * dot3(v_ij, g);
+                }
+            }
+            let compression = (drho_dt / rho_i).max(0.0);
+            mean_div += compression;
+            fluid_count += 1;
+
+            let alpha_i = alphas.get(i).copied().unwrap_or(0.0);
             if alpha_i.abs() < 1e-20 {
                 continue;
             }
-
-            let div_i = p_i.divergence;
-            mean_div += div_i.abs();
-            *kappa = div_i / (dt * alpha_i);
+            *kappa = compression * rho_i * rho_i * alpha_i / dt;
         }
 
-        // Update velocities
+        // 3. Project the velocities with the symmetric pressure acceleration.
         for (i, (p_i, vel_i)) in particles.iter().zip(velocities.iter_mut()).enumerate() {
             if p_i.is_boundary {
                 continue;
@@ -827,6 +865,7 @@ impl DivergenceSolveIter {
                         continue;
                     }
                     let corr = self.omega
+                        * dt
                         * particles[j].mass
                         * (kappas[i] / p_i.density.powi(2) + kappas[j] / rho_j.powi(2));
                     vel_i[0] -= corr * g[0];
@@ -836,7 +875,7 @@ impl DivergenceSolveIter {
             }
         }
 
-        mean_div / n.max(1) as f64
+        mean_div / fluid_count.max(1) as f64
     }
 }
 
@@ -1113,10 +1152,21 @@ impl DfsphSolver {
     }
 
     /// Build neighbor lists using spatial hash.
+    ///
+    /// [`build_spatial_hash`](Self::build_spatial_hash) must have been called
+    /// for the current positions. The hash cell size equals the support radius,
+    /// so every particle closer than the support radius lies in the 3×3×3 block
+    /// of cells around the query cell. Each list contains the particle itself
+    /// (distance zero), which [`update_densities`](Self::update_densities) uses
+    /// for the self contribution; the solver loops skip `j == i`. A particle
+    /// with non-finite coordinates has an empty list (no distance to it is
+    /// below the support radius) and does not disturb the others; cell indices
+    /// that would overflow `i64` for such a particle are skipped.
     pub fn build_neighbor_lists(&mut self) {
         let n = self.particles.len();
         self.neighbor_lists = vec![Vec::new(); n];
         let h = self.config.support_radius;
+        let support_sq = h * h;
 
         let positions: Vec<_> = self.particles.iter().map(|p| p.position).collect();
 
@@ -1124,14 +1174,19 @@ impl DfsphSolver {
             let pos_i = positions[i];
             let base = self.hash_key(pos_i, h);
             let mut neighbors = Vec::new();
-            for dx in -2i64..=2 {
-                for dy in -2i64..=2 {
-                    for dz in -2i64..=2 {
-                        let key = (base.0 + dx, base.1 + dy, base.2 + dz);
-                        if let Some(cell) = self.spatial_hash.get(&key) {
+            for dx in -1i64..=1 {
+                for dy in -1i64..=1 {
+                    for dz in -1i64..=1 {
+                        let (Some(kx), Some(ky), Some(kz)) = (
+                            base.0.checked_add(dx),
+                            base.1.checked_add(dy),
+                            base.2.checked_add(dz),
+                        ) else {
+                            continue;
+                        };
+                        if let Some(cell) = self.spatial_hash.get(&(kx, ky, kz)) {
                             for &j in cell {
-                                let r = norm3(sub3(pos_i, positions[j]));
-                                if r < h {
+                                if norm_sq3(sub3(pos_i, positions[j])) < support_sq {
                                     neighbors.push(j);
                                 }
                             }
@@ -1202,178 +1257,213 @@ impl DfsphSolver {
         (dens_error, div_error)
     }
 
-    /// Solve to enforce divergence-free velocity field.
-    ///
-    /// Returns final mean divergence error.
-    pub fn solve_divergence_free(&mut self, dt: f64) -> f64 {
+    /// Rate of density change `Dρ_i/Dt = Σ_j m_j (v_i − v_j) · ∇W_ij` of
+    /// particle `i`, evaluated from the current velocity field.
+    fn density_rate(&self, i: usize, kernel_obj: &WcSphDensity) -> f64 {
         let n = self.particles.len();
-        let h = self.config.smoothing_length;
-        let kernel_obj = WcSphDensity::new(KernelType::WendlandC2, h);
-        let mut pressures = vec![0.0f64; n];
-        let mut final_error = 0.0;
-
-        for _iter in 0..self.config.max_divergence_iterations {
-            // Compute divergences
-            let positions: Vec<_> = self.particles.iter().map(|p| p.position).collect();
-            let velocities: Vec<_> = self.particles.iter().map(|p| p.velocity).collect();
-            let densities: Vec<_> = self.particles.iter().map(|p| p.density).collect();
-            let masses: Vec<_> = self.particles.iter().map(|p| p.mass).collect();
-
-            let mut total_div = 0.0f64;
-            let mut count = 0;
-            for (i, p_i) in self.particles.iter_mut().enumerate() {
-                if p_i.is_boundary {
+        let p_i = &self.particles[i];
+        let mut rate = 0.0f64;
+        if let Some(neighbors) = self.neighbor_lists.get(i) {
+            for &j in neighbors {
+                if j == i || j >= n {
                     continue;
                 }
-                let mut div_i = 0.0f64;
-                if let Some(neighbors) = self.neighbor_lists.get(i) {
-                    for &j in neighbors {
-                        if j == i || j >= n {
-                            continue;
-                        }
-                        let r_vec = sub3(positions[i], positions[j]);
-                        let g = kernel_obj.eval_gradient(r_vec);
-                        let v_ij = sub3(velocities[i], velocities[j]);
-                        if densities[i] > 1e-15 {
-                            div_i += masses[j] * dot3(v_ij, g) / densities[i];
-                        }
-                    }
-                }
-                p_i.divergence = div_i;
-                total_div += div_i.abs();
-                count += 1;
+                let p_j = &self.particles[j];
+                let g = kernel_obj.eval_gradient(sub3(p_i.position, p_j.position));
+                rate += p_j.mass * dot3(sub3(p_i.velocity, p_j.velocity), g);
             }
-            final_error = if count > 0 {
-                total_div / count as f64
+        }
+        rate
+    }
+
+    /// Evaluate the divergence-free constraint on the current velocities.
+    ///
+    /// Stores `Dρ_i/Dt / ρ_i` (positive in compression) in the `divergence`
+    /// field of every fluid particle and returns the per-particle stiffnesses
+    /// (pressures, Pa) `κ_i = ω · max(div_i, 0) · ρ_i² · α_i / dt` together
+    /// with the mean compressive divergence `mean_i max(div_i, 0)` (1/s) of the
+    /// fluid particles. Only compression is corrected (reference DFSPH): a
+    /// positive pressure cannot repair an expanding particle, and a negative
+    /// one pulls particles together and makes the Jacobi iteration unstable on
+    /// compact clusters.
+    fn divergence_stiffnesses(&mut self, dt: f64, kernel_obj: &WcSphDensity) -> (Vec<f64>, f64) {
+        let n = self.particles.len();
+        let omega = self.config.omega;
+        let mut kappas = vec![0.0f64; n];
+        let mut total = 0.0f64;
+        let mut count = 0usize;
+        for (i, kappa) in kappas.iter_mut().enumerate() {
+            if self.particles[i].is_boundary {
+                continue;
+            }
+            let rho_i = self.particles[i].density;
+            let div_i = if rho_i > 1e-15 {
+                self.density_rate(i, kernel_obj) / rho_i
             } else {
                 0.0
             };
+            self.particles[i].divergence = div_i;
+            let compression = div_i.max(0.0);
+            total += compression;
+            count += 1;
 
-            if final_error < self.config.error_threshold {
-                self.stats.record_divergence_step(final_error, _iter + 1);
-                break;
+            let alpha_i = self.alphas.get(i).copied().unwrap_or(0.0);
+            if alpha_i.abs() < 1e-20 {
+                continue;
             }
+            *kappa = omega * compression * rho_i * rho_i * alpha_i / dt;
+        }
+        let mean = if count > 0 { total / count as f64 } else { 0.0 };
+        (kappas, mean)
+    }
 
-            // Update pressures
-            for (i, (p_i, pressure_i)) in
-                self.particles.iter().zip(pressures.iter_mut()).enumerate()
-            {
-                if p_i.is_boundary {
-                    continue;
-                }
-                let alpha_i = self.alphas.get(i).copied().unwrap_or(0.0);
-                if alpha_i.abs() < 1e-20 {
-                    continue;
-                }
-                let kappa = p_i.divergence / (dt * alpha_i);
-                *pressure_i += self.config.omega * kappa;
+    /// Evaluate the constant-density constraint on the current velocities.
+    ///
+    /// Predicts `ρ*_i = ρ_i + dt · Dρ_i/Dt` and returns the per-particle
+    /// stiffnesses (pressures, Pa) `κ_i = ω · max(ρ*_i − ρ₀, 0) · ρ_i · α_i / dt²`
+    /// together with the mean compressive relative density error
+    /// `mean_i max(ρ*_i − ρ₀, 0) / ρ₀` of the fluid particles. Only compression
+    /// is penalised: a positive pressure cannot repair an under-dense (for
+    /// example free-surface) particle, so counting it would keep the error above
+    /// any tolerance forever.
+    fn density_stiffnesses(&self, dt: f64, kernel_obj: &WcSphDensity) -> (Vec<f64>, f64) {
+        let n = self.particles.len();
+        let omega = self.config.omega;
+        let rho0 = self.config.rest_density;
+        let mut kappas = vec![0.0f64; n];
+        let mut total = 0.0f64;
+        let mut count = 0usize;
+        for (i, kappa) in kappas.iter_mut().enumerate() {
+            if self.particles[i].is_boundary {
+                continue;
             }
+            let rho_i = self.particles[i].density;
+            let rho_star = rho_i + dt * self.density_rate(i, kernel_obj);
+            let compression = (rho_star - rho0).max(0.0);
+            total += compression / rho0;
+            count += 1;
 
-            // Apply pressure correction to velocities
-            for i in 0..n {
-                if self.particles[i].is_boundary {
-                    continue;
-                }
-                if let Some(neighbors) = self.neighbor_lists.clone().get(i).cloned() {
-                    let pos_i = self.particles[i].position;
-                    let rho_i = self.particles[i].density;
-                    for j in neighbors {
-                        if j == i || j >= n {
-                            continue;
-                        }
-                        let pos_j = self.particles[j].position;
-                        let mass_j = self.particles[j].mass;
-                        let rho_j = self.particles[j].density;
-                        let r_vec = sub3(pos_i, pos_j);
-                        let g = kernel_obj.eval_gradient(r_vec);
-                        if rho_i > 1e-15 && rho_j > 1e-15 {
-                            let coeff = mass_j
-                                * (pressures[i] / (rho_i * rho_i) + pressures[j] / (rho_j * rho_j));
-                            self.particles[i].velocity[0] -= dt * coeff * g[0];
-                            self.particles[i].velocity[1] -= dt * coeff * g[1];
-                            self.particles[i].velocity[2] -= dt * coeff * g[2];
-                        }
+            let alpha_i = self.alphas.get(i).copied().unwrap_or(0.0);
+            if alpha_i.abs() < 1e-20 {
+                continue;
+            }
+            *kappa = omega * compression * rho_i * alpha_i / (dt * dt);
+        }
+        let mean = if count > 0 { total / count as f64 } else { 0.0 };
+        (kappas, mean)
+    }
+
+    /// Apply the symmetric pressure acceleration of the stiffnesses `kappas`
+    /// (Pa) to the fluid velocities:
+    /// `v_i -= dt · Σ_j m_j (κ_i/ρ_i² + κ_j/ρ_j²) ∇W_ij`.
+    ///
+    /// Every correction is computed from the pre-projection stiffnesses into a
+    /// scratch buffer and only then applied (Jacobi update), so the result does
+    /// not depend on the particle order and no per-particle copy of the
+    /// neighbour lists is needed.
+    fn apply_stiffness_projection(&mut self, kappas: &[f64], dt: f64, kernel_obj: &WcSphDensity) {
+        let n = self.particles.len();
+        let mut dv = vec![[0.0f64; 3]; n];
+        for (i, dv_i) in dv.iter_mut().enumerate() {
+            let p_i = &self.particles[i];
+            if p_i.is_boundary || p_i.density <= 1e-15 {
+                continue;
+            }
+            let k_i = kappas[i] / (p_i.density * p_i.density);
+            if let Some(neighbors) = self.neighbor_lists.get(i) {
+                for &j in neighbors {
+                    if j == i || j >= n {
+                        continue;
                     }
+                    let p_j = &self.particles[j];
+                    if p_j.density <= 1e-15 {
+                        continue;
+                    }
+                    let g = kernel_obj.eval_gradient(sub3(p_i.position, p_j.position));
+                    let coeff = p_j.mass * (k_i + kappas[j] / (p_j.density * p_j.density));
+                    dv_i[0] -= dt * coeff * g[0];
+                    dv_i[1] -= dt * coeff * g[1];
+                    dv_i[2] -= dt * coeff * g[2];
                 }
             }
         }
-        final_error
+        for (p, d) in self.particles.iter_mut().zip(dv.iter()) {
+            if !p.is_boundary {
+                p.velocity = add3(p.velocity, *d);
+            }
+        }
+    }
+
+    /// Solve to enforce divergence-free velocity field.
+    ///
+    /// Each iteration measures the density-change rate `div_i = Dρ_i/Dt / ρ_i`
+    /// (positive in compression) of the **current** velocities, turns its
+    /// compressive part into per-particle stiffnesses
+    /// `κ_i = ω · max(div_i, 0) · ρ_i² · α_i / dt` and projects the velocities
+    /// with `v_i -= dt · Σ_j m_j (κ_i/ρ_i² + κ_j/ρ_j²) ∇W_ij`. The stiffnesses
+    /// are re-derived from the corrected velocities every iteration (they are
+    /// assigned, not accumulated), so the iteration converges instead of
+    /// re-applying the whole accumulated pressure each time.
+    ///
+    /// The number of iterations used (the converging pass counts, so
+    /// `max_divergence_iterations` when the solve did not converge) and the
+    /// final error are recorded in [`DfsphStats`] either way. Returns the final
+    /// mean compressive divergence (1/s) of the fluid particles.
+    pub fn solve_divergence_free(&mut self, dt: f64) -> f64 {
+        let kernel_obj = WcSphDensity::new(KernelType::WendlandC2, self.config.smoothing_length);
+        let max_iter = self.config.max_divergence_iterations;
+        let threshold = self.config.error_threshold;
+
+        for iter in 0..max_iter {
+            let (kappas, error) = self.divergence_stiffnesses(dt, &kernel_obj);
+            if error < threshold {
+                self.stats.record_divergence_step(error, iter + 1);
+                return error;
+            }
+            self.apply_stiffness_projection(&kappas, dt, &kernel_obj);
+        }
+
+        // Not converged: report the residual that is actually left after the
+        // last projection rather than the one measured before it.
+        let (_, error) = self.divergence_stiffnesses(dt, &kernel_obj);
+        self.stats.record_divergence_step(error, max_iter);
+        error
     }
 
     /// Solve to enforce constant density ρ = ρ₀.
     ///
-    /// Returns final mean density error.
+    /// Each iteration predicts the density `ρ*_i = ρ_i + dt · Dρ_i/Dt` from the
+    /// **current** velocities, turns the compressive part of the error into
+    /// per-particle stiffnesses `κ_i = ω · max(ρ*_i − ρ₀, 0) · ρ_i · α_i / dt²`
+    /// and projects the velocities with
+    /// `v_i -= dt · Σ_j m_j (κ_i/ρ_i² + κ_j/ρ_j²) ∇W_ij`. The stiffnesses are
+    /// assigned, not accumulated, and are re-derived from the corrected
+    /// velocities every iteration, so the predicted density really approaches
+    /// ρ₀ and the convergence test can fire.
+    ///
+    /// The number of iterations used (the converging pass counts, so
+    /// `max_pressure_iterations` when the solve did not converge) and the final
+    /// error are recorded in [`DfsphStats`] either way. Returns the final mean
+    /// compressive relative density error of the fluid particles.
     pub fn solve_constant_density(&mut self, dt: f64) -> f64 {
-        let n = self.particles.len();
-        let h = self.config.smoothing_length;
-        let kernel_obj = WcSphDensity::new(KernelType::WendlandC2, h);
-        let mut pressures = vec![0.0f64; n];
-        let mut final_error = 0.0;
+        let kernel_obj = WcSphDensity::new(KernelType::WendlandC2, self.config.smoothing_length);
+        let max_iter = self.config.max_pressure_iterations;
+        let threshold = self.config.error_threshold;
 
-        for _iter in 0..self.config.max_pressure_iterations {
-            let positions: Vec<_> = self.particles.iter().map(|p| p.position).collect();
-            let densities: Vec<_> = self.particles.iter().map(|p| p.density).collect();
-
-            let mut total_error = 0.0f64;
-            let mut count = 0;
-            for (i, (p_i, pressure_i)) in
-                self.particles.iter().zip(pressures.iter_mut()).enumerate()
-            {
-                if p_i.is_boundary {
-                    continue;
-                }
-                let err = (densities[i] - self.config.rest_density) / self.config.rest_density;
-                total_error += err.abs();
-                count += 1;
-
-                let alpha_i = self.alphas.get(i).copied().unwrap_or(0.0);
-                if alpha_i.abs() < 1e-20 {
-                    continue;
-                }
-                let kappa = err * self.config.rest_density / (dt * dt * alpha_i);
-                *pressure_i += self.config.omega * kappa;
-                *pressure_i = pressure_i.max(0.0);
+        for iter in 0..max_iter {
+            let (kappas, error) = self.density_stiffnesses(dt, &kernel_obj);
+            if error < threshold {
+                self.stats.record_density_step(error, iter + 1);
+                return error;
             }
-
-            final_error = if count > 0 {
-                total_error / count as f64
-            } else {
-                0.0
-            };
-            if final_error < self.config.error_threshold {
-                self.stats.record_density_step(final_error, _iter + 1);
-                break;
-            }
-
-            // Apply pressure forces
-            for i in 0..n {
-                if self.particles[i].is_boundary {
-                    continue;
-                }
-                if let Some(neighbors) = self.neighbor_lists.clone().get(i).cloned() {
-                    let pos_i = positions[i];
-                    let rho_i = densities[i];
-                    for j in neighbors {
-                        if j == i || j >= n {
-                            continue;
-                        }
-                        let pos_j = positions[j];
-                        let mass_j = self.particles[j].mass;
-                        let rho_j = densities[j];
-                        let r_vec = sub3(pos_i, pos_j);
-                        let g = kernel_obj.eval_gradient(r_vec);
-                        if rho_i > 1e-15 && rho_j > 1e-15 {
-                            let coeff = mass_j
-                                * (pressures[i] / (rho_i * rho_i) + pressures[j] / (rho_j * rho_j));
-                            self.particles[i].velocity[0] -= dt * coeff * g[0];
-                            self.particles[i].velocity[1] -= dt * coeff * g[1];
-                            self.particles[i].velocity[2] -= dt * coeff * g[2];
-                        }
-                    }
-                }
-            }
+            self.apply_stiffness_projection(&kappas, dt, &kernel_obj);
         }
-        final_error
+
+        // Not converged: report the residual that is actually left after the
+        // last projection rather than the one measured before it.
+        let (_, error) = self.density_stiffnesses(dt, &kernel_obj);
+        self.stats.record_density_step(error, max_iter);
+        error
     }
 
     /// Compute total kinetic energy of all particles.
@@ -1396,528 +1486,4 @@ impl DfsphSolver {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_default_config() -> DfsphConfig {
-        DfsphConfig {
-            rest_density: 1000.0,
-            smoothing_length: 0.1,
-            support_radius: 0.2,
-            max_pressure_iterations: 50,
-            max_divergence_iterations: 50,
-            error_threshold: 1e-3,
-            omega: 0.5,
-            viscosity: 1e-6,
-            gravity: [0.0, -9.81, 0.0],
-            surface_tension: 0.0,
-        }
-    }
-
-    #[test]
-    fn test_wendland_c2_at_zero() {
-        let h = 0.1;
-        let w = wendland_c2_kernel(0.0, h);
-        // At r=0: W(0,h) = (21/(2π h³)) * 1 * 1
-        let expected = 21.0 / (2.0 * std::f64::consts::PI * h * h * h);
-        assert!(
-            (w - expected).abs() < 1e-10,
-            "W(0,h) should equal {}, got {}",
-            expected,
-            w
-        );
-    }
-
-    #[test]
-    fn test_wendland_c2_at_support() {
-        let h = 0.1;
-        let w = wendland_c2_kernel(2.0 * h, h);
-        assert!(w.abs() < 1e-14, "W(2h,h) should be zero, got {}", w);
-    }
-
-    #[test]
-    fn test_wendland_c2_positive() {
-        let h = 0.1;
-        for r in [0.0, 0.05, 0.1, 0.15, 0.19] {
-            let w = wendland_c2_kernel(r, h);
-            assert!(w >= 0.0, "W(r,h) should be non-negative for r={}", r);
-        }
-    }
-
-    #[test]
-    fn test_wendland_c4_at_zero() {
-        let h = 0.1;
-        let w = wendland_c4_kernel(0.0, h);
-        let expected = 495.0 / (32.0 * std::f64::consts::PI * h * h * h);
-        assert!(
-            (w - expected).abs() < 1e-6,
-            "W_C4(0,h) should equal {}",
-            expected
-        );
-    }
-
-    #[test]
-    fn test_wendland_c4_at_support() {
-        let h = 0.1;
-        let w = wendland_c4_kernel(2.0 * h + 1e-12, h);
-        assert!(w.abs() < 1e-14, "W_C4 should be zero beyond support");
-    }
-
-    #[test]
-    fn test_wendland_c2_gradient_antisymmetric() {
-        let h = 0.1;
-        let r_vec = [0.05, 0.0, 0.0];
-        let r_neg = [-0.05, 0.0, 0.0];
-        let g1 = wendland_c2_gradient(r_vec, h);
-        let g2 = wendland_c2_gradient(r_neg, h);
-        assert!(
-            (g1[0] + g2[0]).abs() < 1e-10,
-            "gradient should be antisymmetric"
-        );
-    }
-
-    #[test]
-    fn test_dfsph_config_default() {
-        let cfg = DfsphConfig::default();
-        assert!(cfg.rest_density > 0.0);
-        assert!(cfg.smoothing_length > 0.0);
-        assert!(cfg.max_pressure_iterations > 0);
-    }
-
-    #[test]
-    fn test_dfsph_particle_new() {
-        let p = DfsphParticle::new([1.0, 2.0, 3.0], 0.001, 1000.0);
-        assert_eq!(p.position, [1.0, 2.0, 3.0]);
-        assert_eq!(p.mass, 0.001);
-        assert_eq!(p.density, 1000.0);
-        assert!(!p.is_boundary);
-    }
-
-    #[test]
-    fn test_dfsph_particle_kinetic_energy() {
-        let mut p = DfsphParticle::new([0.0; 3], 1.0, 1000.0);
-        p.velocity = [3.0, 4.0, 0.0];
-        let ke = p.kinetic_energy();
-        assert!(
-            (ke - 12.5).abs() < 1e-10,
-            "KE should be 0.5*1*25=12.5, got {}",
-            ke
-        );
-    }
-
-    #[test]
-    fn test_dfsph_solver_new() {
-        let cfg = make_default_config();
-        let solver = DfsphSolver::new(cfg);
-        assert_eq!(solver.num_particles(), 0);
-    }
-
-    #[test]
-    fn test_dfsph_solver_add_particle() {
-        let cfg = make_default_config();
-        let mut solver = DfsphSolver::new(cfg);
-        solver.add_particle([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], 0.001);
-        assert_eq!(solver.num_particles(), 1);
-    }
-
-    #[test]
-    fn test_dfsph_solver_kinetic_energy() {
-        let cfg = make_default_config();
-        let mut solver = DfsphSolver::new(cfg);
-        solver.add_particle([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 2.0);
-        let ke = solver.kinetic_energy();
-        assert!((ke - 1.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_dfsph_stats_new() {
-        let stats = DfsphStats::new();
-        assert!(stats.density_error_history.is_empty());
-    }
-
-    #[test]
-    fn test_dfsph_stats_record_density() {
-        let mut stats = DfsphStats::new();
-        stats.record_density_step(0.01, 5);
-        assert_eq!(stats.density_error_history.len(), 1);
-        assert_eq!(stats.pressure_iterations[0], 5);
-    }
-
-    #[test]
-    fn test_dfsph_stats_mean_error() {
-        let mut stats = DfsphStats::new();
-        stats.record_density_step(0.02, 3);
-        stats.record_density_step(0.04, 4);
-        let mean = stats.mean_density_error();
-        assert!((mean - 0.03).abs() < 1e-10, "mean error should be 0.03");
-    }
-
-    #[test]
-    fn test_wcsph_density_compute() {
-        let density_obj = WcSphDensity::new(KernelType::WendlandC2, 0.1);
-        let pos_i = [0.0; 3];
-        let neighbors = vec![([0.05, 0.0, 0.0], 0.001), ([-0.05, 0.0, 0.0], 0.001)];
-        let rho = density_obj.compute_density(pos_i, &neighbors);
-        assert!(rho > 0.0, "density should be positive");
-    }
-
-    #[test]
-    fn test_compute_alpha_zero_neighbors() {
-        let p = DfsphParticle::new([0.0; 3], 0.001, 1000.0);
-        let alpha = compute_alpha(
-            p.density,
-            p.position,
-            p.mass,
-            &[],
-            0.1,
-            &KernelType::WendlandC2,
-        );
-        assert_eq!(alpha, 0.0, "alpha with no neighbors should be 0");
-    }
-
-    #[test]
-    fn test_pressure_solve_density_change_rate() {
-        let solver_iter =
-            PressureSolveIter::new(1000.0, 50, 1e-3, 0.5, KernelType::WendlandC2, 0.1);
-        let pos_i = [0.0; 3];
-        let vel_i = [1.0, 0.0, 0.0];
-        let rho_i = 1000.0;
-        let neighbors = vec![([0.05, 0.0, 0.0], [0.5, 0.0, 0.0], 0.001, 1000.0)];
-        let rate = solver_iter.density_change_rate(pos_i, vel_i, rho_i, &neighbors);
-        // Non-zero divergence should give non-zero rate
-        let _ = rate;
-    }
-
-    #[test]
-    fn test_divergence_solve_velocity_divergence() {
-        let div_solver = DivergenceSolveIter::new(50, 1e-3, 0.5, KernelType::WendlandC2, 0.1);
-        let pos_i = [0.0; 3];
-        let vel_i = [0.0; 3];
-        let rho_i = 1000.0;
-        let neighbors = vec![([0.05, 0.0, 0.0], [0.1, 0.0, 0.0], 0.001, 1000.0)];
-        let div = div_solver.velocity_divergence(pos_i, vel_i, rho_i, &neighbors);
-        let _ = div;
-    }
-
-    /// Build a symmetric `n_side³` grid of fluid particles with measured SPH
-    /// densities and neighbor lists, plus an inward (compressing) radial
-    /// velocity field of magnitude `v_in`. Returns the particles, neighbor
-    /// lists, and the index of the geometric centre particle.
-    fn build_compressing_cluster(
-        n_side: usize,
-        spacing: f64,
-        h: f64,
-        mass: f64,
-        rho0: f64,
-        v_in: f64,
-        kernel: &KernelType,
-    ) -> (Vec<DfsphParticle>, Vec<Vec<usize>>, usize) {
-        let mut particles = Vec::new();
-        for ix in 0..n_side {
-            for iy in 0..n_side {
-                for iz in 0..n_side {
-                    let pos = [
-                        ix as f64 * spacing,
-                        iy as f64 * spacing,
-                        iz as f64 * spacing,
-                    ];
-                    particles.push(DfsphParticle::new(pos, mass, rho0));
-                }
-            }
-        }
-        let n = particles.len();
-        let support = 2.0 * h;
-        let density_obj = WcSphDensity::new(kernel.clone(), h);
-        let mut neighbor_lists = vec![Vec::new(); n];
-        for i in 0..n {
-            for j in 0..n {
-                if i == j {
-                    continue;
-                }
-                let r = norm3(sub3(particles[i].position, particles[j].position));
-                if r < support {
-                    neighbor_lists[i].push(j);
-                }
-            }
-        }
-        // Measure the real SPH density (self-contribution + neighbours).
-        for i in 0..n {
-            let pos_i = particles[i].position;
-            let mut rho = mass * density_obj.eval_kernel(0.0);
-            for &j in &neighbor_lists[i] {
-                let r = norm3(sub3(pos_i, particles[j].position));
-                rho += mass * density_obj.eval_kernel(r);
-            }
-            particles[i].density = rho;
-        }
-        // Centre of the cluster and an inward radial velocity that actively
-        // compresses it (positive Dρ/Dt at the interior).
-        let c = (n_side as f64 - 1.0) * spacing / 2.0;
-        let center = [c, c, c];
-        let mut center_idx = 0;
-        let mut best = f64::INFINITY;
-        for (i, p) in particles.iter_mut().enumerate() {
-            let to_center = sub3(center, p.position);
-            let r = norm3(to_center);
-            if r > 1e-9 {
-                p.velocity = scale3(to_center, v_in / r);
-            }
-            if r < best {
-                best = r;
-                center_idx = i;
-            }
-        }
-        (particles, neighbor_lists, center_idx)
-    }
-
-    /// Predicted-density residual `|ρ*_i − ρ₀| / ρ₀` for a single particle,
-    /// where `ρ*_i = ρ_i + dt · Dρ/Dt` is evaluated from the *current*
-    /// velocity field. This is the quantity the constant-density solve must
-    /// drive to zero -- NOT merely the pressures.
-    fn predicted_density_error_at(
-        solver: &PressureSolveIter,
-        particles: &[DfsphParticle],
-        velocities: &[[f64; 3]],
-        neighbor_lists: &[Vec<usize>],
-        i: usize,
-        rho0: f64,
-        dt: f64,
-    ) -> f64 {
-        let neighbor_entries: Vec<NeighborEntry> = neighbor_lists[i]
-            .iter()
-            .map(|&j| {
-                (
-                    particles[j].position,
-                    velocities[j],
-                    particles[j].mass,
-                    particles[j].density,
-                )
-            })
-            .collect();
-        let drho_dt = solver.density_change_rate(
-            particles[i].position,
-            velocities[i],
-            particles[i].density,
-            &neighbor_entries,
-        );
-        let rho_star = particles[i].density + dt * drho_dt;
-        ((rho_star - rho0) / rho0).abs()
-    }
-
-    #[test]
-    fn test_pressure_solve_enforces_incompressibility_end_to_end() {
-        // A symmetric, over-dense cluster (spacing < support) given an inward
-        // radial velocity so the interior is being actively compressed
-        // (Dρ/Dt > 0). The DFSPH constant-density solve must turn that into an
-        // outward pressure acceleration and drive the predicted-density error
-        // at the well-posed interior (the centre particle, with the most
-        // symmetric neighbourhood) back to the rest density.
-        let kernel = KernelType::WendlandC2;
-        let h = 0.1;
-        let spacing = 0.05;
-        let mass = 0.02; // measured interior density ≈ 1188 kg/m³ ⇒ ~19% over-dense
-        let rho0 = 1000.0;
-        let v_in = 0.05; // inward compression speed (m/s)
-        let dt = 1e-3;
-
-        let (particles, neighbor_lists, center_idx) =
-            build_compressing_cluster(5, spacing, h, mass, rho0, v_in, &kernel);
-
-        // Sanity: the centre is genuinely over-dense and being compressed.
-        let center_overdensity = (particles[center_idx].density - rho0) / rho0;
-        assert!(
-            center_overdensity > 0.05,
-            "centre must be compressed (overdensity {:.4} <= 0.05)",
-            center_overdensity
-        );
-
-        let alpha_compute = AlphaCompute::new(h, kernel.clone());
-        let alphas = alpha_compute.compute_all(&particles, &neighbor_lists);
-
-        // The α-Newton step of this DFSPH formulation is very stiff on a frozen
-        // lattice (in a real time-stepping loop the CFL-limited dt and position
-        // advection keep the per-step density error tiny). Measurements show the
-        // single-step error gain at the centre is ≈ 6·10⁶·ω, so we under-relax
-        // heavily to make the projection contractive (gain ≈ 0.3 per step).
-        let omega = 5e-8;
-        let solver = PressureSolveIter::new(rho0, 2000, 1e-3, omega, kernel.clone(), h);
-
-        let mut velocities: Vec<[f64; 3]> = particles.iter().map(|p| p.velocity).collect();
-        let mut pressures = vec![0.0f64; particles.len()];
-
-        let initial_residual = predicted_density_error_at(
-            &solver,
-            &particles,
-            &velocities,
-            &neighbor_lists,
-            center_idx,
-            rho0,
-            dt,
-        );
-        assert!(
-            initial_residual > 1e-2,
-            "initial centre density-constraint residual should be significant, got {:.3e}",
-            initial_residual
-        );
-        let initial_inward_speed = norm3(velocities[center_idx]);
-
-        // First iteration: the projection must produce a positive pressure
-        // (stiffness) at the compressed centre and push its velocity OUTWARD,
-        // i.e. reduce the inward speed. With the old `let _ = g;` dead loop the
-        // velocity would be untouched -- this assertion fails for that code.
-        let _ = solver.iterate(
-            &particles,
-            &alphas,
-            &mut pressures,
-            &mut velocities,
-            dt,
-            &neighbor_lists,
-        );
-        assert!(
-            pressures[center_idx] > 0.0,
-            "compressed centre must acquire a positive pressure stiffness, got {:.3e}",
-            pressures[center_idx]
-        );
-        let to_center = sub3(
-            {
-                let c = (5.0 - 1.0) * spacing / 2.0;
-                [c, c, c]
-            },
-            particles[center_idx].position,
-        );
-        // Project the centre's velocity onto the inward direction; the
-        // correction must have reduced the inward component.
-        let inward_dir_norm = norm3(to_center);
-        if inward_dir_norm > 1e-9 {
-            let inward_unit = scale3(to_center, 1.0 / inward_dir_norm);
-            let inward_speed_after = dot3(velocities[center_idx], inward_unit);
-            assert!(
-                inward_speed_after < initial_inward_speed,
-                "pressure projection must oppose compression at the centre: \
-                 inward speed before = {:.4e}, after one step = {:.4e}",
-                initial_inward_speed,
-                inward_speed_after
-            );
-        }
-
-        // Continue iterating; the predicted-density residual at the centre must
-        // fall below tolerance. This is only possible because the velocity
-        // projection is real (it removes the compression Dρ/Dt).
-        let tol = 1e-3;
-        let mut final_residual = predicted_density_error_at(
-            &solver,
-            &particles,
-            &velocities,
-            &neighbor_lists,
-            center_idx,
-            rho0,
-            dt,
-        );
-        for _ in 1..solver.max_iter {
-            if final_residual < tol {
-                break;
-            }
-            let _ = solver.iterate(
-                &particles,
-                &alphas,
-                &mut pressures,
-                &mut velocities,
-                dt,
-                &neighbor_lists,
-            );
-            final_residual = predicted_density_error_at(
-                &solver,
-                &particles,
-                &velocities,
-                &neighbor_lists,
-                center_idx,
-                rho0,
-                dt,
-            );
-            assert!(
-                final_residual.is_finite(),
-                "the solve must stay numerically stable (residual went non-finite)"
-            );
-        }
-
-        assert!(
-            final_residual < tol,
-            "constant-density solve must drive the centre residual below {:.1e}; \
-             initial = {:.3e}, final = {:.3e}",
-            tol,
-            initial_residual,
-            final_residual
-        );
-        assert!(
-            final_residual < 0.1 * initial_residual,
-            "centre residual must shrink substantially: initial = {:.3e}, final = {:.3e}",
-            initial_residual,
-            final_residual
-        );
-    }
-
-    #[test]
-    fn test_velocity_advection_gravity() {
-        let adv = VelocityAdvection::new([0.0, -9.81, 0.0], 1e-6, 0.1, KernelType::WendlandC2);
-        let mut particles = vec![DfsphParticle::new([0.0; 3], 1.0, 1000.0)];
-        let neighbor_data: Vec<Vec<NeighborEntry>> = vec![vec![]];
-        let dt = 0.01;
-        adv.advect_velocity(&mut particles, &neighbor_data, dt);
-        // After dt = 0.01 with g = -9.81: v_y should be -0.0981
-        assert!((particles[0].velocity[1] - (-9.81 * dt)).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_dfsph_boundary_floor() {
-        let mut boundary = DfsphBoundary::new(BoundaryType::NoSlip, 1000.0, 0.1);
-        boundary.create_floor(0.0, 1.0, 0.0, 0.1);
-        assert!(boundary.num_particles() > 0, "floor should have particles");
-    }
-
-    #[test]
-    fn test_dfsph_boundary_density_contribution() {
-        let mut boundary = DfsphBoundary::new(BoundaryType::NoSlip, 1000.0, 0.1);
-        boundary.add_particle([0.0, 0.0, 0.0], 0.001);
-        let pos_i = [0.05, 0.0, 0.0];
-        let contrib = boundary.density_contribution(pos_i, &KernelType::WendlandC2);
-        assert!(
-            contrib > 0.0,
-            "boundary density contribution should be positive"
-        );
-    }
-
-    #[test]
-    fn test_dfsph_solver_step() {
-        let cfg = DfsphConfig {
-            rest_density: 1000.0,
-            smoothing_length: 0.1,
-            support_radius: 0.2,
-            max_pressure_iterations: 5,
-            max_divergence_iterations: 5,
-            error_threshold: 1e-2,
-            omega: 0.5,
-            viscosity: 1e-6,
-            gravity: [0.0, -9.81, 0.0],
-            surface_tension: 0.0,
-        };
-        let mut solver = DfsphSolver::new(cfg);
-        // Add a small cluster of particles
-        for i in 0..3 {
-            for j in 0..3 {
-                solver.add_particle([i as f64 * 0.05, j as f64 * 0.05, 0.0], [0.0; 3], 0.001);
-            }
-        }
-        let (dens_err, div_err) = solver.step(0.001);
-        assert!(dens_err >= 0.0, "density error should be non-negative");
-        assert!(div_err >= 0.0, "divergence error should be non-negative");
-    }
-
-    #[test]
-    fn test_dfsph_solver_mean_density() {
-        let cfg = make_default_config();
-        let mut solver = DfsphSolver::new(cfg);
-        solver.add_particle([0.0; 3], [0.0; 3], 0.001);
-        // Before update, density equals rest_density
-        assert!((solver.mean_density() - 1000.0).abs() < 1e-10);
-    }
-}
+mod tests;

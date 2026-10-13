@@ -504,12 +504,21 @@ impl Scene {
 }
 impl Scene {
     /// Compute a tightly-fitting orthographic shadow-map frustum for a
-    /// directional light specified by `light_dir` (unit vector toward the light).
+    /// directional light specified by `light_dir` (vector toward the light).
     ///
     /// The frustum encapsulates all currently-visible nodes using their
     /// world-space positions derived from `world_transform`.  The returned
-    /// `[[f64; 4\]; 4]` is a column-major orthographic projection matrix whose
-    /// clip volume contains the scene bounding box when viewed along `light_dir`.
+    /// `[[f64; 4\]; 4]` is a column-major light view-projection matrix: the
+    /// rotation into the light's frame (right, up and `light_dir` as its +z
+    /// axis, so the light looks down -z towards the scene) followed by an
+    /// orthographic projection fitted to the extent of the visible nodes in
+    /// that frame.  Every visible node position therefore lands inside the
+    /// clip cube `[-1, 1]^3`, touching each face of it.
+    ///
+    /// NDC depth grows with the distance from the light, from `-1` at the
+    /// light-facing side of the scene to `+1` at its far side.  This is the
+    /// convention [`ShadowMap::is_in_shadow`] expects (a point is shadowed when
+    /// its depth exceeds the stored occluder depth).
     ///
     /// Returns the identity matrix when the scene has no visible nodes.
     pub fn compute_shadow_map_frustum(&self, light_dir: [f64; 3]) -> [[f64; 4]; 4] {
@@ -581,13 +590,25 @@ impl Scene {
         let d = (max_z - min_z).max(1e-6);
         let cx = (min_x + max_x) * 0.5;
         let cy = (min_y + max_y) * 0.5;
-        let cz = min_z;
-        [
+        // World -> light view (column-major): its rows are the light's right,
+        // up and +z (= `light_dir`) axes, matching the `lx`, `ly`, `lz`
+        // coordinates the extents above were measured in.
+        let light_view = [
+            [right[0], up[0], ld[0], 0.0],
+            [right[1], up[1], ld[1], 0.0],
+            [right[2], up[2], ld[2], 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        // Orthographic fit of those extents.  Light-space z runs towards the
+        // light, so the standard GL ortho scale is -2/d: `max_z` (the side
+        // facing the light) maps to -1 and `min_z` (the far side) to +1.
+        let ortho = [
             [2.0 / w, 0.0, 0.0, 0.0],
             [0.0, 2.0 / h, 0.0, 0.0],
             [0.0, 0.0, -2.0 / d, 0.0],
-            [-2.0 * cx / w, -2.0 * cy / h, -(max_z + cz) / d, 1.0],
-        ]
+            [-2.0 * cx / w, -2.0 * cy / h, (max_z + min_z) / d, 1.0],
+        ];
+        mat4_mul(ortho, light_view)
     }
     /// Set the `visible` flag to `false` for objects that are entirely hidden
     /// behind a coarse occluder set.

@@ -33,7 +33,9 @@ fn main() {
         let x = (i as f64 - 4.5) * 0.7;
         let mut b = RigidBody::new(1.0);
         b.transform = Transform::from_position(Vec3::new(x, 1.5, 0.0));
-        b.linear_damping = 0.02;
+        // Damping is a rate in 1/s: 2.45 1/s at 120 Hz is the factor
+        // 1 / (1 + dt * rate) = 0.98, i.e. 2 % velocity loss per step.
+        b.linear_damping = 2.45;
         let h = bodies.insert(b);
         colliders.insert(
             Collider::new(Arc::clone(&dyn_shape))

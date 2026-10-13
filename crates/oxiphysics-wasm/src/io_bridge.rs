@@ -12,6 +12,8 @@ use wasm_bindgen::prelude::*;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::Error;
+
 // ---------------------------------------------------------------------------
 // ExportFormat
 // ---------------------------------------------------------------------------
@@ -140,6 +142,12 @@ impl ParticleExporter {
 // ---------------------------------------------------------------------------
 
 /// Collects mesh vertices and triangular faces and exports them as OBJ or STL.
+///
+/// Faces are validated against the vertices when they are added
+/// ([`MeshExporter::add_face`]).  The `vertices` / `faces` fields are public
+/// and the type is deserializable, so a mesh can still be assembled with a
+/// dangling face; both exporters therefore skip any face that references a
+/// missing vertex instead of panicking or writing an invalid file.
 #[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshExporter {
@@ -158,8 +166,35 @@ impl MeshExporter {
     }
 
     /// Append a triangular face defined by vertex indices `i` (zero-based).
-    pub fn add_face(&mut self, i: [usize; 3]) {
+    ///
+    /// The vertices must be added before the faces that use them.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidParameter`] (`face`) when any index is
+    /// `>= vertex_count()`; the face is not stored.
+    pub fn add_face(&mut self, i: [usize; 3]) -> Result<(), Error> {
+        let vertex_count = self.vertices.len();
+        if let Some(&bad) = i.iter().find(|&&index| index >= vertex_count) {
+            return Err(Error::invalid_param(
+                "face",
+                format!(
+                    "vertex index {bad} is out of range for a mesh with {vertex_count} vertices"
+                ),
+            ));
+        }
         self.faces.push(i);
+        Ok(())
+    }
+
+    /// Corner positions of face `f`, or `None` when it references a vertex
+    /// that does not exist.
+    fn face_corners(&self, f: &[usize; 3]) -> Option<[[f64; 3]; 3]> {
+        Some([
+            *self.vertices.get(f[0])?,
+            *self.vertices.get(f[1])?,
+            *self.vertices.get(f[2])?,
+        ])
     }
 
     /// Number of vertices stored.
@@ -189,29 +224,39 @@ impl MeshExporter {
     }
 
     /// Append a triangular face with zero-based indices (JS-compatible).
-    pub fn add_face_js(&mut self, a: u32, b: u32, c: u32) {
-        self.add_face([a as usize, b as usize, c as usize]);
+    ///
+    /// Throws when any index refers to a vertex that has not been added; the
+    /// face is not stored.
+    pub fn add_face_js(&mut self, a: u32, b: u32, c: u32) -> Result<(), JsValue> {
+        Ok(self.add_face([a as usize, b as usize, c as usize])?)
     }
 
     /// Export the mesh as a Wavefront OBJ string.
+    ///
+    /// Faces that reference a missing vertex are skipped.
     pub fn export_obj(&self) -> String {
         let mut out = String::from("# OxiPhysics OBJ export\n");
         for v in &self.vertices {
             out.push_str(&format!("v {} {} {}\n", v[0], v[1], v[2]));
         }
         for f in &self.faces {
+            if self.face_corners(f).is_none() {
+                continue;
+            }
             out.push_str(&format!("f {} {} {}\n", f[0] + 1, f[1] + 1, f[2] + 1));
         }
         out
     }
 
     /// Export the mesh as an ASCII STL string.
+    ///
+    /// Faces that reference a missing vertex are skipped.
     pub fn export_stl_ascii(&self) -> String {
         let mut out = String::from("solid oxiphysics\n");
         for f in &self.faces {
-            let v0 = self.vertices[f[0]];
-            let v1 = self.vertices[f[1]];
-            let v2 = self.vertices[f[2]];
+            let Some([v0, v1, v2]) = self.face_corners(f) else {
+                continue;
+            };
             let e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
             let e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
             let nx = e1[1] * e2[2] - e1[2] * e2[1];
@@ -638,7 +683,7 @@ mod tests {
         me.add_vertex([0.0, 0.0, 0.0]);
         me.add_vertex([1.0, 0.0, 0.0]);
         me.add_vertex([0.0, 1.0, 0.0]);
-        me.add_face([0, 1, 2]);
+        me.add_face([0, 1, 2]).expect("valid face");
         assert_eq!(me.face_count(), 1);
     }
 
@@ -656,7 +701,7 @@ mod tests {
         me.add_vertex([0.0, 0.0, 0.0]);
         me.add_vertex([1.0, 0.0, 0.0]);
         me.add_vertex([0.0, 1.0, 0.0]);
-        me.add_face([0, 1, 2]);
+        me.add_face([0, 1, 2]).expect("valid face");
         let obj = me.export_obj();
         assert!(obj.contains("f 1 2 3"));
     }
@@ -675,7 +720,7 @@ mod tests {
         me.add_vertex([0.0, 0.0, 0.0]);
         me.add_vertex([1.0, 0.0, 0.0]);
         me.add_vertex([0.0, 1.0, 0.0]);
-        me.add_face([0, 1, 2]);
+        me.add_face([0, 1, 2]).expect("valid face");
         let stl = me.export_stl_ascii();
         assert!(stl.contains("facet normal"));
         assert!(stl.contains("outer loop"));
@@ -687,6 +732,88 @@ mod tests {
     fn test_mesh_exporter_default() {
         let me = MeshExporter::default();
         assert_eq!(me.vertex_count(), 0);
+    }
+
+    // ---- MeshExporter face validation (F5692) ----
+
+    /// Mesh with the three vertices of the unit right triangle in the XY plane.
+    fn triangle_mesh() -> MeshExporter {
+        let mut me = MeshExporter::new();
+        me.add_vertex([0.0, 0.0, 0.0]);
+        me.add_vertex([1.0, 0.0, 0.0]);
+        me.add_vertex([0.0, 1.0, 0.0]);
+        me
+    }
+
+    #[test]
+    fn test_mesh_exporter_add_face_rejects_out_of_range_index() {
+        let mut me = triangle_mesh();
+        for bad in [[0, 1, 3], [3, 1, 2], [0, 99, 2], [0, 1, usize::MAX]] {
+            let err = me
+                .add_face(bad)
+                .expect_err("dangling face must be rejected");
+            assert!(
+                matches!(&err, Error::InvalidParameter { name, .. } if name == "face"),
+                "{err:?}"
+            );
+        }
+        assert_eq!(me.face_count(), 0, "a rejected face must not be stored");
+        let stl = me.export_stl_ascii();
+        assert!(!stl.contains("facet"), "stl = {stl}");
+    }
+
+    #[test]
+    fn test_mesh_exporter_add_face_error_names_the_index() {
+        let mut me = triangle_mesh();
+        let err = me.add_face([0, 1, 99]).expect_err("rejected");
+        let text = err.to_string();
+        assert!(text.contains("99"), "{text}");
+        assert!(text.contains("3 vertices"), "{text}");
+    }
+
+    #[test]
+    fn test_mesh_exporter_add_face_requires_vertices_first() {
+        let mut me = MeshExporter::new();
+        assert!(me.add_face([0, 0, 0]).is_err());
+        me.add_vertex([0.0; 3]);
+        assert!(me.add_face([0, 0, 0]).is_ok());
+        assert_eq!(me.face_count(), 1);
+    }
+
+    #[test]
+    fn test_mesh_exporter_add_face_js_accepts_valid_face() {
+        let mut me = triangle_mesh();
+        assert!(me.add_face_js(0, 1, 2).is_ok());
+        assert_eq!(me.face_count_js(), 1);
+    }
+
+    #[test]
+    fn test_mesh_exporters_skip_faces_with_missing_vertices() {
+        // The fields are public, so a mesh can hold a dangling face even
+        // though `add_face` would have refused it.
+        let mut me = triangle_mesh();
+        me.add_face([0, 1, 2]).expect("valid face");
+        me.faces.push([0, 1, 99]);
+        me.faces.push([usize::MAX, 0, 1]);
+        let stl = me.export_stl_ascii();
+        assert_eq!(stl.matches("facet normal").count(), 1, "stl = {stl}");
+        assert!(stl.contains("facet normal 0 0 1"), "stl = {stl}");
+        assert!(stl.ends_with("endsolid oxiphysics\n"));
+        let obj = me.export_obj();
+        let face_lines: Vec<&str> = obj.lines().filter(|l| l.starts_with("f ")).collect();
+        assert_eq!(face_lines, vec!["f 1 2 3"], "obj = {obj}");
+    }
+
+    #[test]
+    fn test_mesh_exporters_survive_deserialized_dangling_faces() {
+        let json = r#"{"vertices":[[0,0,0],[1,0,0],[0,1,0]],"faces":[[0,1,5],[2,1,0]]}"#;
+        let me: MeshExporter = serde_json::from_str(json).expect("valid json");
+        assert_eq!(me.face_count(), 2);
+        let stl = me.export_stl_ascii();
+        assert_eq!(stl.matches("facet normal").count(), 1, "stl = {stl}");
+        let obj = me.export_obj();
+        assert_eq!(obj.matches("\nf ").count(), 1, "obj = {obj}");
+        assert!(obj.contains("f 3 2 1"));
     }
 
     // ---- StateSnapshot ----

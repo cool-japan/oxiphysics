@@ -24,9 +24,13 @@ var<workgroup> shared_digit: array<u32, 256u>;
 fn radix_scatter(
     @builtin(workgroup_id) wg_vec: vec3<u32>,
     @builtin(local_invocation_id) lid_vec: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
     let lid = lid_vec.x;
-    let tile_id = wg_vec.x;
+    // A dispatch wider than one dimension allows is folded into y (see
+    // `dispatch_count_for`): linearise the workgroup (tile) index.  Tiles past
+    // the end have `gid >= n` and therefore neither read nor write.
+    let tile_id = wg_vec.x + wg_vec.y * nwg.x;
     let gid = tile_id * 256u + lid;
 
     var digit_self: u32;

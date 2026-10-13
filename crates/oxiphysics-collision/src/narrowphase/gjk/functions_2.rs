@@ -97,7 +97,10 @@ mod tests_gjk_extended {
         let origin = Vec3::new(0.0, 0.0, 0.0);
         let dir = Vec3::new(1.0, 0.0, 0.0);
         let result = gjk_ray_cast(&s, &t, origin, dir, 20.0);
-        let _ = result;
+        assert!(
+            result.is_none(),
+            "a ray 10 units below the sphere must miss, got {result:?}"
+        );
     }
     #[test]
     fn test_gjk_ray_cast_zero_direction_returns_none() {
@@ -113,7 +116,10 @@ mod tests_gjk_extended {
         let origin = Vec3::new(0.0, 0.0, 0.0);
         let dir = Vec3::new(1.0, 0.0, 0.0);
         let result = gjk_ray_cast(&s, &t, origin, dir, 5.0);
-        let _ = result;
+        assert!(
+            result.is_none(),
+            "the sphere at x = 100 is out of reach of a 5 unit ray, got {result:?}"
+        );
     }
     #[test]
     fn test_mpr_sphere_sphere_intersecting() {

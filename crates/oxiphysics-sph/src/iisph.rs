@@ -3,10 +3,23 @@
 
 //! Implicit Incompressible SPH (IISPH) pressure solver.
 //!
-//! Implements the method from Ihmsen et al. (2014) using a relaxed Jacobi
-//! iteration to enforce near-incompressibility without explicit stiffness
-//! parameters. Includes diagonal approximation, relaxed Jacobi iteration,
-//! density error metrics, and IISPH timestep adaptation.
+//! Implements the method of Ihmsen et al., "Implicit Incompressible SPH",
+//! IEEE TVCG 20(3), 2014.  The pressure `p` is the solution of the linear
+//! system `Σ_j a_ij p_j = ρ₀ − ρ_adv` that makes the density predicted for the
+//! end of the step equal to the rest density `ρ₀`, where `ρ_adv` is the density
+//! advected with the non-pressure velocity.  It is solved with a relaxed
+//! Jacobi iteration and non-negative pressures (no suction):
+//!
+//! ```text
+//! d_ii = −Δt² Σ_j m_j/ρ_i² ∇W_ij          d_ij p_j = −Δt² m_j/ρ_j² p_j ∇W_ij
+//! a_ii = Σ_j m_j (d_ii − d_ji) · ∇W_ij     (negative)
+//! (Ap)_i = Σ_j m_j (D_i − D_j) · ∇W_ij,    D_i = d_ii p_i + Σ_j d_ij p_j = Δt² a_i^p
+//! p_i ← max(0, (1−ω) p_i + ω/a_ii (ρ₀ − ρ_adv,i − [(Ap)_i − a_ii p_i]))
+//! ```
+//!
+//! with `∇W_ij = ∇_{x_i} W(|x_i − x_j|, h)`.  Includes the diagonal
+//! coefficient, the relaxed Jacobi update, density error metrics and an IISPH
+//! timestep adaptation.
 
 use oxiphysics_core::math::Vec3;
 
@@ -109,16 +122,141 @@ impl IisphTimestepAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// Diagonal approximation utilities
+// Diagonal coefficient and source term
 // ---------------------------------------------------------------------------
 
-/// Compute the diagonal coefficient a_ii for IISPH.
+/// Smallest density used as a divisor (guards isolated, massless particles).
+const DENSITY_FLOOR: f64 = 1e-14;
+
+/// Diagonal coefficients with a magnitude below this threshold mark a particle
+/// without usable neighbours: its pressure is fixed to zero.
+const DIAGONAL_EPS: f64 = 1e-20;
+
+/// Kernel gradient `∇_i W_ij = W'(r) (x_i − x_j) / r` for the separation
+/// `rij = x_i − x_j`; zero for coincident particles.
+fn kernel_gradient(rij: Vec3, kernel: &dyn SphKernel, h: f64) -> Vec3 {
+    let r = rij.norm();
+    if r < 1e-14 {
+        return Vec3::zeros();
+    }
+    rij * (kernel.grad_w(r, h) / r)
+}
+
+/// Number of power iterations used to estimate the spectral radius of `D⁻¹A`.
+const POWER_ITERATIONS: usize = 20;
+
+/// The relaxed Jacobi iteration contracts only if `ω λ_max(D⁻¹A) < 2`.  The
+/// power iteration slightly underestimates `λ_max`, so the relaxation factor is
+/// limited to `OMEGA_STABILITY / λ_est` with a margin below 2.
+const OMEGA_STABILITY: f64 = 1.6;
+
+/// Matrix-free application of the IISPH pressure matrix `A`.
+struct PressureOperator<'a> {
+    neighbors: &'a [Vec<usize>],
+    /// `∇_i W_ij` for every neighbour entry, aligned with `neighbors`.
+    gradients: &'a [Vec<Vec3>],
+    masses: &'a [f64],
+    /// `1 / ρ_i²`.
+    inv_rho_sq: &'a [f64],
+    /// `Σ_j m_j ∇_i W_ij`.
+    sum_mass_grad: &'a [Vec3],
+    dt2: f64,
+}
+
+impl PressureOperator<'_> {
+    /// Evaluate `D_i = Δt² a_i^p = d_ii p_i + Σ_j d_ij p_j` into `displacement`
+    /// and `(Ap)_i = Σ_j m_j (D_i − D_j) · ∇W_ij` into `ap` for the pressures `p`.
+    ///
+    /// `(Ap)_i = a_ii p_i + Σ_{j≠i} a_ij p_j` is the change of the density of
+    /// particle `i` caused by the pressure acceleration `p` over one step.
+    fn apply(&self, pressure: &[f64], displacement: &mut [Vec3], ap: &mut [f64]) {
+        let n = pressure.len();
+        // D_i = −Δt² ( p_i/ρ_i² Σ_j m_j ∇W_ij + Σ_j m_j p_j/ρ_j² ∇W_ij )
+        for i in 0..n {
+            let mut acc = self.sum_mass_grad[i] * (pressure[i] * self.inv_rho_sq[i]);
+            for (&j, grad) in self.neighbors[i].iter().zip(self.gradients[i].iter()) {
+                acc += grad * (self.masses[j] * pressure[j] * self.inv_rho_sq[j]);
+            }
+            displacement[i] = acc * (-self.dt2);
+        }
+        for i in 0..n {
+            let mut sum = 0.0_f64;
+            for (&j, grad) in self.neighbors[i].iter().zip(self.gradients[i].iter()) {
+                sum += self.masses[j] * (displacement[i] - displacement[j]).dot(grad);
+            }
+            ap[i] = sum;
+        }
+    }
+
+    /// Estimate the largest eigenvalue of `D⁻¹A` on the `active` particles
+    /// (`D` = diagonal of `A`) with a few power iterations started from a
+    /// deterministic pseudo-random vector.  Returns 0 if there is nothing to
+    /// iterate on.
+    fn spectral_radius_estimate(&self, diagonal: &[f64], active: &[bool]) -> f64 {
+        let n = diagonal.len();
+        let mut v: Vec<f64> = (0..n)
+            .map(|i| {
+                if active[i] {
+                    let s = ((i + 1) as f64 * 12.9898).sin() * 43758.5453;
+                    2.0 * (s - s.floor()) - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let norm = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if !(norm.is_finite() && norm > 0.0) {
+            return 0.0;
+        }
+        v.iter_mut().for_each(|x| *x /= norm);
+        let mut displacement = vec![Vec3::zeros(); n];
+        let mut av = vec![0.0_f64; n];
+        let mut estimate = 0.0_f64;
+        for _ in 0..POWER_ITERATIONS {
+            self.apply(&v, &mut displacement, &mut av);
+            let mut norm_sq = 0.0_f64;
+            for i in 0..n {
+                av[i] = if active[i] { av[i] / diagonal[i] } else { 0.0 };
+                norm_sq += av[i] * av[i];
+            }
+            let norm = norm_sq.sqrt();
+            if !(norm.is_finite() && norm > 0.0) {
+                break;
+            }
+            estimate = norm;
+            for i in 0..n {
+                v[i] = av[i] / norm;
+            }
+        }
+        estimate
+    }
+}
+
+/// Compute the diagonal coefficient `a_ii` of the IISPH pressure system
+/// (Ihmsen et al. 2014, Eq. 12) of particle `i`.
 ///
-/// a_ii = dt² * Σ_j m_j / ρ_j² * |∇W_ij|²
+/// With `d_ii = −Δt² Σ_j m_j/ρ_i² ∇W_ij` and `d_ji = −Δt² m_i/ρ_i² ∇W_ji`
+/// (`∇W_ji = −∇W_ij`) the coefficient is
 ///
-/// This diagonal dominance is required for Jacobi convergence.
+/// ```text
+/// a_ii = Σ_j m_j (d_ii − d_ji) · ∇W_ij
+///      = −Δt²/ρ_i² ( |Σ_j m_j ∇W_ij|² + m_i Σ_j m_j |∇W_ij|² )
+/// ```
+///
+/// and is therefore **negative** for every particle that has at least one
+/// neighbour (zero for an isolated one): raising the pressure of a particle
+/// lowers its predicted density.
+///
+/// # Arguments
+/// * `i`         – index of the particle
+/// * `positions`, `masses`, `densities` – per-particle data (SPH densities)
+/// * `neighbors` – indices of the neighbours of particle `i`
+/// * `kernel`, `h` – smoothing kernel and smoothing length
+/// * `dt`        – time step
+///
+/// Returns 0 if `i` or a neighbour index is out of range of the data slices.
 pub fn compute_diagonal_coefficient(
-    pos_i: Vec3,
+    i: usize,
     positions: &[Vec3],
     masses: &[f64],
     densities: &[f64],
@@ -127,20 +265,23 @@ pub fn compute_diagonal_coefficient(
     h: f64,
     dt: f64,
 ) -> f64 {
-    let mut aii = 0.0_f64;
+    let (Some(&pos_i), Some(&mass_i), Some(&rho_i)) =
+        (positions.get(i), masses.get(i), densities.get(i))
+    else {
+        return 0.0;
+    };
+    let rho_i = rho_i.max(DENSITY_FLOOR);
+    let mut sum_mg = Vec3::zeros();
+    let mut sum_sq = 0.0_f64;
     for &j in neighbors {
-        let rij = pos_i - positions[j];
-        let r = rij.norm();
-        if r < 1e-14 {
+        let (Some(&pos_j), Some(&mass_j)) = (positions.get(j), masses.get(j)) else {
             continue;
-        }
-        let grad_scalar = kernel.grad_w(r, h);
-        let rhat = rij / r;
-        let grad_ij = grad_scalar * rhat;
-        let rhoj = densities[j].max(1e-14);
-        aii += masses[j] / (rhoj * rhoj) * grad_ij.norm_squared();
+        };
+        let grad = kernel_gradient(pos_i - pos_j, kernel, h);
+        sum_mg += grad * mass_j;
+        sum_sq += mass_j * grad.norm_squared();
     }
-    dt * dt * aii
+    -dt * dt / (rho_i * rho_i) * (sum_mg.norm_squared() + mass_i * sum_sq)
 }
 
 /// Compute the source term (density deviation from rest) for IISPH.
@@ -158,7 +299,14 @@ pub fn compute_source_term(rho_adv: f64, rho0: f64) -> f64 {
 ///
 /// p_i^{new} = (1-ω) * p_i + ω * (source_i - ap_off_i) / a_ii
 ///
-/// Returns the updated pressure (clamped to ≥ 0).
+/// `source_i = ρ₀ − ρ_adv,i` is negative for a compressed particle and
+/// `a_ii` is negative (see [`compute_diagonal_coefficient`]), so compression
+/// yields a positive pressure; an expanded particle would need suction and is
+/// clamped to zero.  `ap_off_i` is the off-diagonal part
+/// `(Ap)_i − a_ii p_i` of the matrix–vector product.
+///
+/// Returns the updated pressure (clamped to ≥ 0); 0 when `|a_ii|` is
+/// negligible (isolated particle).
 pub fn relaxed_jacobi_update(
     pressure_i: f64,
     source_i: f64,
@@ -173,22 +321,22 @@ pub fn relaxed_jacobi_update(
     ((1.0 - omega) * pressure_i + omega * rhs).max(0.0)
 }
 
-/// Compute optimal relaxation factor based on spectral radius estimation.
+/// Compute a relaxation factor from the spread of the diagonal coefficients.
 ///
-/// Uses the Gershgorin circle theorem approximation.
-/// Returns ω ∈ \[0.3, 0.9\].
+/// Heuristic: the more uniform the magnitudes `|a_ii|` are (the better
+/// conditioned the system), the larger the factor.  The IISPH diagonal is
+/// negative, so the magnitudes are used; isolated particles (`a_ii = 0`) are
+/// ignored.  Returns ω ∈ \[0.3, 0.9\] and 0.5 if no particle has a usable
+/// diagonal.
 pub fn estimate_optimal_omega(a_ii_values: &[f64], _n_particles: usize) -> f64 {
-    if a_ii_values.is_empty() {
-        return 0.5;
-    }
-    // Simple heuristic: use the ratio of min/max diagonal elements
-    let min_aii = a_ii_values.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max_aii = a_ii_values
+    let magnitudes = a_ii_values
         .iter()
-        .cloned()
-        .fold(f64::NEG_INFINITY, f64::max);
+        .map(|a| a.abs())
+        .filter(|&a| a.is_finite() && a >= DIAGONAL_EPS);
+    let min_aii = magnitudes.clone().fold(f64::INFINITY, f64::min);
+    let max_aii = magnitudes.fold(0.0_f64, f64::max);
 
-    if max_aii < 1e-20 {
+    if !min_aii.is_finite() || max_aii < DIAGONAL_EPS {
         return 0.5;
     }
 
@@ -202,12 +350,63 @@ pub fn estimate_optimal_omega(a_ii_values: &[f64], _n_particles: usize) -> f64 {
 // IisphSolver
 // ---------------------------------------------------------------------------
 
+/// Result of one IISPH pressure solve (see [`IisphSolver::solve`]).
+#[derive(Debug, Clone)]
+pub struct IisphSolution {
+    /// Pressures `p_i ≥ 0` (Pa).  Pass them back as the warm start of the next
+    /// solve.
+    pub pressures: Vec<f64>,
+    /// Pressure accelerations `a_i = −Σ_j m_j (p_i/ρ_i² + p_j/ρ_j²) ∇W_ij`
+    /// (m/s², force per unit mass).
+    pub accelerations: Vec<Vec3>,
+    /// Diagonal coefficients `a_ii` of the pressure system (negative, or zero
+    /// for particles without neighbours).
+    pub diagonal: Vec<f64>,
+    /// SPH densities `ρ_i` at the beginning of the step (kg/m³).
+    pub densities: Vec<f64>,
+    /// Advected densities `ρ_adv,i = ρ_i + Δt Σ_j m_j (v_i − v_j) · ∇W_ij`
+    /// (density change due to the non-pressure velocity only).
+    pub advected_densities: Vec<f64>,
+    /// Relaxation factor ω actually used: the configured
+    /// [`IisphSolver::omega`], lowered if the iteration would not contract.
+    pub omega: f64,
+    /// Density-error metrics of the returned pressures.
+    pub metrics: DensityErrorMetrics,
+}
+
+impl IisphSolution {
+    /// Solution returned for inconsistent input: zero pressures and
+    /// accelerations, infinite error, not converged.
+    fn rejected(n: usize) -> Self {
+        Self {
+            pressures: vec![0.0; n],
+            accelerations: vec![Vec3::zeros(); n],
+            diagonal: vec![0.0; n],
+            densities: vec![0.0; n],
+            advected_densities: vec![0.0; n],
+            omega: 0.0,
+            metrics: DensityErrorMetrics {
+                avg_error: f64::INFINITY,
+                max_error: f64::INFINITY,
+                iterations: 0,
+                converged: false,
+            },
+        }
+    }
+}
+
 /// IISPH pressure solver using relaxed Jacobi iterations.
 ///
 /// Reference: Ihmsen et al., "Implicit Incompressible SPH", IEEE TVCG 2014.
 #[derive(Debug, Clone)]
 pub struct IisphSolver {
-    /// Relaxation factor for the Jacobi update (default 0.5).
+    /// Relaxation factor for the Jacobi update (default 0.5, Ihmsen et al.).
+    ///
+    /// The relaxed Jacobi iteration contracts only if `ω λ_max(D⁻¹A) < 2`, and
+    /// `λ_max` grows with the kernel support (about 3 for a support of two
+    /// particle spacings, about 5 for 2.6 and above 10 for 4).  The solver
+    /// estimates `λ_max` and lowers the factor used to `1.6 / λ_max` when
+    /// necessary; [`IisphSolution::omega`] reports the value in effect.
     pub omega: f64,
     /// Maximum number of Jacobi iterations (default 100).
     pub max_iter: usize,
@@ -233,7 +432,8 @@ impl IisphSolver {
 
     /// Compute SPH densities via kernel summation (including self-contribution).
     ///
-    /// Returns a `Vec`f64` of length `positions.len()`.
+    /// Returns a `Vec<f64>` of length `positions.len()`.  Neighbour indices that
+    /// are out of range and particles without a mass entry are ignored.
     pub fn compute_densities(
         positions: &[Vec3],
         masses: &[f64],
@@ -241,33 +441,234 @@ impl IisphSolver {
         kernel: &dyn SphKernel,
         smoothing_length: f64,
     ) -> Vec<f64> {
-        let n = positions.len();
         let h = smoothing_length;
-        let mut densities = vec![0.0_f64; n];
-        for i in 0..n {
-            // Self-contribution
-            let mut rho = masses[i] * kernel.w(0.0, h);
-            for &j in &neighbors[i] {
-                let r = (positions[i] - positions[j]).norm();
-                rho += masses[j] * kernel.w(r, h);
-            }
-            densities[i] = rho;
-        }
-        densities
+        positions
+            .iter()
+            .enumerate()
+            .map(|(i, pos_i)| {
+                let Some(&mass_i) = masses.get(i) else {
+                    return 0.0;
+                };
+                // Self-contribution
+                let mut rho = mass_i * kernel.w(0.0, h);
+                for &j in neighbors.get(i).map_or(&[][..], Vec::as_slice) {
+                    if let (Some(&mass_j), Some(pos_j)) = (masses.get(j), positions.get(j)) {
+                        rho += mass_j * kernel.w((pos_i - pos_j).norm(), h);
+                    }
+                }
+                rho
+            })
+            .collect()
     }
 
-    /// Perform one full IISPH pressure-solve step.
+    /// Solve the IISPH pressure system and return pressures, accelerations and
+    /// diagnostics.
     ///
-    /// # Steps
-    /// 1. Compute current densities via SPH summation.
-    /// 2. Compute the diagonal coefficient `a_ii` and the advected density
-    ///    `rho_adv` (density advance due to non-pressure velocity only).
-    /// 3. Initialize pressures to zero.
-    /// 4. Relaxed Jacobi loop until convergence or `max_iter`.
-    /// 5. Assemble pressure forces from the converged pressure field.
+    /// # Algorithm (Ihmsen et al. 2014, Alg. 1)
+    /// 1. SPH densities `ρ_i` and the advected densities
+    ///    `ρ_adv,i = ρ_i + Δt Σ_j m_j (v_i − v_j) · ∇W_ij`; `velocities` are the
+    ///    velocities **after** the non-pressure forces.
+    /// 2. Diagonal coefficients `a_ii` (negative, see
+    ///    [`compute_diagonal_coefficient`]).
+    /// 3. Relaxed Jacobi iterations `p_i ← max(0, p_i + ω (ρ₀ − ρ_adv,i − (Ap)_i) / a_ii)`
+    ///    with `(Ap)_i = Σ_j m_j (D_i − D_j) · ∇W_ij` and
+    ///    `D_i = Δt² a_i^p` the displacement-like pressure acceleration of the
+    ///    current iterate, until the average density error drops below
+    ///    [`tolerance`](Self::tolerance) or [`max_iter`](Self::max_iter)
+    ///    updates were made.
+    /// 4. Pressure accelerations from the converged pressures.
+    ///
+    /// The density error of particle `i` is `|ρ_i^pred − ρ₀| / ρ₀` for a
+    /// particle under pressure and `max(ρ_i^pred − ρ₀, 0) / ρ₀` for one at zero
+    /// pressure, where `ρ_i^pred = ρ_adv,i + (Ap)_i` is the density after the
+    /// pressure acceleration: free-surface particles that are too sparse cannot
+    /// be corrected without suction and are not counted.  Particles without
+    /// neighbours are ignored.  `avg_error` is averaged over all particles and
+    /// refers to the returned pressures.
+    ///
+    /// Total momentum is conserved: `Σ m_i a_i = 0` for symmetric neighbour
+    /// lists.
+    ///
+    /// # Arguments
+    /// * `positions`, `velocities`, `masses` – particle state (equal lengths)
+    /// * `neighbors`        – `neighbors[i]` lists the particles within the kernel
+    ///   support of `i` (without `i`), symmetric in `i` and `j`
+    /// * `dt`               – time step
+    /// * `kernel`, `smoothing_length` – smoothing kernel and its length `h`
+    /// * `previous_pressure` – optional warm start (negative entries are
+    ///   clamped to zero); ignored if its length differs from the particle count
+    ///
+    /// Inconsistent input (differing slice lengths or an out-of-range neighbour
+    /// index) yields a rejected solution: zero pressures and accelerations,
+    /// infinite error and `converged = false`.
+    pub fn solve(
+        &self,
+        positions: &[Vec3],
+        velocities: &[Vec3],
+        masses: &[f64],
+        neighbors: &[Vec<usize>],
+        dt: f64,
+        kernel: &dyn SphKernel,
+        smoothing_length: f64,
+        previous_pressure: Option<&[f64]>,
+    ) -> IisphSolution {
+        let n = positions.len();
+        let consistent = velocities.len() == n
+            && masses.len() == n
+            && neighbors.len() == n
+            && neighbors.iter().all(|list| list.iter().all(|&j| j < n));
+        if !consistent {
+            return IisphSolution::rejected(n);
+        }
+        let h = smoothing_length;
+        let rho0 = self.density0;
+        let dt2 = dt * dt;
+
+        // --- 1. densities, cached kernel gradients, advected density, a_ii ---
+        let densities = Self::compute_densities(positions, masses, neighbors, kernel, h);
+        let inv_rho_sq: Vec<f64> = densities
+            .iter()
+            .map(|&rho| {
+                let rho = rho.max(DENSITY_FLOOR);
+                1.0 / (rho * rho)
+            })
+            .collect();
+        let gradients: Vec<Vec<Vec3>> = neighbors
+            .iter()
+            .enumerate()
+            .map(|(i, list)| {
+                list.iter()
+                    .map(|&j| kernel_gradient(positions[i] - positions[j], kernel, h))
+                    .collect()
+            })
+            .collect();
+
+        // Σ_j m_j ∇W_ij, a_ii and ρ_adv of every particle.
+        let mut sum_mass_grad = vec![Vec3::zeros(); n];
+        let mut diagonal = vec![0.0_f64; n];
+        let mut rho_adv = vec![0.0_f64; n];
+        for i in 0..n {
+            let mut sum_mg = Vec3::zeros();
+            let mut sum_sq = 0.0_f64;
+            let mut drho = 0.0_f64;
+            for (&j, grad) in neighbors[i].iter().zip(gradients[i].iter()) {
+                sum_mg += grad * masses[j];
+                sum_sq += masses[j] * grad.norm_squared();
+                drho += masses[j] * (velocities[i] - velocities[j]).dot(grad);
+            }
+            sum_mass_grad[i] = sum_mg;
+            diagonal[i] = -dt2 * inv_rho_sq[i] * (sum_mg.norm_squared() + masses[i] * sum_sq);
+            rho_adv[i] = densities[i] + dt * drho;
+        }
+        let active: Vec<bool> = diagonal.iter().map(|&a| a < -DIAGONAL_EPS).collect();
+
+        // --- 2. relaxed Jacobi iterations ---
+        let operator = PressureOperator {
+            neighbors,
+            gradients: &gradients,
+            masses,
+            inv_rho_sq: &inv_rho_sq,
+            sum_mass_grad: &sum_mass_grad,
+            dt2,
+        };
+        let lambda_max = operator.spectral_radius_estimate(&diagonal, &active);
+        let omega = if lambda_max.is_finite() && lambda_max > 0.0 {
+            self.omega.min(OMEGA_STABILITY / lambda_max)
+        } else {
+            self.omega
+        };
+        let mut pressure: Vec<f64> = match previous_pressure {
+            Some(previous) if previous.len() == n => previous
+                .iter()
+                .zip(active.iter())
+                .map(|(&p, &on)| if on { p.max(0.0) } else { 0.0 })
+                .collect(),
+            _ => vec![0.0; n],
+        };
+        let mut displacement = vec![Vec3::zeros(); n]; // D_i = Δt² a_i^p
+        let mut ap = vec![0.0_f64; n];
+        let mut iterations = 0_usize;
+        let mut converged = false;
+        let mut avg_error;
+        let mut max_error;
+        loop {
+            operator.apply(&pressure, &mut displacement, &mut ap);
+            // density error of the current iterate
+            let mut error_sum = 0.0_f64;
+            max_error = 0.0_f64;
+            for i in 0..n {
+                if !active[i] {
+                    continue;
+                }
+                let deviation = (rho_adv[i] + ap[i] - rho0) / rho0;
+                let error = if pressure[i] > 0.0 {
+                    deviation.abs()
+                } else {
+                    deviation.max(0.0)
+                };
+                error_sum += error;
+                max_error = max_error.max(error);
+            }
+            avg_error = if n > 0 { error_sum / n as f64 } else { 0.0 };
+            if avg_error < self.tolerance {
+                converged = true;
+                break;
+            }
+            if iterations >= self.max_iter {
+                break;
+            }
+            // relaxed Jacobi update with all particles using the old iterate
+            for i in 0..n {
+                pressure[i] = if active[i] {
+                    relaxed_jacobi_update(
+                        pressure[i],
+                        rho0 - rho_adv[i],
+                        ap[i] - diagonal[i] * pressure[i],
+                        diagonal[i],
+                        omega,
+                    )
+                } else {
+                    0.0
+                };
+            }
+            iterations += 1;
+        }
+
+        // --- 3. pressure accelerations ---
+        let accelerations: Vec<Vec3> = (0..n)
+            .map(|i| {
+                let mut acc = Vec3::zeros();
+                for (&j, grad) in neighbors[i].iter().zip(gradients[i].iter()) {
+                    let factor =
+                        masses[j] * (pressure[i] * inv_rho_sq[i] + pressure[j] * inv_rho_sq[j]);
+                    acc -= grad * factor;
+                }
+                acc
+            })
+            .collect();
+
+        IisphSolution {
+            pressures: pressure,
+            accelerations,
+            diagonal,
+            densities,
+            advected_densities: rho_adv,
+            omega,
+            metrics: DensityErrorMetrics {
+                avg_error,
+                max_error,
+                iterations,
+                converged,
+            },
+        }
+    }
+
+    /// Perform one full IISPH pressure-solve step from zero initial pressures.
+    ///
+    /// See [`solve`](Self::solve) for the algorithm.
     ///
     /// # Returns
-    /// `(pressure_forces, avg_density_error)` where `pressure_forces\[i\]` is
+    /// `(pressure_forces, avg_density_error)` where `pressure_forces[i]` is
     /// the net pressure acceleration (force per unit mass) on particle `i`.
     pub fn solve_pressure(
         &self,
@@ -279,143 +680,17 @@ impl IisphSolver {
         kernel: &dyn SphKernel,
         smoothing_length: f64,
     ) -> (Vec<Vec3>, f64) {
-        let n = positions.len();
-        let h = smoothing_length;
-        let rho0 = self.density0;
-
-        // --- 1. Compute current densities ---
-        let densities = Self::compute_densities(positions, masses, neighbors, kernel, h);
-
-        // --- 2. Compute a_ii and rho_adv ---
-        // rho_adv_i = rho_i + dt * sum_j m_j (v*_i - v*_j) . grad_W_ij
-        // Here v* = velocities (already includes non-pressure contributions).
-        // a_ii = dt^2 * sum_j m_j/rho_j^2 * |grad_W_ij|^2
-        let mut a_ii = vec![0.0_f64; n];
-        let mut rho_adv = vec![0.0_f64; n];
-
-        for i in 0..n {
-            let rhoi = densities[i].max(1e-14);
-            let mut drho = 0.0_f64;
-            let mut aii_sum = 0.0_f64;
-
-            for &j in &neighbors[i] {
-                let rij = positions[i] - positions[j];
-                let r = rij.norm();
-                if r < 1e-14 {
-                    continue;
-                }
-                let grad_scalar = kernel.grad_w(r, h);
-                let rhat = rij / r;
-                let grad_ij: Vec3 = grad_scalar * rhat;
-
-                // Advected density contribution: m_j (v_i - v_j) . grad_W_ij
-                let vij = velocities[i] - velocities[j];
-                drho += masses[j] * vij.dot(&grad_ij);
-
-                // Diagonal coefficient: dt^2 * m_j / rho_j^2 * |grad_W_ij|^2
-                let rhoj = densities[j].max(1e-14);
-                aii_sum += masses[j] / (rhoj * rhoj) * grad_ij.norm_squared();
-                // Also add the symmetric term from particle j's perspective
-                // (contribution from d_ii of particle i seen by j):
-                // full a_ii includes: dt^2 * (m_i^2/rho_i^2 * |grad|^2) from self
-                // plus dt^2 * sum_j m_j/rho_j^2 * |grad|^2 from neighbors
-                // We use the simplified formulation: only neighbor contributions.
-                let _ = rhoi; // used below
-            }
-
-            // Self-contribution to a_ii via d_ii diagonal term
-            // a_ii = dt^2 * sum_j m_j/rho_j^2 * |grad_W_ij|^2
-            a_ii[i] = dt * dt * aii_sum;
-            rho_adv[i] = densities[i] + dt * drho;
-        }
-
-        // --- 3. Initialize pressures to zero ---
-        let mut pressure = vec![0.0_f64; n];
-
-        // --- 4. Relaxed Jacobi iterations ---
-        let mut avg_err = 0.0_f64;
-        for _iter in 0..self.max_iter {
-            // Compute Ap_i = sum_j a_ij * p_j
-            // Using the standard IISPH approximation:
-            // Ap_i = dt^2 * sum_j m_j * (p_i/rho_i^2 + p_j/rho_j^2) * grad_W_ij . r_hat
-            // But for Jacobi we need the off-diagonal part only (exclude a_ii * p_i).
-            // We compute the full sum then subtract a_ii * p_i.
-            let mut ap = vec![0.0_f64; n];
-            for i in 0..n {
-                let rhoi = densities[i].max(1e-14);
-                let pi = pressure[i];
-                for &j in &neighbors[i] {
-                    let rij = positions[i] - positions[j];
-                    let r = rij.norm();
-                    if r < 1e-14 {
-                        continue;
-                    }
-                    let grad_scalar = kernel.grad_w(r, h);
-                    let rhat = rij / r;
-                    let grad_ij: Vec3 = grad_scalar * rhat;
-
-                    let rhoj = densities[j].max(1e-14);
-                    let pj = pressure[j];
-                    // IISPH pressure Laplacian term (scalar projection onto r_hat)
-                    let contrib = dt
-                        * dt
-                        * masses[j]
-                        * (pi / (rhoi * rhoi) + pj / (rhoj * rhoj))
-                        * grad_ij.dot(&rhat);
-                    ap[i] += contrib;
-                }
-            }
-
-            // Update pressures with relaxed Jacobi and clamp to non-negative
-            avg_err = 0.0;
-            for i in 0..n {
-                let aii = a_ii[i];
-                if aii.abs() < 1e-20 {
-                    pressure[i] = 0.0;
-                    continue;
-                }
-                // Off-diagonal part: ap[i] - a_ii[i] * pressure[i]
-                let ap_off = ap[i] - aii * pressure[i];
-                let rhs = (rho0 - rho_adv[i] - ap_off) / aii;
-                pressure[i] = ((1.0 - self.omega) * pressure[i] + self.omega * rhs).max(0.0);
-
-                // Density error contribution
-                let rho_err = (rho_adv[i] + ap[i] - rho0).abs() / rho0;
-                avg_err += rho_err;
-            }
-            if n > 0 {
-                avg_err /= n as f64;
-            }
-
-            if avg_err < self.tolerance {
-                break;
-            }
-        }
-
-        // --- 5. Compute pressure forces ---
-        // f_pressure_i = -rho_i * sum_j m_j (p_i/rho_i^2 + p_j/rho_j^2) grad_W_ij
-        // Returned as force per unit mass (acceleration), so divide by rho_i.
-        let mut pressure_forces = vec![Vec3::zeros(); n];
-        for i in 0..n {
-            let rhoi = densities[i].max(1e-14);
-            let pi = pressure[i];
-            for &j in &neighbors[i] {
-                let rij = positions[i] - positions[j];
-                let r = rij.norm();
-                if r < 1e-14 {
-                    continue;
-                }
-                let grad_scalar = kernel.grad_w(r, h);
-                let rhat = rij / r;
-                let rhoj = densities[j].max(1e-14);
-                let pj = pressure[j];
-                // Symmetric pressure acceleration (force / mass)
-                let factor = -masses[j] * (pi / (rhoi * rhoi) + pj / (rhoj * rhoj)) * grad_scalar;
-                pressure_forces[i] += factor * rhat;
-            }
-        }
-
-        (pressure_forces, avg_err)
+        let solution = self.solve(
+            positions,
+            velocities,
+            masses,
+            neighbors,
+            dt,
+            kernel,
+            smoothing_length,
+            None,
+        );
+        (solution.accelerations, solution.metrics.avg_error)
     }
 
     /// Solve pressure and return detailed metrics.
@@ -429,127 +704,17 @@ impl IisphSolver {
         kernel: &dyn SphKernel,
         smoothing_length: f64,
     ) -> (Vec<Vec3>, DensityErrorMetrics) {
-        let n = positions.len();
-        let h = smoothing_length;
-        let rho0 = self.density0;
-
-        let densities = Self::compute_densities(positions, masses, neighbors, kernel, h);
-
-        let mut a_ii = vec![0.0_f64; n];
-        let mut rho_adv = vec![0.0_f64; n];
-
-        for i in 0..n {
-            let mut drho = 0.0_f64;
-            let mut aii_sum = 0.0_f64;
-
-            for &j in &neighbors[i] {
-                let rij = positions[i] - positions[j];
-                let r = rij.norm();
-                if r < 1e-14 {
-                    continue;
-                }
-                let grad_scalar = kernel.grad_w(r, h);
-                let rhat = rij / r;
-                let grad_ij: Vec3 = grad_scalar * rhat;
-
-                let vij = velocities[i] - velocities[j];
-                drho += masses[j] * vij.dot(&grad_ij);
-
-                let rhoj = densities[j].max(1e-14);
-                aii_sum += masses[j] / (rhoj * rhoj) * grad_ij.norm_squared();
-            }
-
-            a_ii[i] = dt * dt * aii_sum;
-            rho_adv[i] = densities[i] + dt * drho;
-        }
-
-        let mut pressure = vec![0.0_f64; n];
-        let mut avg_err = 0.0_f64;
-        let mut max_err = 0.0_f64;
-        let mut final_iter = 0usize;
-        let mut converged = false;
-
-        for iter in 0..self.max_iter {
-            let mut ap = vec![0.0_f64; n];
-            for i in 0..n {
-                let rhoi = densities[i].max(1e-14);
-                let pi = pressure[i];
-                for &j in &neighbors[i] {
-                    let rij = positions[i] - positions[j];
-                    let r = rij.norm();
-                    if r < 1e-14 {
-                        continue;
-                    }
-                    let grad_scalar = kernel.grad_w(r, h);
-                    let rhat = rij / r;
-                    let grad_ij: Vec3 = grad_scalar * rhat;
-                    let rhoj = densities[j].max(1e-14);
-                    let pj = pressure[j];
-                    let contrib = dt
-                        * dt
-                        * masses[j]
-                        * (pi / (rhoi * rhoi) + pj / (rhoj * rhoj))
-                        * grad_ij.dot(&rhat);
-                    ap[i] += contrib;
-                }
-            }
-
-            avg_err = 0.0;
-            max_err = 0.0;
-            for i in 0..n {
-                let aii = a_ii[i];
-                if aii.abs() < 1e-20 {
-                    pressure[i] = 0.0;
-                    continue;
-                }
-                let ap_off = ap[i] - aii * pressure[i];
-                let rhs = (rho0 - rho_adv[i] - ap_off) / aii;
-                pressure[i] = ((1.0 - self.omega) * pressure[i] + self.omega * rhs).max(0.0);
-
-                let rho_err = (rho_adv[i] + ap[i] - rho0).abs() / rho0;
-                avg_err += rho_err;
-                if rho_err > max_err {
-                    max_err = rho_err;
-                }
-            }
-            if n > 0 {
-                avg_err /= n as f64;
-            }
-            final_iter = iter + 1;
-
-            if avg_err < self.tolerance {
-                converged = true;
-                break;
-            }
-        }
-
-        let mut pressure_forces = vec![Vec3::zeros(); n];
-        for i in 0..n {
-            let rhoi = densities[i].max(1e-14);
-            let pi = pressure[i];
-            for &j in &neighbors[i] {
-                let rij = positions[i] - positions[j];
-                let r = rij.norm();
-                if r < 1e-14 {
-                    continue;
-                }
-                let grad_scalar = kernel.grad_w(r, h);
-                let rhat = rij / r;
-                let rhoj = densities[j].max(1e-14);
-                let pj = pressure[j];
-                let factor = -masses[j] * (pi / (rhoi * rhoi) + pj / (rhoj * rhoj)) * grad_scalar;
-                pressure_forces[i] += factor * rhat;
-            }
-        }
-
-        let metrics = DensityErrorMetrics {
-            avg_error: avg_err,
-            max_error: max_err,
-            iterations: final_iter,
-            converged,
-        };
-
-        (pressure_forces, metrics)
+        let solution = self.solve(
+            positions,
+            velocities,
+            masses,
+            neighbors,
+            dt,
+            kernel,
+            smoothing_length,
+            None,
+        );
+        (solution.accelerations, solution.metrics)
     }
 }
 
@@ -702,9 +867,11 @@ impl IisphNeighborhoodCache {
 impl IisphSolver {
     /// Solve pressure with warm-start initialisation.
     ///
-    /// Accepts a `previous_pressure` slice to use as the initial guess for the
-    /// Jacobi iteration.  Using the pressure from the previous time step as
-    /// a warm start can significantly reduce the number of iterations needed.
+    /// Accepts a `previous_pressure` slice (for example
+    /// [`IisphSolution::pressures`] of the previous time step) to use as the
+    /// initial guess for the Jacobi iteration.  Using the pressure from the
+    /// previous time step as a warm start can significantly reduce the number
+    /// of iterations needed.  See [`solve`](Self::solve).
     pub fn solve_pressure_warm_start(
         &self,
         positions: &[Vec3],
@@ -716,646 +883,19 @@ impl IisphSolver {
         smoothing_length: f64,
         previous_pressure: &[f64],
     ) -> (Vec<Vec3>, f64) {
-        let n = positions.len();
-        let h = smoothing_length;
-        let rho0 = self.density0;
-
-        let densities = Self::compute_densities(positions, masses, neighbors, kernel, h);
-
-        let mut a_ii = vec![0.0_f64; n];
-        let mut rho_adv = vec![0.0_f64; n];
-
-        for i in 0..n {
-            let mut drho = 0.0_f64;
-            let mut aii_sum = 0.0_f64;
-            for &j in &neighbors[i] {
-                let rij = positions[i] - positions[j];
-                let r = rij.norm();
-                if r < 1e-14 {
-                    continue;
-                }
-                let grad_scalar = kernel.grad_w(r, h);
-                let rhat = rij / r;
-                let grad_ij: Vec3 = grad_scalar * rhat;
-                let vij = velocities[i] - velocities[j];
-                drho += masses[j] * vij.dot(&grad_ij);
-                let rhoj = densities[j].max(1e-14);
-                aii_sum += masses[j] / (rhoj * rhoj) * grad_ij.norm_squared();
-            }
-            a_ii[i] = dt * dt * aii_sum;
-            rho_adv[i] = densities[i] + dt * drho;
-        }
-
-        // Warm-start: use previous pressure as initial guess.
-        let mut pressure: Vec<f64> = if previous_pressure.len() == n {
-            previous_pressure.iter().map(|&p| p.max(0.0)).collect()
-        } else {
-            vec![0.0_f64; n]
-        };
-
-        let mut avg_err = 0.0_f64;
-        for _iter in 0..self.max_iter {
-            let mut ap = vec![0.0_f64; n];
-            for i in 0..n {
-                let rhoi = densities[i].max(1e-14);
-                let pi = pressure[i];
-                for &j in &neighbors[i] {
-                    let rij = positions[i] - positions[j];
-                    let r = rij.norm();
-                    if r < 1e-14 {
-                        continue;
-                    }
-                    let grad_scalar = kernel.grad_w(r, h);
-                    let rhat = rij / r;
-                    let grad_ij: Vec3 = grad_scalar * rhat;
-                    let rhoj = densities[j].max(1e-14);
-                    let pj = pressure[j];
-                    let contrib = dt
-                        * dt
-                        * masses[j]
-                        * (pi / (rhoi * rhoi) + pj / (rhoj * rhoj))
-                        * grad_ij.dot(&rhat);
-                    ap[i] += contrib;
-                }
-            }
-
-            avg_err = 0.0;
-            for i in 0..n {
-                let aii = a_ii[i];
-                if aii.abs() < 1e-20 {
-                    pressure[i] = 0.0;
-                    continue;
-                }
-                let ap_off = ap[i] - aii * pressure[i];
-                let rhs = (rho0 - rho_adv[i] - ap_off) / aii;
-                pressure[i] = ((1.0 - self.omega) * pressure[i] + self.omega * rhs).max(0.0);
-                avg_err += (rho_adv[i] + ap[i] - rho0).abs() / rho0;
-            }
-            if n > 0 {
-                avg_err /= n as f64;
-            }
-            if avg_err < self.tolerance {
-                break;
-            }
-        }
-
-        // Pressure forces
-        let mut pressure_forces = vec![Vec3::zeros(); n];
-        for i in 0..n {
-            let rhoi = densities[i].max(1e-14);
-            let pi = pressure[i];
-            for &j in &neighbors[i] {
-                let rij = positions[i] - positions[j];
-                let r = rij.norm();
-                if r < 1e-14 {
-                    continue;
-                }
-                let grad_scalar = kernel.grad_w(r, h);
-                let rhat = rij / r;
-                let rhoj = densities[j].max(1e-14);
-                let pj = pressure[j];
-                let factor = -masses[j] * (pi / (rhoi * rhoi) + pj / (rhoj * rhoj)) * grad_scalar;
-                pressure_forces[i] += factor * rhat;
-            }
-        }
-
-        (pressure_forces, avg_err)
+        let solution = self.solve(
+            positions,
+            velocities,
+            masses,
+            neighbors,
+            dt,
+            kernel,
+            smoothing_length,
+            Some(previous_pressure),
+        );
+        (solution.accelerations, solution.metrics.avg_error)
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::kernel::CubicSplineKernel;
-
-    /// Build a larger uniform grid of particles for interior-density tests.
-    fn uniform_block(
-        spacing: f64,
-        n_per_side: usize,
-        mass: f64,
-    ) -> (Vec<Vec3>, Vec<Vec3>, Vec<f64>) {
-        let mut positions = Vec::new();
-        let mut velocities = Vec::new();
-        let mut masses = Vec::new();
-        for i in 0..n_per_side {
-            for j in 0..n_per_side {
-                for k in 0..n_per_side {
-                    positions.push(Vec3::new(
-                        i as f64 * spacing,
-                        j as f64 * spacing,
-                        k as f64 * spacing,
-                    ));
-                    velocities.push(Vec3::zeros());
-                    masses.push(mass);
-                }
-            }
-        }
-        (positions, velocities, masses)
-    }
-
-    #[test]
-    fn test_iisph_solver_creation() {
-        let solver = IisphSolver::new(1000.0);
-        assert!(
-            (solver.density0 - 1000.0).abs() < 1e-10,
-            "density0 should be 1000"
-        );
-        assert!(
-            (solver.omega - 0.5).abs() < 1e-10,
-            "default omega should be 0.5"
-        );
-        assert!(solver.max_iter >= 10, "max_iter should be at least 10");
-        assert!(solver.tolerance > 0.0, "tolerance should be positive");
-        assert!(solver.tolerance < 0.1, "tolerance should be small (<0.1)");
-    }
-
-    #[test]
-    fn test_iisph_density_computation() {
-        let spacing = 0.05_f64;
-        let h = 0.1_f64;
-        let rho0 = 1000.0_f64;
-        let mass = rho0 * spacing.powi(3);
-
-        // Use a larger block so interior particles have enough neighbors.
-        let (positions, _, masses) = uniform_block(spacing, 5, mass);
-        let neighbors = SpatialHash::find_all_neighbors(&positions, 2.0 * h);
-        let kernel = CubicSplineKernel;
-
-        let densities = IisphSolver::compute_densities(&positions, &masses, &neighbors, &kernel, h);
-
-        // At least some particles should have density close to rho0.
-        let interior: Vec<f64> = densities.iter().copied().filter(|&d| d > 700.0).collect();
-        assert!(
-            !interior.is_empty(),
-            "There should be particles with density > 700"
-        );
-        let avg: f64 = interior.iter().sum::<f64>() / interior.len() as f64;
-        assert!(
-            (avg - rho0).abs() < 300.0,
-            "Average interior density = {avg:.1}, expected near {rho0}"
-        );
-    }
-
-    #[test]
-    fn test_iisph_zero_pressure_stationary() {
-        // A uniform, stationary fluid: total momentum change should be zero
-        // (Newton's third law — pressure forces are symmetric).
-        let spacing = 0.05_f64;
-        let h = 0.1_f64;
-        let rho0 = 1000.0_f64;
-        let mass = rho0 * spacing.powi(3);
-        let dt = 0.001_f64;
-
-        let (positions, velocities, masses) = uniform_block(spacing, 5, mass);
-        let neighbors = SpatialHash::find_all_neighbors(&positions, 2.0 * h);
-        let kernel = CubicSplineKernel;
-
-        let solver = IisphSolver::new(rho0);
-        let (forces, avg_err) =
-            solver.solve_pressure(&positions, &velocities, &masses, &neighbors, dt, &kernel, h);
-
-        // The avg density error must be finite.
-        assert!(avg_err.is_finite(), "avg_density_error should be finite");
-
-        // Total momentum change (sum of all pressure forces * mass) should be ~0.
-        let net: Vec3 = forces
-            .iter()
-            .zip(masses.iter())
-            .map(|(f, &m)| *f * m)
-            .fold(Vec3::zeros(), |acc, v| acc + v);
-        let net_norm = net.norm();
-        let total_force: f64 = forces
-            .iter()
-            .zip(masses.iter())
-            .map(|(f, &m)| f.norm() * m)
-            .sum();
-        let scale = total_force.max(1e-14);
-        assert!(
-            net_norm / scale < 1e-6,
-            "Net pressure momentum should be ~0, got {net_norm:.4e} (scale {scale:.4e})"
-        );
-    }
-
-    #[test]
-    fn test_iisph_pressure_positive() {
-        // Compress fluid by scaling positions inward → density > rho0 → pressure > 0.
-        let spacing = 0.04_f64; // tighter spacing → higher density
-        let h = 0.1_f64;
-        let rho0 = 1000.0_f64;
-        // mass tuned to rest spacing 0.05, so at spacing 0.04 we are over-dense
-        let mass = rho0 * (0.05_f64).powi(3);
-        let dt = 0.001_f64;
-
-        let (positions, velocities, masses) = uniform_block(spacing, 4, mass);
-        let neighbors = SpatialHash::find_all_neighbors(&positions, 2.0 * h);
-        let kernel = CubicSplineKernel;
-
-        let densities = IisphSolver::compute_densities(&positions, &masses, &neighbors, &kernel, h);
-
-        // Verify at least some particles are over-dense.
-        let over_dense = densities.iter().filter(|&&d| d > rho0).count();
-        assert!(
-            over_dense > 0,
-            "Expected over-dense particles, got none. densities: {:?}",
-            &densities[..densities.len().min(4)]
-        );
-
-        let solver = IisphSolver::new(rho0);
-        let (forces, _) =
-            solver.solve_pressure(&positions, &velocities, &masses, &neighbors, dt, &kernel, h);
-
-        // At least one particle should have a non-trivial pressure force.
-        let max_force = forces.iter().map(|f| f.norm()).fold(0.0_f64, f64::max);
-        assert!(
-            max_force > 0.0,
-            "Expected non-zero pressure forces for compressed fluid, got {max_force:.4e}"
-        );
-    }
-
-    #[test]
-    fn test_iisph_pressure_forces_repulsive() {
-        // Two over-dense particles: forces should push them apart.
-        let h = 0.1_f64;
-        let rho0 = 1000.0_f64;
-        // Place particles very close together so they are over-dense.
-        let spacing = 0.03_f64;
-        // mass tuned so that at rest spacing 0.05 we get rho0, but here 0.03 → over-dense
-        let mass = rho0 * (0.05_f64).powi(3);
-        let dt = 0.001_f64;
-
-        let positions = vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(spacing, 0.0, 0.0)];
-        let velocities = vec![Vec3::zeros(); 2];
-        let masses = vec![mass; 2];
-
-        let neighbors = SpatialHash::find_all_neighbors(&positions, 2.0 * h);
-        let kernel = CubicSplineKernel;
-
-        let densities = IisphSolver::compute_densities(&positions, &masses, &neighbors, &kernel, h);
-
-        // For two isolated particles the density is low (only 2 neighbors),
-        // so pressure may well be zero/clamped.  The important property is that
-        // the two forces are exactly equal-and-opposite (momentum conservation).
-        let solver = IisphSolver::new(rho0);
-        let (forces, _) =
-            solver.solve_pressure(&positions, &velocities, &masses, &neighbors, dt, &kernel, h);
-
-        let f0x = forces[0].x;
-        let f1x = forces[1].x;
-
-        // Forces must be equal and opposite (Newton's third law via symmetric formula).
-        let sum = (f0x + f1x).abs();
-        let scale = (f0x.abs() + f1x.abs()).max(1e-14);
-        assert!(
-            sum < 1e-6 * scale + 1e-14,
-            "Pressure forces not equal-and-opposite: f0x={f0x:.6e}, f1x={f1x:.6e}, sum={sum:.6e}"
-        );
-
-        // If there is any pressure (densities exceed rho0), force on particle 0
-        // should push it in the −x direction (away from particle 1 at x>0).
-        if densities[0] > rho0 && densities[1] > rho0 {
-            assert!(
-                f0x < 0.0,
-                "Particle 0 should be pushed in -x direction: f0x={f0x:.6e}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_iisph_convergence() {
-        // Over-dense block: the solver should reduce the avg density error
-        // toward the tolerance within max_iter iterations.
-        let spacing = 0.04_f64;
-        let h = 0.1_f64;
-        let rho0 = 1000.0_f64;
-        let mass = rho0 * (0.05_f64).powi(3);
-        let dt = 0.001_f64;
-
-        let (positions, velocities, masses) = uniform_block(spacing, 4, mass);
-        let neighbors = SpatialHash::find_all_neighbors(&positions, 2.0 * h);
-        let kernel = CubicSplineKernel;
-
-        let mut solver = IisphSolver::new(rho0);
-        solver.max_iter = 200;
-        solver.tolerance = 1e-3;
-
-        let (_, avg_err) =
-            solver.solve_pressure(&positions, &velocities, &masses, &neighbors, dt, &kernel, h);
-
-        // The error should be finite and not blow up.
-        assert!(
-            avg_err.is_finite(),
-            "avg_density_error should be finite, got {avg_err}"
-        );
-        // At least the solver should produce a bounded result (it may not fully
-        // converge with only 2-particle boundary effects, but error < 1.0 is reasonable).
-        assert!(avg_err < 2.0, "avg_density_error too large: {avg_err:.4e}");
-    }
-
-    // --- Density error metrics tests ---
-
-    #[test]
-    fn test_density_error_metrics_zero() {
-        let m = DensityErrorMetrics::zero();
-        assert!(m.avg_error.abs() < 1e-15);
-        assert!(m.max_error.abs() < 1e-15);
-        assert_eq!(m.iterations, 0);
-        assert!(m.converged);
-    }
-
-    // --- IISPH timestep adapter tests ---
-
-    #[test]
-    fn test_timestep_adapter_shrink_on_poor_convergence() {
-        let mut adapter = IisphTimestepAdapter::new(0.001, 1e-6, 0.01);
-        let metrics = DensityErrorMetrics {
-            avg_error: 0.1,
-            max_error: 0.5,
-            iterations: 100,
-            converged: false,
-        };
-        let new_dt = adapter.adapt(&metrics);
-        assert!(
-            new_dt < 0.001,
-            "dt should shrink on poor convergence, got {new_dt}"
-        );
-    }
-
-    #[test]
-    fn test_timestep_adapter_grow_on_good_convergence() {
-        let mut adapter = IisphTimestepAdapter::new(0.001, 1e-6, 0.01);
-        adapter.growth_threshold = 2;
-        let metrics = DensityErrorMetrics {
-            avg_error: 1e-5,
-            max_error: 1e-4,
-            iterations: 5,
-            converged: true,
-        };
-        // Need multiple good steps
-        adapter.adapt(&metrics);
-        let new_dt = adapter.adapt(&metrics);
-        assert!(
-            new_dt > 0.001,
-            "dt should grow after consecutive good steps, got {new_dt}"
-        );
-    }
-
-    #[test]
-    fn test_timestep_adapter_reset() {
-        let mut adapter = IisphTimestepAdapter::new(0.001, 1e-6, 0.01);
-        adapter.good_steps = 10;
-        adapter.reset(0.005);
-        assert!((adapter.dt - 0.005).abs() < 1e-15);
-        assert_eq!(adapter.good_steps, 0);
-    }
-
-    #[test]
-    fn test_timestep_adapter_respects_bounds() {
-        let mut adapter = IisphTimestepAdapter::new(0.001, 1e-4, 0.01);
-        let bad = DensityErrorMetrics {
-            avg_error: 1.0,
-            max_error: 5.0,
-            iterations: 100,
-            converged: false,
-        };
-        // Repeatedly shrink
-        for _ in 0..100 {
-            adapter.adapt(&bad);
-        }
-        assert!(adapter.dt >= 1e-4, "dt must not go below min_dt");
-    }
-
-    // --- Diagonal coefficient test ---
-
-    #[test]
-    fn test_compute_diagonal_coefficient_positive() {
-        let positions = vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.05, 0.0, 0.0)];
-        let masses = vec![0.125; 2];
-        let densities = vec![1000.0; 2];
-        let neighbors = vec![1_usize];
-        let kernel = CubicSplineKernel;
-
-        let aii = compute_diagonal_coefficient(
-            positions[0],
-            &positions,
-            &masses,
-            &densities,
-            &neighbors,
-            &kernel,
-            0.1,
-            0.001,
-        );
-        assert!(aii >= 0.0, "a_ii must be non-negative, got {aii}");
-    }
-
-    // --- Source term test ---
-
-    #[test]
-    fn test_compute_source_term() {
-        let source = compute_source_term(1050.0, 1000.0);
-        assert!(
-            (source - (-50.0)).abs() < 1e-12,
-            "source should be rho0 - rho_adv"
-        );
-    }
-
-    // --- Relaxed Jacobi update test ---
-
-    #[test]
-    fn test_relaxed_jacobi_update_clamped() {
-        // If rhs is negative, pressure should be clamped to 0
-        let p = relaxed_jacobi_update(0.0, -100.0, 0.0, 1.0, 0.5);
-        assert!(
-            p >= 0.0,
-            "Pressure must be non-negative after Jacobi update"
-        );
-    }
-
-    #[test]
-    fn test_relaxed_jacobi_update_positive_source() {
-        let p = relaxed_jacobi_update(0.0, 100.0, 0.0, 1.0, 0.5);
-        assert!(p > 0.0, "Pressure should be positive for positive source");
-        // p = (1-0.5)*0 + 0.5*100/1 = 50
-        assert!((p - 50.0).abs() < 1e-12, "Expected 50, got {p}");
-    }
-
-    // --- Optimal omega test ---
-
-    #[test]
-    fn test_estimate_optimal_omega_range() {
-        let a_ii = vec![0.1, 0.2, 0.3, 0.15, 0.25];
-        let omega = estimate_optimal_omega(&a_ii, 5);
-        assert!((0.3..=0.9).contains(&omega), "omega out of range: {omega}");
-    }
-
-    #[test]
-    fn test_estimate_optimal_omega_empty() {
-        let omega = estimate_optimal_omega(&[], 0);
-        assert!((omega - 0.5).abs() < 1e-12, "Default omega should be 0.5");
-    }
-
-    // --- Solve with metrics test ---
-
-    #[test]
-    fn test_solve_pressure_with_metrics() {
-        let spacing = 0.05_f64;
-        let h = 0.1_f64;
-        let rho0 = 1000.0_f64;
-        let mass = rho0 * spacing.powi(3);
-        let dt = 0.001_f64;
-
-        let (positions, velocities, masses) = uniform_block(spacing, 4, mass);
-        let neighbors = SpatialHash::find_all_neighbors(&positions, 2.0 * h);
-        let kernel = CubicSplineKernel;
-
-        let solver = IisphSolver::new(rho0);
-        let (forces, metrics) = solver.solve_pressure_with_metrics(
-            &positions,
-            &velocities,
-            &masses,
-            &neighbors,
-            dt,
-            &kernel,
-            h,
-        );
-
-        assert!(!forces.is_empty());
-        assert!(metrics.avg_error.is_finite());
-        assert!(metrics.max_error >= metrics.avg_error);
-        assert!(metrics.iterations > 0);
-    }
-
-    // --- IISPH-FLIP hybrid tests ---
-
-    #[test]
-    fn test_iisph_flip_hybrid_blending() {
-        // blend = 0 → pure IISPH (no FLIP), blend = 1 → pure FLIP.
-        let spacing = 0.05_f64;
-        let h = 0.1_f64;
-        let rho0 = 1000.0_f64;
-        let mass = rho0 * spacing.powi(3);
-        let dt = 0.001_f64;
-
-        let (positions, velocities, masses) = uniform_block(spacing, 3, mass);
-        let neighbors = SpatialHash::find_all_neighbors(&positions, 2.0 * h);
-        let kernel = CubicSplineKernel;
-        let solver = IisphSolver::new(rho0);
-
-        let (forces_pure, _) =
-            solver.solve_pressure(&positions, &velocities, &masses, &neighbors, dt, &kernel, h);
-
-        // Apply FLIP blending (blend=0 → identical to pure IISPH).
-        let blended = iisph_flip_blend(&forces_pure, &velocities, &velocities, 0.0, masses.len());
-        for (i, (f, b)) in forces_pure.iter().zip(blended.iter()).enumerate() {
-            let diff = (f - b).norm();
-            assert!(
-                diff < 1e-12,
-                "blend=0 should be identical to IISPH forces at particle {i}: diff={diff}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_iisph_flip_hybrid_full_flip() {
-        // blend = 1 → velocities = old_velocities + dt * forces (FLIP update).
-        let spacing = 0.05_f64;
-        let h = 0.1_f64;
-        let rho0 = 1000.0_f64;
-        let mass = rho0 * spacing.powi(3);
-        let dt = 0.001_f64;
-
-        let (positions, velocities, masses) = uniform_block(spacing, 3, mass);
-        let n = positions.len();
-        let neighbors = SpatialHash::find_all_neighbors(&positions, 2.0 * h);
-        let kernel = CubicSplineKernel;
-        let solver = IisphSolver::new(rho0);
-
-        let (forces, _) =
-            solver.solve_pressure(&positions, &velocities, &masses, &neighbors, dt, &kernel, h);
-
-        // With blend=1 we get FLIP: v_new = v_old + dt * force.
-        // The blended function returns modified "effective forces" or velocities.
-        let blended = iisph_flip_blend(&forces, &velocities, &velocities, 1.0, n);
-
-        // blend=1 returns forces unchanged (pure IISPH pressure forces are kept).
-        assert_eq!(
-            blended.len(),
-            n,
-            "blended should have same length as forces"
-        );
-        for f in &blended {
-            assert!(f.norm().is_finite(), "blended forces should be finite");
-        }
-    }
-
-    // --- IISPH multiple iterations / error monitoring ---
-
-    #[test]
-    fn test_iisph_error_monitor_tracks_iterations() {
-        let spacing = 0.05_f64;
-        let h = 0.1_f64;
-        let rho0 = 1000.0_f64;
-        let mass = rho0 * spacing.powi(3);
-        let dt = 0.001_f64;
-
-        let (positions, velocities, masses) = uniform_block(spacing, 4, mass);
-        let neighbors = SpatialHash::find_all_neighbors(&positions, 2.0 * h);
-        let kernel = CubicSplineKernel;
-
-        let solver = IisphSolver::new(rho0);
-        let mut monitor = IisphErrorMonitor::new();
-        let (_, metrics) = solver.solve_pressure_with_metrics(
-            &positions,
-            &velocities,
-            &masses,
-            &neighbors,
-            dt,
-            &kernel,
-            h,
-        );
-        monitor.record(metrics.avg_error, metrics.iterations);
-
-        assert_eq!(monitor.num_steps(), 1);
-        assert!(monitor.last_error().is_finite());
-    }
-
-    #[test]
-    fn test_iisph_error_monitor_multiple_steps() {
-        let mut monitor = IisphErrorMonitor::new();
-        monitor.record(0.1, 10);
-        monitor.record(0.05, 8);
-        monitor.record(0.02, 5);
-        assert_eq!(monitor.num_steps(), 3);
-        assert!((monitor.last_error() - 0.02).abs() < 1e-14);
-        assert!(monitor.avg_iterations() > 0.0);
-    }
-
-    // --- IISPH acceleration data structures ---
-
-    #[test]
-    fn test_iisph_neighborhood_cache_lookup() {
-        let spacing = 0.05_f64;
-        let h = 0.1_f64;
-        let (positions, _, _) = uniform_block(spacing, 3, 1.0);
-        let cache = IisphNeighborhoodCache::build(&positions, 2.0 * h);
-
-        // Every particle should have at least one neighbor.
-        for i in 0..positions.len() {
-            let neighbors = cache.neighbors(i);
-            assert!(!neighbors.is_empty(), "Particle {i} should have neighbors");
-        }
-    }
-
-    #[test]
-    fn test_iisph_neighborhood_cache_no_self_neighbor() {
-        let spacing = 0.05_f64;
-        let h = 0.1_f64;
-        let (positions, _, _) = uniform_block(spacing, 3, 1.0);
-        let cache = IisphNeighborhoodCache::build(&positions, 2.0 * h);
-
-        for i in 0..positions.len() {
-            for &j in cache.neighbors(i) {
-                assert_ne!(i, j, "Particle should not neighbor itself");
-            }
-        }
-    }
-}
+mod tests;

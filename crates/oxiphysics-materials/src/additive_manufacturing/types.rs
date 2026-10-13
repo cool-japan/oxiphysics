@@ -586,6 +586,12 @@ impl DirectedEnergyDeposition {
         self.catchment_efficiency.clamp(0.0_f64, 1.0_f64)
     }
 }
+/// Fraction of the temperature rise to melting, `T_m − T₀`, at which the outer
+/// boundary of the heat-affected zone of a [`ThermalHistory`] is drawn: the HAZ
+/// reaches out to the isotherm `T₀ + 0.5·(T_m − T₀)`.  This is a modelling
+/// convention (the HAZ has no sharp physical boundary); it is relative to the
+/// ambient temperature, so it stays well defined for preheated builds.
+const HAZ_TEMPERATURE_RISE_FRACTION: f64 = 0.5_f64;
 /// Thermal history parameters for a melt-track or layer.
 #[derive(Debug, Clone)]
 pub struct ThermalHistory {
@@ -603,8 +609,40 @@ pub struct ThermalHistory {
     pub recrystallised: bool,
 }
 impl ThermalHistory {
-    /// Construct a [`ThermalHistory`] from process and material parameters using
-    /// simplified analytical estimates.
+    /// Construct a [`ThermalHistory`] from process and material parameters with
+    /// the Rosenthal moving point-source solution for a semi-infinite body
+    /// ([`RosenthalSolution`], thermal diffusivity `α = k / (ρ c)`).
+    ///
+    /// With `q = absorptivity · laser_power` and `v = scan_speed`:
+    ///
+    /// - `melt_pool` is the `T = melting_point` isotherm of the Rosenthal field.
+    ///   Its `half_length` is half of the total pool length along the scan axis
+    ///   (exact trailing extent `q / (2π k (T_m − T₀))` plus the leading
+    ///   extent), its `half_width` the maximum surface half-width of the
+    ///   isotherm and its `depth` the corresponding depth, which equals the
+    ///   half-width because the field is axisymmetric about the scan axis.
+    ///   Scan speed, diffusivity and melting point therefore all shape the
+    ///   pool.  The point-source solution is singular at the source, so the
+    ///   geometry is only reliable for pools large compared with the beam.
+    /// - `thermal_gradient` is the gradient along the trailing centre line at
+    ///   the rear tip of the pool, `G = 2π k (T_m − T₀)² / q`, and
+    ///   `cooling_rate = v · G` (the rear tip advances at the scan speed).
+    /// - `peak_temperature` is the Rosenthal temperature one beam radius behind
+    ///   the source, `T₀ + q / (2π k r)`.  If it does not exceed
+    ///   `melting_point` the beam never melts the surface: the melt pool,
+    ///   gradient, cooling rate and `haz_width` are then all zero.  Equivalently
+    ///   a pool exists exactly when its trailing extent exceeds the beam radius.
+    /// - `haz_width` is the extra surface half-width, beyond the melt pool, of
+    ///   the isotherm half-way between ambient and melting temperature
+    ///   (`T₀ + 0.5 (T_m − T₀)`, a modelling convention for the outer edge of
+    ///   the heat-affected zone).
+    /// - `recrystallised` is `true` when `peak_temperature` exceeds
+    ///   `0.5 · melting_point`.
+    ///
+    /// Non-physical inputs (non-positive power or conductivity, a non-positive
+    /// diffusivity for a moving beam, negative scan speed, `melting_point` not
+    /// above `ambient_temp`) produce an empty melt pool with zero gradient and
+    /// cooling rate.
     ///
     /// # Parameters
     /// - `layer`: layer model (power, speed, …)
@@ -624,26 +662,49 @@ impl ThermalHistory {
         ambient_temp: f64,
     ) -> Self {
         let effective_power = absorptivity * layer.laser_power;
-        let _diffusivity = thermal_conductivity / (density * specific_heat);
+        let diffusivity = thermal_conductivity / (density * specific_heat);
         let r = layer.spot_radius.max(1.0e-6_f64);
         let peak_temperature =
             ambient_temp + effective_power / (2.0_f64 * PI * thermal_conductivity * r);
-        let thermal_gradient = (peak_temperature - ambient_temp) / r;
+        let rosenthal = RosenthalSolution::new(
+            layer.laser_power,
+            absorptivity,
+            layer.scan_speed,
+            thermal_conductivity,
+            diffusivity,
+            ambient_temp,
+        );
+        let pool = if peak_temperature > melting_point {
+            rosenthal.melt_pool_geometry(melting_point)
+        } else {
+            None
+        };
+        let (melt_pool, thermal_gradient, haz_width) = match pool {
+            Some(melt_pool) => {
+                let thermal_gradient = rosenthal
+                    .trailing_edge_gradient(melting_point)
+                    .unwrap_or(0.0_f64);
+                let haz_isotherm =
+                    ambient_temp + HAZ_TEMPERATURE_RISE_FRACTION * (melting_point - ambient_temp);
+                let haz_width = rosenthal
+                    .isotherm_max_half_width(haz_isotherm)
+                    .map_or(0.0_f64, |outer| (outer - melt_pool.half_width).max(0.0_f64));
+                (melt_pool, thermal_gradient, haz_width)
+            }
+            None => (
+                MeltPoolGeometry {
+                    half_length: 0.0_f64,
+                    half_width: 0.0_f64,
+                    depth: 0.0_f64,
+                },
+                0.0_f64,
+                0.0_f64,
+            ),
+        };
         let cooling_rate = layer.scan_speed * thermal_gradient;
-        let q_eff = effective_power;
-        let half_length = q_eff
-            / (2.0_f64 * PI * thermal_conductivity * (peak_temperature - ambient_temp))
-                .max(1.0e-20_f64);
-        let half_width = half_length * 0.6_f64;
-        let depth = half_length * 0.4_f64;
-        let haz_width = half_width * 1.5_f64;
         let recrystallised = peak_temperature > 0.5_f64 * melting_point;
         ThermalHistory {
-            melt_pool: MeltPoolGeometry {
-                half_length,
-                half_width,
-                depth,
-            },
+            melt_pool,
             peak_temperature,
             cooling_rate,
             thermal_gradient,
@@ -651,8 +712,9 @@ impl ThermalHistory {
             recrystallised,
         }
     }
-    /// Solidification rate (m/s) — ratio of scan speed projected onto the
-    /// liquid/solid interface.  Simplified: G_s = cooling_rate / thermal_gradient.
+    /// Solidification rate (m/s) at the trailing edge of the pool:
+    /// `cooling_rate / thermal_gradient`.  The rear tip of the pool advances
+    /// with the beam, so this equals the scan speed (zero when no pool forms).
     pub fn solidification_rate(&self) -> f64 {
         if self.thermal_gradient.abs() < 1.0e-12_f64 {
             0.0_f64
@@ -781,7 +843,9 @@ impl RosenthalSolution {
         }
     }
     /// Temperature (K) at position `(xi, y, z)` in the moving heat-source
-    /// frame.  `xi = x − v·t` is the distance behind the laser spot.
+    /// frame.  `xi = x − v·t` is the coordinate along the scan direction
+    /// relative to the laser spot: negative behind the spot (trailing side),
+    /// positive ahead of it.
     ///
     /// Returns `f64::INFINITY` at the exact source centre.
     pub fn temperature(&self, xi: f64, y: f64, z: f64) -> f64 {

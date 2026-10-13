@@ -407,13 +407,10 @@ mod tests_extended {
         let a = identity_csr(4);
         let b = vec![1.0, 2.0, 3.0, 4.0];
         let (x, conv, _) = minres_solve(&a, &b, 1e-8, 100);
-        assert!(
-            conv || {
-                let ax = a.matvec(&x);
-                let res: Vec<f64> = b.iter().zip(ax.iter()).map(|(bi, ai)| bi - ai).collect();
-                res.iter().map(|x| x * x).sum::<f64>().sqrt() < 1e-4
-            }
-        );
+        assert!(conv, "MINRES must report convergence on the identity");
+        for (xi, bi) in x.iter().zip(b.iter()) {
+            assert!(approx(*xi, *bi, 1e-10), "x = {x:?}");
+        }
     }
     #[test]
     fn test_minres_zero_rhs() {

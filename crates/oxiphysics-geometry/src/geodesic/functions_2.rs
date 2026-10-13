@@ -229,13 +229,13 @@ mod tests {
     #[test]
     fn test_heat_geodesic_source_distance_zero() {
         let m = tet_surface_mesh();
-        let result = heat_geodesic(&m, 0, 0.0, 3);
+        let result = heat_geodesic(&m, 0, 0.0, 3).expect("heat method on a valid mesh");
         assert_eq!(result.distances[0], 0.0, "source distance should be 0");
     }
     #[test]
     fn test_heat_geodesic_all_finite() {
         let m = tet_surface_mesh();
-        let result = heat_geodesic(&m, 0, 0.0, 5);
+        let result = heat_geodesic(&m, 0, 0.0, 5).expect("heat method on a valid mesh");
         for (i, &d) in result.distances.iter().enumerate() {
             assert!(d.is_finite(), "distance to vertex {i} should be finite");
         }
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn test_heat_geodesic_non_negative() {
         let m = strip_mesh(3);
-        let result = heat_geodesic(&m, 0, 0.1, 3);
+        let result = heat_geodesic(&m, 0, 0.1, 3).expect("heat method on a valid mesh");
         for &d in &result.distances {
             assert!(d >= 0.0, "distances should be non-negative");
         }
@@ -251,13 +251,174 @@ mod tests {
     #[test]
     fn test_heat_geodesic_gradient_size() {
         let m = strip_mesh(3);
-        let result = heat_geodesic(&m, 0, 0.1, 2);
+        let result = heat_geodesic(&m, 0, 0.1, 2).expect("heat method on a valid mesh");
         assert_eq!(
             result.gradient.len(),
             m.n_faces(),
             "gradient should have one entry per face"
         );
     }
+    fn grid_mesh(n: usize) -> GeoMesh {
+        let (vertices, faces) = crate::test_meshes::flat_grid(n, n, 1.0);
+        GeoMesh::new(vertices, faces)
+    }
+
+    fn euclid(a: [f64; 3], b: [f64; 3]) -> f64 {
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    }
+
+    #[test]
+    fn test_heat_geodesic_flat_grid_matches_euclidean_distance() {
+        let m = grid_mesh(20);
+        let source = 10 * 21 + 10;
+        let result = heat_geodesic(&m, source, 0.0, 1).expect("heat method on a valid mesh");
+        assert_eq!(result.distances[source], 0.0);
+        let (mut sum, mut count, mut worst) = (0.0_f64, 0usize, 0.0_f64);
+        for (v, &d) in result.distances.iter().enumerate() {
+            let exact = euclid(m.vertices[v], m.vertices[source]);
+            if exact >= 3.0 {
+                let rel = (d - exact).abs() / exact;
+                sum += rel;
+                count += 1;
+                worst = worst.max(rel);
+            }
+        }
+        let mean = sum / count as f64;
+        assert!(mean < 0.04, "mean relative error {mean}");
+        assert!(worst < 0.10, "worst relative error {worst}");
+    }
+
+    #[test]
+    fn test_heat_geodesic_is_not_the_graph_distance() {
+        // Along the anti-diagonal the edge graph needs 14 hops of length 1 to reach
+        // (+7, -7), while the straight-line distance is 7 * sqrt(2).
+        let m = grid_mesh(20);
+        let source = 10 * 21 + 10;
+        let target = 3 * 21 + 17;
+        let graph_distance = dijkstra_geodesic(&m, source)[target];
+        let heat = heat_geodesic(&m, source, 0.0, 1)
+            .expect("valid mesh")
+            .distances[target];
+        let exact = 7.0 * 2.0_f64.sqrt();
+        assert!(
+            (graph_distance - 14.0).abs() < 1e-9,
+            "graph {graph_distance}"
+        );
+        assert!(
+            (heat - exact).abs() < 0.06 * exact,
+            "heat {heat} should approximate {exact}, not the graph distance"
+        );
+    }
+
+    #[test]
+    fn test_heat_geodesic_sphere_antipode_is_pi() {
+        let (vertices, faces) = crate::test_meshes::icosphere(4);
+        let m = GeoMesh::new(vertices, faces);
+        for steps in [1, 5] {
+            let result = heat_geodesic(&m, 0, 0.0, steps).expect("valid mesh");
+            let pi = std::f64::consts::PI;
+            assert!(
+                (result.distances[3] - pi).abs() < 0.03 * pi,
+                "steps = {steps}: antipode distance {}",
+                result.distances[3]
+            );
+        }
+    }
+
+    #[test]
+    fn test_heat_geodesic_gradient_is_the_unit_outward_direction_field() {
+        let m = grid_mesh(16);
+        let source = 8 * 17 + 8;
+        let result = heat_geodesic(&m, source, 0.0, 1).expect("valid mesh");
+        assert_eq!(result.gradient.len(), m.n_faces());
+        let mut interior = 0;
+        for (fi, x) in result.gradient.iter().enumerate() {
+            let len = (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt();
+            assert!((len - 1.0).abs() < 1e-9, "face {fi}: |X| = {len}");
+            let [a, b, c] = m.faces[fi];
+            let centroid = [
+                (m.vertices[a][0] + m.vertices[b][0] + m.vertices[c][0]) / 3.0,
+                (m.vertices[a][1] + m.vertices[b][1] + m.vertices[c][1]) / 3.0,
+            ];
+            let radial = [
+                centroid[0] - m.vertices[source][0],
+                centroid[1] - m.vertices[source][1],
+            ];
+            let r = (radial[0] * radial[0] + radial[1] * radial[1]).sqrt();
+            if r <= 2.0 {
+                continue;
+            }
+            let cos = (x[0] * radial[0] + x[1] * radial[1]) / r;
+            // The Neumann heat flow bends along the domain boundary, where the
+            // direction field is only roughly radial.
+            assert!(
+                cos > 0.7,
+                "face {fi}: direction is not outward (cos = {cos})"
+            );
+            let to_boundary = centroid[0]
+                .min(16.0 - centroid[0])
+                .min(centroid[1])
+                .min(16.0 - centroid[1]);
+            if to_boundary >= 3.0 {
+                interior += 1;
+                assert!(
+                    cos > 0.88,
+                    "face {fi}: direction is not radial (cos = {cos})"
+                );
+            }
+        }
+        assert!(
+            interior > 100,
+            "only {interior} interior faces were checked"
+        );
+    }
+
+    #[test]
+    fn test_heat_geodesic_bad_source_is_an_index_error() {
+        let m = tet_surface_mesh();
+        let n = m.n_vertices();
+        match heat_geodesic(&m, n, 0.0, 1) {
+            Err(crate::Error::IndexOutOfBounds { index, len }) => assert_eq!((index, len), (n, n)),
+            other => panic!(
+                "expected IndexOutOfBounds, got {:?}",
+                other.map(|r| r.distances)
+            ),
+        }
+        let empty = GeoMesh::new(Vec::new(), Vec::new());
+        assert!(matches!(
+            heat_geodesic(&empty, 0, 0.0, 1),
+            Err(crate::Error::IndexOutOfBounds { .. })
+        ));
+    }
+
+    #[test]
+    fn test_heat_geodesic_rejects_faces_with_missing_vertices() {
+        let m = GeoMesh::new(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![[0, 1, 7]],
+        );
+        assert!(matches!(
+            heat_geodesic(&m, 0, 0.0, 1),
+            Err(crate::Error::InvalidMesh { .. })
+        ));
+    }
+
+    #[test]
+    fn test_heat_geodesic_other_components_are_unreachable() {
+        let (mut vertices, mut faces) = crate::test_meshes::flat_grid(3, 3, 1.0);
+        let offset = vertices.len();
+        let (v2, f2) = crate::test_meshes::flat_grid(3, 3, 1.0);
+        vertices.extend(v2.iter().map(|p| [p[0] + 40.0, p[1], p[2]]));
+        faces.extend(
+            f2.iter()
+                .map(|t| [t[0] + offset, t[1] + offset, t[2] + offset]),
+        );
+        let m = GeoMesh::new(vertices, faces);
+        let result = heat_geodesic(&m, 0, 0.0, 1).expect("valid mesh");
+        assert!(result.distances[..offset].iter().all(|d| d.is_finite()));
+        assert!(result.distances[offset..].iter().all(|d| d.is_infinite()));
+    }
+
     #[test]
     fn test_extract_isolines_single_triangle() {
         let m = single_triangle();

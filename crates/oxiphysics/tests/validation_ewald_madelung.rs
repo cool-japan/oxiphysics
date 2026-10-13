@@ -15,14 +15,7 @@
 #[path = "regression_harness.rs"]
 mod harness;
 
-use oxiphysics::md::ewald::{EwaldParams, EwaldSummation};
-
-/// Coulomb constant used by the Ewald implementation (kJ*angstrom*mol^-1*e^-2).
-///
-/// Mirrors `oxiphysics_md::ewald::params::COULOMB_K` (not re-exported as a pub
-/// constant at the module root, so we redefine it locally with the identical
-/// value; used only to convert the measured energy into dimensionless units).
-const COULOMB_K_LOCAL: f64 = 138.935;
+use oxiphysics::md::ewald::{COULOMB_K, EwaldParams, EwaldSummation};
 
 /// Build the 4x4x4 simple-cubic rock-salt ion lattice.
 ///
@@ -102,7 +95,7 @@ fn test_nacl_madelung_constant() {
     // Baseline `ewald_madelung` stores the signed quantity -M = -1.7475645946.
     let n_pairs = (n_ions as f64) / 2.0;
     let e_per_pair = e_total / n_pairs;
-    let measured_neg_m = e_per_pair * a0 / COULOMB_K_LOCAL;
+    let measured_neg_m = e_per_pair * a0 / COULOMB_K;
 
     let baseline = harness::load_baseline("ewald_madelung").expect("load ewald_madelung baseline");
     eprintln!(

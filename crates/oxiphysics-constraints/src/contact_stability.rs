@@ -12,9 +12,12 @@
 //! * **Contact wrench space** – compute the set of wrenches achievable
 //!   through a collection of contacts.
 //! * **Force closure test** – determine whether arbitrary wrenches can be
-//!   resisted by a contact configuration.
-//! * **Grasp quality metrics** – Q1 (largest inscribed ball in the wrench
-//!   space) and epsilon metric.
+//!   resisted by a contact configuration: an exact test (rank plus a strictly
+//!   positive vanishing combination, decided by a linear program) and a cheap
+//!   per-axis necessary condition used as a prefilter.
+//! * **Grasp quality metrics** – Q1 (the exact radius of the largest
+//!   origin-centred ball inside the convex hull of the primitive wrenches,
+//!   computed by facet enumeration) and the epsilon metric.
 //! * **Support polygon** – compute the convex hull of ground-contact
 //!   projections.
 //! * **ZMP (Zero Moment Point)** computation.
@@ -24,6 +27,18 @@
 //!   polyhedron for multiple simultaneous contacts.
 //! * **Complementarity conditions** – formulate the LCP conditions for
 //!   contact with friction.
+
+mod force_closure;
+mod inscribed_ball;
+mod linear_program;
+mod polar_cone;
+mod wrench_set;
+
+#[cfg(test)]
+mod exact_tests;
+
+pub use force_closure::force_closure_exact;
+pub use inscribed_ball::{GraspQuality, grasp_quality_q1_detailed};
 
 // ── tiny linear-algebra helpers (f64 arrays only, no nalgebra) ──────────────
 
@@ -208,18 +223,20 @@ pub fn multi_contact_wrench_set(contacts: &[ContactPoint], num_cone_sides: usize
 // Force closure test
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Check whether a set of contact wrenches achieves **force closure**.
+/// Cheap **necessary** condition for force closure (a prefilter).
 ///
 /// Force closure means that any external wrench can be balanced by
-/// non-negative combinations of the contact wrenches.
+/// non-negative combinations of the contact wrenches, i.e. that the origin lies
+/// in the interior of the convex hull of the primitive wrenches.
 ///
-/// This implementation uses a necessary (but practical) condition:
-/// the *convex hull* of the primitive wrenches must contain the origin
-/// in its interior.  We approximate this by checking that the minimum
-/// over all 6 coordinate axes of the signed span is strictly positive.
-///
-/// For a rigorous test the full 6-D convex-hull check is required;
-/// this heuristic is fast and conservative.
+/// This function only checks that each of the six wrench axes is reached with
+/// both signs (components of magnitude `1e-10` or less count as zero).  A
+/// `false` result is therefore conclusive for wrenches that are not vanishingly
+/// small (the contacts cannot close), but `true` is **not**: the per-axis test
+/// also accepts sets whose hull misses the origin (for instance three planar
+/// wrenches that lie in an open half-plane although both signs occur on each
+/// axis).  Use [`force_closure_exact`] or [`force_closure_test_full`] whenever a
+/// positive answer matters.
 pub fn force_closure_test(wrenches: &[Wrench]) -> bool {
     if wrenches.is_empty() {
         return false;
@@ -247,111 +264,58 @@ pub fn force_closure_test(wrenches: &[Wrench]) -> bool {
     true
 }
 
-/// Full force-closure test using ray-casting in wrench space.
+/// Full force-closure test; delegates to [`force_closure_exact`].
 ///
-/// For each of six canonical wrench directions we check whether a
-/// non-negative combination of primitive wrenches can produce it.
-/// Returns `true` only if all six directions are achievable.
+/// Returns `true` iff non-negative combinations of the wrenches produce every
+/// wrench of `R^6`: the wrenches span `R^6` and a strictly positive
+/// combination of them vanishes (rank test plus an exact linear program).
 pub fn force_closure_test_full(wrenches: &[Wrench]) -> bool {
-    if wrenches.len() < 7 {
-        // At least 7 wrenches needed for a 6-D interior point
-        return force_closure_test(wrenches);
-    }
-    // Check the six canonical directions and their negatives.
-    let dirs: [[f64; 6]; 6] = [
-        [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-    ];
-    for d in &dirs {
-        let mut max_proj = f64::NEG_INFINITY;
-        let mut min_proj = f64::INFINITY;
-        for w in wrenches {
-            let proj = dot6(w, d);
-            if proj > max_proj {
-                max_proj = proj;
-            }
-            if proj < min_proj {
-                min_proj = proj;
-            }
-        }
-        // Must span both sides of the origin in this direction
-        if max_proj < 1e-10 || min_proj > -1e-10 {
-            return false;
-        }
-    }
-    true
+    force_closure_exact(wrenches)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Grasp quality metrics
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Compute the Q1 grasp quality metric.
+/// Compute the Q1 grasp quality metric (Ferrari & Canny, 1992).
 ///
-/// Q1 is defined as the radius of the largest ball centred at the origin
-/// that is fully contained in the convex hull of the primitive wrenches.
+/// Q1 is the radius of the largest ball centred at the origin that is contained
+/// in the convex hull of the primitive wrenches,
+/// `Q1 = min over unit u of max_i u . w_i`.  It is positive iff the wrenches
+/// achieve force closure and `0.0` otherwise (this includes empty, non-finite
+/// and rank-deficient input).
 ///
-/// This approximation computes the minimum distance from the origin to
-/// the convex-hull boundary by taking `min(|w|)` over all primitive
-/// wrenches.  For a more accurate result the full wrench-space convex
-/// hull is required.
+/// The value is exact: the facets of the hull are enumerated through the
+/// vertices of the polar polytope (double-description method) and Q1 is the
+/// smallest distance of a facet hyperplane from the origin.  For pathological
+/// inputs whose hull has an enormous number of facets the enumeration stops at
+/// a fixed work budget and the result is then a lower bound of Q1 (use
+/// [`grasp_quality_q1_detailed`] to learn whether that happened).  Values below
+/// about `1e-9` are reported as zero.
+///
+/// Wrench components mix force and torque units, so Q1 depends on the chosen
+/// length scale and torque reference point.
 pub fn grasp_quality_q1(wrenches: &[Wrench]) -> f64 {
-    if wrenches.is_empty() {
-        return 0.0;
-    }
-    let mut min_dist = f64::INFINITY;
-    for w in wrenches {
-        let d = vec6_len(w);
-        if d < min_dist {
-            min_dist = d;
-        }
-    }
-    min_dist
+    inscribed_ball::q1_radius(wrenches)
 }
 
 /// Compute the epsilon grasp quality metric.
 ///
-/// Epsilon is the radius of the largest wrench ball that can be resisted
-/// (equivalent to Q1 when the primitive wrenches are normalised).
-///
-/// This function normalises each wrench to unit length before computing
-/// the minimum distance.
+/// Epsilon is Q1 ([`grasp_quality_q1`]) of the primitive wrenches after
+/// normalising each of them to unit length: the radius of the largest wrench
+/// ball, centred at the origin, that lies in the convex hull of the unit
+/// wrenches.  It lies in `[0, 1)`, is positive iff the wrenches achieve force
+/// closure, and equals `1 / sqrt(6)` for the twelve wrenches `+-e_k`.
 pub fn grasp_quality_epsilon(wrenches: &[Wrench]) -> f64 {
-    if wrenches.is_empty() {
-        return 0.0;
-    }
-    let normalised: Vec<Wrench> = wrenches
-        .iter()
-        .map(|w| {
-            let l = vec6_len(w);
-            if l < 1e-15 {
-                [0.0; 6]
-            } else {
-                let inv = 1.0 / l;
-                [
-                    w[0] * inv,
-                    w[1] * inv,
-                    w[2] * inv,
-                    w[3] * inv,
-                    w[4] * inv,
-                    w[5] * inv,
-                ]
-            }
-        })
-        .collect();
-    grasp_quality_q1(&normalised)
+    inscribed_ball::epsilon_radius(wrenches)
 }
 
-/// Volume-based grasp quality: the volume of the convex hull of the
-/// normalised wrenches (approximation using the sum of absolute
-/// determinants of 6-wrench subsets divided by 720).
+/// Volume-based grasp quality proxy: the volume of the axis-aligned bounding
+/// box of the wrench set (the product of the six per-axis extents).
 ///
-/// For large wrench sets this is expensive; here we use a bounding
-/// approximation based on axis-aligned extent.
+/// This is an upper bound of the volume of the convex hull of the wrenches, not
+/// the hull volume itself, and it is zero unless the wrenches extend along every
+/// axis.
 pub fn grasp_quality_volume(wrenches: &[Wrench]) -> f64 {
     if wrenches.is_empty() {
         return 0.0;
@@ -796,6 +760,13 @@ pub fn total_complementarity_residual(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// A contact entry for the LCP formulation.
+///
+/// Every entry describes one *decoupled* contact: the normal LCP
+/// `0 <= f_n  ⟂  w_n = f_n / eff_mass_n + gap * bias_factor >= 0` and the
+/// tangential relation `w_t = v_t + f_t / eff_mass_t` with the Coulomb bound
+/// `|f_t| <= mu * f_n`.  The `v_t` and `gap` fields are the values *without*
+/// any contact force acting, and entries do not interact through shared
+/// bodies (the Delassus matrix is diagonal).
 #[derive(Debug, Clone, Copy)]
 pub struct LcpContact {
     /// Penetration gap (negative = penetrating).
@@ -826,23 +797,42 @@ pub fn project_friction_force(f_t: f64, mu: f64, f_n: f64) -> f64 {
     f_t.max(-limit).min(limit)
 }
 
-/// Perform one Gauss-Seidel iteration for an LCP contact set.
+/// Perform one projected Gauss-Seidel sweep for a set of decoupled LCP contacts.
+///
+/// For each contact the residual of the normal LCP is
+/// `w_n = f_n / eff_mass_n + gap * bias_factor`; the sweep applies the
+/// projected update `f_n <- max(0, f_n - eff_mass_n * w_n)` and then the
+/// friction update `f_t <- clamp(f_t - eff_mass_t * w_t, ±mu * f_n)` with
+/// `w_t = v_t + f_t / eff_mass_t` (friction opposes the sliding speed).  The
+/// residuals include the current force (`f / eff_mass`), so repeated sweeps
+/// reach a fixed point instead of accumulating the same increment.
+///
+/// Contacts are treated as independent (see [`LcpContact`]): a sweep reaches
+/// the exact solution and a second sweep confirms the fixed point.  A contact
+/// whose effective mass is not positive cannot respond, so its force is left
+/// untouched (friction is still clamped to the cone).
 ///
 /// Updates forces in place.  Returns the sum of absolute force changes
 /// (useful for convergence checks).
 pub fn lcp_gauss_seidel_step(contacts: &mut [LcpContact], bias_factor: f64) -> f64 {
     let mut delta_sum = 0.0;
     for c in contacts.iter_mut() {
-        // Normal direction
-        let rhs_n = -c.gap * bias_factor;
-        let old_fn = c.f_n;
-        c.f_n = project_normal_force(old_fn + c.eff_mass_n * rhs_n);
-        delta_sum += (c.f_n - old_fn).abs();
+        // Normal direction: w_n = f_n / eff + gap * bias.
+        if c.eff_mass_n > 0.0 {
+            let old_fn = c.f_n;
+            let rhs_n = -(c.gap * bias_factor + old_fn / c.eff_mass_n);
+            c.f_n = project_normal_force(old_fn + c.eff_mass_n * rhs_n);
+            delta_sum += (c.f_n - old_fn).abs();
+        }
 
-        // Tangential direction
-        let rhs_t = -c.v_t;
+        // Tangential direction: w_t = v_t + f_t / eff.
         let old_ft = c.f_t;
-        let new_ft = old_ft + c.eff_mass_t * rhs_t;
+        let new_ft = if c.eff_mass_t > 0.0 {
+            let rhs_t = -(c.v_t + old_ft / c.eff_mass_t);
+            old_ft + c.eff_mass_t * rhs_t
+        } else {
+            old_ft
+        };
         c.f_t = project_friction_force(new_ft, c.mu, c.f_n);
         delta_sum += (c.f_t - old_ft).abs();
     }
@@ -850,6 +840,11 @@ pub fn lcp_gauss_seidel_step(contacts: &mut [LcpContact], bias_factor: f64) -> f
 }
 
 /// Solve the contact LCP using projected Gauss-Seidel.
+///
+/// Sweeps [`lcp_gauss_seidel_step`] until the total force change drops below
+/// `tol` or `max_iter` sweeps were made.  Because the contacts are decoupled
+/// the solution is reached after one sweep, so a well-posed set returns `2`
+/// (the solving sweep plus the sweep that confirms the fixed point).
 ///
 /// Returns the number of iterations performed.
 pub fn solve_contact_lcp(
@@ -1037,17 +1032,26 @@ pub fn multi_contact_stability_score(
     if contacts.is_empty() {
         return 0.0;
     }
-    // Force closure contribution
     let wrenches = multi_contact_wrench_set(contacts, num_cone_sides);
-    let fc = if force_closure_test(&wrenches) {
-        0.4
+    let closure = force_closure_exact(&wrenches);
+    // Epsilon is positive only with force closure: skip the facet enumeration
+    // for open grasps.
+    let epsilon = if closure {
+        grasp_quality_epsilon(&wrenches)
     } else {
         0.0
     };
+    stability_score(contacts, com, closure, epsilon)
+}
+
+/// Combine the force-closure flag, the epsilon quality and the support-polygon
+/// margin into the score of [`multi_contact_stability_score`].
+fn stability_score(contacts: &[ContactPoint], com: [f64; 3], closure: bool, epsilon: f64) -> f64 {
+    // Force closure contribution
+    let closure_score = if closure { 0.4 } else { 0.0 };
 
     // Grasp quality contribution
-    let eps = grasp_quality_epsilon(&wrenches);
-    let eps_score = (eps.min(1.0)) * 0.3;
+    let epsilon_score = epsilon.min(1.0) * 0.3;
 
     // Support polygon stability margin
     let positions: Vec<[f64; 3]> = contacts.iter().map(|c| c.position).collect();
@@ -1066,7 +1070,7 @@ pub fn multi_contact_stability_score(
         0.0
     };
 
-    fc + eps_score + margin_score
+    closure_score + epsilon_score + margin_score
 }
 
 /// Compute the diameter of a polygon (maximum distance between vertices).
@@ -1194,9 +1198,9 @@ impl ContactWrenchCone {
         }
     }
 
-    /// Check force closure.
+    /// Check force closure with the exact test ([`force_closure_exact`]).
     pub fn is_force_closure(&self) -> bool {
-        force_closure_test(&self.rays)
+        force_closure_exact(&self.rays)
     }
 
     /// Q1 quality.
@@ -1318,9 +1322,17 @@ pub fn analyse_contact_stability(
     num_cone_sides: usize,
 ) -> ContactStabilityReport {
     let wrenches = multi_contact_wrench_set(contacts, num_cone_sides);
-    let fc = force_closure_test(&wrenches);
-    let q1 = grasp_quality_q1(&wrenches);
-    let eps = grasp_quality_epsilon(&wrenches);
+    let fc = force_closure_exact(&wrenches);
+    // Q1 and epsilon are positive exactly when the contacts achieve force
+    // closure, so the facet enumeration is skipped for open grasps.
+    let (q1, eps) = if fc {
+        (
+            grasp_quality_q1(&wrenches),
+            grasp_quality_epsilon(&wrenches),
+        )
+    } else {
+        (0.0, 0.0)
+    };
 
     let positions: Vec<[f64; 3]> = contacts.iter().map(|c| c.position).collect();
     let poly = support_polygon(&positions);
@@ -1342,7 +1354,7 @@ pub fn analyse_contact_stability(
         f64::NEG_INFINITY
     };
 
-    let score = multi_contact_stability_score(contacts, com, num_cone_sides);
+    let score = stability_score(contacts, com, fc, eps);
 
     ContactStabilityReport {
         force_closure: fc,
@@ -1611,8 +1623,18 @@ mod tests {
             eff_mass_n: 1.0,
             eff_mass_t: 1.0,
         }];
-        let _delta = lcp_gauss_seidel_step(&mut contacts, 0.2);
-        assert!(contacts[0].f_n >= 0.0);
+        let delta = lcp_gauss_seidel_step(&mut contacts, 0.2);
+        // Decoupled LCP: w_n = f_n / eff + gap * bias = 0  =>  f_n = 0.002.
+        assert!(
+            (contacts[0].f_n - 0.002).abs() < 1e-12,
+            "f_n = {}",
+            contacts[0].f_n
+        );
+        assert!((delta - 0.002).abs() < 1e-12, "delta = {delta}");
+        // The solution is a fixed point of the sweep.
+        let delta_again = lcp_gauss_seidel_step(&mut contacts, 0.2);
+        assert!(delta_again < 1e-15, "delta_again = {delta_again}");
+        assert!((contacts[0].f_n - 0.002).abs() < 1e-12);
     }
 
     #[test]
@@ -1626,9 +1648,119 @@ mod tests {
             eff_mass_n: 1.0,
             eff_mass_t: 1.0,
         }];
-        let iters = solve_contact_lcp(&mut contacts, 0.2, 100, 1e-8);
-        assert!(iters <= 100);
-        assert!(contacts[0].f_n >= 0.0);
+        // A decoupled contact needs one sweep to solve and one to confirm the
+        // fixed point, no matter how large the iteration budget is.
+        let iters = solve_contact_lcp(&mut contacts, 0.2, 1000, 1e-8);
+        assert_eq!(iters, 2, "must converge in two sweeps, took {iters}");
+        assert!(
+            (contacts[0].f_n - 0.002).abs() < 1e-12,
+            "f_n = {}",
+            contacts[0].f_n
+        );
+        // Sliding at 0.1 m/s with mu * f_n = 0.001: friction saturates the cone
+        // and opposes the motion.
+        assert!(
+            (contacts[0].f_t + 0.001).abs() < 1e-12,
+            "f_t = {}",
+            contacts[0].f_t
+        );
+    }
+
+    #[test]
+    fn test_solve_contact_lcp_recovers_from_large_warm_start() {
+        // A previous (wrong) normal force must relax to the LCP solution; the
+        // old sweep only ever added the same increment.
+        let mut contacts = vec![LcpContact {
+            gap: -0.01,
+            f_n: 5.0,
+            f_t: 3.0,
+            mu: 0.5,
+            v_t: 0.0,
+            eff_mass_n: 1.0,
+            eff_mass_t: 1.0,
+        }];
+        let iters = solve_contact_lcp(&mut contacts, 0.2, 500, 1e-12);
+        assert!(iters <= 3, "took {iters} sweeps");
+        assert!((contacts[0].f_n - 0.002).abs() < 1e-12);
+        // No tangential motion -> no friction needed.
+        assert!(contacts[0].f_t.abs() < 1e-12, "f_t = {}", contacts[0].f_t);
+    }
+
+    #[test]
+    fn test_lcp_gauss_seidel_satisfies_complementarity() {
+        let mut contacts = vec![
+            // penetrating, heavy
+            LcpContact {
+                gap: -0.02,
+                f_n: 0.0,
+                f_t: 0.0,
+                mu: 0.4,
+                v_t: 0.0,
+                eff_mass_n: 4.0,
+                eff_mass_t: 2.0,
+            },
+            // separated: no contact force may act
+            LcpContact {
+                gap: 0.05,
+                f_n: 1.0,
+                f_t: 0.5,
+                mu: 0.4,
+                v_t: 0.3,
+                eff_mass_n: 1.0,
+                eff_mass_t: 1.0,
+            },
+            // deeply penetrating, sticking inside the friction cone
+            LcpContact {
+                gap: -0.5,
+                f_n: 0.0,
+                f_t: 0.0,
+                mu: 1.0,
+                v_t: 0.01,
+                eff_mass_n: 1.0,
+                eff_mass_t: 3.0,
+            },
+        ];
+        let bias = 0.25;
+        let iters = solve_contact_lcp(&mut contacts, bias, 50, 1e-12);
+        assert!(iters <= 3, "iters = {iters}");
+        for (i, c) in contacts.iter().enumerate() {
+            let w_n = c.f_n / c.eff_mass_n + c.gap * bias;
+            assert!(c.f_n >= 0.0, "contact {i}: f_n = {}", c.f_n);
+            assert!(w_n >= -1e-12, "contact {i}: w_n = {w_n}");
+            assert!((c.f_n * w_n).abs() < 1e-12, "contact {i}: f_n * w_n");
+            assert!(
+                c.f_t.abs() <= c.mu * c.f_n + 1e-12,
+                "contact {i}: friction outside the cone"
+            );
+        }
+        // Penetrating contact: f_n = -eff * gap * bias.
+        assert!((contacts[0].f_n - 4.0 * 0.02 * bias).abs() < 1e-12);
+        // Separated contact carries no force at all.
+        assert!(contacts[1].f_n.abs() < 1e-15 && contacts[1].f_t.abs() < 1e-15);
+        // Sticking: friction cancels the sliding speed exactly (eff_t * v_t),
+        // opposing the motion, and lies inside the cone mu * f_n = 0.125.
+        assert!(
+            (contacts[2].f_t + 3.0 * 0.01).abs() < 1e-12,
+            "f_t = {}",
+            contacts[2].f_t
+        );
+    }
+
+    #[test]
+    fn test_lcp_gauss_seidel_skips_contacts_without_effective_mass() {
+        let mut contacts = vec![LcpContact {
+            gap: -0.1,
+            f_n: 0.0,
+            f_t: 0.0,
+            mu: 0.5,
+            v_t: 1.0,
+            eff_mass_n: 0.0,
+            eff_mass_t: 0.0,
+        }];
+        let delta = lcp_gauss_seidel_step(&mut contacts, 0.2);
+        assert!(delta.abs() < 1e-15);
+        assert!(contacts[0].f_n.is_finite() && contacts[0].f_t.is_finite());
+        assert!(contacts[0].f_n.abs() < 1e-15 && contacts[0].f_t.abs() < 1e-15);
     }
 
     #[test]

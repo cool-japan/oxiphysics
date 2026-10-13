@@ -94,12 +94,18 @@ impl Shape for Compound {
         let mut total = Mat3::zeros();
         for (transform, shape) in &self.children {
             let child_mass = mass * shape.volume() / total_vol;
+            // `Shape::inertia_tensor` is expressed in the child's own frame
+            // (about the child's center of mass).  Rotate it into the
+            // compound frame, I_world = R * I_local * R^T, before adding the
+            // parallel-axis term; the translation alone does not do this.
             let child_inertia = shape.inertia_tensor(child_mass);
+            let rotation = transform.rotation.to_rotation_matrix().into_inner();
+            let world_inertia = rotation * child_inertia * rotation.transpose();
             let child_com = transform.transform_point(&shape.center_of_mass());
             let r = child_com - com;
             let r2 = r.dot(&r);
             let parallel = Mat3::identity() * r2 - r * r.transpose();
-            total += child_inertia + parallel * child_mass;
+            total += world_inertia + parallel * child_mass;
         }
         total
     }

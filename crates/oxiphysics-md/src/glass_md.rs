@@ -14,6 +14,7 @@
 //! - Mean-squared displacement and non-Gaussian parameter
 //! - `GlassSimulation` driver with anneal and quench protocols
 
+use crate::error::MdError;
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -140,54 +141,176 @@ impl VogelFulcherTammann {
         (a + b / denom).exp()
     }
 
-    /// Fit VFT parameters (A, B, T₀) to measured temperature–viscosity data
-    /// using a simple iterative least-squares approach (Gauss–Newton, 50 iterations).
+    /// Fit the VFT parameters (A, B, T₀) of `η(T) = exp(A + B / (T − T₀))` to
+    /// measured temperature–viscosity data by least squares in `ln η`.
+    ///
+    /// For a fixed Vogel temperature T₀ the model `ln η = A + B · x` with
+    /// `x = 1 / (T − T₀)` is linear, so A and B follow from a 2×2 linear least
+    /// squares problem (variable projection).  The remaining one-dimensional
+    /// sum of squared residuals SSE(T₀) is scanned on a logarithmic grid of
+    /// gaps `T_min − T₀` (so that minima close to the lowest temperature are
+    /// resolved) and the best bracket is refined with a golden-section search.
+    ///
+    /// The Vogel temperature is restricted to `0 ≤ T₀ < T_min` (strictly below
+    /// the coldest measurement, so the model is finite on all data).  Data that
+    /// are more Arrhenius-like than any VFT curve end up at the `T₀ = 0` bound,
+    /// where the model reduces to `ln η = A + B / T`.
     ///
     /// # Arguments
-    /// * `temps`       – measured temperatures (K), length ≥ 3.
-    /// * `viscosities` – measured viscosities (Pa s), same length.
+    /// * `temps`       – measured temperatures (K), positive, at least three
+    ///   distinct values.
+    /// * `viscosities` – measured viscosities (Pa s), positive, same length.
     ///
     /// # Returns
     /// `(A, B, T₀)` parameters.
-    pub fn fit_vft(temps: &[f64], viscosities: &[f64]) -> (f64, f64, f64) {
-        assert_eq!(temps.len(), viscosities.len());
-        assert!(temps.len() >= 3);
-
-        // Working in log-space: log(η) = A + B/(T - T0)
+    ///
+    /// # Errors
+    /// [`MdError::General`] if the slices differ in length, hold fewer than three
+    /// points or fewer than three distinct temperatures, or contain a
+    /// non-finite or non-positive temperature or viscosity.
+    pub fn fit_vft(temps: &[f64], viscosities: &[f64]) -> Result<(f64, f64, f64), MdError> {
+        if temps.len() != viscosities.len() {
+            return Err(MdError::General(format!(
+                "fit_vft: {} temperatures but {} viscosities",
+                temps.len(),
+                viscosities.len()
+            )));
+        }
+        if temps.len() < 3 {
+            return Err(MdError::General(format!(
+                "fit_vft needs at least 3 data points, got {}",
+                temps.len()
+            )));
+        }
+        if temps.iter().any(|&t| !(t.is_finite() && t > 0.0)) {
+            return Err(MdError::General(
+                "fit_vft: temperatures must be finite and positive".into(),
+            ));
+        }
+        if viscosities.iter().any(|&v| !(v.is_finite() && v > 0.0)) {
+            return Err(MdError::General(
+                "fit_vft: viscosities must be finite and positive".into(),
+            ));
+        }
+        let mut distinct = temps.to_vec();
+        distinct.sort_by(f64::total_cmp);
+        distinct.dedup();
+        if distinct.len() < 3 {
+            return Err(MdError::General(
+                "fit_vft needs at least 3 distinct temperatures to determine A, B and T0".into(),
+            ));
+        }
+        let t_min = distinct[0];
         let log_vis: Vec<f64> = viscosities.iter().map(|v| v.ln()).collect();
 
-        // Initial guesses
-        let mut a_val = 0.0_f64;
-        let mut b_val = 4000.0_f64;
-        let mut t0 = temps.iter().cloned().fold(f64::INFINITY, f64::min) * 0.8;
-
-        let n = temps.len() as f64;
-        let lr = 1.0e-4;
-
-        for _ in 0..100 {
-            let mut grad_a = 0.0_f64;
-            let mut grad_b = 0.0_f64;
-            let mut grad_t0 = 0.0_f64;
-
-            for (i, &ti) in temps.iter().enumerate() {
-                let dt = ti - t0;
-                if dt.abs() < 1.0e-9 {
-                    continue;
-                }
-                let pred = a_val + b_val / dt;
-                let err = pred - log_vis[i];
-                grad_a += 2.0 * err / n;
-                grad_b += 2.0 * err / (n * dt);
-                grad_t0 += 2.0 * err * b_val / (n * dt * dt);
+        // SSE as a function of s = ln(T_min - T0); s = ln(T_min) is T0 = 0.
+        let t0_of = |s: f64| (t_min - s.exp()).max(0.0);
+        let objective =
+            |s: f64| vft_linear_fit(temps, &log_vis, t0_of(s)).map_or(f64::INFINITY, |fit| fit.sse);
+        let s_lo = (t_min * VFT_MIN_GAP_FRACTION).ln();
+        let s_hi = t_min.ln();
+        let step = (s_hi - s_lo) / (VFT_SCAN_POINTS - 1) as f64;
+        let mut best_index = 0;
+        let mut best_value = f64::INFINITY;
+        for k in 0..VFT_SCAN_POINTS {
+            let value = objective(s_lo + k as f64 * step);
+            if value < best_value {
+                best_index = k;
+                best_value = value;
             }
-
-            a_val -= lr * grad_a;
-            b_val -= lr * grad_b;
-            t0 -= lr * grad_t0;
+        }
+        if !best_value.is_finite() {
+            return Err(MdError::General(
+                "fit_vft: no admissible Vogel temperature below the lowest measurement".into(),
+            ));
         }
 
-        (a_val, b_val, t0)
+        // Golden-section refinement inside the neighbouring grid cells.
+        let mut a = s_lo + best_index.saturating_sub(1) as f64 * step;
+        let mut b = s_lo + (best_index + 1).min(VFT_SCAN_POINTS - 1) as f64 * step;
+        let inv_phi = 0.5 * (5.0_f64.sqrt() - 1.0);
+        let mut c = b - inv_phi * (b - a);
+        let mut d = a + inv_phi * (b - a);
+        let mut f_c = objective(c);
+        let mut f_d = objective(d);
+        for _ in 0..VFT_REFINE_ITERATIONS {
+            if (b - a).abs() <= 1.0e-15 * (1.0 + a.abs() + b.abs()) {
+                break;
+            }
+            if f_c < f_d {
+                b = d;
+                d = c;
+                f_d = f_c;
+                c = b - inv_phi * (b - a);
+                f_c = objective(c);
+            } else {
+                a = c;
+                c = d;
+                f_c = f_d;
+                d = a + inv_phi * (b - a);
+                f_d = objective(d);
+            }
+        }
+        let s_refined = 0.5 * (a + b);
+        let s_best_grid = s_lo + best_index as f64 * step;
+        let s_final = if objective(s_refined) <= best_value {
+            s_refined
+        } else {
+            s_best_grid
+        };
+        let t0 = t0_of(s_final);
+        let fit = vft_linear_fit(temps, &log_vis, t0).ok_or_else(|| {
+            MdError::General("fit_vft: degenerate linear sub-problem at the optimum".into())
+        })?;
+        Ok((fit.a, fit.b, t0))
     }
+}
+
+/// Number of Vogel-temperature gaps in the coarse scan of `fit_vft`.
+const VFT_SCAN_POINTS: usize = 400;
+/// Smallest scanned gap `T_min - T0`, as a fraction of `T_min`.
+const VFT_MIN_GAP_FRACTION: f64 = 1.0e-6;
+/// Maximum number of golden-section steps of `fit_vft`.
+const VFT_REFINE_ITERATIONS: usize = 200;
+
+/// Linear least-squares solution of `ln η = A + B / (T − T₀)` at fixed `T₀`.
+struct VftLinearFit {
+    a: f64,
+    b: f64,
+    /// Sum of squared residuals in `ln η`.
+    sse: f64,
+}
+
+/// Solve the 2×2 least-squares problem for (A, B) at a fixed Vogel temperature.
+///
+/// Returns `None` when `T − T₀` vanishes or the abscissae `1 / (T − T₀)` are all
+/// equal (nothing to regress on).
+fn vft_linear_fit(temps: &[f64], log_vis: &[f64], t0: f64) -> Option<VftLinearFit> {
+    let n = temps.len() as f64;
+    let x: Vec<f64> = temps.iter().map(|&t| 1.0 / (t - t0)).collect();
+    if x.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    let mean_x = x.iter().sum::<f64>() / n;
+    let mean_y = log_vis.iter().sum::<f64>() / n;
+    let mut sxx = 0.0;
+    let mut sxy = 0.0;
+    for (&xi, &yi) in x.iter().zip(log_vis.iter()) {
+        let dx = xi - mean_x;
+        sxx += dx * dx;
+        sxy += dx * (yi - mean_y);
+    }
+    if sxx.is_nan() || sxx <= 0.0 {
+        return None;
+    }
+    let b = sxy / sxx;
+    let a = mean_y - b * mean_x;
+    let sse = x
+        .iter()
+        .zip(log_vis.iter())
+        .map(|(&xi, &yi)| (a + b * xi - yi).powi(2))
+        .sum();
+    Some(VftLinearFit { a, b, sse })
 }
 
 // ---------------------------------------------------------------------------
@@ -800,12 +923,148 @@ mod tests {
 
     #[test]
     fn test_vft_fit_returns_triple() {
+        // 1e6, 1e4, 1e2, 1 Pa s at 1500, 1700, 2000, 2500 K lie exactly on the
+        // VFT curve with T0 = 500 K, B = 12000 ln(10) K and A = -6 ln(10).
         let temps = [1500.0, 1700.0, 2000.0, 2500.0];
         let vis = [1.0e6, 1.0e4, 100.0, 1.0];
-        let (a, b, t0) = VogelFulcherTammann::fit_vft(&temps, &vis);
-        assert!(a.is_finite());
-        assert!(b.is_finite());
-        assert!(t0.is_finite());
+        let (a, b, t0) = VogelFulcherTammann::fit_vft(&temps, &vis).unwrap();
+        let ln10 = std::f64::consts::LN_10;
+        assert!((t0 - 500.0).abs() < 1.0e-3, "T0 = {t0}");
+        assert!(
+            (b - 12000.0 * ln10).abs() < 1.0e-6 * 12000.0 * ln10,
+            "B = {b}"
+        );
+        assert!((a + 6.0 * ln10).abs() < 1.0e-6 * 6.0 * ln10, "A = {a}");
+    }
+
+    /// Sum of squared residuals of the VFT model in ln(eta).
+    fn vft_sse(temps: &[f64], vis: &[f64], a: f64, b: f64, t0: f64) -> f64 {
+        temps
+            .iter()
+            .zip(vis.iter())
+            .map(|(&t, &v)| (v.ln() - (a + b / (t - t0))).powi(2))
+            .sum()
+    }
+
+    #[test]
+    fn test_vft_fit_recovers_synthetic_parameters() {
+        let (a_true, b_true, t0_true) = (-3.5, 4000.0, 500.0);
+        let temps = [800.0, 900.0, 1000.0, 1200.0, 1500.0, 2000.0];
+        let vis: Vec<f64> = temps
+            .iter()
+            .map(|&t| VogelFulcherTammann::viscosity(t, a_true, b_true, t0_true))
+            .collect();
+        let (a, b, t0) = VogelFulcherTammann::fit_vft(&temps, &vis).unwrap();
+        assert!((a - a_true).abs() < 1.0e-6 * a_true.abs(), "A = {a}");
+        assert!((b - b_true).abs() < 1.0e-6 * b_true, "B = {b}");
+        assert!((t0 - t0_true).abs() < 1.0e-6 * t0_true, "T0 = {t0}");
+        // The recovered model reproduces the data.
+        for (&t, &v) in temps.iter().zip(vis.iter()) {
+            let model = VogelFulcherTammann::viscosity(t, a, b, t0);
+            assert!((model / v - 1.0).abs() < 1.0e-5, "T = {t}: {model} vs {v}");
+        }
+    }
+
+    #[test]
+    fn test_vft_fit_recovers_other_parameter_regimes() {
+        for &(a_true, b_true, t0_true, t_start) in &[
+            (-5.0, 2500.0, 350.0, 450.0),
+            (-2.0, 1500.0, 200.0, 280.0),
+            (-11.0, 9000.0, 120.0, 150.0),
+        ] {
+            let temps: Vec<f64> = (0..9).map(|k| t_start * (1.0 + 0.12 * k as f64)).collect();
+            let vis: Vec<f64> = temps
+                .iter()
+                .map(|&t| VogelFulcherTammann::viscosity(t, a_true, b_true, t0_true))
+                .collect();
+            let (a, b, t0) = VogelFulcherTammann::fit_vft(&temps, &vis).unwrap();
+            assert!((a - a_true).abs() < 1.0e-5 * a_true.abs(), "A = {a}");
+            assert!((b - b_true).abs() < 1.0e-5 * b_true, "B = {b}");
+            assert!((t0 - t0_true).abs() < 1.0e-5 * t0_true, "T0 = {t0}");
+        }
+    }
+
+    #[test]
+    fn test_vft_fit_noisy_data_is_a_least_squares_minimum() {
+        let (a_true, b_true, t0_true) = (-3.5, 4000.0, 500.0);
+        let temps = [750.0, 850.0, 950.0, 1100.0, 1300.0, 1550.0, 1850.0, 2200.0];
+        let vis: Vec<f64> = temps
+            .iter()
+            .enumerate()
+            .map(|(i, &t)| {
+                let noise = 0.02 * (1.7 * i as f64 + 0.3).sin();
+                (a_true + b_true / (t - t0_true) + noise).exp()
+            })
+            .collect();
+        let (a, b, t0) = VogelFulcherTammann::fit_vft(&temps, &vis).unwrap();
+        // Close to the generating parameters despite the 2 % noise ...
+        assert!((a - a_true).abs() < 0.05, "A = {a}");
+        assert!((b - b_true).abs() < 0.02 * b_true, "B = {b}");
+        assert!((t0 - t0_true).abs() < 5.0, "T0 = {t0}");
+        // ... never worse than the generating parameters ...
+        let sse = vft_sse(&temps, &vis, a, b, t0);
+        assert!(sse <= vft_sse(&temps, &vis, a_true, b_true, t0_true));
+        // ... and a local minimum along every parameter direction.
+        for &(da, db, dt0) in &[
+            (1.0e-3, 0.0, 0.0),
+            (-1.0e-3, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, -1.0, 0.0),
+            (0.0, 0.0, 0.05),
+            (0.0, 0.0, -0.05),
+        ] {
+            let moved = vft_sse(&temps, &vis, a + da, b + db, t0 + dt0);
+            assert!(
+                sse <= moved + 1.0e-12,
+                "moving ({da}, {db}, {dt0}) lowers the SSE"
+            );
+        }
+    }
+
+    #[test]
+    fn test_vft_fit_arrhenius_data_ends_at_the_zero_vogel_temperature() {
+        let temps: [f64; 5] = [600.0, 700.0, 800.0, 1000.0, 1300.0];
+        let vis: Vec<f64> = temps.iter().map(|&t| (-10.0 + 20000.0 / t).exp()).collect();
+        let (a, b, t0) = VogelFulcherTammann::fit_vft(&temps, &vis).unwrap();
+        assert!(t0 >= 0.0 && t0 < 1.0e-3, "T0 = {t0}");
+        assert!((a + 10.0).abs() < 1.0e-5, "A = {a}");
+        assert!((b - 20000.0).abs() < 1.0e-2, "B = {b}");
+    }
+
+    #[test]
+    fn test_vft_fit_is_independent_of_data_order() {
+        let temps = [800.0, 1500.0, 900.0, 2000.0, 1000.0, 1200.0];
+        let vis: Vec<f64> = temps
+            .iter()
+            .map(|&t| VogelFulcherTammann::viscosity(t, -3.5, 4000.0, 500.0))
+            .collect();
+        let (a, b, t0) = VogelFulcherTammann::fit_vft(&temps, &vis).unwrap();
+        assert!(
+            (a + 3.5).abs() < 1.0e-5 && (b - 4000.0).abs() < 1.0e-2 && (t0 - 500.0).abs() < 1.0e-3
+        );
+    }
+
+    #[test]
+    fn test_vft_fit_rejects_invalid_input() {
+        let ok_t = [800.0, 900.0, 1000.0];
+        let ok_v = [10.0, 5.0, 2.0];
+        assert!(VogelFulcherTammann::fit_vft(&ok_t, &ok_v).is_ok());
+        // length mismatch
+        assert!(VogelFulcherTammann::fit_vft(&ok_t, &ok_v[..2]).is_err());
+        // too few points
+        assert!(VogelFulcherTammann::fit_vft(&ok_t[..2], &ok_v[..2]).is_err());
+        assert!(VogelFulcherTammann::fit_vft(&[], &[]).is_err());
+        // non-positive / non-finite viscosity
+        assert!(VogelFulcherTammann::fit_vft(&ok_t, &[10.0, 0.0, 2.0]).is_err());
+        assert!(VogelFulcherTammann::fit_vft(&ok_t, &[10.0, -5.0, 2.0]).is_err());
+        assert!(VogelFulcherTammann::fit_vft(&ok_t, &[10.0, f64::NAN, 2.0]).is_err());
+        assert!(VogelFulcherTammann::fit_vft(&ok_t, &[10.0, f64::INFINITY, 2.0]).is_err());
+        // non-positive / non-finite temperature
+        assert!(VogelFulcherTammann::fit_vft(&[0.0, 900.0, 1000.0], &ok_v).is_err());
+        assert!(VogelFulcherTammann::fit_vft(&[-5.0, 900.0, 1000.0], &ok_v).is_err());
+        assert!(VogelFulcherTammann::fit_vft(&[f64::NAN, 900.0, 1000.0], &ok_v).is_err());
+        // only two distinct temperatures
+        assert!(VogelFulcherTammann::fit_vft(&[800.0, 800.0, 900.0], &ok_v).is_err());
     }
 
     // ---- WLF ----

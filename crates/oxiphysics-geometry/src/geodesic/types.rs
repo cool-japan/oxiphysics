@@ -94,9 +94,11 @@ impl GeoMesh {
 }
 /// Result of the heat method geodesic computation.
 pub struct HeatGeodesicResult {
-    /// Geodesic distances from the source vertex to all vertices.
+    /// Geodesic distances from the source vertex to all vertices
+    /// (`f64::INFINITY` for vertices in other connected components).
     pub distances: Vec<f64>,
-    /// Normalised heat gradient (per face, not per vertex) for debugging.
+    /// Unit direction field `X = -∇u / |∇u|` of the heat method, one vector per
+    /// face (zero on degenerate faces).
     pub gradient: Vec<[f64; 3]>,
 }
 /// Entry for the Dijkstra priority queue.

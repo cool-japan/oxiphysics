@@ -14,6 +14,9 @@
 
 use std::f64::consts::PI;
 
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
+
 // ---------------------------------------------------------------------------
 // TensorGlyph — 3D tensor visualization
 // ---------------------------------------------------------------------------
@@ -38,7 +41,8 @@ pub struct TensorGlyph {
     pub position: [f64; 3],
     /// Eigenvalues `[lambda1, lambda2, lambda3]` (principal stresses/strains).
     pub eigenvalues: [f64; 3],
-    /// Eigenvectors stored row-major: `[v1x, v1y, v1z, v2x, v2y, v2z, v3x, v3y, v3z]`.
+    /// Unit eigenvectors stored row-major, one per eigenvalue:
+    /// `[v1x, v1y, v1z, v2x, v2y, v2z, v3x, v3y, v3z]`.
     pub eigenvectors: [f64; 9],
     /// Selected glyph shape.
     pub shape: GlyphShape,
@@ -109,20 +113,36 @@ impl TensorGlyph {
         (l2 - l3) / l1
     }
 
-    /// Generate a simple point cloud approximating the ellipsoid surface (lon × lat grid).
+    /// Generate a point cloud on the ellipsoid surface (lon × lat grid).
+    ///
+    /// The semi-axes `[a, b, c]` of [`ellipsoid_axes`](Self::ellipsoid_axes)
+    /// lie along the glyph's eigenvectors `e1`, `e2`, `e3`, so a point at
+    /// colatitude `phi` and longitude `theta` is
+    /// `position + a·sin(phi)·cos(theta)·e1 + b·sin(phi)·sin(theta)·e2 + c·cos(phi)·e3`.
     ///
     /// Returns `(n_lon * n_lat)` points as `[x, y, z]` arrays.
     pub fn ellipsoid_surface_points(&self, n_lon: usize, n_lat: usize) -> Vec<[f64; 3]> {
         let [a, b, c] = self.ellipsoid_axes();
+        let ev = &self.eigenvectors;
+        let e1 = [ev[0], ev[1], ev[2]];
+        let e2 = [ev[3], ev[4], ev[5]];
+        let e3 = [ev[6], ev[7], ev[8]];
         let mut pts = Vec::with_capacity(n_lon * n_lat);
         for i in 0..n_lat {
             let phi = PI * (i as f64 + 0.5) / n_lat as f64; // [0, π]
+            let (sin_phi, cos_phi) = phi.sin_cos();
             for j in 0..n_lon {
                 let theta = 2.0 * PI * j as f64 / n_lon as f64;
-                let x = self.position[0] + a * phi.sin() * theta.cos();
-                let y = self.position[1] + b * phi.sin() * theta.sin();
-                let z = self.position[2] + c * phi.cos();
-                pts.push([x, y, z]);
+                let (sin_theta, cos_theta) = theta.sin_cos();
+                // Coordinates in the eigenvector frame.
+                let l1 = a * sin_phi * cos_theta;
+                let l2 = b * sin_phi * sin_theta;
+                let l3 = c * cos_phi;
+                pts.push([
+                    self.position[0] + l1 * e1[0] + l2 * e2[0] + l3 * e3[0],
+                    self.position[1] + l1 * e1[1] + l2 * e2[1] + l3 * e3[1],
+                    self.position[2] + l1 * e1[2] + l2 * e2[2] + l3 * e3[2],
+                ]);
             }
         }
         pts
@@ -133,7 +153,8 @@ impl TensorGlyph {
 ///
 /// `tensors`: each entry is `[Txx, Tyy, Tzz, Txy, Txz, Tyz]`.
 /// `positions`: matching list of `[x, y, z]` positions.
-/// Returns one `TensorGlyph` per entry after 3×3 eigen-decomposition (power iteration).
+/// Returns one `TensorGlyph` per entry after 3×3 eigen-decomposition (Jacobi
+/// rotations): eigenvalues in descending order, eigenvectors as unit rows.
 pub fn build_tensor_glyphs(
     tensors: &[[f64; 6]],
     positions: &[[f64; 3]],
@@ -151,70 +172,24 @@ pub fn build_tensor_glyphs(
         .collect()
 }
 
-/// Approximate eigendecomposition for a 3×3 symmetric matrix in Voigt form.
+/// Eigendecomposition of a symmetric 3×3 tensor in this module's Voigt form
+/// `[Txx, Tyy, Tzz, Txy, Txz, Tyz]`.
 ///
-/// Uses Jacobi iteration (10 sweeps) for correctness.
+/// Delegates to [`crate::tensor_visualization::eig3`] (Jacobi rotations), which
+/// returns the eigenvalues in descending order (`λ1 ≥ λ2 ≥ λ3`) with unit
+/// eigenvectors.  The eigenvectors are flattened row by row,
+/// `[e1x, e1y, e1z, e2x, e2y, e2z, e3x, e3y, e3z]`, so row `k` is the
+/// eigenvector belonging to eigenvalue `k` (the layout of
+/// [`TensorGlyph::eigenvectors`]).
 fn eigen3_sym(voigt: [f64; 6]) -> ([f64; 3], [f64; 9]) {
     let [txx, tyy, tzz, txy, txz, tyz] = voigt;
-    // Build 3×3 matrix
-    let mut a = [[txx, txy, txz], [txy, tyy, tyz], [txz, tyz, tzz]];
-    // Identity eigenvector matrix
-    let mut v = [[1.0_f64, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-
-    // Jacobi iterations
-    for _ in 0..50 {
-        let mut max_off = 0.0_f64;
-        let mut p = 0;
-        let mut q = 1;
-        for (i, a_row) in a.iter().enumerate() {
-            for (j, a_ij) in a_row.iter().enumerate().skip(i + 1) {
-                if a_ij.abs() > max_off {
-                    max_off = a_ij.abs();
-                    p = i;
-                    q = j;
-                }
-            }
-        }
-        if max_off < 1e-14 {
-            break;
-        }
-        let theta = 0.5 * (a[q][q] - a[p][p]) / a[p][q];
-        let t_val = theta.signum() / (theta.abs() + (1.0 + theta * theta).sqrt());
-        let c = 1.0 / (1.0 + t_val * t_val).sqrt();
-        let s = t_val * c;
-
-        // Update matrix
-        let app = a[p][p];
-        let aqq = a[q][q];
-        let apq = a[p][q];
-        a[p][p] = c * c * app - 2.0 * c * s * apq + s * s * aqq;
-        a[q][q] = s * s * app + 2.0 * c * s * apq + c * c * aqq;
-        a[p][q] = 0.0;
-        a[q][p] = 0.0;
-        let sym_updates: Vec<(usize, f64, f64)> = (0..3)
-            .filter(|&r| r != p && r != q)
-            .map(|r| (r, c * a[p][r] - s * a[q][r], s * a[p][r] + c * a[q][r]))
-            .collect();
-        for (r, new_pr, new_qr) in sym_updates {
-            a[p][r] = new_pr;
-            a[r][p] = new_pr;
-            a[q][r] = new_qr;
-            a[r][q] = new_qr;
-        }
-        // Update eigenvectors
-        for v_row in v.iter_mut() {
-            let vp = v_row[p];
-            let vq = v_row[q];
-            v_row[p] = c * vp - s * vq;
-            v_row[q] = s * vp + c * vq;
-        }
-    }
-
-    let evals = [a[0][0], a[1][1], a[2][2]];
+    // `tensor_visualization` orders the shear terms `[xy, yz, xz]`.
+    let eig = crate::tensor_visualization::eig3(&[txx, tyy, tzz, txy, tyz, txz]);
+    let [e1, e2, e3] = eig.vectors;
     let evecs = [
-        v[0][0], v[0][1], v[0][2], v[1][0], v[1][1], v[1][2], v[2][0], v[2][1], v[2][2],
+        e1[0], e1[1], e1[2], e2[0], e2[1], e2[2], e3[0], e3[1], e3[2],
     ];
-    (evals, evecs)
+    (eig.values, evecs)
 }
 
 // ---------------------------------------------------------------------------
@@ -425,14 +400,29 @@ impl ErrorBandPlot {
         }
     }
 
-    /// Compute bootstrap confidence interval at `confidence_level` (e.g., 0.95).
+    /// Compute a bootstrap percentile confidence band at `confidence_level`
+    /// (e.g., 0.95).
     ///
-    /// Performs `n_bootstrap` resamples and returns the percentile-based CI.
+    /// `data` holds one row per observation and one value per x position
+    /// (`x.len()` columns); a shorter row simply lacks the later columns.  Each
+    /// of the `n_bootstrap` replicates draws `data.len()` whole rows with
+    /// replacement, so correlations between x positions are preserved, and
+    /// records the mean of the drawn rows for every column.  The band edges
+    /// are the linearly interpolated `(1 − level)/2` and `(1 + level)/2`
+    /// percentiles of these replicate means, while `mean` is the plain sample
+    /// mean.
+    ///
+    /// The resampling is driven by a [`StdRng`] seeded with `seed`, so the same
+    /// arguments always give the same band.  A row lacking a column is skipped
+    /// for that column.  With `n_bootstrap == 0` (or a NaN `confidence_level`)
+    /// no interval can be formed and the band collapses onto the mean;
+    /// `confidence_level` is otherwise clamped to `[0, 1]`.
     pub fn bootstrap_ci(
         x: Vec<f64>,
         data: &[Vec<f64>],
         confidence_level: f64,
         n_bootstrap: usize,
+        seed: u64,
     ) -> Self {
         let n = x.len();
         let m = data.len();
@@ -448,28 +438,52 @@ impl ErrorBandPlot {
             };
         }
 
-        let alpha = 1.0 - confidence_level;
-        let lo_idx = ((alpha / 2.0) * n_bootstrap as f64) as usize;
-        let hi_idx =
-            ((1.0 - alpha / 2.0) * n_bootstrap as f64).min((n_bootstrap - 1) as f64) as usize;
-
+        // Sample mean per column (rows lacking the column are skipped).
         let mean: Vec<f64> = (0..n)
-            .map(|j| data.iter().map(|s| s[j]).sum::<f64>() / m as f64)
+            .map(|j| {
+                let (sum, count) = data
+                    .iter()
+                    .filter_map(|row| row.get(j))
+                    .fold((0.0_f64, 0_usize), |(s, c), v| (s + v, c + 1));
+                if count > 0 { sum / count as f64 } else { 0.0 }
+            })
             .collect();
 
-        // Simple deterministic bootstrap via circular resampling
-        let mut lower = vec![0.0; n];
-        let mut upper = vec![0.0; n];
-        for j in 0..n {
-            let mut boot_means: Vec<f64> = (0..n_bootstrap)
-                .map(|b| {
-                    let sum: f64 = (0..m).map(|i| data[(i + b) % m][j]).sum();
-                    sum / m as f64
-                })
-                .collect();
-            boot_means.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            lower[j] = boot_means[lo_idx.min(boot_means.len() - 1)];
-            upper[j] = boot_means[hi_idx.min(boot_means.len() - 1)];
+        let mut lower = mean.clone();
+        let mut upper = mean.clone();
+        if n_bootstrap > 0 && !confidence_level.is_nan() {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mut replicate_means: Vec<Vec<f64>> =
+                (0..n).map(|_| Vec::with_capacity(n_bootstrap)).collect();
+            let mut sums = vec![0.0_f64; n];
+            let mut counts = vec![0_usize; n];
+            for _ in 0..n_bootstrap {
+                sums.fill(0.0);
+                counts.fill(0);
+                for _ in 0..m {
+                    let row = &data[rng.random_range(0..m)];
+                    for (j, v) in row.iter().take(n).enumerate() {
+                        sums[j] += v;
+                        counts[j] += 1;
+                    }
+                }
+                for (j, samples) in replicate_means.iter_mut().enumerate() {
+                    if counts[j] > 0 {
+                        samples.push(sums[j] / counts[j] as f64);
+                    }
+                }
+            }
+
+            let tail = 0.5 * (1.0 - confidence_level.clamp(0.0, 1.0));
+            for (j, samples) in replicate_means.iter_mut().enumerate() {
+                samples.sort_by(f64::total_cmp);
+                if let Some(lo) = quantile_sorted(samples, tail) {
+                    lower[j] = lo;
+                }
+                if let Some(hi) = quantile_sorted(samples, 1.0 - tail) {
+                    upper[j] = hi;
+                }
+            }
         }
 
         Self {
@@ -490,6 +504,19 @@ impl ErrorBandPlot {
             .zip(self.lower.iter().zip(self.upper.iter()))
             .all(|(m, (lo, hi))| m >= lo && m <= hi)
     }
+}
+
+/// Linearly interpolated quantile `p ∈ [0, 1]` of an ascending-sorted slice
+/// (position `p·(len − 1)`, the common "type 7" definition).
+///
+/// Returns `None` for an empty slice.  `p` is clamped to `[0, 1]`.
+fn quantile_sorted(sorted: &[f64], p: f64) -> Option<f64> {
+    let last = sorted.len().checked_sub(1)?;
+    let pos = p.clamp(0.0, 1.0) * last as f64;
+    let below = (pos.floor() as usize).min(last);
+    let above = (pos.ceil() as usize).min(last);
+    let frac = pos - below as f64;
+    Some(sorted[below] * (1.0 - frac) + sorted[above] * frac)
 }
 
 // ---------------------------------------------------------------------------
@@ -1005,23 +1032,38 @@ impl PhasePortrait {
         }
     }
 
-    /// Detect and classify fixed points near `candidates` using finite-difference Jacobian.
+    /// Classify the fixed points at `candidates` from the Jacobian of `f`,
+    /// estimated with central differences of half-step `eps`.
+    ///
+    /// `eps` enters through its absolute value; zero or a non-finite value falls
+    /// back to `1e-6`.  A candidate whose finite-difference stencil is not
+    /// finite cannot be classified and is skipped.  The classification follows
+    /// the trace `τ` and determinant `Δ` of the Jacobian: `Δ < 0` is a saddle;
+    /// otherwise a negative discriminant `τ² − 4Δ` gives a focus (a centre when
+    /// `|τ|` is negligible against the eigenvalue scale `√Δ`) and a
+    /// non-negative one a node, stable for `τ < 0`.
     pub fn classify_fixed_points<F>(&mut self, candidates: &[[f64; 2]], f: &F, eps: f64)
     where
         F: Fn(f64, f64) -> (f64, f64),
     {
+        let h = if eps.is_finite() && eps != 0.0 {
+            eps.abs()
+        } else {
+            1e-6
+        };
         for &[x0, y0] in candidates {
-            // Numerical Jacobian
-            let (fp, _) = f(x0, y0);
-            let (fm, _) = f(x0 - eps, y0);
-            let (fpe, _) = f(x0, y0);
-            let (_, fq) = f(x0, y0);
-            let (_, fqm) = f(x0, y0 - eps);
-            let a11 = (f(x0 + eps, y0).0 - fm) / (2.0 * eps);
-            let a12 = (f(x0, y0 + eps).0 - fp) / (2.0 * eps);
-            let a21 = (f(x0 + eps, y0).1 - f(x0 - eps, y0).1) / (2.0 * eps);
-            let a22 = (fq - fqm) / eps;
-            let _ = fpe; // silence unused
+            // Central-difference Jacobian [[∂f/∂x, ∂f/∂y], [∂g/∂x, ∂g/∂y]].
+            let (f_xp, g_xp) = f(x0 + h, y0);
+            let (f_xm, g_xm) = f(x0 - h, y0);
+            let (f_yp, g_yp) = f(x0, y0 + h);
+            let (f_ym, g_ym) = f(x0, y0 - h);
+            let a11 = (f_xp - f_xm) / (2.0 * h);
+            let a12 = (f_yp - f_ym) / (2.0 * h);
+            let a21 = (g_xp - g_xm) / (2.0 * h);
+            let a22 = (g_yp - g_ym) / (2.0 * h);
+            if ![a11, a12, a21, a22].iter().all(|v| v.is_finite()) {
+                continue;
+            }
 
             let trace = a11 + a22;
             let det = a11 * a22 - a12 * a21;
@@ -1035,7 +1077,7 @@ impl PhasePortrait {
                 } else {
                     FixedPointType::UnstableNode
                 }
-            } else if trace.abs() < 1e-8 {
+            } else if trace.abs() < 1e-6 * det.abs().sqrt() {
                 FixedPointType::Center
             } else if trace < 0.0 {
                 FixedPointType::StableFocus
@@ -1212,443 +1254,4 @@ impl LissajousFigure {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ---- TensorGlyph ----
-
-    #[test]
-    fn tensor_glyph_ellipsoid_axes_match_eigenvalues() {
-        let evals = [3.0, 2.0, 1.0];
-        let evecs = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        let g = TensorGlyph::new([0.0, 0.0, 0.0], evals, evecs, GlyphShape::Ellipsoid, 1.0);
-        let axes = g.ellipsoid_axes();
-        assert!((axes[0] - 3.0).abs() < 1e-10);
-        assert!((axes[1] - 2.0).abs() < 1e-10);
-        assert!((axes[2] - 1.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn tensor_glyph_scale_applied_to_axes() {
-        let evals = [2.0, 1.0, 0.5];
-        let evecs = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        let g = TensorGlyph::new([0.0, 0.0, 0.0], evals, evecs, GlyphShape::Ellipsoid, 2.0);
-        let axes = g.ellipsoid_axes();
-        assert!((axes[0] - 4.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn tensor_glyph_isotropic_fa_is_zero() {
-        let evals = [1.0, 1.0, 1.0];
-        let evecs = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        let g = TensorGlyph::new([0.0, 0.0, 0.0], evals, evecs, GlyphShape::Ellipsoid, 1.0);
-        assert!(g.fractional_anisotropy() < 1e-10);
-    }
-
-    #[test]
-    fn tensor_glyph_anisotropic_fa_near_one() {
-        let evals = [100.0, 0.01, 0.01];
-        let evecs = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        let g = TensorGlyph::new([0.0, 0.0, 0.0], evals, evecs, GlyphShape::Ellipsoid, 1.0);
-        let fa = g.fractional_anisotropy();
-        assert!(
-            fa > 0.9,
-            "FA={fa:.6} should be close to 1 for very anisotropic tensor"
-        );
-    }
-
-    #[test]
-    fn tensor_glyph_surface_points_count() {
-        let evals = [2.0, 1.5, 1.0];
-        let evecs = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        let g = TensorGlyph::new([0.0, 0.0, 0.0], evals, evecs, GlyphShape::Ellipsoid, 1.0);
-        let pts = g.ellipsoid_surface_points(16, 8);
-        assert_eq!(pts.len(), 16 * 8);
-    }
-
-    #[test]
-    fn build_tensor_glyphs_from_diagonal_tensor() {
-        let tensors = vec![[4.0, 1.0, 0.25, 0.0, 0.0, 0.0]];
-        let positions = vec![[0.0, 0.0, 0.0]];
-        let glyphs = build_tensor_glyphs(&tensors, &positions, GlyphShape::Ellipsoid, 1.0);
-        assert_eq!(glyphs.len(), 1);
-        // All eigenvalues should be real and match the diagonal entries approximately
-        let evals = glyphs[0].eigenvalues;
-        let sorted: Vec<f64> = {
-            let mut v = evals.to_vec();
-            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            v
-        };
-        assert!(
-            (sorted[2] - 4.0).abs() < 0.1,
-            "largest eigenval≈4: {:.6}",
-            sorted[2]
-        );
-    }
-
-    #[test]
-    fn tensor_glyph_linear_anisotropy_extreme() {
-        let evals = [10.0, 10.0, 0.001];
-        let evecs = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        let g = TensorGlyph::new([0.0, 0.0, 0.0], evals, evecs, GlyphShape::Ellipsoid, 1.0);
-        assert!(g.planar_anisotropy() > 0.5);
-    }
-
-    // ---- PhaseDiagramViz ----
-
-    #[test]
-    fn phase_diagram_clausius_clapeyron_points_count() {
-        let pts =
-            PhaseDiagramViz::clausius_clapeyron_line([300.0, 400.0], 50, 40_000.0, 373.0, 101325.0);
-        assert_eq!(pts.len(), 50);
-    }
-
-    #[test]
-    fn phase_diagram_clausius_clapeyron_pressure_increases() {
-        let pts =
-            PhaseDiagramViz::clausius_clapeyron_line([300.0, 500.0], 10, 40_000.0, 373.0, 101325.0);
-        // Vapor pressure should increase with temperature
-        assert!(
-            pts[9][1] > pts[0][1],
-            "vapor pressure should increase with T"
-        );
-    }
-
-    #[test]
-    fn phase_diagram_tie_line_at_correct_temperature() {
-        let mut pd = PhaseDiagramViz::new();
-        let temps = vec![400.0, 450.0, 500.0];
-        pd.compute_tie_lines(&temps, |t| 0.3 + 0.001 * t, |t| 0.1 + 0.0005 * t);
-        assert_eq!(pd.tie_lines.len(), 3);
-        assert!((pd.tie_lines[1].temperature - 450.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn phase_diagram_triple_and_critical_point() {
-        let mut pd = PhaseDiagramViz::new();
-        pd.set_triple_point(273.16, 611.73);
-        pd.set_critical_point(647.1, 22.064e6);
-        assert!(pd.triple_point.is_some());
-        assert!(pd.critical_point.is_some());
-        let tp = pd.triple_point.unwrap();
-        assert!((tp.temperature - 273.16).abs() < 1e-6);
-    }
-
-    #[test]
-    fn phase_diagram_add_region_and_line() {
-        let mut pd = PhaseDiagramViz::new();
-        pd.add_region(PhaseRegion {
-            name: "Liquid".to_string(),
-            color: [0.2, 0.5, 1.0, 0.4],
-            boundary: vec![[200.0, 1e3], [300.0, 1e5]],
-        });
-        pd.add_coexistence_line(vec![[273.0, 1e5], [373.0, 2e5]]);
-        assert_eq!(pd.regions.len(), 1);
-        assert_eq!(pd.coexistence_lines.len(), 1);
-    }
-
-    // ---- ErrorBandPlot ----
-
-    #[test]
-    fn error_band_mean_within_band() {
-        let x = vec![0.0, 1.0, 2.0, 3.0];
-        let samples: Vec<Vec<f64>> = (0..100)
-            .map(|i| {
-                x.iter()
-                    .map(|&xi| xi * xi + (i as f64 - 50.0) * 0.01)
-                    .collect()
-            })
-            .collect();
-        let band = ErrorBandPlot::from_samples(x, &samples, 2.0);
-        assert!(band.mean_within_band(), "mean should lie within ±2σ band");
-    }
-
-    #[test]
-    fn error_band_upper_greater_than_lower() {
-        let x = vec![0.0, 1.0, 2.0];
-        let samples: Vec<Vec<f64>> = (0..10).map(|i| vec![i as f64; 3]).collect();
-        let band = ErrorBandPlot::from_samples(x, &samples, 1.0);
-        for (lo, hi) in band.lower.iter().zip(band.upper.iter()) {
-            assert!(hi >= lo, "upper >= lower must hold");
-        }
-    }
-
-    #[test]
-    fn error_band_empty_samples() {
-        let x = vec![0.0, 1.0];
-        let band = ErrorBandPlot::from_samples(x, &[], 1.0);
-        assert_eq!(band.mean.len(), 2);
-        assert!(band.mean_within_band());
-    }
-
-    #[test]
-    fn error_band_bootstrap_ci_structure() {
-        let x = vec![0.0, 1.0, 2.0];
-        let data: Vec<Vec<f64>> = (0..20).map(|i| vec![i as f64 * 0.1; 3]).collect();
-        let band = ErrorBandPlot::bootstrap_ci(x, &data, 0.95, 50);
-        assert_eq!(band.x.len(), 3);
-        assert!(band.mean_within_band());
-    }
-
-    // ---- BifurcationDiagram ----
-
-    #[test]
-    fn bifurcation_logistic_period1_for_small_r() {
-        // r < 3: logistic map has a single stable fixed point
-        let diag = BifurcationDiagram::logistic_map([2.5, 2.9], 5, 500, 100);
-        let stable = diag.stable_points();
-        assert!(
-            !stable.is_empty(),
-            "should have stable points for r ∈ [2.5, 2.9]"
-        );
-    }
-
-    #[test]
-    fn bifurcation_logistic_chaotic_for_large_r() {
-        // r ≈ 4.0: logistic map is fully chaotic
-        let diag = BifurcationDiagram::logistic_map([3.9, 4.0], 5, 500, 200);
-        let chaotic = diag.chaotic_points();
-        assert!(!chaotic.is_empty(), "should have chaotic points for r ≈ 4");
-    }
-
-    #[test]
-    fn bifurcation_diagram_points_in_unit_interval() {
-        let diag = BifurcationDiagram::logistic_map([2.5, 4.0], 10, 100, 50);
-        for p in &diag.points {
-            assert!(p.x >= 0.0 && p.x <= 1.0, "x={:.6} not in [0,1]", p.x);
-        }
-    }
-
-    // ---- FractalViz ----
-
-    #[test]
-    fn mandelbrot_origin_does_not_escape() {
-        let f = FractalViz::mandelbrot(10, 10, 256);
-        let v = f.escape_value(0.0, 0.0);
-        // Origin z=0 maps to c=0, stays bounded → max_iter
-        assert!(
-            (v - 256.0).abs() < 10.0,
-            "origin escape value={v:.6} should be near max_iter"
-        );
-    }
-
-    #[test]
-    fn mandelbrot_far_point_escapes_fast() {
-        let f = FractalViz::mandelbrot(10, 10, 256);
-        let v = f.escape_value(10.0, 10.0);
-        assert!(v < 10.0, "far-away point should escape quickly, got {v:.6}");
-    }
-
-    #[test]
-    fn julia_set_render_dimensions() {
-        let f = FractalViz::julia(8, 6, 64, -0.7, 0.27);
-        let buf = f.render(-1.5, 1.5, -1.0, 1.0);
-        assert_eq!(buf.len(), 48);
-    }
-
-    #[test]
-    fn mandelbrot_render_dimensions() {
-        let f = FractalViz::mandelbrot(4, 4, 32);
-        let buf = f.render(-2.0, 1.0, -1.5, 1.5);
-        assert_eq!(buf.len(), 16);
-    }
-
-    #[test]
-    fn fractal_orbit_trap_positive() {
-        let f = FractalViz {
-            width: 4,
-            height: 4,
-            max_iter: 64,
-            escape_radius: 2.0,
-            coloring: FractalColoring::OrbitTrap,
-            julia_c: None,
-        };
-        let v = f.orbit_trap_value(0.0, 0.0);
-        assert!(v >= 0.0, "orbit trap should be non-negative: {v:.6}");
-    }
-
-    #[test]
-    fn fractal_escape_time_coloring() {
-        let mut f = FractalViz::mandelbrot(4, 4, 100);
-        f.coloring = FractalColoring::EscapeTime;
-        let v = f.escape_value(2.5, 0.0);
-        assert!(v < 100.0);
-    }
-
-    // ---- NetworkViz ----
-
-    #[test]
-    fn network_layout_nodes_on_canvas() {
-        let mut net = NetworkViz::new(100.0, 100.0);
-        for i in 0..5 {
-            net.add_node(i, 50.0, 50.0);
-        }
-        net.add_edge(0, 1, 1.0);
-        net.add_edge(1, 2, 1.0);
-        let k = (100.0 * 100.0 / 5.0_f64).sqrt();
-        net.layout_fruchterman_reingold(50, k);
-        for node in &net.nodes {
-            assert!(node.position[0] >= 0.0 && node.position[0] <= 100.0);
-            assert!(node.position[1] >= 0.0 && node.position[1] <= 100.0);
-        }
-    }
-
-    #[test]
-    fn network_degree_updated_on_add_edge() {
-        let mut net = NetworkViz::new(100.0, 100.0);
-        net.add_node(0, 10.0, 10.0);
-        net.add_node(1, 90.0, 90.0);
-        net.add_edge(0, 1, 1.0);
-        assert_eq!(net.nodes[0].degree, 1);
-        assert_eq!(net.nodes[1].degree, 1);
-    }
-
-    #[test]
-    fn network_color_by_degree_changes_colors() {
-        let mut net = NetworkViz::new(100.0, 100.0);
-        for i in 0..3 {
-            net.add_node(i, 50.0, 50.0);
-        }
-        net.add_edge(0, 1, 1.0);
-        net.add_edge(0, 2, 1.0);
-        let orig_color = net.nodes[0].color;
-        net.color_by_degree();
-        // Node 0 has degree 2 vs nodes 1,2 with degree 1 → different color
-        assert!(
-            (net.nodes[0].color[0] - orig_color[0]).abs() > 0.01
-                || (net.nodes[1].color[0] - orig_color[0]).abs() > 0.01
-        );
-    }
-
-    // ---- PhasePortrait ----
-
-    #[test]
-    fn phase_portrait_fixed_point_at_zero_velocity() {
-        // f(x,y) = (-x, -y): origin is a stable node
-        // Integrate long enough with a small step to reach dist < 0.1
-        let f = |x: f64, y: f64| (-x, -y);
-        let seeds = [[-0.5_f64, 0.5], [0.5, -0.5]];
-        let pp = PhasePortrait::compute(&f, [-1.0, 1.0], [-1.0, 1.0], 5, &seeds, 0.05, 200);
-        // Trajectories should approach origin (e^{-10} ≈ 4.5e-5 << 0.1)
-        for traj in &pp.trajectories {
-            let last = traj.states.last().unwrap();
-            let dist = (last[0] * last[0] + last[1] * last[1]).sqrt();
-            assert!(
-                dist < 0.1,
-                "trajectory should converge to origin: dist={dist:.6}"
-            );
-        }
-    }
-
-    #[test]
-    fn phase_portrait_vector_field_count() {
-        let f = |x: f64, y: f64| (y, -x);
-        let pp = PhasePortrait::compute(&f, [-1.0, 1.0], [-1.0, 1.0], 8, &[], 0.01, 10);
-        assert_eq!(pp.vector_field.len(), 64);
-    }
-
-    #[test]
-    fn phase_portrait_trajectory_length() {
-        let f = |_x: f64, _y: f64| (0.0, 0.0);
-        let seeds = [[0.5_f64, 0.5]];
-        let pp = PhasePortrait::compute(&f, [-1.0, 1.0], [-1.0, 1.0], 4, &seeds, 0.1, 20);
-        assert_eq!(pp.trajectories[0].states.len(), 21);
-    }
-
-    #[test]
-    fn phase_portrait_classify_stable_node() {
-        let f = |x: f64, y: f64| (-2.0 * x, -3.0 * y);
-        let mut pp = PhasePortrait::compute(&f, [-1.0, 1.0], [-1.0, 1.0], 4, &[], 0.01, 10);
-        pp.classify_fixed_points(&[[0.0, 0.0]], &f, 1e-5);
-        assert_eq!(pp.fixed_points.len(), 1);
-        let fp = pp.fixed_points[0];
-        assert!(
-            fp.stability == FixedPointType::StableNode
-                || fp.stability == FixedPointType::StableFocus,
-            "origin of (-2x,-3y) should be stable: {:?}",
-            fp.stability
-        );
-    }
-
-    // ---- Hodograph ----
-
-    #[test]
-    fn hodograph_projectile_linear_vy() {
-        let h = Hodograph::projectile(10.0, 20.0, 9.81, 0.1, 10);
-        // vx stays constant
-        for v in &h.velocities {
-            assert!((v[0] - 10.0).abs() < 1e-10, "vx should be constant");
-        }
-        // vy decreases linearly
-        assert!(h.velocities.last().unwrap()[1] < h.velocities[0][1]);
-    }
-
-    #[test]
-    fn hodograph_arc_length_positive() {
-        let h = Hodograph::projectile(5.0, 10.0, 9.81, 0.1, 20);
-        assert!(h.arc_length() > 0.0);
-    }
-
-    #[test]
-    fn hodograph_mean_speed_correct() {
-        let mut h = Hodograph::new();
-        h.push(0.0, 3.0, 4.0); // speed = 5
-        h.push(1.0, 0.0, 5.0); // speed = 5
-        let ms = h.mean_speed();
-        assert!((ms - 5.0).abs() < 1e-10, "mean speed={ms:.6}");
-    }
-
-    // ---- LissajousFigures ----
-
-    #[test]
-    fn lissajous_point_count() {
-        let fig = LissajousFigure::new(1.0, 2.0, 0.0, 1.0, 1.0, [0.0, 2.0 * PI], 200);
-        assert_eq!(fig.points.len(), 200);
-    }
-
-    #[test]
-    fn lissajous_amplitude_bounds() {
-        let amp_x = 3.0;
-        let amp_y = 2.0;
-        let fig = LissajousFigure::new(1.0, 2.0, PI / 4.0, amp_x, amp_y, [0.0, 4.0 * PI], 500);
-        for &[x, y] in &fig.points {
-            assert!(
-                x.abs() <= amp_x + 1e-10,
-                "x={x:.6} exceeds amplitude {amp_x}"
-            );
-            assert!(
-                y.abs() <= amp_y + 1e-10,
-                "y={y:.6} exceeds amplitude {amp_y}"
-            );
-        }
-    }
-
-    #[test]
-    fn lissajous_integer_ratio_is_closed() {
-        // 1:2 ratio → closed figure
-        let fig = LissajousFigure::new(1.0, 2.0, 0.0, 1.0, 1.0, [0.0, 2.0 * PI], 100);
-        assert!(
-            fig.is_closed(1e-6),
-            "1:2 frequency ratio should be a closed curve"
-        );
-    }
-
-    #[test]
-    fn lissajous_bounding_box_within_amplitude() {
-        let fig = LissajousFigure::new(3.0, 2.0, 0.5, 2.0, 1.5, [0.0, 10.0 * PI], 1000);
-        let (xb, yb) = fig.bounding_box();
-        assert!(xb[0] >= -2.0 - 1e-10 && xb[1] <= 2.0 + 1e-10);
-        assert!(yb[0] >= -1.5 - 1e-10 && yb[1] <= 1.5 + 1e-10);
-    }
-
-    #[test]
-    fn lissajous_circle_at_equal_freqs_and_phase() {
-        // freq_x = freq_y, phase = π/2 → circle
-        let fig = LissajousFigure::new(1.0, 1.0, PI / 2.0, 1.0, 1.0, [0.0, 2.0 * PI], 360);
-        // All points should lie on unit circle
-        for &[x, y] in &fig.points {
-            let r = (x * x + y * y).sqrt();
-            assert!((r - 1.0).abs() < 0.01, "r={r:.6} should be 1 for a circle");
-        }
-    }
-}
+mod tests;

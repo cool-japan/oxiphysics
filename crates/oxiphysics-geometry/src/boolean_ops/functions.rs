@@ -290,22 +290,32 @@ pub fn clip_polygon_2d(subject: &[[f64; 2]], clip: &[[f64; 2]]) -> Vec<[f64; 2]>
         if output.is_empty() {
             return Vec::new();
         }
-        let input = output.clone();
-        output.clear();
-        let edge_a = clip[i];
-        let edge_b = clip[(i + 1) % n_clip];
-        let n_in = input.len();
-        for j in 0..n_in {
-            let current = input[j];
-            let prev = input[(j + n_in - 1) % n_in];
-            if inside_2d(current, edge_a, edge_b) {
-                if !inside_2d(prev, edge_a, edge_b) {
-                    output.push(intersect_2d(prev, current, edge_a, edge_b));
-                }
-                output.push(current);
-            } else if inside_2d(prev, edge_a, edge_b) {
+        output = clip_polygon_half_plane_2d(&output, clip[i], clip[(i + 1) % n_clip]);
+    }
+    output
+}
+/// One Sutherland-Hodgman step: clip `polygon` to the closed half-plane on
+/// the left of the directed line `edge_a → edge_b`.
+///
+/// Points on the line count as inside.  The result is empty when the whole
+/// polygon lies strictly on the right of the line.
+pub(super) fn clip_polygon_half_plane_2d(
+    polygon: &[[f64; 2]],
+    edge_a: [f64; 2],
+    edge_b: [f64; 2],
+) -> Vec<[f64; 2]> {
+    let n_in = polygon.len();
+    let mut output = Vec::with_capacity(n_in + 1);
+    for j in 0..n_in {
+        let current = polygon[j];
+        let prev = polygon[(j + n_in - 1) % n_in];
+        if inside_2d(current, edge_a, edge_b) {
+            if !inside_2d(prev, edge_a, edge_b) {
                 output.push(intersect_2d(prev, current, edge_a, edge_b));
             }
+            output.push(current);
+        } else if inside_2d(prev, edge_a, edge_b) {
+            output.push(intersect_2d(prev, current, edge_a, edge_b));
         }
     }
     output
@@ -392,42 +402,6 @@ pub fn polygon2d_union(a: &[[f64; 2]], b: &[[f64; 2]]) -> Vec<[f64; 2]> {
     pts.extend_from_slice(a);
     pts.extend_from_slice(b);
     convex_hull_2d(&pts)
-}
-/// Compute the 2-D difference `a \ b` for convex polygons.
-///
-/// Returns the portion of `a` outside `b`.
-/// Inverts b's winding so we clip a against the outside of b.
-pub fn polygon2d_difference(a: &[[f64; 2]], b: &[[f64; 2]]) -> Vec<[f64; 2]> {
-    if a.is_empty() || b.is_empty() {
-        return a.to_vec();
-    }
-    let mut result = a.to_vec();
-    let n = b.len();
-    for i in 0..n {
-        if result.is_empty() {
-            break;
-        }
-        let edge_a = b[i];
-        let edge_b = b[(i + 1) % n];
-        let input = result.clone();
-        result.clear();
-        let ni = input.len();
-        for j in 0..ni {
-            let current = input[j];
-            let prev = input[(j + ni - 1) % ni];
-            let cur_out = !inside_2d(current, edge_a, edge_b);
-            let prev_out = !inside_2d(prev, edge_a, edge_b);
-            if cur_out {
-                if !prev_out {
-                    result.push(intersect_2d(prev, current, edge_a, edge_b));
-                }
-                result.push(current);
-            } else if prev_out {
-                result.push(intersect_2d(prev, current, edge_a, edge_b));
-            }
-        }
-    }
-    result
 }
 /// Compute a convex hull of 2-D points using the gift-wrapping algorithm.
 pub(super) fn convex_hull_2d(pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
@@ -827,12 +801,6 @@ mod tests {
             result.is_empty(),
             "non-overlapping squares have empty intersection"
         );
-    }
-    #[test]
-    fn test_polygon2d_difference_basic() {
-        let a: Vec<[f64; 2]> = vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]];
-        let b: Vec<[f64; 2]> = vec![[1.0, 0.0], [3.0, 0.0], [3.0, 2.0], [1.0, 2.0]];
-        let _result = polygon2d_difference(&a, &b);
     }
     #[test]
     fn test_csg_material_union() {

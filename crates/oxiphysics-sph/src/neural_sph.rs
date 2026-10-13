@@ -133,15 +133,42 @@ impl NeuralKernel {
 /// Particle data bundle passed to the iterative divergence-free pressure
 /// correction.  Groups position, velocity, mass, and density slices so that
 /// the correction function stays within the 7-argument limit.
+///
+/// The velocities are borrowed mutably because the correction projects them
+/// towards a divergence-free field in place.
 pub struct DivCorrectionData<'a> {
     /// Particle positions `[[x, y, z]; n]`.
     pub pos: &'a [[f64; 3]],
-    /// Particle velocities `[[vx, vy, vz]; n]`.
-    pub vel: &'a [[f64; 3]],
+    /// Particle velocities `[[vx, vy, vz]; n]`, corrected in place.
+    pub vel: &'a mut [[f64; 3]],
     /// Particle masses `[m; n]`.
     pub mass: &'a [f64],
     /// Particle densities `[ρ; n]`.
     pub rho: &'a [f64],
+}
+
+/// Gradient `∇_i W(x_i − x_j, h)` of the 3-D cubic-spline kernel (support `2h`)
+/// for the separation `r_ij = x_i − x_j`; zero for coincident particles.
+fn cubic_kernel_gradient(r_ij: [f64; 3], h: f64) -> [f64; 3] {
+    let r = (r_ij[0] * r_ij[0] + r_ij[1] * r_ij[1] + r_ij[2] * r_ij[2]).sqrt();
+    if r < 1.0e-30 || h < 1.0e-30 {
+        return [0.0; 3];
+    }
+    let q = r / h;
+    let sigma = 1.0 / (std::f64::consts::PI * h * h * h * h);
+    let dw_dr = if q < 1.0 {
+        sigma * (-3.0 * q + 2.25 * q * q)
+    } else if q < 2.0 {
+        let t = 2.0 - q;
+        sigma * (-0.75 * t * t)
+    } else {
+        0.0
+    };
+    [
+        dw_dr * r_ij[0] / r,
+        dw_dr * r_ij[1] / r,
+        dw_dr * r_ij[2] / r,
+    ]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -232,110 +259,187 @@ impl NeuralPressureSolver {
 
     /// Iterative divergence-free pressure correction for a full particle system.
     ///
-    /// Runs up to `MAX_ITER=3` correction passes.  Each pass:
-    /// 1. Computes the density divergence at each particle via SPH summation.
-    /// 2. Adjusts pressure: `Δp = -ρ₀ * div_v / dt` (clamped non-negative).
+    /// A projected Gauss–Seidel version of the divergence-free solver of Bender
+    /// & Koschier (DFSPH).  With the pair gradients `∇ᵢWᵢⱼ`, the density rate
+    /// `ρ̇ᵢ = Σⱼ mⱼ (vᵢ − vⱼ)·∇ᵢWᵢⱼ` (positive under compression) and the
+    /// reported divergence `Dᵢ = Σⱼ (mⱼ/ρⱼ)(vᵢ − vⱼ)·∇ᵢWᵢⱼ` \[1/s\], one sweep
+    /// visits the particles in index order and for each particle `i`
     ///
-    /// Returns the maximum absolute divergence before the first iteration and
-    /// after the final iteration as `(max_div_before, max_div_after)`.
+    /// 1. evaluates `ρ̇ᵢ` from the *current* (already partly corrected)
+    ///    velocities and chooses the pressure increment that cancels it,
+    ///    `Δpᵢ = ρᵢ² ρ̇ᵢ / (dt Zᵢ)` with
+    ///    `Zᵢ = |Σⱼ mⱼ ∇ᵢWᵢⱼ|² + mᵢ Σⱼ mⱼ |∇ᵢWᵢⱼ|²`;
+    ///    the total pressure never drops below zero, so only pressure that is
+    ///    actually present can be removed again;
+    /// 2. applies the symmetric pressure-gradient acceleration of that
+    ///    increment at once, `vᵢ −= dt (Δpᵢ/ρᵢ²) Σⱼ mⱼ ∇ᵢWᵢⱼ` and
+    ///    `vⱼ += dt mᵢ (Δpᵢ/ρᵢ²) ∇ᵢWᵢⱼ` for every neighbour `j`, which conserves
+    ///    the linear momentum `Σ m v` exactly for any neighbour list.
+    ///
+    /// Compression (`D > 0`) is relaxed by raising the pressure.  Expansion
+    /// cannot be removed by a non-negative pressure, so a purely diverging
+    /// field is left unchanged.  The velocity change is independent of `dt`
+    /// (it cancels between the pressure increment and the acceleration); only
+    /// the pressure scales as `1/dt`.  A vanishing `dt` is replaced by `1`.
+    /// Negative entries of `pressure` are clamped to zero first.
+    ///
+    /// Runs up to `10` sweeps and stops early once `max |D| < 1e-4`.  Returns
+    /// the maximum absolute divergence before the first sweep and after the last
+    /// sweep as `(max_div_before, max_div_after)`.
     ///
     /// # Arguments
-    /// * `data`          — particle data bundle (positions, velocities, masses, densities)
-    /// * `pressure`      — mutable pressure array `[p; n]` (updated in-place)
-    /// * `neighbor_list` — pre-built neighbour lists `Vec<Vec<usize>>`
+    /// * `data`          — particle data bundle (positions, velocities, masses,
+    ///   densities); the velocities are corrected in place.  Only the first
+    ///   `n` particles are used, where `n` is the length of the shortest of
+    ///   `pos`, `vel`, `rho` and `pressure`; a missing mass defaults to `1`.
+    /// * `pressure`      — pressure array `[p; n]`, updated in place
+    /// * `neighbor_list` — neighbour lists `Vec<Vec<usize>>` within the support
+    ///   radius `2h`; entries outside `0..n` and self entries are ignored
     /// * `h`             — smoothing length
     /// * `dt`            — time step
     pub fn iterative_divergence_free_correction(
         &self,
-        data: &DivCorrectionData<'_>,
+        data: &mut DivCorrectionData<'_>,
         pressure: &mut [f64],
         neighbor_list: &[Vec<usize>],
         h: f64,
         dt: f64,
     ) -> (f64, f64) {
-        const MAX_ITER: usize = 3;
+        const MAX_ITER: usize = 10;
         const DIV_THRESHOLD: f64 = 1e-4;
 
-        let pos = data.pos;
-        let vel = data.vel;
-        let mass = data.mass;
-        let rho = data.rho;
-
-        let n = pos.len();
+        let n = data
+            .pos
+            .len()
+            .min(data.vel.len())
+            .min(data.rho.len())
+            .min(pressure.len());
         if n == 0 {
             return (0.0, 0.0);
         }
-        let mut density_div = vec![0.0_f64; n];
+        let dt_eff = if dt.abs() > 1e-30 { dt.abs() } else { 1.0 };
 
-        // Helper: SPH kernel gradient vector (cubic spline)
-        let kernel_gradient = |r_ij: [f64; 3], h_: f64| -> [f64; 3] {
-            let rx = r_ij[0];
-            let ry = r_ij[1];
-            let rz = r_ij[2];
-            let r = (rx * rx + ry * ry + rz * rz).sqrt();
-            if r < 1.0e-30 || h_ < 1.0e-30 {
-                return [0.0; 3];
-            }
-            let q = r / h_;
-            let sigma = 1.0 / (std::f64::consts::PI * h_ * h_ * h_ * h_);
-            let dw_dr = if q < 1.0 {
-                sigma * (-3.0 * q + 2.25 * q * q)
-            } else if q < 2.0 {
-                let t = 2.0 - q;
-                sigma * (-0.75 * t * t)
-            } else {
-                0.0
-            };
-            [dw_dr * rx / r, dw_dr * ry / r, dw_dr * rz / r]
-        };
+        let pos = data.pos;
+        let mass = data.mass;
+        let rho = data.rho;
+        let mass_of = |j: usize| mass.get(j).copied().unwrap_or(1.0);
+        let rho_of = |j: usize| rho[j].max(1e-30);
 
-        let compute_div = |density_div: &mut [f64]| -> f64 {
-            let mut max_div = 0.0_f64;
-            for i in 0..n {
-                let mut div_v = 0.0_f64;
-                if let Some(neighbours) = neighbor_list.get(i) {
-                    for &j in neighbours {
-                        if j >= n {
-                            continue;
-                        }
-                        let r_ij = [
-                            pos[i][0] - pos[j][0],
-                            pos[i][1] - pos[j][1],
-                            pos[i][2] - pos[j][2],
-                        ];
-                        let v_ij = [
-                            vel[i][0] - vel[j][0],
-                            vel[i][1] - vel[j][1],
-                            vel[i][2] - vel[j][2],
-                        ];
-                        let grad_w = kernel_gradient(r_ij, h);
-                        let rho_j = rho[j].max(1e-30);
-                        let m_j = mass.get(j).copied().unwrap_or(1.0);
-                        let dot_vg =
-                            v_ij[0] * grad_w[0] + v_ij[1] * grad_w[1] + v_ij[2] * grad_w[2];
-                        div_v += m_j * dot_vg / rho_j;
+        // Pair gradients ∇_i W_ij depend on the (fixed) positions only.
+        let pairs: Vec<Vec<(usize, [f64; 3])>> = (0..n)
+            .map(|i| {
+                neighbor_list
+                    .get(i)
+                    .map(|list| {
+                        list.iter()
+                            .filter(|&&j| j != i && j < n)
+                            .map(|&j| {
+                                let r_ij = [
+                                    pos[i][0] - pos[j][0],
+                                    pos[i][1] - pos[j][1],
+                                    pos[i][2] - pos[j][2],
+                                ];
+                                (j, cubic_kernel_gradient(r_ij, h))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        // Z_i = |Σ_j m_j ∇W_ij|² + m_i Σ_j m_j |∇W_ij|²: the decrease of ρ̇_i per
+        // unit of Δp_i/ρ_i², scaled by 1/dt.
+        let stiffness: Vec<f64> = pairs
+            .iter()
+            .enumerate()
+            .map(|(i, list)| {
+                let mut sum = [0.0_f64; 3];
+                let mut sum_sq = 0.0_f64;
+                for &(j, g) in list {
+                    let m_j = mass_of(j);
+                    for k in 0..3 {
+                        sum[k] += m_j * g[k];
                     }
+                    sum_sq += m_j * (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
                 }
-                density_div[i] = div_v;
-                max_div = max_div.max(div_v.abs());
-            }
-            max_div
+                sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2] + mass_of(i) * sum_sq
+            })
+            .collect();
+
+        // Density rate ρ̇_i = Σ_j m_j (v_i − v_j)·∇_i W_ij.
+        let density_rate = |vel: &[[f64; 3]], i: usize| -> f64 {
+            pairs[i]
+                .iter()
+                .map(|&(j, g)| {
+                    let v_ij = [
+                        vel[i][0] - vel[j][0],
+                        vel[i][1] - vel[j][1],
+                        vel[i][2] - vel[j][2],
+                    ];
+                    mass_of(j) * (v_ij[0] * g[0] + v_ij[1] * g[1] + v_ij[2] * g[2])
+                })
+                .sum()
+        };
+        // max_i |D_i| with D_i = Σ_j (m_j/ρ_j)(v_i − v_j)·∇_i W_ij.
+        let max_abs_divergence = |vel: &[[f64; 3]]| -> f64 {
+            pairs
+                .iter()
+                .enumerate()
+                .map(|(i, list)| {
+                    list.iter()
+                        .map(|&(j, g)| {
+                            let v_ij = [
+                                vel[i][0] - vel[j][0],
+                                vel[i][1] - vel[j][1],
+                                vel[i][2] - vel[j][2],
+                            ];
+                            mass_of(j) * (v_ij[0] * g[0] + v_ij[1] * g[1] + v_ij[2] * g[2])
+                                / rho_of(j)
+                        })
+                        .sum::<f64>()
+                        .abs()
+                })
+                .fold(0.0_f64, f64::max)
         };
 
-        let max_div_before = compute_div(&mut density_div);
+        for p in pressure.iter_mut().take(n) {
+            *p = p.max(0.0);
+        }
+        let max_div_before = max_abs_divergence(data.vel);
         let mut max_div_after = max_div_before;
 
         for _iter in 0..MAX_ITER {
             if max_div_after < DIV_THRESHOLD {
                 break;
             }
-            // Pressure correction: Δp = -ρ₀ * div_v / dt
-            let dt_safe = if dt.abs() > 1e-30 { dt } else { 1.0 };
             for i in 0..n {
-                pressure[i] -= self.rho0 * density_div[i] / dt_safe;
-                pressure[i] = pressure[i].max(0.0);
+                if stiffness[i] <= 1e-300 {
+                    continue;
+                }
+                let rho_i = rho_of(i);
+                let rate = density_rate(data.vel, i);
+                let raw = rho_i * rho_i * rate / (dt_eff * stiffness[i]);
+                // The total pressure stays non-negative.
+                let delta_p = raw.max(-pressure[i]);
+                if delta_p == 0.0 {
+                    continue;
+                }
+                let scale = dt_eff * delta_p / (rho_i * rho_i);
+                let m_i = mass_of(i);
+                let mut gradient_sum = [0.0_f64; 3];
+                for &(j, g) in &pairs[i] {
+                    let m_j = mass_of(j);
+                    for k in 0..3 {
+                        gradient_sum[k] += m_j * g[k];
+                        data.vel[j][k] += scale * m_i * g[k];
+                    }
+                }
+                for k in 0..3 {
+                    data.vel[i][k] -= scale * gradient_sum[k];
+                }
+                pressure[i] += delta_p;
             }
-            max_div_after = compute_div(&mut density_div);
+            max_div_after = max_abs_divergence(data.vel);
         }
 
         (max_div_before, max_div_after)
@@ -994,71 +1098,257 @@ mod tests {
 
     // ── Iterative divergence-free correction (E4) ────────────────────────────
 
-    #[test]
-    fn test_divergence_correction_reduces_max_div() {
-        // Build a small 8-particle system with non-zero divergence.
-        let solver = NeuralPressureSolver::default_solver(1000.0, 1500.0);
-        let n = 8_usize;
-        let h = 0.5_f64;
-        let dt = 1e-3_f64;
-
-        // Particles arranged in a 2×2×2 cube with outward velocities (diverging flow)
-        let positions: Vec<[f64; 3]> = (0..n)
+    /// Neighbour lists of all pairs closer than `2h` (symmetric, self excluded).
+    fn lists_within_support(positions: &[[f64; 3]], h: f64) -> Vec<Vec<usize>> {
+        (0..positions.len())
             .map(|i| {
-                let ix = (i % 2) as f64;
-                let iy = ((i / 2) % 2) as f64;
-                let iz = (i / 4) as f64;
-                [ix * 0.3, iy * 0.3, iz * 0.3]
-            })
-            .collect();
-        let velocities: Vec<[f64; 3]> = positions
-            .iter()
-            .map(|p| [p[0] * 0.5, p[1] * 0.5, p[2] * 0.5]) // outward => divergence > 0
-            .collect();
-        let masses = vec![1.0_f64; n];
-        let rho = vec![1000.0_f64; n];
-        let mut pressure = vec![0.0_f64; n];
-
-        // Build simple neighbour lists: each particle sees all others within 2h
-        let neighbor_list: Vec<Vec<usize>> = (0..n)
-            .map(|i| {
-                (0..n)
+                (0..positions.len())
                     .filter(|&j| {
-                        if j == i {
-                            return false;
-                        }
                         let dx = positions[i][0] - positions[j][0];
                         let dy = positions[i][1] - positions[j][1];
                         let dz = positions[i][2] - positions[j][2];
-                        (dx * dx + dy * dy + dz * dz).sqrt() < 2.0 * h
+                        j != i && (dx * dx + dy * dy + dz * dz).sqrt() <= 2.0 * h
                     })
                     .collect()
             })
-            .collect();
+            .collect()
+    }
 
-        let particle_data = DivCorrectionData {
+    /// `n³` lattice of spacing `dx` centred on the origin.
+    fn lattice(n: usize, dx: f64) -> Vec<[f64; 3]> {
+        let offset = 0.5 * (n as f64 - 1.0) * dx;
+        let mut out = Vec::with_capacity(n * n * n);
+        for i in 0..n {
+            for j in 0..n {
+                for k in 0..n {
+                    out.push([
+                        i as f64 * dx - offset,
+                        j as f64 * dx - offset,
+                        k as f64 * dx - offset,
+                    ]);
+                }
+            }
+        }
+        out
+    }
+
+    fn total_momentum(vel: &[[f64; 3]], mass: &[f64]) -> [f64; 3] {
+        let mut p = [0.0_f64; 3];
+        for (v, &m) in vel.iter().zip(mass.iter()) {
+            for k in 0..3 {
+                p[k] += m * v[k];
+            }
+        }
+        p
+    }
+
+    #[test]
+    fn test_divergence_correction_removes_the_compression_of_an_approaching_pair() {
+        let solver = NeuralPressureSolver::default_solver(1000.0, 1500.0);
+        let positions = vec![[0.0, 0.0, 0.0], [0.3, 0.0, 0.0]];
+        let mut velocities = vec![[0.5, 0.0, 0.0], [-0.5, 0.0, 0.0]];
+        let masses = vec![1.0, 1.0];
+        let rho = vec![1000.0, 1000.0];
+        let mut pressure = vec![0.0, 0.0];
+        let lists = lists_within_support(&positions, 0.5);
+        let mut data = DivCorrectionData {
             pos: &positions,
-            vel: &velocities,
+            vel: &mut velocities,
             mass: &masses,
             rho: &rho,
         };
-        let (max_div_before, max_div_after) = solver.iterative_divergence_free_correction(
-            &particle_data,
+        let (before, after) = solver.iterative_divergence_free_correction(
+            &mut data,
             &mut pressure,
-            &neighbor_list,
-            h,
-            dt,
+            &lists,
+            0.5,
+            1.0e-3,
         );
-
-        // Divergence may already be small for this geometry, but after correction
-        // it must be <= before.
+        assert!(before > 0.0, "an approaching pair is compressing: {before}");
         assert!(
-            max_div_after <= max_div_before + 1e-14,
-            "divergence should not increase: before={max_div_before}, after={max_div_after}"
+            after < 1.0e-9 * before,
+            "divergence must be removed: before={before}, after={after}"
         );
-        // All pressures should be non-negative
-        for (i, &p) in pressure.iter().enumerate() {
-            assert!(p >= 0.0, "pressure[{i}] must be non-negative, got {p}");
+        // The velocities were actually changed: the pair has been stopped.
+        for v in &velocities {
+            assert!(v[0].abs() < 1.0e-9, "velocity {v:?}");
+            assert_eq!(v[1], 0.0);
+            assert_eq!(v[2], 0.0);
         }
+        // The pressure that did the work is positive.
+        assert!(pressure.iter().all(|&p| p >= 0.0));
+        assert!(pressure[0] + pressure[1] > 0.0);
+    }
+
+    #[test]
+    fn test_divergence_correction_reduces_compression_in_a_lattice_cloud() {
+        let solver = NeuralPressureSolver::default_solver(1000.0, 1500.0);
+        let dx = 0.1;
+        let h = 0.13;
+        let positions = lattice(4, dx);
+        let n = positions.len();
+        // Uniform compression towards the centre: v = −α x.
+        let alpha = 0.5;
+        let mut velocities: Vec<[f64; 3]> = positions
+            .iter()
+            .map(|p| [-alpha * p[0], -alpha * p[1], -alpha * p[2]])
+            .collect();
+        let masses = vec![1000.0 * dx * dx * dx; n];
+        let rho = vec![1000.0; n];
+        let mut pressure = vec![0.0; n];
+        let lists = lists_within_support(&positions, h);
+        let p_before = total_momentum(&velocities, &masses);
+        let scale: f64 = velocities
+            .iter()
+            .zip(masses.iter())
+            .map(|(v, m)| m * (v[0].abs() + v[1].abs() + v[2].abs()))
+            .sum();
+        let mut data = DivCorrectionData {
+            pos: &positions,
+            vel: &mut velocities,
+            mass: &masses,
+            rho: &rho,
+        };
+        let (before, after) = solver.iterative_divergence_free_correction(
+            &mut data,
+            &mut pressure,
+            &lists,
+            h,
+            1.0e-3,
+        );
+        assert!(before > 0.0);
+        assert!(
+            after < 0.05 * before,
+            "max divergence must drop clearly: before={before}, after={after}"
+        );
+        let p_after = total_momentum(&velocities, &masses);
+        for k in 0..3 {
+            assert!(
+                (p_after[k] - p_before[k]).abs() <= 1.0e-10 * scale,
+                "linear momentum component {k} changed: {} → {}",
+                p_before[k],
+                p_after[k]
+            );
+        }
+        assert!(pressure.iter().all(|&p| p.is_finite() && p >= 0.0));
+        assert!(pressure.iter().any(|&p| p > 0.0));
+    }
+
+    #[test]
+    fn test_divergence_correction_leaves_an_expanding_flow_untouched() {
+        // A non-negative pressure cannot pull particles together again.
+        let solver = NeuralPressureSolver::default_solver(1000.0, 1500.0);
+        let positions = lattice(2, 0.3);
+        let n = positions.len();
+        let mut velocities: Vec<[f64; 3]> = positions
+            .iter()
+            .map(|p| [0.5 * p[0], 0.5 * p[1], 0.5 * p[2]])
+            .collect();
+        let original = velocities.clone();
+        let masses = vec![1.0; n];
+        let rho = vec![1000.0; n];
+        let mut pressure = vec![0.0; n];
+        let lists = lists_within_support(&positions, 0.5);
+        let mut data = DivCorrectionData {
+            pos: &positions,
+            vel: &mut velocities,
+            mass: &masses,
+            rho: &rho,
+        };
+        let (before, after) = solver.iterative_divergence_free_correction(
+            &mut data,
+            &mut pressure,
+            &lists,
+            0.5,
+            1.0e-3,
+        );
+        assert!(before > 0.0);
+        assert_eq!(before, after);
+        assert_eq!(velocities, original);
+        assert!(pressure.iter().all(|&p| p == 0.0));
+    }
+
+    #[test]
+    fn test_divergence_correction_velocity_change_is_independent_of_the_time_step() {
+        // dt cancels between the pressure increment and the acceleration, so the
+        // corrected velocities agree while the pressure scales as 1/dt.
+        let solver = NeuralPressureSolver::default_solver(1000.0, 1500.0);
+        let dx = 0.1;
+        let h = 0.13;
+        let positions = lattice(3, dx);
+        let n = positions.len();
+        let masses = vec![1000.0 * dx * dx * dx; n];
+        let rho = vec![1000.0; n];
+        let lists = lists_within_support(&positions, h);
+        let run = |dt: f64| -> (Vec<[f64; 3]>, Vec<f64>) {
+            let mut velocities: Vec<[f64; 3]> = positions
+                .iter()
+                .map(|p| [-0.4 * p[0], -0.4 * p[1], -0.4 * p[2]])
+                .collect();
+            let mut pressure = vec![0.0; n];
+            let mut data = DivCorrectionData {
+                pos: &positions,
+                vel: &mut velocities,
+                mass: &masses,
+                rho: &rho,
+            };
+            let _ = solver.iterative_divergence_free_correction(
+                &mut data,
+                &mut pressure,
+                &lists,
+                h,
+                dt,
+            );
+            (velocities, pressure)
+        };
+        let (v_slow, p_slow) = run(1.0e-3);
+        let (v_fast, p_fast) = run(1.0e-5);
+        for (a, b) in v_slow.iter().zip(v_fast.iter()) {
+            for k in 0..3 {
+                assert!((a[k] - b[k]).abs() < 1.0e-9, "{a:?} vs {b:?}");
+            }
+        }
+        for (a, b) in p_slow.iter().zip(p_fast.iter()) {
+            assert!(
+                (a * 1.0e-3 - b * 1.0e-5).abs() <= 1.0e-8 * (a * 1.0e-3).abs().max(1.0e-30),
+                "p·dt: {} vs {}",
+                a * 1.0e-3,
+                b * 1.0e-5
+            );
+        }
+    }
+
+    #[test]
+    fn test_divergence_correction_edge_cases_do_not_panic() {
+        let solver = NeuralPressureSolver::default_solver(1000.0, 1500.0);
+        // Empty system.
+        let mut empty_vel: Vec<[f64; 3]> = Vec::new();
+        let mut data = DivCorrectionData {
+            pos: &[],
+            vel: &mut empty_vel,
+            mass: &[],
+            rho: &[],
+        };
+        assert_eq!(
+            solver.iterative_divergence_free_correction(&mut data, &mut [], &[], 0.5, 1.0e-3),
+            (0.0, 0.0)
+        );
+        // Missing neighbour lists, out-of-range and self indices.
+        let positions = vec![[0.0; 3], [0.2, 0.0, 0.0]];
+        let mut velocities = vec![[0.3, 0.0, 0.0], [-0.3, 0.0, 0.0]];
+        let masses = vec![1.0];
+        let rho = vec![1000.0, 1000.0];
+        let mut pressure = vec![-5.0, 2.0];
+        let lists = vec![vec![0, 1, 7]];
+        let mut data = DivCorrectionData {
+            pos: &positions,
+            vel: &mut velocities,
+            mass: &masses,
+            rho: &rho,
+        };
+        let (before, after) =
+            solver.iterative_divergence_free_correction(&mut data, &mut pressure, &lists, 0.5, 0.0);
+        assert!(before.is_finite() && after.is_finite());
+        assert!(pressure.iter().all(|&p| p.is_finite() && p >= 0.0));
     }
 }

@@ -350,16 +350,17 @@ impl ElectrokineticLBM {
 
     /// Body force (per unit volume) on the fluid from the electric field acting on charge.
     ///
-    /// **F** = ρ_e **E** = −ρ_e ∇φ
+    /// **F** = ρ_e **E**, with **E** = **E**_applied − ∇φ
     ///
     /// Uses central differences for ∇φ.
     ///
     /// # Arguments
     /// * `i`, `j` — cell indices
     /// * `e_x`    — externally applied electric field in x (V m⁻¹)
+    /// * `e_y`    — externally applied electric field in y (V m⁻¹)
     ///
     /// Returns `[Fx, Fy]`.
-    pub fn electroosmotic_forcing(&self, i: usize, j: usize, e_x: f64) -> [f64; 2] {
+    pub fn electroosmotic_forcing(&self, i: usize, j: usize, e_x: f64, e_y: f64) -> [f64; 2] {
         let nx = self.nx;
         let ny = self.ny;
         let ip = (i + 1) % nx;
@@ -370,10 +371,39 @@ impl ElectrokineticLBM {
         let dphi_dx = (self.phi_e[self.index(ip, j)] - self.phi_e[self.index(im, j)]) / 2.0;
         let dphi_dy = (self.phi_e[self.index(i, jp)] - self.phi_e[self.index(i, jm)]) / 2.0;
         let rho_e = self.rho_charge[self.index(i, j)];
-        // Total Ex = applied + gradient contribution
+        // Total E = applied + gradient contribution
         let ex_total = e_x - dphi_dx;
-        let ey_total = -dphi_dy;
+        let ey_total = e_y - dphi_dy;
         [rho_e * ex_total, rho_e * ey_total]
+    }
+
+    /// Macroscopic density and force-corrected velocity at cell `(i, j)`.
+    ///
+    /// Returns `(ρ, [u_x, u_y])` with ρ = Σ f_q and, following Guo et al.
+    /// (2002), the physical velocity `u = (Σ c_q f_q + F/2) / ρ` where **F** is
+    /// the electrokinetic body force of
+    /// [`electroosmotic_forcing`](Self::electroosmotic_forcing) for the applied
+    /// field `(e_x, e_y)`.  A cell with vanishing density has zero velocity.
+    pub fn macroscopic(&self, i: usize, j: usize, e_x: f64, e_y: f64) -> (f64, [f64; 2]) {
+        let base = (j * self.nx + i) * 9;
+        let force = self.electroosmotic_forcing(i, j, e_x, e_y);
+        let mut rho = 0.0_f64;
+        let mut jx = 0.0_f64;
+        let mut jy = 0.0_f64;
+        for (q, c) in D2Q9_C.iter().enumerate() {
+            let f = self.f_dist[base + q];
+            rho += f;
+            jx += c[0] * f;
+            jy += c[1] * f;
+        }
+        if rho > 1e-20 {
+            (
+                rho,
+                [(jx + 0.5 * force[0]) / rho, (jy + 0.5 * force[1]) / rho],
+            )
+        } else {
+            (rho, [0.0, 0.0])
+        }
     }
 
     /// D2Q9 equilibrium distribution function.
@@ -394,10 +424,11 @@ impl ElectrokineticLBM {
 
     /// BGK collision + streaming step with electrokinetic body force.
     ///
-    /// Performs:
-    /// 1. Compute macroscopic ρ, u from f.
-    /// 2. Add electrokinetic forcing via Guo scheme.
-    /// 3. BGK relaxation toward f^eq.
+    /// Performs, with the Guo et al. (2002) forcing scheme:
+    /// 1. Evaluate the body force **F** = ρ_e (**E**_applied − ∇φ) per cell.
+    /// 2. Compute ρ and the force-corrected velocity `u = (Σ c f + F/2) / ρ`.
+    /// 3. BGK relaxation toward `f^eq(ρ, u)` plus the forcing term
+    ///    `(1 − 1/(2τ)) w_q [ (c−u)/cs² + (c·u) c/cs⁴ ] · F`.
     /// 4. Streaming (periodic BC).
     ///
     /// # Arguments
@@ -407,6 +438,7 @@ impl ElectrokineticLBM {
         let ny = self.ny;
         let tau = 0.5 + self.nu / CS2; // relaxation time from ν = cs² (τ − 0.5)
         let inv_tau = 1.0 / tau;
+        let guo_prefactor = 1.0 - 0.5 * inv_tau;
         let ncells = nx * ny;
 
         // Collision
@@ -414,28 +446,10 @@ impl ElectrokineticLBM {
         for j in 0..ny {
             for i in 0..nx {
                 let base = (j * nx + i) * 9;
-                let idx = j * nx + i;
 
-                // Macroscopic density and velocity
-                let mut rho = 0.0_f64;
-                let mut ux = 0.0_f64;
-                let mut uy = 0.0_f64;
-                for (q, c) in D2Q9_C.iter().enumerate() {
-                    let f = self.f_dist[base + q];
-                    rho += f;
-                    ux += c[0] * f;
-                    uy += c[1] * f;
-                }
-                if rho > 1e-20 {
-                    ux /= rho;
-                    uy /= rho;
-                }
-
-                // Electrokinetic force
-                let force = self.electroosmotic_forcing(i, j, e_x);
-                let fx = force[0] + self.rho_charge[idx] * e_y * 0.0; // ey contribution
-                let fy = force[1];
-                let _ = e_y; // absorbed via electroosmotic_forcing
+                // Electrokinetic body force and the force-corrected velocity
+                let [fx, fy] = self.electroosmotic_forcing(i, j, e_x, e_y);
+                let (rho, [ux, uy]) = self.macroscopic(i, j, e_x, e_y);
 
                 // BGK + Guo forcing
                 for q in 0..9usize {
@@ -443,11 +457,10 @@ impl ElectrokineticLBM {
                     let cx = D2Q9_C[q][0];
                     let cy = D2Q9_C[q][1];
                     // Guo forcing term
-                    let guo =
-                        D2Q9_W[q] * ((cx - ux) / CS2 + cx * (cx * ux + cy * uy) / (CS2 * CS2)) * fx
-                            + D2Q9_W[q]
-                                * ((cy - uy) / CS2 + cy * (cx * ux + cy * uy) / (CS2 * CS2))
-                                * fy;
+                    let guo = guo_prefactor
+                        * D2Q9_W[q]
+                        * (((cx - ux) / CS2 + cx * (cx * ux + cy * uy) / (CS2 * CS2)) * fx
+                            + ((cy - uy) / CS2 + cy * (cx * ux + cy * uy) / (CS2 * CS2)) * fy);
                     f_post[base + q] =
                         self.f_dist[base + q] * (1.0 - inv_tau) + feq * inv_tau + guo;
                 }
@@ -802,7 +815,7 @@ mod tests {
     #[test]
     fn test_forcing_zero_charge() {
         let ek = ElectrokineticLBM::new(8, 8, 7.1e-10, -0.05, 1.0 / 6.0);
-        let f = ek.electroosmotic_forcing(3, 3, 1e4);
+        let f = ek.electroosmotic_forcing(3, 3, 1e4, 0.0);
         assert_eq!(f[0], 0.0);
         assert_eq!(f[1], 0.0);
     }
@@ -812,9 +825,39 @@ mod tests {
         let mut ek = ElectrokineticLBM::new(8, 8, 7.1e-10, -0.05, 1.0 / 6.0);
         let idx33 = ek.index(3, 3);
         ek.rho_charge[idx33] = 1.0;
-        let f = ek.electroosmotic_forcing(3, 3, 1e4);
+        let f = ek.electroosmotic_forcing(3, 3, 1e4, 0.0);
         // Positive charge in positive field → positive force in x
         assert!(f[0] > 0.0, "fx={}", f[0]);
+    }
+
+    #[test]
+    fn test_forcing_includes_applied_ey() {
+        let mut ek = ElectrokineticLBM::new(8, 8, 7.1e-10, -0.05, 1.0 / 6.0);
+        let idx33 = ek.index(3, 3);
+        ek.rho_charge[idx33] = 2.0;
+        let f = ek.electroosmotic_forcing(3, 3, 0.0, 3e-3);
+        assert!((f[1] - 6e-3).abs() < 1e-15, "Fy = {}", f[1]);
+        assert_eq!(f[0], 0.0);
+        let f = ek.electroosmotic_forcing(3, 3, 1e-3, -2e-3);
+        assert!((f[0] - 2e-3).abs() < 1e-15, "Fx = {}", f[0]);
+        assert!((f[1] + 4e-3).abs() < 1e-15, "Fy = {}", f[1]);
+    }
+
+    #[test]
+    fn test_forcing_potential_gradient_opposes_gradient() {
+        // E = -grad(phi): phi rising with y pushes positive charge towards -y.
+        let mut ek = ElectrokineticLBM::new(8, 8, 7.1e-10, -0.05, 1.0 / 6.0);
+        for j in 0..8 {
+            for i in 0..8 {
+                let idx = ek.index(i, j);
+                ek.phi_e[idx] = 0.1 * j as f64;
+            }
+        }
+        let idx33 = ek.index(3, 3);
+        ek.rho_charge[idx33] = 1.5;
+        let f = ek.electroosmotic_forcing(3, 3, 0.0, 0.0);
+        assert!((f[1] + 0.15).abs() < 1e-12, "Fy = {}", f[1]);
+        assert!(f[0].abs() < 1e-15, "Fx = {}", f[0]);
     }
 
     // ---- equilibrium_f ----
@@ -886,6 +929,137 @@ mod tests {
             (rho_after - rho_before).abs() / rho_before < 1e-10,
             "before={rho_before} after={rho_after}"
         );
+    }
+
+    /// A uniform charge in an applied E_y accelerates the fluid along y and
+    /// not at all along x: after n steps u_y = (n + 1/2) rho_e E_y / rho.
+    #[test]
+    fn test_collide_stream_applies_ey_to_charged_fluid() {
+        let (nx, ny) = (8, 8);
+        let (rho_e, e_y) = (1e-3, 1e-3);
+        let mut ek = ElectrokineticLBM::new(nx, ny, 7.1e-10, -0.05, 1.0 / 6.0);
+        for v in ek.rho_charge.iter_mut() {
+            *v = rho_e;
+        }
+        let steps = 100;
+        for _ in 0..steps {
+            ek.collide_stream(0.0, e_y);
+        }
+        let (mut sum_ux, mut sum_uy, mut sum_rho) = (0.0, 0.0, 0.0);
+        for j in 0..ny {
+            for i in 0..nx {
+                let (rho, u) = ek.macroscopic(i, j, 0.0, e_y);
+                sum_rho += rho;
+                sum_ux += u[0];
+                sum_uy += u[1];
+            }
+        }
+        let n = (nx * ny) as f64;
+        let (mean_rho, mean_ux, mean_uy) = (sum_rho / n, sum_ux / n, sum_uy / n);
+        let expected_uy = steps as f64 * rho_e * e_y / mean_rho;
+        assert!(
+            (mean_uy - expected_uy).abs() < 0.02 * expected_uy,
+            "mean u_y = {mean_uy}, expected {expected_uy}"
+        );
+        assert!(mean_ux.abs() < 1e-12, "mean u_x = {mean_ux}");
+        assert!((mean_rho - 1.0).abs() < 1e-12, "mean rho = {mean_rho}");
+    }
+
+    /// Total momentum injected per step equals the total body force exactly
+    /// for any relaxation time (consistent Guo prefactor and velocity shift).
+    #[test]
+    fn test_collide_stream_momentum_equals_force_impulse() {
+        let (nx, ny) = (8, 6);
+        let mut ek = ElectrokineticLBM::new(nx, ny, 7.1e-10, -0.05, 0.05);
+        let mut total_fx = 0.0;
+        let mut total_fy = 0.0;
+        let (e_x, e_y) = (2e-3, -1e-3);
+        for j in 0..ny {
+            for i in 0..nx {
+                let idx = ek.index(i, j);
+                ek.rho_charge[idx] =
+                    1e-3 * (1.0 + 0.5 * (2.0 * std::f64::consts::PI * j as f64 / ny as f64).sin());
+                total_fx += ek.rho_charge[idx] * e_x;
+                total_fy += ek.rho_charge[idx] * e_y;
+            }
+        }
+        let steps = 20;
+        for _ in 0..steps {
+            ek.collide_stream(e_x, e_y);
+        }
+        let (mut jx, mut jy) = (0.0, 0.0);
+        for j in 0..ny {
+            for i in 0..nx {
+                for (q, c) in D2Q9_C.iter().enumerate() {
+                    let f = ek.f_dist[ek.fi(i, j, q)];
+                    jx += c[0] * f;
+                    jy += c[1] * f;
+                }
+            }
+        }
+        assert!(
+            (jx - steps as f64 * total_fx).abs() < 1e-12,
+            "momentum x = {jx}, impulse {}",
+            steps as f64 * total_fx
+        );
+        assert!(
+            (jy - steps as f64 * total_fy).abs() < 1e-12,
+            "momentum y = {jy}, impulse {}",
+            steps as f64 * total_fy
+        );
+    }
+
+    /// One step from a uniform state reproduces the exact Guo-scheme momentum
+    /// flux, Pi = rho cs^2 I + rho u u + (u F + F u) + (1 - 1/(4 tau)) F F / rho,
+    /// which requires the (1 - 1/(2 tau)) forcing prefactor and the F/2
+    /// velocity shift.
+    #[test]
+    fn test_collide_stream_guo_momentum_flux() {
+        let nu = 0.1; // tau = 0.5 + nu / cs^2 = 0.8
+        let tau = 0.8;
+        let (nx, ny) = (4, 4);
+        let mut ek = ElectrokineticLBM::new(nx, ny, 7.1e-10, -0.05, nu);
+        let (rho0, u0) = (1.0, [0.05, 0.02]);
+        for j in 0..ny {
+            for i in 0..nx {
+                let idx = ek.index(i, j);
+                ek.rho_charge[idx] = 1.0;
+                for q in 0..9usize {
+                    let k = ek.fi(i, j, q);
+                    ek.f_dist[k] = ek.equilibrium_f(rho0, u0[0], u0[1], q);
+                }
+            }
+        }
+        let force = [0.05, 0.03];
+        ek.collide_stream(force[0], force[1]);
+        let (mut mom, mut pxx, mut pxy, mut pyy) = ([0.0; 2], 0.0, 0.0, 0.0);
+        for (q, c) in D2Q9_C.iter().enumerate() {
+            let f = ek.f_dist[ek.fi(2, 2, q)];
+            let (cx, cy) = (c[0], c[1]);
+            mom[0] += cx * f;
+            mom[1] += cy * f;
+            pxx += cx * cx * f;
+            pxy += cx * cy * f;
+            pyy += cy * cy * f;
+        }
+        for a in 0..2 {
+            let expected = rho0 * u0[a] + force[a];
+            assert!(
+                (mom[a] - expected).abs() < 1e-13,
+                "momentum[{a}] = {}",
+                mom[a]
+            );
+        }
+        let ff = 1.0 - 1.0 / (4.0 * tau);
+        let expect = |a: usize, b: usize, delta: f64| {
+            rho0 * CS2 * delta
+                + rho0 * u0[a] * u0[b]
+                + (u0[a] * force[b] + force[a] * u0[b])
+                + ff * force[a] * force[b] / rho0
+        };
+        assert!((pxx - expect(0, 0, 1.0)).abs() < 1e-13, "Pxx = {pxx}");
+        assert!((pxy - expect(0, 1, 0.0)).abs() < 1e-13, "Pxy = {pxy}");
+        assert!((pyy - expect(1, 1, 1.0)).abs() < 1e-13, "Pyy = {pyy}");
     }
 
     #[test]

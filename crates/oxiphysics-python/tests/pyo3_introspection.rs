@@ -10,15 +10,16 @@
 //!
 //! The tests below validate that this test binary compiles and links correctly
 //! against the current Cargo configuration.  They are intentionally minimal
-//! because:
+//! because the crate is built as `cdylib` only: the library is named
+//! `oxiphysics` (the name of the Python module), which is also the name of the
+//! umbrella dependency, so an `rlib` target would make `use oxiphysics::…` in an
+//! integration test ambiguous.  The unit tests inside `src/` need no `rlib`;
+//! they are compiled into the library's own test target and run with
+//! `cargo nextest run -p oxiphysics-python`.  The `pyo3/extension-module`
+//! feature is enabled by `maturin` (see `pyproject.toml`) and not by Cargo, so
+//! those test binaries link `libpython` normally.
 //!
-//! 1. The crate is built as `cdylib` only — there is no rlib to link against from
-//!    an integration test binary.
-//! 2. The `pyo3/extension-module` feature (required for `maturin`) suppresses
-//!    linking against `libpython`, so calling `pyo3::prepare_freethreaded_python()`
-//!    from an integration-test binary would cause undefined-symbol link errors.
-//!
-//! Substantive runtime tests live in `python/tests/test_smoke.py`.
+//! Substantive runtime tests of the live module live in `python/tests/test_smoke.py`.
 
 /// Verify that the integration-test binary itself builds and is reachable.
 #[test]

@@ -100,25 +100,34 @@ pub fn quat_to_mat4(q: Quat) -> Mat4 {
     m[10] = 1.0 - 2.0 * (x * x + y * y);
     m
 }
-/// Convert roll-pitch-yaw (intrinsic ZYX) to a 4×4 rotation matrix.
-pub fn rpy_to_mat4(rpy: Vec3) -> Mat4 {
+/// Convert URDF roll-pitch-yaw angles (radians) to a 3×3 rotation matrix.
+///
+/// URDF applies the rotations about the *fixed* axes in the order roll (X),
+/// pitch (Y), yaw (Z), which is the intrinsic-ZYX composition
+/// `R = Rz(yaw) · Ry(pitch) · Rx(roll)`. The matrix is row-major (`m[row][col]`)
+/// and maps child-frame vectors to the parent frame.
+pub fn rpy_to_mat3(rpy: Vec3) -> [[f64; 3]; 3] {
     let [roll, pitch, yaw] = rpy;
-    let cr = roll.cos();
-    let sr = roll.sin();
-    let cp = pitch.cos();
-    let sp = pitch.sin();
-    let cy = yaw.cos();
-    let sy = yaw.sin();
+    let (sr, cr) = roll.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    let (sy, cy) = yaw.sin_cos();
+    [
+        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+        [-sp, cp * sr, cp * cr],
+    ]
+}
+/// Convert roll-pitch-yaw (intrinsic ZYX) to a 4×4 rotation matrix.
+///
+/// The rotation block is [`rpy_to_mat3`]; the translation column is zero.
+pub fn rpy_to_mat4(rpy: Vec3) -> Mat4 {
+    let r = rpy_to_mat3(rpy);
     let mut m = mat4_identity();
-    m[0] = cy * cp;
-    m[1] = cy * sp * sr - sy * cr;
-    m[2] = cy * sp * cr + sy * sr;
-    m[4] = sy * cp;
-    m[5] = sy * sp * sr + cy * cr;
-    m[6] = sy * sp * cr - cy * sr;
-    m[8] = -sp;
-    m[9] = cp * sr;
-    m[10] = cp * cr;
+    for (row, r_row) in r.iter().enumerate() {
+        for (col, &value) in r_row.iter().enumerate() {
+            m[row * 4 + col] = value;
+        }
+    }
     m
 }
 pub(super) const ROS_MAGIC: [u8; 4] = [0x52, 0x4F, 0x53, 0x31];
@@ -586,5 +595,49 @@ mod tests {
         for i in 0..16 {
             assert!((m[i] - id[i]).abs() < 1e-12);
         }
+    }
+    #[test]
+    fn test_rpy_to_mat3_is_a_proper_rotation() {
+        let r = rpy_to_mat3([0.3, -0.7, 1.1]);
+        // R * R^T = I and det(R) = +1.
+        for i in 0..3 {
+            for j in 0..3 {
+                let dot: f64 = (0..3).map(|k| r[i][k] * r[j][k]).sum();
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!((dot - expected).abs() < 1e-12, "R*R^T[{i}][{j}] = {dot}");
+            }
+        }
+        let det = r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
+            - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+            + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
+        assert!((det - 1.0).abs() < 1e-12, "det = {det}");
+    }
+    #[test]
+    fn test_rpy_to_mat3_axis_conventions() {
+        use std::f64::consts::FRAC_PI_2;
+        // Yaw of 90 degrees about Z maps +x onto +y.
+        let yaw = rpy_to_mat3([0.0, 0.0, FRAC_PI_2]);
+        assert!(yaw[0][0].abs() < 1e-12 && (yaw[1][0] - 1.0).abs() < 1e-12);
+        // Roll of 90 degrees about X maps +y onto +z.
+        let roll = rpy_to_mat3([FRAC_PI_2, 0.0, 0.0]);
+        assert!((roll[2][1] - 1.0).abs() < 1e-12 && roll[1][1].abs() < 1e-12);
+        // Pitch of 90 degrees about Y maps +z onto +x.
+        let pitch = rpy_to_mat3([0.0, FRAC_PI_2, 0.0]);
+        assert!((pitch[0][2] - 1.0).abs() < 1e-12 && pitch[2][2].abs() < 1e-12);
+    }
+    #[test]
+    fn test_rpy_to_mat4_embeds_mat3_rotation_block() {
+        let rpy = [0.2, 0.4, -0.9];
+        let r3 = rpy_to_mat3(rpy);
+        let r4 = rpy_to_mat4(rpy);
+        for row in 0..3 {
+            for col in 0..3 {
+                assert_eq!(r4[row * 4 + col], r3[row][col]);
+            }
+        }
+        assert_eq!(r4[3], 0.0);
+        assert_eq!(r4[7], 0.0);
+        assert_eq!(r4[11], 0.0);
+        assert_eq!(r4[15], 1.0);
     }
 }

@@ -4,7 +4,7 @@
 use oxiphysics_articulated::{
     aba::aba,
     body::RigidBody,
-    joint::RevoluteJoint,
+    joint::{RevoluteJoint, SphericalJoint},
     joint_limits::{JointLimit, JointLimitSet, aba_with_limits},
     model::ArticulatedModel,
     spatial::{SpatialInertia, SpatialTransform},
@@ -158,4 +158,76 @@ fn test_limit_set_indexing_two_body_model() {
         "tau[1] should be a strong negative penalty, got {}",
         tau[1]
     );
+}
+
+#[test]
+fn test_limits_index_configuration_after_quaternion_joint() {
+    // Spherical root (nq = 4, nv = 3) followed by a limited revolute joint:
+    // the revolute angle lives at q[4] while its torque lives at tau[3].
+    let mut model = ArticulatedModel::new([0.0; 3]);
+    let inertia = SpatialInertia::from_com(
+        1.0,
+        [0.0, 0.0, -0.5],
+        [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]],
+    );
+    model.add_body(
+        RigidBody::new("ball", inertia, None, SpatialTransform::IDENTITY),
+        Box::new(SphericalJoint),
+    );
+    model.add_body(
+        RigidBody::new(
+            "elbow",
+            inertia,
+            Some(0),
+            SpatialTransform::from_translation([0.0, 0.0, -1.0]),
+        ),
+        Box::new(RevoluteJoint::new([1.0, 0.0, 0.0])),
+    );
+    let mut limits = JointLimitSet::for_model(&model);
+    let lim = JointLimit {
+        lo: -0.5,
+        hi: 0.5,
+        stiffness: 100.0,
+        damping: 0.0,
+    };
+    limits.set(1, 0, lim);
+
+    // Identity quaternion, elbow at 0.8 rad (0.3 rad beyond the upper limit).
+    let q = vec![1.0, 0.0, 0.0, 0.0, 0.8];
+    let qd = vec![0.0; 4];
+    let mut tau = vec![0.0; 4];
+    limits.apply(&model, &q, &qd, &mut tau);
+    assert_eq!(&tau[..3], &[0.0, 0.0, 0.0]);
+    assert!((tau[3] - lim.penalty(0.8, 0.0)).abs() < 1e-12);
+    assert!((tau[3] + 30.0).abs() < 1e-9, "tau[3]={}", tau[3]);
+}
+
+#[test]
+fn test_spherical_limit_acts_on_rotation_vector() {
+    // A limit on DOF 0 of a spherical joint bounds the x-component of the
+    // body rotation vector from the neutral orientation.
+    let mut model = ArticulatedModel::new([0.0; 3]);
+    let inertia = SpatialInertia::from_com(
+        1.0,
+        [0.0; 3],
+        [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]],
+    );
+    model.add_body(
+        RigidBody::new("ball", inertia, None, SpatialTransform::IDENTITY),
+        Box::new(SphericalJoint),
+    );
+    let mut limits = JointLimitSet::for_model(&model);
+    let lim = JointLimit {
+        lo: -0.2,
+        hi: 0.2,
+        stiffness: 50.0,
+        damping: 0.0,
+    };
+    limits.set(0, 0, lim);
+    let half = 0.25_f64; // rotation of 0.5 rad about x
+    let q = vec![half.cos(), half.sin(), 0.0, 0.0];
+    let mut tau = vec![0.0; 3];
+    limits.apply(&model, &q, &[0.0; 3], &mut tau);
+    assert!((tau[0] + 50.0 * 0.3).abs() < 1e-9, "tau={tau:?}");
+    assert!(tau[1].abs() < 1e-15 && tau[2].abs() < 1e-15);
 }

@@ -4,7 +4,20 @@
 
 use std::f64::consts::PI;
 
-use super::functions::{CS2, CX, CY, NQ, W, add2, clamp, feq, len2, scale2, sub2};
+use super::functions::{CS2, CX, CY, NQ, OPP, W, add2, clamp, feq, len2, scale2, sub2};
+
+/// Reference density `rho0` of the Shan-Chen pseudo-potential `psi(rho) = rho0 (1 - exp(-rho / rho0))`.
+const SC_REFERENCE_DENSITY: f64 = 1.0;
+
+/// Shan-Chen pseudo-potential of a (partial) density.
+///
+/// It is monotonically increasing and saturates at `rho0`; unlike `ln(rho)` it does not vanish
+/// at the nominal density `rho = rho0`, so a component at its reference density still feels the
+/// interaction force.
+#[inline]
+fn shan_chen_potential(rho: f64) -> f64 {
+    SC_REFERENCE_DENSITY * (1.0 - (-rho / SC_REFERENCE_DENSITY).exp())
+}
 
 /// Hele-Shaw flow parameters in a thin-gap device.
 #[derive(Debug, Clone)]
@@ -135,6 +148,24 @@ pub struct RbcMembraneParams {
     pub ib_stiffness: f64,
 }
 /// 2-D LBM microfluidics simulation supporting Hele-Shaw, Dean flow, and droplet dynamics.
+///
+/// Two D2Q9 BGK populations are evolved: the carrier fluid `f` and the droplet phase `g`. The
+/// components interact through the Shan-Chen pseudo-potential force
+///
+/// `F_c(x) = -g_sc psi(rho_c(x)) sum_i w_i psi(rho_d(x + c_i)) c_i`
+///
+/// (and symmetrically for `F_d`) with `psi(rho) = rho0 (1 - exp(-rho / rho0))` and `rho0 = 1`.
+/// `g_sc > 0` is repulsive (immiscible components), `g_sc < 0` attractive. Momentum is exchanged
+/// between the components through the Shan-Chen common velocity
+/// `u' = sum_s (rho_s u_s / tau_s) / sum_s (rho_s / tau_s)`, and the equilibrium of component `s`
+/// is evaluated at the shifted velocity `u' + tau_s F_s / rho_s`, which conserves the total
+/// momentum up to the applied force.
+///
+/// The lattice is periodic in x and y. Nodes flagged in [`is_wall`](Self::is_wall) are solid; by
+/// default these are the rows `y = 0` and `y = ny - 1`, so the channel has `ny - 2` fluid rows
+/// with the no-slip walls half-way between the first/last fluid row and its wall row
+/// (half-way bounce-back). The walls are neutrally wetting: a solid neighbour contributes the
+/// pseudo-potential of the fluid node itself, so a uniform fluid feels no wall force.
 pub struct MicrofluidicsLbm {
     /// Grid width.
     pub nx: usize,
@@ -166,6 +197,14 @@ pub struct MicrofluidicsLbm {
     pub dean_flow: DeanFlowParams,
     /// Solid mask.
     pub is_wall: Vec<bool>,
+    /// Post-collision carrier populations (source buffer of the pull-streaming step).
+    f_post: Vec<f64>,
+    /// Post-collision droplet populations (source buffer of the pull-streaming step).
+    g_post: Vec<f64>,
+    /// Shan-Chen pseudo-potential of the carrier phase, refreshed every step.
+    psi_c: Vec<f64>,
+    /// Shan-Chen pseudo-potential of the droplet phase, refreshed every step.
+    psi_d: Vec<f64>,
 }
 impl MicrofluidicsLbm {
     /// Create a new microfluidics LBM simulation.
@@ -203,6 +242,10 @@ impl MicrofluidicsLbm {
             hele_shaw,
             dean_flow,
             is_wall,
+            f_post: vec![0.0; n * NQ],
+            g_post: vec![0.0; n * NQ],
+            psi_c: vec![0.0; n],
+            psi_d: vec![0.0; n],
         }
     }
     /// Add a droplet to the simulation.
@@ -213,83 +256,205 @@ impl MicrofluidicsLbm {
     pub fn hele_shaw_force(&self, dp_dx: f64) -> f64 {
         self.hele_shaw.darcy_velocity(dp_dx)
     }
-    /// Perform one LBM step (BGK, Shan-Chen pseudo-potential for multiphase).
-    pub fn step(&mut self, pressure_gradient: f64) {
-        let nx = self.nx;
-        let ny = self.ny;
-        let n = nx * ny;
-        for idx in 0..n {
+    /// Recompute the densities, the barycentric velocity and the Shan-Chen pseudo-potentials
+    /// from the populations of all fluid nodes.
+    ///
+    /// The velocity is the first moment of the two populations divided by the total density,
+    /// `u = sum_i (f_i + g_i) c_i / (rho_c + rho_d)`. Solid nodes are left untouched.
+    fn refresh_fields(&mut self) {
+        for idx in 0..self.nx * self.ny {
+            if self.is_wall[idx] {
+                continue;
+            }
+            let base = idx * NQ;
             let mut rc = 0.0f64;
             let mut rd = 0.0f64;
-            let mut ux = 0.0f64;
-            let mut uy = 0.0f64;
+            let mut jx = 0.0f64;
+            let mut jy = 0.0f64;
             for q in 0..NQ {
-                rc += self.f[idx * NQ + q];
-                rd += self.g[idx * NQ + q];
-                ux += (self.f[idx * NQ + q] + self.g[idx * NQ + q]) * CX[q];
-                uy += (self.f[idx * NQ + q] + self.g[idx * NQ + q]) * CY[q];
+                let fq = self.f[base + q];
+                let gq = self.g[base + q];
+                rc += fq;
+                rd += gq;
+                jx += (fq + gq) * CX[q];
+                jy += (fq + gq) * CY[q];
             }
             self.rho_c[idx] = rc;
             self.rho_d[idx] = rd;
             let rho_tot = rc + rd;
-            self.ux[idx] = if rho_tot > 1e-12 { ux / rho_tot } else { 0.0 };
-            self.uy[idx] = if rho_tot > 1e-12 { uy / rho_tot } else { 0.0 };
+            self.ux[idx] = if rho_tot > 1e-12 { jx / rho_tot } else { 0.0 };
+            self.uy[idx] = if rho_tot > 1e-12 { jy / rho_tot } else { 0.0 };
+            self.psi_c[idx] = shan_chen_potential(rc);
+            self.psi_d[idx] = shan_chen_potential(rd);
         }
+    }
+    /// Shan-Chen interaction forces at fluid node `(ix, iy)` from the pseudo-potential fields.
+    ///
+    /// Returns `(force on the carrier, force on the droplet phase)`. Neighbours across the
+    /// periodic boundaries wrap around; a solid neighbour contributes the pseudo-potential of
+    /// the node itself (neutral wetting).
+    fn shan_chen_forces_at(
+        &self,
+        ix: usize,
+        iy: usize,
+        psi_c: &[f64],
+        psi_d: &[f64],
+    ) -> ([f64; 2], [f64; 2]) {
+        let nx = self.nx;
+        let ny = self.ny;
+        let idx = ix + iy * nx;
+        let mut grad_c = [0.0f64; 2];
+        let mut grad_d = [0.0f64; 2];
+        for q in 1..NQ {
+            let nx2 = (ix as isize + CX[q] as isize).rem_euclid(nx as isize) as usize;
+            let ny2 = (iy as isize + CY[q] as isize).rem_euclid(ny as isize) as usize;
+            let idx2 = nx2 + ny2 * nx;
+            let (pc, pd) = if self.is_wall[idx2] {
+                (psi_c[idx], psi_d[idx])
+            } else {
+                (psi_c[idx2], psi_d[idx2])
+            };
+            grad_c[0] += W[q] * CX[q] * pc;
+            grad_c[1] += W[q] * CY[q] * pc;
+            grad_d[0] += W[q] * CX[q] * pd;
+            grad_d[1] += W[q] * CY[q] * pd;
+        }
+        let force_c = [
+            -self.g_sc * psi_c[idx] * grad_d[0],
+            -self.g_sc * psi_c[idx] * grad_d[1],
+        ];
+        let force_d = [
+            -self.g_sc * psi_d[idx] * grad_c[0],
+            -self.g_sc * psi_d[idx] * grad_c[1],
+        ];
+        (force_c, force_d)
+    }
+    /// Shan-Chen interaction forces at fluid node `(ix, iy)`, evaluated from the current
+    /// populations.
+    ///
+    /// Returns `(force on the carrier, force on the droplet phase)` as `[fx, fy]` force
+    /// densities in lattice units. Both vanish for a spatially uniform state and for solid
+    /// nodes; see the type documentation for the force law.
+    pub fn interaction_forces(&self, ix: usize, iy: usize) -> ([f64; 2], [f64; 2]) {
+        let n = self.nx * self.ny;
+        if ix >= self.nx || iy >= self.ny || self.is_wall[ix + iy * self.nx] {
+            return ([0.0; 2], [0.0; 2]);
+        }
+        let mut psi_c = vec![0.0f64; n];
+        let mut psi_d = vec![0.0f64; n];
+        for idx in 0..n {
+            if self.is_wall[idx] {
+                continue;
+            }
+            let base = idx * NQ;
+            let rc: f64 = self.f[base..base + NQ].iter().sum();
+            let rd: f64 = self.g[base..base + NQ].iter().sum();
+            psi_c[idx] = shan_chen_potential(rc);
+            psi_d[idx] = shan_chen_potential(rd);
+        }
+        self.shan_chen_forces_at(ix, iy, &psi_c, &psi_d)
+    }
+    /// Perform one LBM step: Shan-Chen forced BGK collision, pull streaming with half-way
+    /// bounce-back at solid nodes, and Lagrangian droplet advection.
+    ///
+    /// `pressure_gradient` is the magnitude of the driving force density `-dp/dx` along +x in
+    /// lattice units. It acts on the mixture as a whole, i.e. each component receives the share
+    /// `rho_s / (rho_c + rho_d)` of it (the same acceleration for both components).
+    ///
+    /// After the step the fields `rho_c`, `rho_d`, `ux` and `uy` describe the new populations
+    /// (`ux`, `uy` is the barycentric velocity `sum_i (f_i + g_i) c_i / (rho_c + rho_d)`).
+    pub fn step(&mut self, pressure_gradient: f64) {
+        let nx = self.nx;
+        let ny = self.ny;
+        if nx == 0 || ny == 0 {
+            return;
+        }
+        self.refresh_fields();
+
         let omega_c = 1.0 / self.tau_c;
         let omega_d = 1.0 / self.tau_d;
-        let g_sc = self.g_sc;
-        let mut f_new = self.f.clone();
-        let mut g_new = self.g.clone();
         for iy in 0..ny {
             for ix in 0..nx {
                 let idx = ix + iy * nx;
                 if self.is_wall[idx] {
-                    let opp = [0usize, 3, 4, 1, 2, 7, 8, 5, 6];
-                    for q in 0..NQ {
-                        f_new[idx * NQ + opp[q]] = self.f[idx * NQ + q];
-                        g_new[idx * NQ + opp[q]] = self.g[idx * NQ + q];
-                    }
                     continue;
                 }
-                let psi_c = self.rho_c[idx].clamp(1e-6, 1.0).ln();
-                let psi_d = self.rho_d[idx].clamp(1e-6, 1.0).ln();
-                let mut fx_sc_c = 0.0f64;
-                let mut fy_sc_c = 0.0f64;
-                let mut fx_sc_d = 0.0f64;
-                let mut fy_sc_d = 0.0f64;
-                for q in 1..NQ {
-                    let nx2 = ((ix as isize + CX[q] as isize).rem_euclid(nx as isize)) as usize;
-                    let ny2 = ((iy as isize + CY[q] as isize).rem_euclid(ny as isize)) as usize;
-                    let idx2 = nx2 + ny2 * nx;
-                    let psi_c2 = self.rho_c[idx2].clamp(1e-6, 1.0).ln();
-                    let psi_d2 = self.rho_d[idx2].clamp(1e-6, 1.0).ln();
-                    fx_sc_c += W[q] * CX[q] * psi_c2;
-                    fy_sc_c += W[q] * CY[q] * psi_c2;
-                    fx_sc_d += W[q] * CX[q] * psi_d2;
-                    fy_sc_d += W[q] * CY[q] * psi_d2;
-                    let _ = psi_c2;
-                    let _ = psi_d2;
+                let base = idx * NQ;
+                let rc = self.rho_c[idx];
+                let rd = self.rho_d[idx];
+
+                let (mut force_c, mut force_d) =
+                    self.shan_chen_forces_at(ix, iy, &self.psi_c, &self.psi_d);
+                let rho_tot = rc + rd;
+                if rho_tot > 1e-12 {
+                    force_c[0] += pressure_gradient * rc / rho_tot;
+                    force_d[0] += pressure_gradient * rd / rho_tot;
                 }
-                let fx_c = -g_sc * psi_c * fx_sc_d + pressure_gradient;
-                let fy_c = -g_sc * psi_c * fy_sc_d;
-                let fx_d = -g_sc * psi_d * fx_sc_c;
-                let fy_d = -g_sc * psi_d * fy_sc_c;
-                let ux_eq_c = self.ux[idx] + self.tau_c * fx_c / self.rho_c[idx].max(1e-12);
-                let uy_eq_c = self.uy[idx] + self.tau_c * fy_c / self.rho_c[idx].max(1e-12);
-                let ux_eq_d = self.ux[idx] + self.tau_d * fx_d / self.rho_d[idx].max(1e-12);
-                let uy_eq_d = self.uy[idx] + self.tau_d * fy_d / self.rho_d[idx].max(1e-12);
-                let feq_c = feq(self.rho_c[idx], ux_eq_c, uy_eq_c);
-                let feq_d = feq(self.rho_d[idx], ux_eq_d, uy_eq_d);
+
+                // Shan-Chen common velocity: momentum-weighted by the inverse relaxation times.
+                let mut jc = [0.0f64; 2];
+                let mut jd = [0.0f64; 2];
                 for q in 0..NQ {
-                    f_new[idx * NQ + q] =
-                        self.f[idx * NQ + q] * (1.0 - omega_c) + omega_c * feq_c[q];
-                    g_new[idx * NQ + q] =
-                        self.g[idx * NQ + q] * (1.0 - omega_d) + omega_d * feq_d[q];
+                    jc[0] += self.f[base + q] * CX[q];
+                    jc[1] += self.f[base + q] * CY[q];
+                    jd[0] += self.g[base + q] * CX[q];
+                    jd[1] += self.g[base + q] * CY[q];
+                }
+                let weight = rc / self.tau_c + rd / self.tau_d;
+                let u_common = if weight > 1e-12 {
+                    [
+                        (jc[0] / self.tau_c + jd[0] / self.tau_d) / weight,
+                        (jc[1] / self.tau_c + jd[1] / self.tau_d) / weight,
+                    ]
+                } else {
+                    [0.0, 0.0]
+                };
+
+                let rc_safe = rc.max(1e-12);
+                let rd_safe = rd.max(1e-12);
+                let feq_c = feq(
+                    rc,
+                    u_common[0] + self.tau_c * force_c[0] / rc_safe,
+                    u_common[1] + self.tau_c * force_c[1] / rc_safe,
+                );
+                let feq_d = feq(
+                    rd,
+                    u_common[0] + self.tau_d * force_d[0] / rd_safe,
+                    u_common[1] + self.tau_d * force_d[1] / rd_safe,
+                );
+                for q in 0..NQ {
+                    self.f_post[base + q] = self.f[base + q] * (1.0 - omega_c) + omega_c * feq_c[q];
+                    self.g_post[base + q] = self.g[base + q] * (1.0 - omega_d) + omega_d * feq_d[q];
                 }
             }
         }
-        self.f = f_new;
-        self.g = g_new;
+
+        // Pull streaming with half-way bounce-back: a population that would arrive from a
+        // solid node is the post-collision population that left this node towards that
+        // solid node, reversed.
+        for iy in 0..ny {
+            for ix in 0..nx {
+                let idx = ix + iy * nx;
+                if self.is_wall[idx] {
+                    continue;
+                }
+                let base = idx * NQ;
+                for q in 0..NQ {
+                    let sx = (ix as isize - CX[q] as isize).rem_euclid(nx as isize) as usize;
+                    let sy = (iy as isize - CY[q] as isize).rem_euclid(ny as isize) as usize;
+                    let src = sx + sy * nx;
+                    if self.is_wall[src] {
+                        self.f[base + q] = self.f_post[base + OPP[q]];
+                        self.g[base + q] = self.g_post[base + OPP[q]];
+                    } else {
+                        self.f[base + q] = self.f_post[src * NQ + q];
+                        self.g[base + q] = self.g_post[src * NQ + q];
+                    }
+                }
+            }
+        }
+        self.refresh_fields();
+
         for d in self.droplets.iter_mut() {
             let ix = clamp(d.pos[0], 0.0, (nx - 1) as f64) as usize;
             let iy = clamp(d.pos[1], 0.0, (ny - 1) as f64) as usize;
@@ -297,6 +462,7 @@ impl MicrofluidicsLbm {
             d.vel[0] = self.ux[idx];
             d.vel[1] = self.uy[idx];
             d.advance(1.0);
+            d.pos[0] = d.pos[0].rem_euclid(nx as f64);
         }
     }
     /// Run `n_steps` steps.

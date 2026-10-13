@@ -542,6 +542,12 @@ impl CapsuleCast {
 }
 
 /// Local segment-segment closest distance.
+///
+/// Returns `(distance, point_on_p1p2, point_on_p3p4)`. This is the clamped
+/// closest-point computation from Ericson, *Real-Time Collision Detection*
+/// (5.1.9): when the parameter on the second segment has to be clamped to one of
+/// its end points, the parameter on the first segment is recomputed against that
+/// end point, so the result is the true minimum-distance pair.
 fn seg_seg_dist(
     p1: [f64; 3],
     p2: [f64; 3],
@@ -554,29 +560,36 @@ fn seg_seg_dist(
     let a = dot3(d1, d1);
     let e = dot3(d2, d2);
     let f = dot3(d2, r);
-    let (s, t);
     if a < 1e-15 && e < 1e-15 {
         return (dist3(p1, p3), p1, p3);
     }
-    if a < 1e-15 {
-        s = 0.0;
-        t = (f / e).clamp(0.0, 1.0);
+    // `s` parameterises p1..p2 and `t` parameterises p3..p4.
+    let (s, t) = if a < 1e-15 {
+        (0.0, (f / e).clamp(0.0, 1.0))
     } else {
         let c = dot3(d1, r);
         if e < 1e-15 {
-            t = 0.0;
-            s = (-c / a).clamp(0.0, 1.0);
+            ((-c / a).clamp(0.0, 1.0), 0.0)
         } else {
             let b = dot3(d1, d2);
             let denom = a * e - b * b;
-            s = if denom > 1e-15 {
+            // Point on segment 1 closest to the infinite line through segment 2
+            // (arbitrary when the segments are parallel).
+            let s_line = if denom > 1e-12 * a * e {
                 ((b * f - c * e) / denom).clamp(0.0, 1.0)
             } else {
                 0.0
             };
-            t = ((b * s + f) / e).clamp(0.0, 1.0);
+            let t_nom = b * s_line + f;
+            if t_nom < 0.0 {
+                ((-c / a).clamp(0.0, 1.0), 0.0)
+            } else if t_nom > e {
+                (((b - c) / a).clamp(0.0, 1.0), 1.0)
+            } else {
+                (s_line, t_nom / e)
+            }
         }
-    }
+    };
     let wa = lerp3(p1, p2, s);
     let wb = lerp3(p3, p4, t);
     (dist3(wa, wb), wa, wb)
@@ -1153,5 +1166,70 @@ mod tests {
             &cfg,
         );
         assert!(!result.hit);
+    }
+
+    #[test]
+    fn test_seg_seg_dist_recomputes_first_parameter_after_clamp() {
+        // Segment 1: (0,0,0)-(10,0,0). Segment 2: (5,1,0)-(6,2,0).
+        // The infinite-line closest pair clamps segment 2 to its start point;
+        // segment 1 must then be re-projected onto (5,1,0), giving (5,0,0) and a
+        // distance of exactly 1 (not sqrt(2) at (4,0,0)).
+        let (dist, wa, wb) = seg_seg_dist(
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [5.0, 1.0, 0.0],
+            [6.0, 2.0, 0.0],
+        );
+        assert!((dist - 1.0).abs() < 1e-12, "dist={dist}");
+        assert!(len3(sub3(wa, [5.0, 0.0, 0.0])) < 1e-12, "wa={wa:?}");
+        assert!(len3(sub3(wb, [5.0, 1.0, 0.0])) < 1e-12, "wb={wb:?}");
+    }
+
+    #[test]
+    fn test_seg_seg_dist_degenerate_and_parallel_inputs() {
+        // Both segments are points.
+        let (d, _, _) = seg_seg_dist([0.0; 3], [0.0; 3], [3.0, 4.0, 0.0], [3.0, 4.0, 0.0]);
+        assert!((d - 5.0).abs() < 1e-12);
+        // First segment is a point; second is clamped at its end point.
+        let (d, _, wb) = seg_seg_dist([9.0, 1.0, 0.0], [9.0, 1.0, 0.0], [0.0; 3], [2.0, 0.0, 0.0]);
+        assert!((d - (49.0_f64 + 1.0).sqrt()).abs() < 1e-12, "d={d}");
+        assert!(len3(sub3(wb, [2.0, 0.0, 0.0])) < 1e-12);
+        // Parallel overlapping segments one unit apart.
+        let (d, _, _) = seg_seg_dist([0.0; 3], [4.0, 0.0, 0.0], [1.0, 1.0, 0.0], [3.0, 1.0, 0.0]);
+        assert!((d - 1.0).abs() < 1e-12, "d={d}");
+    }
+
+    #[test]
+    fn test_capsule_cast_vs_capsule_end_point_clamped_pair() {
+        // The long capsule A (axis (0,0,0)-(10,0,0), radius 0.25) sweeps up +y
+        // towards the short static capsule B (axis (5,1,0)-(6,2,0), radius 0.25).
+        // B's lower end point (5,1,0) is the nearest feature, so the surfaces
+        // touch when the axes are 0.5 apart, i.e. at t = 0.5. The buggy
+        // segment-segment distance overestimated the gap by sqrt(2) and reported
+        // a late hit at t ~ 0.91.
+        let motion = LinearMotion::new([0.0; 3], [0.0, 1.0, 0.0]);
+        let cfg = ShapeCastConfig {
+            max_toc: 10.0,
+            ..default_cfg()
+        };
+        let result = CapsuleCast::vs_capsule(
+            &motion,
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            0.25,
+            [5.0, 1.0, 0.0],
+            [6.0, 2.0, 0.0],
+            0.25,
+            &cfg,
+        );
+        assert!(result.hit);
+        assert!((result.toi - 0.5).abs() < 1e-9, "toi={}", result.toi);
+        assert!(len3(sub3(result.witness_a, [5.0, 0.5, 0.0])) < 1e-9);
+        assert!(len3(sub3(result.witness_b, [5.0, 1.0, 0.0])) < 1e-9);
+        assert!(
+            result.normal_at_toi[1] < -0.99,
+            "{:?}",
+            result.normal_at_toi
+        );
     }
 }

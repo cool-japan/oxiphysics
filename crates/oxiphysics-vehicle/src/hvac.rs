@@ -343,43 +343,103 @@ impl OccupantComfort {
         }
     }
 
-    /// Compute PMV using a simplified ISO 7730 approximation.
+    /// Partial pressure of water vapour in the ambient air \[Pa\]
+    /// (ISO 7730:2005 Annex D, `pa = RH · 10 · exp(16.6536 − 4030.183/(ta + 235))`
+    /// with `RH` in percent).
+    fn vapour_pressure_pa(&self) -> f64 {
+        let rh = self.relative_humidity.clamp(0.0, 100.0);
+        rh * 10.0 * (16.6536 - 4030.183 / (self.air_temp + 235.0)).exp()
+    }
+
+    /// Clothing surface temperature `t_cl` \[°C\] from the steady heat balance
+    /// of the clothed body (ISO 7730:2005, Annex D):
     ///
-    /// This linearisation gives ±0.3 accuracy for typical comfort ranges.
+    /// `t_cl = 35.7 − 0.028·M − I_cl·(3.96·10⁻⁸·f_cl·[(t_cl+273)⁴ − (t_r+273)⁴]
+    ///                             + f_cl·h_c·(t_cl − t_a))`
+    ///
+    /// with `h_c = max(2.38·|t_cl − t_a|^0.25, 12.1·√v_a)`.  Both the radiative
+    /// and the convective loss grow monotonically with `t_cl`, so the residual
+    /// of the balance is strictly increasing and the unique root lies between
+    /// the lowest and the highest of the air, radiant and skin-side
+    /// temperatures; it is found by bisection (the relaxation loop of the
+    /// standard converges to the same root but can fail to converge for
+    /// extreme inputs).
+    fn clothing_surface_temp(&self, m: f64, icl: f64, fcl: f64, hcf: f64) -> f64 {
+        let ta = self.air_temp;
+        let tr = self.mean_radiant_temp;
+        let t_skin_side = 35.7 - 0.028 * m;
+        let residual = |tcl: f64| -> f64 {
+            let hc = hcf.max(2.38 * (tcl - ta).abs().powf(0.25));
+            let radiation = 3.96e-8 * fcl * ((tcl + 273.0).powi(4) - (tr + 273.0).powi(4));
+            let convection = fcl * hc * (tcl - ta);
+            tcl - (t_skin_side - icl * (radiation + convection))
+        };
+        let mut lo = ta.min(tr).min(t_skin_side);
+        let mut hi = ta.max(tr).max(t_skin_side);
+        for _ in 0..200 {
+            if hi - lo < 1e-10 {
+                break;
+            }
+            let mid = 0.5 * (lo + hi);
+            if residual(mid) > 0.0 {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        0.5 * (lo + hi)
+    }
+
+    /// Compute the Predicted Mean Vote according to Fanger's model as
+    /// specified in ISO 7730:2005 (Annex D), clamped to the −3 … +3 sensation
+    /// scale.
+    ///
+    /// `PMV = (0.303·e^(−0.036·M) + 0.028)·L`, where the thermal load `L` is the
+    /// metabolic heat production `M` (external work is taken as zero) minus
+    /// the heat lost by skin diffusion, sweating, latent and dry respiration,
+    /// radiation and convection from the clothing surface.  The clothing
+    /// surface temperature is solved from the clothing heat balance (see
+    /// `clothing_surface_temp`), so clothing insulation, mean radiant
+    /// temperature, air velocity and humidity all act on the result.
+    ///
+    /// For 1.2 met (69.8 W/m²), 0.5 clo, `t_a = t_r = 22 °C`, 0.1 m/s and 60 %
+    /// relative humidity this gives −0.75 (ISO 7730:2005 Table D.1).
     pub fn pmv(&self) -> f64 {
         let ta = self.air_temp;
         let tr = self.mean_radiant_temp;
         let va = self.air_velocity.max(0.0);
-        let rh = self.relative_humidity;
-        let icl = self.clothing_insulation * 0.155; // m²·K/W
-        let m = self.metabolic_rate;
+        let m = self.metabolic_rate.max(0.0);
+        let icl = self.clothing_insulation.max(0.0) * 0.155; // m²·K/W
+        let pa = self.vapour_pressure_pa();
 
-        // Operative temperature
-        let top = (ta + tr) / 2.0;
+        // Clothing area factor
+        let fcl = if icl <= 0.078 {
+            1.0 + 1.29 * icl
+        } else {
+            1.05 + 0.645 * icl
+        };
+        // Heat transfer coefficients: forced convection and the clothing surface
+        let hcf = 12.1 * va.sqrt();
+        let tcl = self.clothing_surface_temp(m, icl, fcl, hcf);
+        let hc = hcf.max(2.38 * (tcl - ta).abs().powf(0.25));
 
-        // Water vapour pressure (Antoine approximation) [Pa]
-        let pvs = 133.322 * E.powf(18.956 - 4030.18 / (ta + 235.0));
-        let pa = rh / 100.0 * pvs;
+        // Heat loss components in W/m²
+        let skin_diffusion = 3.05e-3 * (5733.0 - 6.99 * m - pa);
+        let sweating = if m > 58.15 { 0.42 * (m - 58.15) } else { 0.0 };
+        let latent_respiration = 1.7e-5 * m * (5867.0 - pa);
+        let dry_respiration = 0.0014 * m * (34.0 - ta);
+        let radiation = 3.96e-8 * fcl * ((tcl + 273.0).powi(4) - (tr + 273.0).powi(4));
+        let convection = fcl * hc * (tcl - ta);
 
-        // Clothing surface temperature (simplified)
-        let tcl =
-            35.7 - 0.028 * m + icl * (3.96e-8 * 273.15_f64.powi(4) - (top + 273.15).powi(4) * 0.0);
-        let _ = tcl; // used implicitly
-
-        // PMV = (0.303 * exp(-0.036 m) + 0.028) * L, simplified L
-        let l = m
-            - 58.15
-            - 0.42 * (m - 58.15)
-            - 3.05e-3 * (5733.0 - 6.99 * m - pa)
-            - 0.0173 * m * (5.867 - pa * 1e-3)
-            - 0.0014 * m * (34.0 - ta)
-            - 3.96e-8 * 0.72 * ((top + 273.15).powi(4) - (top + 273.15).powi(4))
-            - 2.38 * va.powf(0.25) * (top - ta)
-            - 0.5
-            + 0.5;
-        // Simplified continuous approximation
-        let pmv_approx = (0.303 * (-0.036 * m).exp() + 0.028) * l;
-        pmv_approx.clamp(-3.0, 3.0)
+        let load = m
+            - skin_diffusion
+            - sweating
+            - latent_respiration
+            - dry_respiration
+            - radiation
+            - convection;
+        let sensation_gain = 0.303 * (-0.036 * m).exp() + 0.028;
+        (sensation_gain * load).clamp(-3.0, 3.0)
     }
 
     /// Compute PPD \[%\] from PMV: `PPD = 100 − 95 exp(−(0.03353 PMV⁴ + 0.2179 PMV²))`.
@@ -969,10 +1029,211 @@ mod tests {
         assert!(oc.ppd() <= 100.0);
     }
 
+    /// Occupant with the metabolic rate given in met (1 met = 58.15 W/m²).
+    fn occupant(
+        air_temp: f64,
+        mean_radiant_temp: f64,
+        air_velocity: f64,
+        relative_humidity: f64,
+        met: f64,
+        clo: f64,
+    ) -> OccupantComfort {
+        OccupantComfort {
+            metabolic_rate: met * 58.15,
+            clothing_insulation: clo,
+            air_temp,
+            mean_radiant_temp,
+            air_velocity,
+            relative_humidity,
+        }
+    }
+
     #[test]
-    fn comfort_check_returns_bool() {
+    fn seated_driver_is_comfortable_in_a_mild_cabin() {
         let oc = OccupantComfort::seated_driver();
-        let _ = oc.is_comfortable(); // just ensure no panic
+        let pmv = oc.pmv();
+        assert!((pmv - 0.103).abs() < 0.01, "pmv = {pmv}");
+        assert!(oc.is_comfortable());
+        assert!(oc.ppd() < 6.0, "ppd = {}", oc.ppd());
+    }
+
+    #[test]
+    fn pmv_matches_iso_7730_table_d1_cool_room() {
+        // ISO 7730:2005 Table D.1: 22 °C / 22 °C, 0.1 m/s, 60 %, 1.2 met, 0.5 clo -> -0.75
+        let pmv = occupant(22.0, 22.0, 0.1, 60.0, 1.2, 0.5).pmv();
+        assert!((pmv - (-0.75)).abs() < 0.01, "pmv = {pmv}");
+    }
+
+    #[test]
+    fn pmv_matches_iso_7730_table_d1_warm_room() {
+        // ISO 7730:2005 Table D.1: 27 °C / 27 °C, 0.1 m/s, 60 %, 1.2 met, 0.5 clo -> +0.77
+        let pmv = occupant(27.0, 27.0, 0.1, 60.0, 1.2, 0.5).pmv();
+        assert!((pmv - 0.77).abs() < 0.01, "pmv = {pmv}");
+    }
+
+    #[test]
+    fn pmv_matches_the_iso_7730_relaxation_algorithm() {
+        // Reference values from a separate transcription of the ISO 7730:2005
+        // Annex D program: it relaxes `t_cl` until two successive iterates agree to
+        // 1e-12 (the standard's own stopping rule is looser), where the library
+        // bisects the clothing heat balance.  Columns: t_a, t_r, v_a, RH, met, clo.
+        let rows = [
+            (22.0, 22.0, 0.10, 60.0, 1.2, 0.5, -0.753_051),
+            (27.0, 27.0, 0.10, 60.0, 1.2, 0.5, 0.763_911),
+            (27.0, 27.0, 0.30, 60.0, 1.2, 0.5, 0.432_762),
+            (23.5, 25.5, 0.10, 60.0, 1.2, 0.5, -0.014_374),
+            (19.0, 19.0, 0.10, 40.0, 1.2, 1.0, -0.600_626),
+            (23.0, 21.0, 0.10, 40.0, 1.2, 1.0, 0.051_976),
+            (22.0, 22.0, 0.10, 60.0, 1.6, 0.5, 0.046_616),
+            (26.0, 30.0, 0.50, 50.0, 1.6, 0.6, 0.967_969),
+            (30.0, 34.0, 1.00, 70.0, 2.0, 0.4, 2.218_685),
+            (15.0, 12.0, 0.20, 50.0, 1.0, 1.5, -1.628_363),
+            (10.0, 10.0, 0.10, 50.0, 1.2, 2.0, -0.781_496),
+            (24.0, 24.0, 0.05, 50.0, 1.0, 0.0, -2.964_217),
+        ];
+        for (ta, tr, va, rh, met, clo, expected) in rows {
+            let pmv = occupant(ta, tr, va, rh, met, clo).pmv();
+            assert!(
+                (pmv - expected).abs() < 2e-6,
+                "t_a {ta}, t_r {tr}, v_a {va}, RH {rh}, {met} met, {clo} clo: \
+                 pmv {pmv}, reference {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn pmv_is_neutral_with_slightly_warm_radiant_surfaces() {
+        // 23.5 °C air with 25.5 °C radiant temperature is a neutral state.
+        let pmv = occupant(23.5, 25.5, 0.1, 60.0, 1.2, 0.5).pmv();
+        assert!(pmv.abs() < 0.03, "pmv = {pmv}");
+    }
+
+    #[test]
+    fn pmv_responds_to_mean_radiant_temperature() {
+        let cool_walls = occupant(22.0, 22.0, 0.1, 50.0, 1.2, 0.5).pmv();
+        let warm_walls = occupant(22.0, 27.0, 0.1, 50.0, 1.2, 0.5).pmv();
+        let cold_walls = occupant(22.0, 17.0, 0.1, 50.0, 1.2, 0.5).pmv();
+        assert!(
+            warm_walls - cool_walls > 0.5,
+            "5 K warmer surroundings must raise PMV: {cool_walls} -> {warm_walls}"
+        );
+        assert!(
+            cool_walls - cold_walls > 0.5,
+            "5 K colder surroundings must lower PMV: {cold_walls} -> {cool_walls}"
+        );
+    }
+
+    #[test]
+    fn pmv_responds_to_clothing_insulation() {
+        let light = occupant(22.0, 22.0, 0.1, 50.0, 1.2, 0.5).pmv();
+        let medium = occupant(22.0, 22.0, 0.1, 50.0, 1.2, 1.0).pmv();
+        let heavy = occupant(22.0, 22.0, 0.1, 50.0, 1.2, 1.5).pmv();
+        assert!(medium - light > 0.7, "{light} -> {medium}");
+        assert!(heavy - medium > 0.4, "{medium} -> {heavy}");
+    }
+
+    #[test]
+    fn pmv_falls_with_air_velocity_in_a_warm_room() {
+        let still = occupant(27.0, 27.0, 0.1, 50.0, 1.2, 0.5).pmv();
+        let breezy = occupant(27.0, 27.0, 0.4, 50.0, 1.2, 0.5).pmv();
+        let windy = occupant(27.0, 27.0, 1.0, 50.0, 1.2, 0.5).pmv();
+        assert!(still - breezy > 0.3, "{still} -> {breezy}");
+        assert!(breezy > windy);
+    }
+
+    #[test]
+    fn pmv_rises_with_humidity_in_a_warm_room() {
+        let dry = occupant(27.0, 27.0, 0.1, 30.0, 1.2, 0.5).pmv();
+        let humid = occupant(27.0, 27.0, 0.1, 80.0, 1.2, 0.5).pmv();
+        assert!(humid - dry > 0.3, "{dry} -> {humid}");
+    }
+
+    #[test]
+    fn pmv_increases_monotonically_with_air_temperature() {
+        let mut previous = f64::NEG_INFINITY;
+        for t in 16..=32 {
+            let t = t as f64;
+            let pmv = occupant(t, t, 0.1, 50.0, 1.2, 0.5).pmv();
+            assert!(pmv > previous, "pmv not increasing at {t} °C: {pmv}");
+            previous = pmv;
+        }
+    }
+
+    #[test]
+    fn pmv_is_clamped_to_the_sensation_scale() {
+        assert_eq!(occupant(45.0, 45.0, 0.1, 50.0, 1.2, 0.5).pmv(), 3.0);
+        assert_eq!(occupant(-10.0, -10.0, 0.1, 50.0, 1.2, 0.5).pmv(), -3.0);
+    }
+
+    #[test]
+    fn pmv_handles_unclothed_and_invalid_clothing() {
+        let nude = occupant(22.0, 22.0, 0.1, 50.0, 1.2, 0.0).pmv();
+        let negative = occupant(22.0, 22.0, 0.1, 50.0, 1.2, -1.0).pmv();
+        assert!(nude.is_finite());
+        assert!(nude < -2.0, "a nude occupant at 22 °C is cold: {nude}");
+        assert_eq!(nude, negative);
+    }
+
+    #[test]
+    fn clothing_surface_temperature_satisfies_the_heat_balance() {
+        for (ta, tr, va, met, clo) in [
+            (22.0, 22.0, 0.1, 1.2, 0.5),
+            (27.0, 30.0, 0.4, 1.6, 0.7),
+            (15.0, 12.0, 0.2, 1.0, 1.5),
+            (30.0, 40.0, 1.0, 2.0, 0.3),
+        ] {
+            let oc = occupant(ta, tr, va, 50.0, met, clo);
+            let m = oc.metabolic_rate;
+            let icl = clo * 0.155;
+            let fcl = if icl <= 0.078 {
+                1.0 + 1.29 * icl
+            } else {
+                1.05 + 0.645 * icl
+            };
+            let hcf = 12.1_f64 * va.sqrt();
+            let tcl = oc.clothing_surface_temp(m, icl, fcl, hcf);
+            let hc = hcf.max(2.38 * (tcl - ta).abs().powf(0.25));
+            let balance = 35.7
+                - 0.028 * m
+                - icl
+                    * (3.96e-8 * fcl * ((tcl + 273.0).powi(4) - (tr + 273.0).powi(4))
+                        + fcl * hc * (tcl - ta));
+            assert!(
+                (tcl - balance).abs() < 1e-6,
+                "tcl = {tcl}, heat balance gives {balance}"
+            );
+        }
+    }
+
+    #[test]
+    fn ppd_is_five_percent_at_the_neutral_vote() {
+        // Bisect the air temperature at which PMV crosses zero.
+        let (mut lo, mut hi) = (15.0_f64, 35.0_f64);
+        for _ in 0..60 {
+            let mid = 0.5 * (lo + hi);
+            if occupant(mid, mid, 0.1, 50.0, 1.2, 0.5).pmv() > 0.0 {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        let neutral = occupant(lo, lo, 0.1, 50.0, 1.2, 0.5);
+        assert!((lo - 24.72).abs() < 0.05, "neutral air temperature {lo} °C");
+        assert!(neutral.pmv().abs() < 1e-6);
+        assert!(
+            (neutral.ppd() - 5.0).abs() < 1e-3,
+            "ppd = {}",
+            neutral.ppd()
+        );
+    }
+
+    #[test]
+    fn ppd_follows_the_iso_formula() {
+        let oc = occupant(22.0, 22.0, 0.1, 60.0, 1.2, 0.5);
+        let pmv = oc.pmv();
+        let expected = 100.0 - 95.0 * (-(0.03353 * pmv.powi(4) + 0.2179 * pmv.powi(2))).exp();
+        assert!((oc.ppd() - expected).abs() < 1e-12);
+        assert!((oc.ppd() - 17.0).abs() < 1.0, "ppd = {}", oc.ppd());
     }
 
     // ── HvacController ────────────────────────────────────────────────────

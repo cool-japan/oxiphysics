@@ -778,13 +778,26 @@ impl PolynomialChaosExpansion {
     }
     /// Compute PCE coefficients via `n`-point Gauss-Hermite quadrature.
     ///
-    /// Given a model function `f: ξ → y`, computes the first `max_order+1`
-    /// Hermite-PCE coefficients by numerical integration.
+    /// Given a model function `f: ξ → y` of a standard-normal variable ξ,
+    /// computes the first `max_order + 1` coefficients of the probabilists'
+    /// Hermite expansion f(ξ) = Σₙ cₙ Heₙ(ξ) by the Galerkin projection
+    ///
+    /// cₙ = E[f(ξ) Heₙ(ξ)] / E[Heₙ²] = E[f(ξ) Heₙ(ξ)] / n!,
+    ///
+    /// where the expectation uses the physicists' Gauss-Hermite rule through
+    /// ξ = √2·x and E[g(ξ)] = π^(−1/2) Σᵢ wᵢ g(√2·xᵢ).  The model is evaluated
+    /// once per quadrature node.
+    ///
+    /// The rule integrates polynomials of degree ≤ 2·`quad_pts` − 1 exactly,
+    /// so the coefficient of order n of a polynomial model of degree d is exact
+    /// whenever `quad_pts` ≥ (n + d + 1) / 2.  For smooth non-polynomial
+    /// models increase `quad_pts` until the coefficients stop changing.
     ///
     /// # Arguments
     /// * `f`         – scalar function of a standard-normal variable
     /// * `max_order` – maximum polynomial order
-    /// * `quad_pts`  – number of Gauss-Hermite quadrature points (1..=5)
+    /// * `quad_pts`  – number of Gauss-Hermite quadrature points (any `n ≥ 1`);
+    ///   `0` yields all-zero coefficients
     pub fn from_quadrature<F>(f: F, max_order: usize, quad_pts: usize) -> Self
     where
         F: Fn(f64) -> f64,
@@ -793,24 +806,27 @@ impl PolynomialChaosExpansion {
         if nodes.is_empty() {
             return Self::new(vec![0.0; max_order + 1]);
         }
-        let sqrt2 = 2.0_f64.sqrt();
+        let sqrt2 = std::f64::consts::SQRT_2;
         let mut coeffs = vec![0.0f64; max_order + 1];
-        let factorial: Vec<f64> = {
-            let mut v = vec![1.0f64; max_order + 2];
-            for k in 1..=max_order + 1 {
-                v[k] = v[k - 1] * k as f64;
+        for (&x, &w) in nodes.iter().zip(weights.iter()) {
+            let xi = sqrt2 * x;
+            let weighted_value = w * f(xi);
+            // He_0 = 1, He_1 = ξ, He_{k+1} = ξ He_k − k He_{k−1}.
+            let mut he_prev = 0.0_f64;
+            let mut he = 1.0_f64;
+            for (k, coeff) in coeffs.iter_mut().enumerate() {
+                *coeff += weighted_value * he;
+                let he_next = xi * he - k as f64 * he_prev;
+                he_prev = he;
+                he = he_next;
             }
-            v
-        };
-        for order in 0..=max_order {
-            let mut sum = 0.0;
-            for (xi_phys, &w) in nodes.iter().zip(weights.iter()) {
-                let xi_prob = xi_phys / sqrt2;
-                let he = hermite_polynomial(order, xi_prob);
-                sum += w * f(xi_prob) * he;
+        }
+        let mut factorial = 1.0_f64;
+        for (k, coeff) in coeffs.iter_mut().enumerate() {
+            if k > 0 {
+                factorial *= k as f64;
             }
-            let norm = factorial[order] * PI.sqrt() / 2.0_f64.powi(order as i32);
-            coeffs[order] = sum / norm;
+            *coeff /= PI.sqrt() * factorial;
         }
         Self {
             coefficients: coeffs,

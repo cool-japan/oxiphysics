@@ -251,6 +251,457 @@ mod tests {
         let m2 = elem2.consistent_mass_matrix(15600.0);
         assert!((m2[0][0] / m1[0][0] - 2.0).abs() < 1e-12);
     }
+    fn plate_element(a: f64, b: f64, nu: f64) -> RectPlateElement {
+        RectPlateElement::new(PlateParams::new(200e9, nu, 0.01), a, b)
+    }
+    /// Nodal DOFs `(w, ∂w/∂y, −∂w/∂x)` of the field `w` with gradient `grad`.
+    fn nodal_dofs(
+        elem: &RectPlateElement,
+        w: impl Fn(f64, f64) -> f64,
+        grad: impl Fn(f64, f64) -> (f64, f64),
+    ) -> Vec<f64> {
+        elem.node_positions
+            .iter()
+            .flat_map(|&[x, y]| {
+                let (w_x, w_y) = grad(x, y);
+                [w(x, y), w_y, -w_x]
+            })
+            .collect()
+    }
+    fn mat_vec(k: &[Vec<f64>], v: &[f64]) -> Vec<f64> {
+        k.iter()
+            .map(|row| row.iter().zip(v.iter()).map(|(a, b)| a * b).sum())
+            .collect()
+    }
+    fn quad_form(k: &[Vec<f64>], v: &[f64]) -> f64 {
+        mat_vec(k, v).iter().zip(v.iter()).map(|(a, b)| a * b).sum()
+    }
+    fn max_abs(k: &[Vec<f64>]) -> f64 {
+        k.iter()
+            .flat_map(|row| row.iter())
+            .fold(0.0_f64, |m, v| m.max(v.abs()))
+    }
+    /// Eigenvalues (ascending) of a symmetric matrix by cyclic Jacobi rotations.
+    fn symmetric_eigenvalues(matrix: &[Vec<f64>]) -> Vec<f64> {
+        let n = matrix.len();
+        let mut a: Vec<Vec<f64>> = matrix.to_vec();
+        for _ in 0..100 {
+            let off: f64 = (0..n)
+                .flat_map(|i| (0..n).filter(move |&j| j != i).map(move |j| (i, j)))
+                .map(|(i, j)| a[i][j] * a[i][j])
+                .sum();
+            let total: f64 = a.iter().flatten().map(|v| v * v).sum();
+            if off <= 1e-30 * total {
+                break;
+            }
+            for p in 0..n {
+                for q in (p + 1)..n {
+                    if a[p][q] == 0.0 {
+                        continue;
+                    }
+                    let tau = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
+                    let t = tau.signum() / (tau.abs() + (1.0 + tau * tau).sqrt());
+                    let c = 1.0 / (1.0 + t * t).sqrt();
+                    let s = t * c;
+                    for row in a.iter_mut() {
+                        let (rp, rq) = (row[p], row[q]);
+                        row[p] = c * rp - s * rq;
+                        row[q] = s * rp + c * rq;
+                    }
+                    let row_p = a[p].clone();
+                    let row_q = a[q].clone();
+                    for k in 0..n {
+                        a[p][k] = c * row_p[k] - s * row_q[k];
+                        a[q][k] = s * row_p[k] + c * row_q[k];
+                    }
+                }
+            }
+        }
+        let mut eigenvalues: Vec<f64> = (0..n).map(|i| a[i][i]).collect();
+        eigenvalues.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+        eigenvalues
+    }
+    #[test]
+    fn test_rect_plate_stiffness_is_symmetric_and_fully_coupled() {
+        let k = plate_element(0.5, 0.25, 0.3).stiffness_matrix_12x12();
+        let scale = max_abs(&k);
+        let mut off_diagonal_nonzero = 0;
+        for (i, row) in k.iter().enumerate() {
+            for (j, &value) in row.iter().enumerate() {
+                assert!(
+                    (value - k[j][i]).abs() < 1e-12 * scale,
+                    "asymmetric at ({i},{j})"
+                );
+                if i != j && value.abs() > 1e-9 * scale {
+                    off_diagonal_nonzero += 1;
+                }
+            }
+        }
+        // A plate element couples every DOF to its neighbours: the matrix is
+        // dense, not diagonal.
+        assert!(
+            off_diagonal_nonzero >= 100,
+            "only {off_diagonal_nonzero} coupled pairs"
+        );
+    }
+    #[test]
+    fn test_rect_plate_stiffness_has_exactly_three_rigid_body_modes() {
+        for (a, b, nu) in [
+            (0.5, 0.5, 0.3),
+            (0.5, 0.25, 0.3),
+            (0.2, 0.9, 0.0),
+            (1.0, 1.0, 0.45),
+        ] {
+            let k = plate_element(a, b, nu).stiffness_matrix_12x12();
+            let scale = max_abs(&k);
+            let scaled: Vec<Vec<f64>> = k
+                .iter()
+                .map(|row| row.iter().map(|v| v / scale).collect())
+                .collect();
+            let eig = symmetric_eigenvalues(&scaled);
+            for (i, lambda) in eig.iter().take(3).enumerate() {
+                assert!(
+                    lambda.abs() < 1e-11,
+                    "a={a} b={b}: eigenvalue {i} = {lambda}"
+                );
+            }
+            assert!(
+                eig[3] > 1e-4,
+                "a={a} b={b}: fourth eigenvalue {} is not positive",
+                eig[3]
+            );
+        }
+    }
+    #[test]
+    fn test_rect_plate_rigid_motions_carry_no_force() {
+        let elem = plate_element(0.5, 0.25, 0.3);
+        let k = elem.stiffness_matrix_12x12();
+        let scale = max_abs(&k);
+        let modes = [
+            nodal_dofs(&elem, |_, _| 1.0, |_, _| (0.0, 0.0)),
+            nodal_dofs(&elem, |x, _| x, |_, _| (1.0, 0.0)),
+            nodal_dofs(&elem, |_, y| y, |_, _| (0.0, 1.0)),
+            nodal_dofs(&elem, |x, y| 2.0 - 3.0 * x + 5.0 * y, |_, _| (-3.0, 5.0)),
+        ];
+        for (m, mode) in modes.iter().enumerate() {
+            let force = mat_vec(&k, mode);
+            let norm_f = force.iter().map(|v| v * v).sum::<f64>().sqrt();
+            let norm_d = mode.iter().map(|v| v * v).sum::<f64>().sqrt();
+            assert!(
+                norm_f < 1e-12 * scale * norm_d,
+                "mode {m}: |K d| = {norm_f}"
+            );
+        }
+    }
+    #[test]
+    fn test_rect_plate_strain_energy_of_constant_curvature_fields() {
+        let (a, b, nu) = (0.5, 0.25, 0.3);
+        let elem = plate_element(a, b, nu);
+        let k = elem.stiffness_matrix_12x12();
+        let d = elem.params.flexural_rigidity();
+        let area = 4.0 * a * b;
+        let energy = |dofs: &[f64]| 0.5 * quad_form(&k, dofs);
+        // w = x²/2: κ = (1, 0, 0)
+        let wxx = nodal_dofs(&elem, |x, _| 0.5 * x * x, |x, _| (x, 0.0));
+        assert!((energy(&wxx) - 0.5 * d * area).abs() < 1e-12 * d * area);
+        // w = y²/2: κ = (0, 1, 0)
+        let wyy = nodal_dofs(&elem, |_, y| 0.5 * y * y, |_, y| (0.0, y));
+        assert!((energy(&wyy) - 0.5 * d * area).abs() < 1e-12 * d * area);
+        // w = (x² + y²)/2: κ = (1, 1, 0)  ->  ½ D (2 + 2ν) A
+        let both = nodal_dofs(&elem, |x, y| 0.5 * (x * x + y * y), |x, y| (x, y));
+        let expected = 0.5 * d * (2.0 + 2.0 * nu) * area;
+        assert!((energy(&both) - expected).abs() < 1e-12 * d * area);
+        // w = x y: κ = (0, 0, 2)  ->  ½ D (1 - ν)/2 · 4 · A
+        let twist = nodal_dofs(&elem, |x, y| x * y, |x, y| (y, x));
+        let expected = 0.5 * d * (1.0 - nu) / 2.0 * 4.0 * area;
+        assert!((energy(&twist) - expected).abs() < 1e-12 * d * area);
+    }
+    #[test]
+    fn test_rect_plate_stiffness_scales_with_element_size() {
+        // Energy ~ D w²/s²: with scaled rotations (w, s θx, s θy) every entry
+        // of the stiffness times s² is independent of the element size s.
+        let kind_weight = |dof: usize, s: f64| if dof.is_multiple_of(3) { 1.0 } else { s };
+        let (s1, s2) = (0.5, 1.3);
+        let k1 = plate_element(s1, s1, 0.3).stiffness_matrix_12x12();
+        let k2 = plate_element(s2, s2, 0.3).stiffness_matrix_12x12();
+        let scale = max_abs(&k1) * s1 * s1;
+        for i in 0..12 {
+            for j in 0..12 {
+                let m1 = k1[i][j] * s1 * s1 / (kind_weight(i, s1) * kind_weight(j, s1));
+                let m2 = k2[i][j] * s2 * s2 / (kind_weight(i, s2) * kind_weight(j, s2));
+                assert!(
+                    (m1 - m2).abs() < 1e-12 * scale,
+                    "entry ({i},{j}): {m1} vs {m2}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn test_rect_plate_shape_functions_are_nodally_unit() {
+        let elem = plate_element(0.5, 0.25, 0.3);
+        let h = 1e-6;
+        for (node, &[x, y]) in elem.node_positions.iter().enumerate() {
+            let n = elem.shape_functions(x, y);
+            let n_y_plus = elem.shape_functions(x, y + h);
+            let n_y_minus = elem.shape_functions(x, y - h);
+            let n_x_plus = elem.shape_functions(x + h, y);
+            let n_x_minus = elem.shape_functions(x - h, y);
+            for j in 0..12 {
+                let value = if j == 3 * node { 1.0 } else { 0.0 };
+                assert!(
+                    (n[j] - value).abs() < 1e-12,
+                    "N_{j}(node {node}) = {}",
+                    n[j]
+                );
+                let d_dy = (n_y_plus[j] - n_y_minus[j]) / (2.0 * h);
+                let minus_d_dx = -(n_x_plus[j] - n_x_minus[j]) / (2.0 * h);
+                let theta_x = if j == 3 * node + 1 { 1.0 } else { 0.0 };
+                let theta_y = if j == 3 * node + 2 { 1.0 } else { 0.0 };
+                assert!(
+                    (d_dy - theta_x).abs() < 1e-6,
+                    "dN_{j}/dy at node {node} = {d_dy}"
+                );
+                assert!(
+                    (minus_d_dx - theta_y).abs() < 1e-6,
+                    "-dN_{j}/dx at node {node} = {minus_d_dx}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn test_rect_plate_interpolates_every_polynomial_of_the_acm_space() {
+        let elem = plate_element(0.5, 0.25, 0.3);
+        let w = |x: f64, y: f64| {
+            1.0 + 2.0 * x - y + 0.5 * x * x + x * y - 0.3 * y * y + 0.2 * x.powi(3)
+                - 0.1 * x * x * y
+                + 0.4 * x * y * y
+                + 0.7 * y.powi(3)
+                + 0.05 * x.powi(3) * y
+                - 0.02 * x * y.powi(3)
+        };
+        let grad = |x: f64, y: f64| {
+            (
+                2.0 + x + y + 0.6 * x * x - 0.2 * x * y + 0.4 * y * y + 0.15 * x * x * y
+                    - 0.02 * y.powi(3),
+                -1.0 + x - 0.6 * y - 0.1 * x * x + 0.8 * x * y + 2.1 * y * y + 0.05 * x.powi(3)
+                    - 0.06 * x * y * y,
+            )
+        };
+        let dofs = nodal_dofs(&elem, w, grad);
+        for &(x, y) in &[
+            (0.0, 0.0),
+            (0.2, -0.1),
+            (-0.45, 0.2),
+            (0.3, 0.24),
+            (-0.5, -0.25),
+        ] {
+            let n = elem.shape_functions(x, y);
+            let interpolated: f64 = n.iter().zip(dofs.iter()).map(|(a, b)| a * b).sum();
+            assert!(
+                (interpolated - w(x, y)).abs() < 1e-12,
+                "({x}, {y}): {interpolated} vs {}",
+                w(x, y)
+            );
+        }
+    }
+    #[test]
+    fn test_rect_plate_consistent_mass_conserves_mass_and_inertia() {
+        let (a, b, rho) = (0.5, 0.25, 7800.0);
+        let elem = plate_element(a, b, 0.3);
+        let m = elem.consistent_mass_matrix(rho);
+        let h = elem.params.thickness;
+        let scale = max_abs(&m);
+        for (i, row) in m.iter().enumerate() {
+            for (j, &value) in row.iter().enumerate() {
+                assert!(
+                    (value - m[j][i]).abs() < 1e-12 * scale,
+                    "asymmetric at ({i},{j})"
+                );
+            }
+        }
+        let eig = symmetric_eigenvalues(
+            &m.iter()
+                .map(|r| r.iter().map(|v| v / scale).collect())
+                .collect::<Vec<Vec<f64>>>(),
+        );
+        assert!(
+            eig[0] > 1e-9,
+            "mass matrix not positive definite: {}",
+            eig[0]
+        );
+        let moment = |p: i32, q: i32| {
+            let f = |len: f64, e: i32| {
+                if e % 2 == 0 {
+                    2.0 * len.powi(e + 1) / (e + 1) as f64
+                } else {
+                    0.0
+                }
+            };
+            f(a, p) * f(b, q)
+        };
+        let fields: [(Vec<f64>, f64); 4] = [
+            (
+                nodal_dofs(&elem, |_, _| 1.0, |_, _| (0.0, 0.0)),
+                rho * h * moment(0, 0),
+            ),
+            (
+                nodal_dofs(&elem, |x, _| x, |_, _| (1.0, 0.0)),
+                rho * h * moment(2, 0),
+            ),
+            (
+                nodal_dofs(&elem, |_, y| y, |_, _| (0.0, 1.0)),
+                rho * h * moment(0, 2),
+            ),
+            (
+                nodal_dofs(&elem, |x, y| x * y, |x, y| (y, x)),
+                rho * h * moment(2, 2),
+            ),
+        ];
+        for (idx, (dofs, expected)) in fields.iter().enumerate() {
+            let got = quad_form(&m, dofs);
+            assert!(
+                (got - expected).abs() < 1e-12 * expected,
+                "field {idx}: {got} vs {expected}"
+            );
+        }
+    }
+    #[test]
+    fn test_rect_plate_uniform_pressure_load_matches_numerical_integration() {
+        let (a, b, q) = (0.5, 0.25, 3.0);
+        let elem = plate_element(a, b, 0.3);
+        let f = elem.uniform_pressure_load(q);
+        let resultant: f64 = f.iter().step_by(3).sum();
+        assert!(
+            (resultant - q * 4.0 * a * b).abs() < 1e-13,
+            "resultant = {resultant}"
+        );
+        // Independent check: 4-point Gauss-Legendre in each direction.
+        let g = [
+            (-0.861_136_311_594_052_6, 0.347_854_845_137_453_85),
+            (-0.339_981_043_584_856_26, 0.652_145_154_862_546_1),
+            (0.339_981_043_584_856_26, 0.652_145_154_862_546_1),
+            (0.861_136_311_594_052_6, 0.347_854_845_137_453_85),
+        ];
+        let mut integrated = [0.0_f64; 12];
+        for &(xi, wx) in &g {
+            for &(eta, wy) in &g {
+                let n = elem.shape_functions(a * xi, b * eta);
+                for (acc, nj) in integrated.iter_mut().zip(n.iter()) {
+                    *acc += q * wx * wy * a * b * nj;
+                }
+            }
+        }
+        for j in 0..12 {
+            assert!(
+                (f[j] - integrated[j]).abs() < 1e-12,
+                "load {j}: {} vs {}",
+                f[j],
+                integrated[j]
+            );
+        }
+    }
+    /// Centre deflection of a uniformly loaded unit square plate meshed with
+    /// `nel × nel` ACM elements (`E = h = 1`, ν = 0.3, `q = 1`), simply
+    /// supported (`w = 0` and zero tangential rotation on the edges) or clamped.
+    fn square_plate_centre_deflection(nel: usize, clamped: bool) -> f64 {
+        use crate::solvers::CholeskyDense;
+        let params = PlateParams::new(1.0, 0.3, 1.0);
+        let half = 0.5 / nel as f64;
+        let elem = RectPlateElement::new(params, half, half);
+        let ke = elem.stiffness_matrix_12x12();
+        let fe = elem.uniform_pressure_load(1.0);
+        let nn = nel + 1;
+        let ndof = 3 * nn * nn;
+        let node_id = |i: usize, j: usize| j * nn + i;
+        let mut k = vec![0.0_f64; ndof * ndof];
+        let mut f = vec![0.0_f64; ndof];
+        for ey in 0..nel {
+            for ex in 0..nel {
+                let nodes = [
+                    node_id(ex, ey),
+                    node_id(ex + 1, ey),
+                    node_id(ex + 1, ey + 1),
+                    node_id(ex, ey + 1),
+                ];
+                let dofs: Vec<usize> = nodes
+                    .iter()
+                    .flat_map(|&n| [3 * n, 3 * n + 1, 3 * n + 2])
+                    .collect();
+                for r in 0..12 {
+                    f[dofs[r]] += fe[r];
+                    for c in 0..12 {
+                        k[dofs[r] * ndof + dofs[c]] += ke[r][c];
+                    }
+                }
+            }
+        }
+        let mut fixed = vec![false; ndof];
+        for j in 0..nn {
+            for i in 0..nn {
+                let n = node_id(i, j);
+                let on_x_edge = i == 0 || i == nel;
+                let on_y_edge = j == 0 || j == nel;
+                if on_x_edge || on_y_edge {
+                    fixed[3 * n] = true;
+                    if clamped {
+                        fixed[3 * n + 1] = true;
+                        fixed[3 * n + 2] = true;
+                    } else {
+                        if on_y_edge {
+                            fixed[3 * n + 2] = true;
+                        }
+                        if on_x_edge {
+                            fixed[3 * n + 1] = true;
+                        }
+                    }
+                }
+            }
+        }
+        let free: Vec<usize> = (0..ndof).filter(|&d| !fixed[d]).collect();
+        let nf = free.len();
+        let mut k_ff = vec![0.0_f64; nf * nf];
+        let mut f_f = vec![0.0_f64; nf];
+        for (r, &dr) in free.iter().enumerate() {
+            f_f[r] = f[dr];
+            for (c, &dc) in free.iter().enumerate() {
+                k_ff[r * nf + c] = k[dr * ndof + dc];
+            }
+        }
+        let chol = CholeskyDense::new(nf);
+        let factor = chol.factorize(&k_ff).expect("constrained plate is SPD");
+        let u = chol.solve(&factor, &f_f);
+        let centre = 3 * node_id(nel / 2, nel / 2);
+        let position = free
+            .iter()
+            .position(|&d| d == centre)
+            .expect("centre w is free");
+        u[position]
+    }
+    #[test]
+    fn test_rect_plate_simply_supported_square_plate_matches_navier() {
+        // w_max = 0.00406 q a⁴ / D  (Timoshenko), with D = E h³ / (12 (1 - ν²)).
+        let d = PlateParams::new(1.0, 0.3, 1.0).flexural_rigidity();
+        let reference = 0.00406 / d;
+        let w8 = square_plate_centre_deflection(8, false);
+        assert!(
+            (w8 - reference).abs() < 0.03 * reference,
+            "8x8 centre deflection {w8} vs reference {reference}"
+        );
+        let err4 = (square_plate_centre_deflection(4, false) - reference).abs();
+        let err8 = (w8 - reference).abs();
+        assert!(err8 < 0.4 * err4, "no mesh convergence: {err4} -> {err8}");
+    }
+    #[test]
+    fn test_rect_plate_clamped_square_plate_matches_reference() {
+        // w_max = 0.00126 q a⁴ / D for a clamped square plate.
+        let d = PlateParams::new(1.0, 0.3, 1.0).flexural_rigidity();
+        let reference = 0.00126 / d;
+        let w8 = square_plate_centre_deflection(8, true);
+        assert!(
+            (w8 - reference).abs() < 0.05 * reference,
+            "8x8 centre deflection {w8} vs reference {reference}"
+        );
+    }
     #[test]
     fn test_mindlin_params_shear_stiffness() {
         let p = MindlinParams::new(200e9, 0.3, 0.02, 5.0 / 6.0);

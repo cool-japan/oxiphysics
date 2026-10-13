@@ -842,39 +842,41 @@ impl SplineInterpolation {
         }
     }
 
-    /// Evaluate spline at x.
+    /// Index `i` of the spline interval `[xs[i], xs[i + 1]]` that serves `x`.
+    ///
+    /// Found by binary search in `O(log n)`.  A point left of the first knot uses
+    /// the first interval and a point right of the last knot uses the last one,
+    /// so the end cubics extrapolate.
+    fn interval_index(&self, x: f64) -> usize {
+        let last_interval = self.xs.len().saturating_sub(2);
+        self.xs
+            .partition_point(|&xi| xi <= x)
+            .saturating_sub(1)
+            .min(last_interval)
+    }
+
+    /// Evaluate the spline at `x`.
+    ///
+    /// Uses the exact piecewise-cubic representation in terms of the knot values
+    /// and second derivatives, i.e. it is the same function as
+    /// [`eval_cubic`](Self::eval_cubic).
     pub fn eval(&self, x: f64) -> f64 {
-        let n = self.xs.len();
-        // Find interval
-        let mut idx = 0;
-        for i in 1..n - 1 {
-            if x >= self.xs[i] {
-                idx = i;
-            }
-        }
-        let h = self.xs[idx + 1] - self.xs[idx];
-        let t = (x - self.xs[idx]) / h;
-        let a = self.ys[idx];
-        let b_val = self.ys[idx + 1];
-        let ma = self.m[idx];
-        let mb = self.m[idx + 1];
-        // Cubic Hermite form using second derivatives
-        (1.0 - t) * a
-            + t * b_val
-            + t * (1.0 - t)
-                * ((1.0 - t) * h * h * ma / 6.0 - t * h * h * mb / 6.0 - h * h * (ma - mb) / 6.0
-                    + h * h * ma / 6.0 * (2.0 * t - 1.0))
+        self.eval_cubic(x)
     }
 
     /// Evaluate spline using proper cubic formula.
+    ///
+    /// On `[x_i, x_{i+1}]` with `h = x_{i+1} - x_i`, `A = (x_{i+1} - x) / h` and
+    /// `B = 1 - A` the spline is
+    /// `A*y_i + B*y_{i+1} + (A^3 - A) h^2 M_i / 6 + (B^3 - B) h^2 M_{i+1} / 6`,
+    /// where `M` are the stored second derivatives.  A degenerate spline (fewer
+    /// than two knots, or `xs`, `ys` and `m` of different lengths) evaluates to
+    /// its first value, or to `NaN` when it has none.
     pub fn eval_cubic(&self, x: f64) -> f64 {
-        let n = self.xs.len();
-        let mut idx = 0;
-        for i in 1..n - 1 {
-            if x >= self.xs[i] {
-                idx = i;
-            }
+        if self.xs.len() < 2 || self.ys.len() != self.xs.len() || self.m.len() != self.xs.len() {
+            return self.ys.first().copied().unwrap_or(f64::NAN);
         }
+        let idx = self.interval_index(x);
         let h = self.xs[idx + 1] - self.xs[idx];
         let dx = x - self.xs[idx];
         let dx2 = self.xs[idx + 1] - x;
@@ -1401,6 +1403,110 @@ mod tests {
                 "NotAKnot spline at node {i}: {v:.6}"
             );
         }
+    }
+
+    #[test]
+    fn test_spline_eval_agrees_with_eval_cubic_and_tracks_sin() {
+        // 20 natural-spline knots on [0, pi]: sin'' vanishes at both ends, so the
+        // natural boundary condition is exact and the error is O(h^4).
+        let n = 20;
+        let xs: Vec<f64> = (0..n)
+            .map(|i| std::f64::consts::PI * i as f64 / (n - 1) as f64)
+            .collect();
+        let ys: Vec<f64> = xs.iter().map(|&x| x.sin()).collect();
+        let sp = SplineInterpolation::fit(&xs, &ys, SplineKind::Natural);
+        for w in xs.windows(2) {
+            let mid = 0.5 * (w[0] + w[1]);
+            let direct = sp.eval(mid);
+            assert!(
+                (direct - sp.eval_cubic(mid)).abs() < 1e-14,
+                "eval and eval_cubic disagree at {mid}"
+            );
+            assert!(
+                (direct - mid.sin()).abs() < 1e-3,
+                "natural spline of sin off by {} at {mid}",
+                (direct - mid.sin()).abs()
+            );
+        }
+    }
+
+    #[test]
+    fn test_spline_eval_reproduces_quadratic_between_knots() {
+        // y = x^2 has constant second derivative M = 2.  A clamped spline with the
+        // exact end slopes reproduces it exactly; the old `eval` degraded to
+        // linear interpolation whenever the two end second derivatives agreed.
+        let xs = [0.0, 1.0, 2.0, 3.0, 4.0];
+        let ys: Vec<f64> = xs.iter().map(|&x| x * x).collect();
+        let sp = SplineInterpolation::fit(&xs, &ys, SplineKind::Clamped(0.0, 8.0));
+        for &m in &sp.m {
+            assert!((m - 2.0).abs() < 1e-10, "second derivative {m}");
+        }
+        for &x in &[0.25, 0.5, 1.5, 2.75, 3.5, 3.99] {
+            assert!(
+                (sp.eval(x) - x * x).abs() < 1e-10,
+                "eval({x}) = {} but x^2 = {}",
+                sp.eval(x),
+                x * x
+            );
+        }
+    }
+
+    #[test]
+    fn test_spline_eval_reproduces_cubic_on_nonuniform_knots() {
+        let p = |x: f64| x * x * x - 2.0 * x * x + x + 1.0;
+        let dp = |x: f64| 3.0 * x * x - 4.0 * x + 1.0;
+        let xs = [0.0, 0.4, 1.1, 1.5, 2.2, 3.0];
+        let ys: Vec<f64> = xs.iter().map(|&x| p(x)).collect();
+        let sp = SplineInterpolation::fit(&xs, &ys, SplineKind::Clamped(dp(0.0), dp(3.0)));
+        for k in 0..=60 {
+            let x = 3.0 * k as f64 / 60.0;
+            assert!(
+                (sp.eval(x) - p(x)).abs() < 1e-9,
+                "eval({x}) = {} but p(x) = {}",
+                sp.eval(x),
+                p(x)
+            );
+        }
+    }
+
+    #[test]
+    fn test_spline_eval_interval_selection_at_and_beyond_knots() {
+        let xs = [0.0, 1.0, 2.5, 3.0, 5.0];
+        let ys = [1.0, -1.0, 0.5, 2.0, 0.0];
+        let sp = SplineInterpolation::fit(&xs, &ys, SplineKind::Natural);
+        // Exact interpolation at every knot, the last one included.
+        for (x, y) in xs.iter().zip(ys.iter()) {
+            assert!((sp.eval(*x) - y).abs() < 1e-12, "knot {x}");
+        }
+        // Continuity across each interior knot (value continuity of the pieces).
+        for &x in &xs[1..xs.len() - 1] {
+            let left = sp.eval(x - 1e-9);
+            let right = sp.eval(x + 1e-9);
+            assert!((left - right).abs() < 1e-7, "jump at knot {x}");
+        }
+        // Outside the data range the end cubics extrapolate and stay finite.
+        assert!(sp.eval(-1.0).is_finite());
+        assert!(sp.eval(7.0).is_finite());
+        assert_eq!(sp.eval(-1.0), sp.eval_cubic(-1.0));
+        assert_eq!(sp.eval(7.0), sp.eval_cubic(7.0));
+    }
+
+    #[test]
+    fn test_spline_eval_degenerate_spline_does_not_panic() {
+        let empty = SplineInterpolation {
+            xs: Vec::new(),
+            ys: Vec::new(),
+            m: Vec::new(),
+            kind: SplineKind::Natural,
+        };
+        assert!(empty.eval(0.5).is_nan());
+        let single = SplineInterpolation {
+            xs: vec![1.0],
+            ys: vec![3.0],
+            m: vec![0.0],
+            kind: SplineKind::Natural,
+        };
+        assert_eq!(single.eval(0.5), 3.0);
     }
 
     // ── Barycentric tests ─────────────────────────────────────────────────

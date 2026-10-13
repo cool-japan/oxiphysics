@@ -32,11 +32,12 @@
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
-// Physical constant (GROMACS-compatible)
+// Physical constant
 // ---------------------------------------------------------------------------
 
-/// Coulomb constant in GROMACS units: kJ·Å/(mol·e²).
-pub const COULOMB_K: f64 = 138.935_458;
+/// Coulomb constant in kJ·Å/(mol·e²); re-exported from the single definition in
+/// [`super::coulomb`] so that every Å-based electrostatics routine agrees.
+pub use super::coulomb::COULOMB_K;
 
 // ---------------------------------------------------------------------------
 // B-spline order 4
@@ -712,6 +713,16 @@ mod tests {
         assert!(
             diff < 5e-3,
             "Madelung constant error too large: got {e_madelung:.8}, expected {madelung_ref:.8}, diff = {diff:.2e}"
+        );
+
+        // Absolute energy scale: -M K / d_nn = -861.0 kJ/mol per NaCl ion pair
+        // (the Madelung ratio above divides by K and so cannot see a unit error;
+        // the old nm-valued constant gave only -86.1 kJ/mol).
+        let e_per_pair = e_total / n_pairs;
+        let expected_per_pair = -1.747_564_594_6 * 1_389.354_576 / d_nn;
+        assert!(
+            (e_per_pair - expected_per_pair).abs() < 5e-3 * expected_per_pair.abs(),
+            "energy per ion pair {e_per_pair:.3} kJ/mol, expected {expected_per_pair:.3} kJ/mol"
         );
     }
 

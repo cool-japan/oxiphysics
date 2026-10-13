@@ -3,6 +3,8 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
+use super::germano::{clip_to_bounds, germano_lilly_ratio, germano_lilly_ratio_field};
+use super::singular_values::{sigma_operator, singular_values_3x3};
 
 /// Tracks the SGS energy budget: production, dissipation, and transfer.
 #[derive(Debug, Clone)]
@@ -339,8 +341,13 @@ impl SmagorinskyLes {
 }
 /// Dynamic Smagorinsky coefficient computed via the Germano–Lilly procedure.
 ///
-/// Uses two filter levels (grid filter Δ and test filter 2Δ) to dynamically
-/// adjust the Smagorinsky constant in space and time.
+/// Uses two filter levels (grid filter Δ and test filter α Δ, with
+/// `α =` [`test_filter_ratio`](DynamicSmagorinsky::test_filter_ratio)) to adjust
+/// the squared Smagorinsky constant `C_s²` in space and time:
+/// [`dynamic_cs_sq`](DynamicSmagorinsky::dynamic_cs_sq) evaluates the Germano
+/// identity `L^d_ij = C_s² M_ij` from the resolved velocity and strain fields of
+/// the particles and their neighbour lists (see [`super::germano`]), and clips
+/// the least-squares value to `[c_min, c_max]`.
 #[derive(Debug, Clone)]
 pub struct DynamicSmagorinsky {
     /// Base filter width Δ (particle spacing).
@@ -362,26 +369,73 @@ impl DynamicSmagorinsky {
             c_max: 0.25,
         }
     }
-    /// Compute the dynamic Smagorinsky constant C_s² via the Germano–Lilly method.
+    /// Dynamic Smagorinsky constant `C_s²` at particle `i` (Germano–Lilly).
     ///
-    /// Arguments:
-    /// - `s_grid` : strain-rate tensor at the grid-filter level.
-    /// - `s_test` : strain-rate tensor at the test-filter level.
+    /// * `u` – resolved velocity of every particle,
+    /// * `s` – resolved strain-rate tensor `S̄_ij` of every particle,
+    /// * `neighbors` – neighbour list of every particle (the particle itself excluded);
+    ///   `i` and `neighbors[i]` form the test-filter stencil,
+    /// * `i` – index of the particle.
     ///
-    /// Returns the clipped dynamic coefficient C_s² (≥ 0).
-    pub fn dynamic_coefficient(&self, s_grid: Mat3, s_test: Mat3) -> f64 {
+    /// Returns `⟨L^d:M⟩/⟨M:M⟩` clipped to `[c_min, c_max]`.  It vanishes (up to
+    /// rounding) for a uniform velocity field and is exactly `0` when the strain
+    /// vanishes.  See [`germano_lilly_ratio`] for the definition of `L` and `M`.
+    pub fn dynamic_cs_sq(
+        &self,
+        u: &[[f64; 3]],
+        s: &[Mat3],
+        neighbors: &[Vec<usize>],
+        i: usize,
+    ) -> f64 {
+        let ratio = germano_lilly_ratio(u, s, neighbors, i, self.delta, self.test_filter_ratio);
+        clip_to_bounds(ratio, self.c_min, self.c_max)
+    }
+    /// [`DynamicSmagorinsky::dynamic_cs_sq`] for every particle (`O(N k)`).
+    pub fn dynamic_cs_sq_field(
+        &self,
+        u: &[[f64; 3]],
+        s: &[Mat3],
+        neighbors: &[Vec<usize>],
+    ) -> Vec<f64> {
+        germano_lilly_ratio_field(u, s, neighbors, self.delta, self.test_filter_ratio)
+            .into_iter()
+            .map(|ratio| clip_to_bounds(ratio, self.c_min, self.c_max))
+            .collect()
+    }
+    /// Eddy viscosity `ν_t = C_s² Δ² |S̄|` for a given coefficient `cs_sq`.
+    pub fn eddy_viscosity_with_cs_sq(&self, cs_sq: f64, s_bar: &Mat3) -> f64 {
+        cs_sq * self.delta * self.delta * strain_rate_magnitude(s_bar)
+    }
+    /// SGS stress `τ_ij = −2 ρ ν_t S̄_ij` for a given coefficient `cs_sq`.
+    pub fn sgs_stress_with_cs_sq(&self, cs_sq: f64, s_bar: &Mat3, density: f64) -> Mat3 {
+        let nu_t = self.eddy_viscosity_with_cs_sq(cs_sq, s_bar);
+        mat3_scale(-2.0 * density * nu_t, *s_bar)
+    }
+    /// Dynamic eddy viscosity `ν_t = C_s² Δ² |S̄|` of every particle.
+    pub fn eddy_viscosity_field(
+        &self,
+        u: &[[f64; 3]],
+        s: &[Mat3],
+        neighbors: &[Vec<usize>],
+    ) -> Vec<f64> {
+        self.dynamic_cs_sq_field(u, s, neighbors)
+            .iter()
+            .zip(s.iter())
+            .map(|(&cs_sq, s_bar)| self.eddy_viscosity_with_cs_sq(cs_sq, s_bar))
+            .collect()
+    }
+    /// Strain-only "coefficient" kept for the deprecated entry points.
+    fn strain_only_coefficient(&self, s_grid: &Mat3, s_test: &Mat3) -> f64 {
         let delta_hat = self.delta * self.test_filter_ratio;
-        let s_bar_mag = strain_rate_magnitude(&s_grid);
-        let s_hat_mag = strain_rate_magnitude(&s_test);
+        let s_bar_mag = strain_rate_magnitude(s_grid);
+        let s_hat_mag = strain_rate_magnitude(s_test);
         let mut lm = 0.0_f64;
         let mut mm = 0.0_f64;
         for i in 0..3 {
             for j in 0..3 {
-                let m_ij = 2.0
-                    * (delta_hat * delta_hat * s_hat_mag * s_test[i][j]
-                        - self.delta * self.delta * s_bar_mag * s_grid[i][j]);
                 let l_ij = delta_hat * delta_hat * s_hat_mag * s_test[i][j]
                     - self.delta * self.delta * s_bar_mag * s_grid[i][j];
+                let m_ij = 2.0 * l_ij;
                 lm += l_ij * m_ij;
                 mm += m_ij * m_ij;
             }
@@ -389,24 +443,46 @@ impl DynamicSmagorinsky {
         if mm < 1e-30 {
             return 0.0;
         }
-        (lm / mm).clamp(self.c_min, self.c_max)
+        clip_to_bounds(lm / mm, self.c_min, self.c_max)
     }
-    /// Compute the dynamic eddy viscosity ν_t = C_s² · Δ² · |S|.
+    /// Strain-only "dynamic" coefficient (deprecated, **not** Germano–Lilly).
+    ///
+    /// The Leonard stress is built from the same strain tensors as the model
+    /// tensor `M_ij`, which forces `L_ij = M_ij / 2`; the ratio `⟨L:M⟩/⟨M:M⟩` is
+    /// therefore identically `1/2` for every non-degenerate input and the result
+    /// is just `0.5` clipped to `[c_min, c_max]` (`c_max` for the default
+    /// bounds), and `0` when the strain vanishes.  The identity needs the
+    /// resolved velocity: use [`DynamicSmagorinsky::dynamic_cs_sq`].
+    #[deprecated(
+        since = "0.1.3",
+        note = "strain-only inputs cannot represent the Germano identity (L = M/2 gives a constant); use `dynamic_cs_sq`"
+    )]
+    pub fn dynamic_coefficient(&self, s_grid: Mat3, s_test: Mat3) -> f64 {
+        self.strain_only_coefficient(&s_grid, &s_test)
+    }
+    /// Eddy viscosity `C_s² Δ² |S̄|` with the strain-only coefficient (deprecated).
+    ///
+    /// See [`DynamicSmagorinsky::dynamic_coefficient`] for why that coefficient
+    /// is a constant; use [`DynamicSmagorinsky::eddy_viscosity_field`].
+    #[deprecated(
+        since = "0.1.3",
+        note = "uses the constant strain-only coefficient; use `eddy_viscosity_field`"
+    )]
     pub fn eddy_viscosity(&self, s_grid: Mat3, s_test: Mat3) -> f64 {
-        let cs2 = self.dynamic_coefficient(s_grid, s_test);
-        let s_mag = strain_rate_magnitude(&s_grid);
-        cs2 * self.delta * self.delta * s_mag
+        let cs_sq = self.strain_only_coefficient(&s_grid, &s_test);
+        self.eddy_viscosity_with_cs_sq(cs_sq, &s_grid)
     }
-    /// Compute the full dynamic SGS stress tensor τ_ij = -2 ρ ν_t S_ij.
+    /// SGS stress `−2 ρ ν_t S̄_ij` with the strain-only coefficient (deprecated).
+    ///
+    /// See [`DynamicSmagorinsky::dynamic_coefficient`] for why that coefficient
+    /// is a constant; use [`DynamicSmagorinsky::sgs_stress_with_cs_sq`].
+    #[deprecated(
+        since = "0.1.3",
+        note = "uses the constant strain-only coefficient; use `dynamic_cs_sq_field` with `sgs_stress_with_cs_sq`"
+    )]
     pub fn sgs_stress(&self, s_grid: Mat3, s_test: Mat3, density: f64) -> Mat3 {
-        let nu_t = self.eddy_viscosity(s_grid, s_test);
-        let mut tau = mat3_zero();
-        for i in 0..3 {
-            for j in 0..3 {
-                tau[i][j] = -2.0 * density * nu_t * s_grid[i][j];
-            }
-        }
-        tau
+        let cs_sq = self.strain_only_coefficient(&s_grid, &s_test);
+        self.sgs_stress_with_cs_sq(cs_sq, &s_grid, density)
     }
 }
 /// Turbulent diffusion coefficient for the SPH momentum equation.
@@ -462,8 +538,12 @@ impl TurbulentDiffusionSph {
 /// C_s² = < L_ij M_ij > / < M_ij M_ij >
 /// ```
 ///
-/// where L_ij is the resolved turbulent stress (Leonard stress) and M_ij is
-/// the Germano tensor. A test filter at scale Δ̂ = 2Δ is used.
+/// where `L_ij` is the resolved turbulent stress (Leonard stress) and `M_ij` is
+/// the model tensor.  A test filter at scale Δ̂ = 2Δ is used.
+/// [`dynamic_cs_sq`](DynamicSmagorinskyLes::dynamic_cs_sq) evaluates the
+/// procedure from the resolved velocity and strain fields of the particles and
+/// their neighbour lists (see [`super::germano`]); it shares its implementation
+/// with [`DynamicSmagorinsky`] and differs only in the clipping bounds.
 ///
 /// Reference: Germano et al. (1991), "A dynamic subgrid-scale eddy viscosity
 /// model", Physics of Fluids A.
@@ -488,17 +568,63 @@ impl DynamicSmagorinskyLes {
             cs_sq_max: 0.04,
         }
     }
-    /// Compute the dynamic C_s² using averaged Germano identity.
+    /// Dynamic `C_s²` at particle `i` from the Germano–Lilly procedure.
     ///
-    /// # Arguments
-    /// - `s_bar`     : strain-rate tensor at the grid filter level S̄_ij.
-    /// - `s_hat`     : strain-rate tensor at the test-filter level Ŝ_ij.
-    /// - `u_bar`     : velocity at grid-filter level (3-vector).
-    /// - `u_hat`     : velocity at test-filter level (3-vector).
+    /// * `u` – resolved velocity of every particle,
+    /// * `s` – resolved strain-rate tensor `S̄_ij` of every particle,
+    /// * `neighbors` – neighbour list of every particle (the particle itself excluded);
+    ///   `i` and `neighbors[i]` form the test-filter stencil,
+    /// * `i` – index of the particle.
     ///
-    /// # Returns
-    /// Clipped value of C_s².
-    pub fn compute_cs_sq(&self, s_bar: &Mat3, s_hat: &Mat3) -> f64 {
+    /// Returns `⟨L^d:M⟩/⟨M:M⟩` clipped to `[cs_sq_min, cs_sq_max]`; it vanishes
+    /// (up to rounding) for a uniform velocity field and is exactly `0` when the
+    /// strain vanishes.
+    pub fn dynamic_cs_sq(
+        &self,
+        u: &[[f64; 3]],
+        s: &[Mat3],
+        neighbors: &[Vec<usize>],
+        i: usize,
+    ) -> f64 {
+        let ratio = germano_lilly_ratio(u, s, neighbors, i, self.delta, self.test_filter_ratio);
+        clip_to_bounds(ratio, self.cs_sq_min, self.cs_sq_max)
+    }
+    /// [`DynamicSmagorinskyLes::dynamic_cs_sq`] for every particle (`O(N k)`).
+    pub fn dynamic_cs_sq_field(
+        &self,
+        u: &[[f64; 3]],
+        s: &[Mat3],
+        neighbors: &[Vec<usize>],
+    ) -> Vec<f64> {
+        germano_lilly_ratio_field(u, s, neighbors, self.delta, self.test_filter_ratio)
+            .into_iter()
+            .map(|ratio| clip_to_bounds(ratio, self.cs_sq_min, self.cs_sq_max))
+            .collect()
+    }
+    /// Eddy viscosity `ν_t = C_s² Δ² |S̄|` for a given coefficient `cs_sq`.
+    pub fn eddy_viscosity_with_cs_sq(&self, cs_sq: f64, s_bar: &Mat3) -> f64 {
+        self.delta * self.delta * cs_sq * strain_rate_magnitude(s_bar)
+    }
+    /// SGS stress `τ_ij = −2 ρ ν_t S̄_ij` for a given coefficient `cs_sq`.
+    pub fn sgs_stress_with_cs_sq(&self, cs_sq: f64, s_bar: &Mat3, density: f64) -> Mat3 {
+        let nu_t = self.eddy_viscosity_with_cs_sq(cs_sq, s_bar);
+        mat3_scale(-2.0 * density * nu_t, *s_bar)
+    }
+    /// Dynamic eddy viscosity `ν_t = C_s² Δ² |S̄|` of every particle.
+    pub fn eddy_viscosity_field(
+        &self,
+        u: &[[f64; 3]],
+        s: &[Mat3],
+        neighbors: &[Vec<usize>],
+    ) -> Vec<f64> {
+        self.dynamic_cs_sq_field(u, s, neighbors)
+            .iter()
+            .zip(s.iter())
+            .map(|(&cs_sq, s_bar)| self.eddy_viscosity_with_cs_sq(cs_sq, s_bar))
+            .collect()
+    }
+    /// Strain-only proxy kept for the deprecated entry points.
+    fn strain_only_cs_sq(&self, s_bar: &Mat3, s_hat: &Mat3) -> f64 {
         let s_bar_mag = strain_rate_magnitude(s_bar);
         let s_hat_mag = strain_rate_magnitude(s_hat);
         let delta_hat = self.test_filter_ratio * self.delta;
@@ -522,18 +648,45 @@ impl DynamicSmagorinskyLes {
         if mm < 1e-30 {
             return 0.0;
         }
-        (lm / mm).clamp(self.cs_sq_min, self.cs_sq_max)
+        clip_to_bounds(lm / mm, self.cs_sq_min, self.cs_sq_max)
     }
-    /// Compute the local eddy viscosity using the dynamic C_s².
+    /// Strain-only estimate of `C_s²` (deprecated, **not** Germano–Lilly).
+    ///
+    /// The Leonard stress is replaced by the strain proxy
+    /// `L_ij := (Δ̂² − Δ²) |S̄| S̄_ij` and `M_ij = 2 (Δ̂² |Ŝ| Ŝ_ij − Δ² |S̄| S̄_ij)`
+    /// is formed from `s_bar = S̄` and `s_hat = Ŝ`; the ratio `⟨L:M⟩/⟨M:M⟩`,
+    /// clipped to `[cs_sq_min, cs_sq_max]`, depends on the strain fields only.
+    /// The true Leonard stress `L_ij = (ū_i ū_j)^ − û_i û_j` needs the resolved
+    /// velocity: use [`DynamicSmagorinskyLes::dynamic_cs_sq`].
+    #[deprecated(
+        since = "0.1.3",
+        note = "strain-only proxy for the Leonard stress, not the Germano identity; use `dynamic_cs_sq`"
+    )]
+    pub fn compute_cs_sq(&self, s_bar: &Mat3, s_hat: &Mat3) -> f64 {
+        self.strain_only_cs_sq(s_bar, s_hat)
+    }
+    /// Eddy viscosity `C_s² Δ² |S̄|` with the strain-only estimate (deprecated).
+    ///
+    /// Use [`DynamicSmagorinskyLes::eddy_viscosity_field`].
+    #[deprecated(
+        since = "0.1.3",
+        note = "uses the strain-only proxy coefficient; use `eddy_viscosity_field`"
+    )]
     pub fn eddy_viscosity(&self, s_bar: &Mat3, s_hat: &Mat3) -> f64 {
-        let cs_sq = self.compute_cs_sq(s_bar, s_hat);
-        let s_mag = strain_rate_magnitude(s_bar);
-        self.delta * self.delta * cs_sq * s_mag
+        let cs_sq = self.strain_only_cs_sq(s_bar, s_hat);
+        self.eddy_viscosity_with_cs_sq(cs_sq, s_bar)
     }
-    /// Return the dynamic SGS stress tensor τ_ij = -2 ρ ν_t S̄_ij.
+    /// SGS stress `−2 ρ ν_t S̄_ij` with the strain-only estimate (deprecated).
+    ///
+    /// Use [`DynamicSmagorinskyLes::dynamic_cs_sq_field`] with
+    /// [`DynamicSmagorinskyLes::sgs_stress_with_cs_sq`].
+    #[deprecated(
+        since = "0.1.3",
+        note = "uses the strain-only proxy coefficient; use `dynamic_cs_sq_field` with `sgs_stress_with_cs_sq`"
+    )]
     pub fn sgs_stress(&self, s_bar: &Mat3, s_hat: &Mat3, density: f64) -> Mat3 {
-        let nu_t = self.eddy_viscosity(s_bar, s_hat);
-        mat3_scale(-2.0 * density * nu_t, *s_bar)
+        let cs_sq = self.strain_only_cs_sq(s_bar, s_hat);
+        self.sgs_stress_with_cs_sq(cs_sq, s_bar, density)
     }
 }
 /// Stores a per-particle turbulent viscosity field and provides operations
@@ -619,8 +772,19 @@ impl TurbulentViscosityField {
 }
 /// Sigma turbulence model.
 ///
-/// Uses the singular values of the velocity-gradient tensor to build
-/// an eddy viscosity that vanishes at walls and in laminar regions.
+/// Uses the singular values `σ1 ≥ σ2 ≥ σ3 ≥ 0` of the velocity-gradient
+/// tensor `g` to build an eddy viscosity that vanishes in two-dimensional or
+/// two-component flow, for pure shear, in solid-body rotation, for isotropic
+/// expansion and at walls:
+///
+/// ```text
+/// ν_t = (C_σ Δ)² · D_σ,   D_σ = σ3 (σ1 − σ2)(σ2 − σ3) / σ1²
+/// ```
+///
+/// The `σ_i` are the singular values of `g`, computed directly from `g` (no
+/// Gram matrix and no characteristic cubic) with the one-sided Jacobi solver
+/// shared with [`crate::turbulence_sph::SigmaModel`].
+///
 /// Nicoud et al. (2011) "Using singular values to build a subgrid-scale
 /// model for large eddy simulations."
 #[derive(Debug, Clone)]
@@ -635,73 +799,14 @@ impl SigmaModel {
     pub fn new(c_sigma: f64, delta: f64) -> Self {
         Self { c_sigma, delta }
     }
-    /// Compute the three invariants of G = gᵀg (where g = velocity-gradient tensor).
+    /// Sigma model eddy viscosity for the velocity-gradient tensor
+    /// `g_ij = ∂u_i/∂x_j`:
     ///
-    /// Returns (I1, I2, I3) of the matrix G = gᵀg.
-    fn invariants_g(g: &Mat3) -> (f64, f64, f64) {
-        let mut big_g = mat3_zero();
-        for i in 0..3 {
-            for j in 0..3 {
-                for g_k in g.iter() {
-                    big_g[i][j] += g_k[i] * g_k[j];
-                }
-            }
-        }
-        let i1 = big_g[0][0] + big_g[1][1] + big_g[2][2];
-        let i2 = 0.5
-            * (i1 * i1
-                - (big_g[0][0] * big_g[0][0]
-                    + big_g[1][1] * big_g[1][1]
-                    + big_g[2][2] * big_g[2][2]
-                    + 2.0 * big_g[0][1] * big_g[1][0]
-                    + 2.0 * big_g[0][2] * big_g[2][0]
-                    + 2.0 * big_g[1][2] * big_g[2][1]));
-        let i3 = big_g[0][0] * (big_g[1][1] * big_g[2][2] - big_g[1][2] * big_g[2][1])
-            - big_g[0][1] * (big_g[1][0] * big_g[2][2] - big_g[1][2] * big_g[2][0])
-            + big_g[0][2] * (big_g[1][0] * big_g[2][1] - big_g[1][1] * big_g[2][0]);
-        (i1, i2, i3)
-    }
-    /// Approximate singular values σ_1 ≥ σ_2 ≥ σ_3 ≥ 0 of g via
-    /// the eigenvalues of G = gᵀg (σ_i = sqrt(λ_i)).
-    ///
-    /// Uses the closed-form cubic formula for the eigenvalues of the
-    /// symmetric 3×3 matrix G.
-    fn singular_values(g: &Mat3) -> [f64; 3] {
-        let (i1, i2, i3) = Self::invariants_g(g);
-        let p = i2 - i1 * i1 / 3.0;
-        let q = (2.0 * i1 * i1 * i1 / 27.0) - (i1 * i2 / 3.0) + i3;
-        let disc = -(4.0 * p * p * p + 27.0 * q * q);
-        let mut lambdas = [0.0_f64; 3];
-        if disc >= 0.0 {
-            let m = 2.0 * (-p / 3.0).sqrt();
-            let theta = (3.0 * q / (p * m)).clamp(-1.0, 1.0).acos() / 3.0;
-            use std::f64::consts::PI;
-            lambdas[0] = m * theta.cos() + i1 / 3.0;
-            lambdas[1] = m * (theta - 2.0 * PI / 3.0).cos() + i1 / 3.0;
-            lambdas[2] = m * (theta - 4.0 * PI / 3.0).cos() + i1 / 3.0;
-        } else {
-            let a = (-q / 2.0 + (q * q / 4.0 + p * p * p / 27.0).sqrt()).cbrt();
-            let b = if a.abs() > 1e-30 { -p / (3.0 * a) } else { 0.0 };
-            lambdas[0] = a + b + i1 / 3.0;
-        }
-        lambdas.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-        [
-            lambdas[0].max(0.0).sqrt(),
-            lambdas[1].max(0.0).sqrt(),
-            lambdas[2].max(0.0).sqrt(),
-        ]
-    }
-    /// Sigma model eddy viscosity:
-    /// ν_t = (C_σ Δ)² · D_σ(σ_1, σ_2, σ_3)
-    /// where D_σ = σ_3 (σ_1 - σ_2)(σ_2 - σ_3) / σ_1²
+    /// ν_t = (C_σ Δ)² · σ3 (σ1 − σ2)(σ2 − σ3) / σ1²
     pub fn eddy_viscosity(&self, g: Mat3) -> f64 {
-        let [s1, s2, s3] = Self::singular_values(&g);
-        if s1 < 1e-30 {
-            return 0.0;
-        }
-        let d_sigma = s3 * (s1 - s2) * (s2 - s3) / (s1 * s1);
-        let cw2 = self.c_sigma * self.delta;
-        cw2 * cw2 * d_sigma.max(0.0)
+        let d_sigma = sigma_operator(singular_values_3x3(&g));
+        let length = self.c_sigma * self.delta;
+        length * length * d_sigma
     }
 }
 /// Simplified DES (Detached Eddy Simulation) model.

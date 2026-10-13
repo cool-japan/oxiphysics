@@ -8,6 +8,8 @@ use oxiphysics_core::Aabb;
 use oxiphysics_core::math::{Mat3, Real, Vec3};
 use std::f64::consts::PI;
 
+mod welzl;
+
 /// A sphere defined by its radius.
 #[derive(Debug, Clone)]
 pub struct Sphere {
@@ -683,14 +685,16 @@ impl Shape for Sphere {
 
 /// Minimum enclosing sphere using Welzl's algorithm (randomised).
 ///
-/// Returns `(center, radius)` for the smallest sphere containing all points.
+/// Returns `(center, radius)` for the smallest sphere containing all points; an
+/// empty input gives the radius-zero sphere at the origin.
+///
+/// The points are processed in a pseudo-random order (a copy of the input
+/// permuted with a fixed-seed LCG), which gives the expected linear running time
+/// of the randomised algorithm and keeps the result deterministic. The recursion
+/// over the point list is unrolled into loops, so the call depth is bounded by
+/// the four support points and does not grow with the number of points.
 pub fn minimum_enclosing_sphere(points: &[[f64; 3]]) -> ([f64; 3], f64) {
-    if points.is_empty() {
-        return ([0.0; 3], 0.0);
-    }
-    let mut pts: Vec<[f64; 3]> = points.to_vec();
-    let n = pts.len();
-    welzl_sphere(&mut pts, &[], n)
+    welzl::minimum_enclosing_sphere(points)
 }
 
 /// Sphere-OBB penetration depth.
@@ -788,128 +792,6 @@ pub fn sphere_sphere_intersection_volume(r1: f64, r2: f64, d: f64) -> f64 {
     let h2 = d - h1;
     let cap2 = (PI / 3.0) * (r2 - h2).powi(2) * (2.0 * r2 + h2);
     cap1 + cap2
-}
-
-// ── Welzl helpers (module-level) ──────────────────────────────────────────────
-
-/// Minimum sphere enclosing up to 4 boundary points.
-fn min_sphere_with_boundary(boundary: &[[f64; 3]]) -> ([f64; 3], f64) {
-    match boundary.len() {
-        0 => ([0.0; 3], 0.0),
-        1 => (boundary[0], 0.0),
-        2 => {
-            let c = [
-                (boundary[0][0] + boundary[1][0]) * 0.5,
-                (boundary[0][1] + boundary[1][1]) * 0.5,
-                (boundary[0][2] + boundary[1][2]) * 0.5,
-            ];
-            let r = sphere_dist3(boundary[0], c);
-            (c, r)
-        }
-        3 => circumsphere_3(boundary[0], boundary[1], boundary[2]),
-        4 => circumsphere_4(boundary[0], boundary[1], boundary[2], boundary[3]),
-        _ => ([0.0; 3], 0.0),
-    }
-}
-
-fn sphere_dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
-}
-
-fn welzl_sphere(pts: &mut [[f64; 3]], boundary: &[[f64; 3]], n: usize) -> ([f64; 3], f64) {
-    if n == 0 || boundary.len() == 4 {
-        return min_sphere_with_boundary(boundary);
-    }
-    let p = pts[n - 1];
-    let (c, r) = welzl_sphere(pts, boundary, n - 1);
-    if sphere_dist3(p, c) <= r + 1e-10 {
-        return (c, r);
-    }
-    let mut new_boundary = boundary.to_vec();
-    new_boundary.push(p);
-    welzl_sphere(pts, &new_boundary, n - 1)
-}
-
-fn circumsphere_3(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> ([f64; 3], f64) {
-    // circumcenter of triangle in 3D
-    let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    let ab_cross_ac = cross3sph(ab, ac);
-    let denom = 2.0 * dot3sph(ab_cross_ac, ab_cross_ac);
-    if denom.abs() < 1e-30 {
-        // Degenerate: return circumsphere of ab
-        return (
-            [
-                (a[0] + b[0]) * 0.5,
-                (a[1] + b[1]) * 0.5,
-                (a[2] + b[2]) * 0.5,
-            ],
-            sphere_dist3(
-                a,
-                [
-                    (a[0] + b[0]) * 0.5,
-                    (a[1] + b[1]) * 0.5,
-                    (a[2] + b[2]) * 0.5,
-                ],
-            ),
-        );
-    }
-    let i_denom = 1.0 / denom;
-    let ab2 = dot3sph(ab, ab);
-    let ac2 = dot3sph(ac, ac);
-    let ab_cross_ac2 = cross3sph(ab, ac);
-    let ac_cross_ab = cross3sph(ac, ab);
-    let _ = ac_cross_ab;
-    let t1 = cross3sph(scale3sph(ab, ac2), ab_cross_ac2);
-    let t2 = cross3sph(scale3sph(ac, ab2), ab_cross_ac2);
-    let center = [
-        a[0] + (t1[0] - t2[0]) * i_denom,
-        a[1] + (t1[1] - t2[1]) * i_denom,
-        a[2] + (t1[2] - t2[2]) * i_denom,
-    ];
-    let r = sphere_dist3(a, center);
-    (center, r)
-}
-
-fn circumsphere_4(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> ([f64; 3], f64) {
-    // Use circumsphere of the three points that give the largest sphere
-    let opts = [
-        circumsphere_3(a, b, c),
-        circumsphere_3(a, b, d),
-        circumsphere_3(a, c, d),
-        circumsphere_3(b, c, d),
-    ];
-    // Return the smallest sphere that contains all 4 points
-    for (center, r) in &opts {
-        let all_inside = [a, b, c, d]
-            .iter()
-            .all(|&p| sphere_dist3(p, *center) <= r + 1e-8);
-        if all_inside {
-            return (*center, *r);
-        }
-    }
-    // Fallback: midpoint of ab
-    let cen = [
-        (a[0] + d[0]) * 0.5,
-        (a[1] + d[1]) * 0.5,
-        (a[2] + d[2]) * 0.5,
-    ];
-    let r = sphere_dist3(a, cen);
-    (cen, r)
-}
-
-fn cross3sph(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-fn dot3sph(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-fn scale3sph(a: [f64; 3], s: f64) -> [f64; 3] {
-    [a[0] * s, a[1] * s, a[2] * s]
 }
 
 #[cfg(test)]

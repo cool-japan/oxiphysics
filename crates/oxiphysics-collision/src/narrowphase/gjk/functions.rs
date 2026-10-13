@@ -7,8 +7,8 @@ use oxiphysics_core::math::{Real, Vec3};
 use oxiphysics_geometry::Shape;
 
 use super::types::{
-    CcdResult, Gjk, GjkDistanceResult, GjkResult, MprResult, RayCastResult, Simplex,
-    SpeculativeContact, SupportPoint,
+    CcdResult, Gjk, GjkDistanceResult, GjkResult, MprResult, Simplex, SpeculativeContact,
+    SupportPoint,
 };
 use oxiphysics_geometry::Sphere;
 
@@ -497,99 +497,6 @@ pub fn barycentric_witnesses(simplex: &Simplex, bary: &[Real]) -> (Vec3, Vec3) {
         wb += pt.support_b * b;
     }
     (wa, wb)
-}
-/// Cast a ray against a convex shape using the GJK algorithm.
-///
-/// `ray_origin` and `ray_dir` define the ray in world space.
-/// `max_t` limits the ray length.
-///
-/// Returns `Some(RayCastResult)` if the ray hits the shape within `[0, max_t]`.
-pub fn gjk_ray_cast(
-    shape: &dyn Shape,
-    transform: &Transform,
-    ray_origin: Vec3,
-    ray_dir: Vec3,
-    max_t: f64,
-) -> Option<RayCastResult> {
-    let dir_len = ray_dir.norm();
-    if dir_len < 1e-14 {
-        return None;
-    }
-    let unit_dir = ray_dir / dir_len;
-    let mut t = 0.0_f64;
-    let mut normal = Vec3::new(0.0, 1.0, 0.0);
-    let start_origin = ray_origin;
-    for _ in 0..MAX_ITERATIONS {
-        let query_pos = start_origin + unit_dir * t;
-        let query_t = Transform {
-            position: query_pos,
-            rotation: transform.rotation,
-        };
-        let sp_fwd = {
-            let local = transform.rotation.inverse() * unit_dir;
-            let lp = shape.support_point(&local);
-            transform.transform_point(&lp)
-        };
-        let sp_bwd = {
-            let local = transform.rotation.inverse() * (-unit_dir);
-            let lp = shape.support_point(&local);
-            transform.transform_point(&lp)
-        };
-        let to_fwd = sp_fwd - query_t.position;
-        let to_bwd = sp_bwd - query_t.position;
-        if to_fwd.dot(&unit_dir) < 0.0 && (-to_bwd).dot(&unit_dir) < 0.0 {
-            return Some(RayCastResult {
-                t,
-                point: query_pos,
-                normal,
-            });
-        }
-        let diff = sp_bwd - query_pos;
-        let proj = diff.dot(&unit_dir);
-        if proj.abs() < 1e-6 {
-            let surf_diff = query_pos - sp_bwd;
-            let surf_len = surf_diff.norm();
-            normal = if surf_len > 1e-10 {
-                surf_diff / surf_len
-            } else {
-                unit_dir
-            };
-            return Some(RayCastResult {
-                t,
-                point: query_pos,
-                normal,
-            });
-        }
-        if proj > 0.0 {
-            t += proj;
-            let n = diff;
-            let nl = n.norm();
-            normal = if nl > 1e-10 { n / nl } else { normal };
-        } else {
-            break;
-        }
-        if t > max_t {
-            break;
-        }
-    }
-    let local_origin = transform.inverse().transform_point(&start_origin);
-    let local_dir = transform.rotation.inverse() * unit_dir;
-    if let Some(hit) = shape.ray_cast(&local_origin, &local_dir, max_t) {
-        let world_point = transform.transform_point(&hit.point);
-        let world_normal = transform.transform_vector(&hit.normal);
-        let nl = world_normal.norm();
-        let world_normal = if nl > 1e-10 {
-            world_normal / nl
-        } else {
-            Vec3::new(0.0, 1.0, 0.0)
-        };
-        return Some(RayCastResult {
-            t: hit.toi,
-            point: world_point,
-            normal: world_normal,
-        });
-    }
-    None
 }
 /// Cast a ray against the Minkowski sum of two convex shapes (GJK portal ray-cast).
 ///

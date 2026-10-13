@@ -2,7 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use super::functions::{CS2, CX, CY, W};
+use super::functions::{CS2, CX, CY, W, guo_forcing_term};
 
 /// A cell with anisotropic permeability and thermal state.
 #[derive(Debug, Clone)]
@@ -250,6 +250,47 @@ impl DarcyBrinkmanForchheimer {
         let fd = self.darcy_force(u);
         let ff = self.forchheimer_force(u);
         [fd[0] + ff[0], fd[1] + ff[1]]
+    }
+    /// Pore (interstitial) velocity `u` consistent with the half-step force of
+    /// the Guo scheme, solving
+    ///
+    /// `rho * eps * u = m + (f_b + F_DBF(u)) / 2`
+    ///
+    /// for `u`, where `m = sum_i f_i c_i` is the lattice momentum density,
+    /// `f_b` the external body force density and
+    /// `F_DBF(u) = -(eps mu/K) u - (eps C_F rho_f/sqrt(K)) |u| u` the Darcy plus
+    /// Forchheimer drag ([`DarcyBrinkmanForchheimer::total_force`]).  The
+    /// equation is `a u + b |u| u = v` with `a = rho eps + eps mu / (2 K)`,
+    /// `b = eps C_F rho_f / (2 sqrt(K))` and `v = m + f_b/2`, which has the
+    /// closed-form solution `u = 2 v / (a + sqrt(a^2 + 4 b |v|))`.
+    ///
+    /// Treating the drag implicitly keeps the explicit-looking collision
+    /// unconditionally stable however small the permeability is, and the
+    /// steady state is exactly the Darcy-Forchheimer balance.
+    ///
+    /// # Arguments
+    /// * `momentum`   - lattice momentum density `sum_i f_i c_i`
+    /// * `body_force` - external body force density `f_b`
+    /// * `rho`        - lattice density `sum_i f_i`
+    /// * `porosity`   - porosity `eps` of the cell (as used by the grid's velocity definition)
+    pub fn half_step_velocity(
+        &self,
+        momentum: [f64; 2],
+        body_force: [f64; 2],
+        rho: f64,
+        porosity: f64,
+    ) -> [f64; 2] {
+        let eps_cell = porosity.max(1e-12);
+        let k = self.permeability.max(1e-300);
+        let a = rho * eps_cell + 0.5 * self.porosity * self.viscosity / k;
+        let b = 0.5 * self.porosity * self.forchheimer_cf * self.density / k.sqrt();
+        let v = [
+            momentum[0] + 0.5 * body_force[0],
+            momentum[1] + 0.5 * body_force[1],
+        ];
+        let v_mag = (v[0] * v[0] + v[1] * v[1]).sqrt();
+        let denominator = a + (a * a + 4.0 * b * v_mag).sqrt();
+        [2.0 * v[0] / denominator, 2.0 * v[1] / denominator]
     }
     /// Modified relaxation frequency accounting for Brinkman viscosity.
     ///
@@ -575,8 +616,13 @@ pub struct PorousLbmCell {
     pub resistance: f64,
     /// Macroscopic density.
     pub density: f64,
-    /// Macroscopic velocity \[ux, uy\].
+    /// Macroscopic (pore) velocity \[ux, uy\], including the Guo half-step
+    /// force correction `F/2` of the force stored in [`PorousLbmCell::force`].
     pub velocity: [f64; 2],
+    /// Force density applied in the last collision (body force plus porous
+    /// drag).  [`PorousLbmGrid::compute_macroscopic`] adds half of it to the
+    /// momentum when it evaluates the velocity (Guo forcing scheme).
+    pub force: [f64; 2],
 }
 impl PorousLbmCell {
     /// Create a new `PorousLbmCell` at rest with equilibrium distributions.
@@ -589,7 +635,24 @@ impl PorousLbmCell {
             resistance: 0.0,
             density: 1.0,
             velocity: [0.0; 2],
+            force: [0.0; 2],
         }
+    }
+    /// BGK collision toward the equilibrium at velocity `u_eq` together with
+    /// the Guo forcing term of the force density `force`; the force is stored
+    /// in [`PorousLbmCell::force`].
+    ///
+    /// The equilibrium is built with the density `sum_i f_i` of the cell and
+    /// the forcing term has a vanishing zeroth moment, so the collision
+    /// conserves mass exactly for any `u_eq` and `force`.  To conserve momentum
+    /// (apart from the force) `u_eq` has to be the momentum per unit density.
+    pub(super) fn collide_with_guo_forcing(&mut self, omega: f64, u_eq: [f64; 2], force: [f64; 2]) {
+        let rho: f64 = self.f.iter().sum();
+        for i in 0..9 {
+            let feq = PorousLbmGrid::equilibrium(rho, u_eq, i);
+            self.f[i] += omega * (feq - self.f[i]) + guo_forcing_term(i, omega, u_eq, force);
+        }
+        self.force = force;
     }
 }
 /// Classification of porous-medium flow model.
@@ -646,9 +709,15 @@ impl DarcyResistance {
 }
 /// Driver for a volume-averaged porous-media LBM simulation.
 ///
-/// At each step the standard BGK collision is applied using a porous-corrected
-/// relaxation time, then the Darcy-Brinkman-Forchheimer body force is injected
-/// via the Guo forcing scheme.
+/// At each step the BGK collision is applied using a porous-corrected
+/// relaxation time, and the external body force plus the Darcy-Brinkman-
+/// Forchheimer drag ([`DarcyBrinkmanForchheimer::total_force`]) is injected via
+/// the Guo forcing scheme.  The lattice momentum `m = sum_i f_i c_i` of a cell
+/// is the superficial momentum `rho eps u` of the pore velocity `u`; the drag is
+/// evaluated at the half-step pore velocity
+/// ([`DarcyBrinkmanForchheimer::half_step_velocity`]) and the equilibrium is
+/// taken at the superficial velocity `eps u`, so the collision conserves mass
+/// and (up to the force) momentum.
 pub struct PorousMediaDriver {
     /// The underlying D2Q9 LBM porous grid.
     pub grid: PorousLbmGrid,
@@ -683,7 +752,8 @@ impl PorousMediaDriver {
     pub fn set_body_force(&mut self, fx: f64, fy: f64) {
         self.body_force = [fx, fy];
     }
-    /// BGK collision with Darcy+Forchheimer implicit source.
+    /// BGK collision with the Darcy + Forchheimer drag and the external body
+    /// force injected through the Guo forcing scheme.
     fn collide(&mut self) {
         let nx = self.grid.nx;
         let ny = self.grid.ny;
@@ -692,29 +762,25 @@ impl PorousMediaDriver {
                 let k = self.grid.idx(x, y);
                 let dbf = &self.dbf_models[k];
                 let omega = dbf.brinkman_omega().min(1.99);
-                let rho = self.grid.cells[k].density;
-                let sigma = self.grid.cells[k].resistance;
                 let tau = 1.0 / omega;
-                let denom = 1.0 + sigma * tau;
-                let u_eff = [
-                    self.grid.cells[k].velocity[0] / denom,
-                    self.grid.cells[k].velocity[1] / denom,
-                ];
+                let cell = &mut self.grid.cells[k];
+                let eps = cell.porosity.max(1e-12);
+                let rho: f64 = cell.f.iter().sum();
+                let mut momentum = [0.0_f64; 2];
                 for i in 0..9 {
-                    let feq = PorousLbmGrid::equilibrium(rho, u_eff, i);
-                    self.grid.cells[k].f[i] += omega * (feq - self.grid.cells[k].f[i]);
+                    momentum[0] += CX[i] * cell.f[i];
+                    momentum[1] += CY[i] * cell.f[i];
                 }
-                let total_f = dbf.darcy_force(u_eff);
-                let fx_total = self.body_force[0] + total_f[0];
-                let fy_total = self.body_force[1] + total_f[1];
-                for i in 0..9 {
-                    let cu = CX[i] * u_eff[0] + CY[i] * u_eff[1];
-                    let fi_term = W[i]
-                        * (1.0 - 0.5 * omega)
-                        * ((CX[i] / CS2 + cu * CX[i] / (CS2 * CS2)) * fx_total
-                            + (CY[i] / CS2 + cu * CY[i] / (CS2 * CS2)) * fy_total);
-                    self.grid.cells[k].f[i] += fi_term;
-                }
+                // Pore velocity at the half step, with the drag treated
+                // implicitly, and the corresponding total force density.
+                let u_pore = dbf.half_step_velocity(momentum, self.body_force, rho, eps);
+                let drag = dbf.total_force(u_pore);
+                let force = [self.body_force[0] + drag[0], self.body_force[1] + drag[1]];
+                // Equilibrium at the superficial velocity (momentum per unit
+                // density), reduced by the cell's implicit resistance.
+                let denom = 1.0 + cell.resistance * tau;
+                let u_eq = [eps * u_pore[0] / denom, eps * u_pore[1] / denom];
+                cell.collide_with_guo_forcing(omega, u_eq, force);
             }
         }
     }
@@ -806,25 +872,23 @@ impl PorousLbmGrid {
     /// force is applied via a velocity correction before equilibrium
     /// evaluation:
     ///
-    /// `u_eff = u / (1 + resistance * tau)`
+    /// `u_eff = eps * u / (1 + resistance * tau)`
     ///
     /// where `resistance` is the dimensionless drag coefficient stored in
-    /// each `PorousLbmCell`.
+    /// each `PorousLbmCell`, `u` its pore velocity and `eps * u` the
+    /// superficial velocity (momentum per unit density), which keeps the
+    /// collision momentum conserving when there is no resistance.  No external
+    /// force acts here, so the stored cell forces are reset to zero.
     pub fn collide(&mut self, tau: f64) {
         let omega = 1.0 / tau;
-        let n = self.nx * self.ny;
-        for k in 0..n {
-            let rho = self.cells[k].density;
-            let sigma = self.cells[k].resistance;
-            let denom = 1.0 + sigma * tau;
+        for cell in self.cells.iter_mut() {
+            let eps = cell.porosity.max(1e-12);
+            let denom = 1.0 + cell.resistance * tau;
             let u_eff = [
-                self.cells[k].velocity[0] / denom,
-                self.cells[k].velocity[1] / denom,
+                eps * cell.velocity[0] / denom,
+                eps * cell.velocity[1] / denom,
             ];
-            for i in 0..9 {
-                let feq = Self::equilibrium(rho, u_eff, i);
-                self.cells[k].f[i] += omega * (feq - self.cells[k].f[i]);
-            }
+            cell.collide_with_guo_forcing(omega, u_eff, [0.0; 2]);
         }
     }
     /// Standard D2Q9 streaming with periodic boundary conditions.
@@ -848,8 +912,10 @@ impl PorousLbmGrid {
     }
     /// Compute macroscopic density and velocity from distribution functions.
     ///
-    /// For porous media the velocity is porosity-corrected:
-    /// `u_macro = (1 / (rho * epsilon)) * sum_i f_i * c_i`
+    /// For porous media the velocity is porosity-corrected and, following the
+    /// Guo forcing scheme, includes half of the force density applied in the
+    /// last collision ([`PorousLbmCell::force`]):
+    /// `u_macro = (1 / (rho * epsilon)) * (sum_i f_i * c_i + F / 2)`
     pub fn compute_macroscopic(&mut self) {
         let n = self.nx * self.ny;
         for k in 0..n {
@@ -863,8 +929,9 @@ impl PorousLbmGrid {
                 mx += fi * CX[i];
                 my += fi * CY[i];
             }
+            let [fx, fy] = self.cells[k].force;
             self.cells[k].density = rho;
-            self.cells[k].velocity = [mx / (rho * eps), my / (rho * eps)];
+            self.cells[k].velocity = [(mx + 0.5 * fx) / (rho * eps), (my + 0.5 * fy) / (rho * eps)];
         }
     }
 }

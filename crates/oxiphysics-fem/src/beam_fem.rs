@@ -84,10 +84,15 @@ impl CrossSection {
         let area = b * h;
         let izz = b * h * h * h / 12.0;
         let iyy = h * b * b * b / 12.0;
-        // Approximate torsional constant for rectangle: J ≈ b h³ (1/3 - 0.21 h/b) for b > h
+        // Saint-Venant torsional constant of a solid rectangle (Roark's formula),
+        // with `bw` the long and `hw` the short side:
+        //   J = bw·hw³ · [1/3 − 0.21·(hw/bw)·(1 − hw⁴ / (12·bw⁴))]
+        // It reproduces the exact series to within 0.5 % for every aspect ratio
+        // (a square gives 0.1408·h⁴ against the exact 0.1406·h⁴).
         let (bw, hw) = if b >= h { (b, h) } else { (h, b) };
-        let j = hw * hw * hw * bw / 3.0
-            * (1.0 - 0.21 * hw / bw * (1.0 - hw.powi(4) / (12.0 * bw.powi(4))));
+        let j = bw
+            * hw.powi(3)
+            * (1.0 / 3.0 - 0.21 * hw / bw * (1.0 - hw.powi(4) / (12.0 * bw.powi(4))));
         Self {
             area,
             izz,
@@ -1226,6 +1231,69 @@ mod tests {
     fn test_cross_section_torsional_stiffness() {
         let cs = steel_rect_section();
         assert!(cs.torsional_stiffness() > 0.0);
+    }
+
+    /// Exact Saint-Venant torsion constant of a solid rectangle (series solution):
+    /// `J = b·h³/3 · [1 − 192/π⁵ · (h/b) · Σ_{n odd} tanh(n·π·b / (2h)) / n⁵]`, `b ≥ h`.
+    fn rectangle_torsion_constant_series(b: f64, h: f64) -> f64 {
+        let (long, short) = if b >= h { (b, h) } else { (h, b) };
+        let mut sum = 0.0;
+        for n in (1..400).step_by(2) {
+            let nf = n as f64;
+            sum += (nf * PI * long / (2.0 * short)).tanh() / nf.powi(5);
+        }
+        long * short.powi(3) / 3.0 * (1.0 - 192.0 / PI.powi(5) * short / long * sum)
+    }
+
+    #[test]
+    fn test_rectangular_torsion_constant_square_section() {
+        // Exact value for a square: J = 0.1406 h⁴. The pre-fix formula gave 0.269.
+        let cs = CrossSection::rectangular(1.0, 1.0, 200.0e9, 0.3);
+        assert!(
+            (cs.j_torsion - 0.1406).abs() / 0.1406 < 0.005,
+            "J(square) = {}",
+            cs.j_torsion
+        );
+    }
+
+    #[test]
+    fn test_rectangular_torsion_constant_slender_section() {
+        // b = 10 h: J ≈ b h³ (1/3 − 0.21 h/b) = 3.123 h⁴.
+        let cs = CrossSection::rectangular(10.0, 1.0, 200.0e9, 0.3);
+        assert!(
+            (cs.j_torsion - 3.123).abs() / 3.123 < 0.005,
+            "J(10 x 1) = {}",
+            cs.j_torsion
+        );
+    }
+
+    #[test]
+    fn test_rectangular_torsion_constant_is_symmetric_in_b_and_h() {
+        let wide = CrossSection::rectangular(0.3, 0.1, 200.0e9, 0.3);
+        let tall = CrossSection::rectangular(0.1, 0.3, 200.0e9, 0.3);
+        assert_eq!(wide.j_torsion, tall.j_torsion);
+        assert!(wide.j_torsion > 0.0);
+    }
+
+    #[test]
+    fn test_rectangular_torsion_constant_matches_exact_series_for_all_aspect_ratios() {
+        for &ratio in &[1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 6.0, 10.0, 20.0] {
+            let h = 0.05;
+            let b = ratio * h;
+            let cs = CrossSection::rectangular(b, h, 70.0e9, 0.33);
+            let exact = rectangle_torsion_constant_series(b, h);
+            assert!(
+                (cs.j_torsion - exact).abs() / exact < 0.005,
+                "b/h = {ratio}: J = {:e}, exact {exact:e}",
+                cs.j_torsion
+            );
+            // Dimensional consistency: GJ uses the corrected J.
+            assert!(
+                (cs.torsional_stiffness() - cs.shear_modulus * exact).abs()
+                    / (cs.shear_modulus * exact)
+                    < 0.005
+            );
+        }
     }
 
     #[test]

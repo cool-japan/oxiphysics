@@ -9,10 +9,14 @@ use oxifft;
 // Physical constant
 // ---------------------------------------------------------------------------
 
-/// Coulomb constant in GROMACS-compatible units: kJ*angstrom*mol^-1*e^-2.
+/// Coulomb constant `e² N_A / (4π ε₀)` in kJ·Å·mol⁻¹·e⁻² (distances in Å).
 ///
-/// Value: 138.935458 kJ*angstrom/(mol*e^2).
-pub const COULOMB_K: f64 = 138.935_458;
+/// Value: 1389.354576 kJ·Å/(mol·e²).  This is ten times the GROMACS constant
+/// 138.935458 kJ·nm/(mol·e²), which belongs to nm-based code (the AMBER and
+/// coarse-grained modules); every Å-based electrostatics routine of this
+/// crate (Ewald, PME, reaction field, multipole, solvation, QEq) shares this
+/// single definition.
+pub const COULOMB_K: f64 = 1_389.354_576;
 
 // ---------------------------------------------------------------------------
 // Basic Coulomb functions
@@ -621,6 +625,50 @@ mod tests {
             (e - COULOMB_K).abs() < 1e-6,
             "coulomb_energy(1,1,1) = {e}, expected {COULOMB_K}"
         );
+    }
+
+    /// `e² N_A / (4π ε₀)` from CODATA 2018 SI values, converted to kJ·Å/mol.
+    fn coulomb_constant_from_si() -> f64 {
+        let elementary_charge = 1.602_176_634e-19_f64; // C
+        let avogadro = 6.022_140_76e23_f64; // 1/mol
+        let vacuum_permittivity = 8.854_187_812_8e-12_f64; // F/m
+        // J·m/mol -> kJ·Å/mol is a factor 1e-3 · 1e10 = 1e7.
+        elementary_charge * elementary_charge * avogadro
+            / (4.0 * std::f64::consts::PI * vacuum_permittivity)
+            * 1.0e7
+    }
+
+    #[test]
+    fn test_coulomb_constant_matches_si_derivation_in_angstrom_units() {
+        let reference = coulomb_constant_from_si();
+        assert!(
+            ((COULOMB_K - reference) / reference).abs() < 1e-7,
+            "COULOMB_K = {COULOMB_K}, SI derivation = {reference}"
+        );
+        // The nm-based GROMACS value 138.935 is ten times too small for Å distances.
+        assert!((COULOMB_K - 1_389.354_576).abs() < 1e-6, "{COULOMB_K}");
+    }
+
+    #[test]
+    fn test_coulomb_energy_absolute_values_in_kj_per_mol() {
+        // Two unit charges 1 Å apart: 1389.35 kJ/mol (14.4 eV).
+        let e = coulomb_energy(1.0, 1.0, 1.0);
+        assert!((e - 1_389.354_576).abs() < 1e-6, "e = {e}");
+        // Na⁺···Cl⁻ contact pair at 2.82 Å: -1389.354576 / 2.82 kJ/mol.
+        let contact = coulomb_energy(1.0, -1.0, 2.82);
+        assert!(
+            (contact + 492.678_927_7).abs() < 1e-6,
+            "contact = {contact}"
+        );
+        // The force at r = 2 Å is K / 4 kJ mol⁻¹ Å⁻¹ and is repulsive for like charges.
+        let f = coulomb_force_scalar(1.0, 1.0, 2.0);
+        assert!((f - 1_389.354_576 / 4.0).abs() < 1e-6, "f = {f}");
+    }
+
+    #[test]
+    fn test_pme_and_ewald_reexport_the_same_coulomb_constant() {
+        assert_eq!(crate::electrostatics::pme::COULOMB_K, COULOMB_K);
+        assert_eq!(crate::ewald::COULOMB_K, COULOMB_K);
     }
 
     #[test]

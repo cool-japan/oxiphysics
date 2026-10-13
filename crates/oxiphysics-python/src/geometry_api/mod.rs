@@ -13,7 +13,7 @@ pub mod transform;
 
 // Re-export everything needed by lib.rs and other crate modules
 pub use mesh::{PyCsg, PyTriangleMesh, compute_aabb};
-pub use shapes::{PyConvexHull, PyShape, PyShapeWrapper};
+pub use shapes::{ConvexHullError, PyConvexHull, PyShape, PyShapeWrapper};
 pub use spatial::{PyAabb, PyBvh, PyBvhNode, PyHeightfield, PySpatialHash};
 pub use transform::{
     PyGeometryTransform, PyMeshQuality, PyPointCloud, convex_hull_from_mesh, mesh_to_obj_string,
@@ -60,7 +60,7 @@ pub fn register_geometry_module(
 #[cfg(test)]
 mod tests {
     use super::mesh::{PyTriangleMesh, compute_aabb};
-    use super::shapes::{PyConvexHull, PyShape};
+    use super::shapes::{ConvexHullError, PyConvexHull, PyShape};
     use super::spatial::{PyAabb, PyBvh, PyHeightfield, PySpatialHash};
     use super::transform::{
         PyGeometryTransform, PyMeshQuality, PyPointCloud, convex_hull_from_mesh,
@@ -143,58 +143,157 @@ mod tests {
 
     // --- PyConvexHull tests ---
 
+    /// Unit right tetrahedron with its right-angle corner at the origin.
+    fn unit_tetra() -> Vec<[f64; 3]> {
+        vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    }
+
+    /// Axis-aligned cube `[lo, hi]^3` as eight corner points.
+    fn cube_corners(lo: f64, hi: f64) -> Vec<[f64; 3]> {
+        let mut pts = Vec::new();
+        for &x in &[lo, hi] {
+            for &y in &[lo, hi] {
+                for &z in &[lo, hi] {
+                    pts.push([x, y, z]);
+                }
+            }
+        }
+        pts
+    }
+
+    fn translated(pts: &[[f64; 3]], offset: [f64; 3]) -> Vec<[f64; 3]> {
+        pts.iter()
+            .map(|p| [p[0] + offset[0], p[1] + offset[1], p[2] + offset[2]])
+            .collect()
+    }
+
     #[test]
-    fn test_convex_hull_from_points_empty() {
-        let hull = PyConvexHull::from_points_internal(&[]);
-        assert!(hull.vertices.is_empty());
+    fn test_convex_hull_from_points_empty_is_an_error() {
+        assert_eq!(
+            PyConvexHull::from_points_internal(&[]).err(),
+            Some(ConvexHullError::TooFewPoints(0))
+        );
     }
 
     #[test]
     fn test_convex_hull_from_points_basic() {
-        let pts = vec![
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ];
-        let hull = PyConvexHull::from_points_internal(&pts);
-        assert!(!hull.vertices.is_empty());
-        assert!(!hull.faces.is_empty());
+        let hull = PyConvexHull::from_points_internal(&unit_tetra()).expect("tetrahedron hull");
+        assert_eq!(hull.vertices.len(), 4);
+        assert_eq!(hull.faces.len(), 12);
     }
 
     #[test]
-    fn test_convex_hull_volume_positive() {
-        let pts: Vec<[f64; 3]> = vec![
-            [-1.0, -1.0, -1.0],
-            [1.0, -1.0, -1.0],
-            [1.0, 1.0, -1.0],
-            [-1.0, 1.0, -1.0],
-            [-1.0, -1.0, 1.0],
-            [1.0, -1.0, 1.0],
-            [1.0, 1.0, 1.0],
-            [-1.0, 1.0, 1.0],
+    fn test_convex_hull_tetrahedron_volume_is_one_sixth_not_its_bounding_box() {
+        let hull = PyConvexHull::from_points_internal(&unit_tetra()).expect("tetrahedron hull");
+        // The bounding box of this tetrahedron has volume 1; the tetrahedron 1/6.
+        assert!(
+            (hull.volume() - 1.0 / 6.0).abs() < 1e-12,
+            "volume = {}",
+            hull.volume()
+        );
+        let expected_area = 3.0 * 0.5 + 0.5 * 3.0_f64.sqrt();
+        assert!(
+            (hull.surface_area() - expected_area).abs() < 1e-12,
+            "area = {}",
+            hull.surface_area()
+        );
+    }
+
+    #[test]
+    fn test_convex_hull_volume_and_area_of_cube() {
+        let hull = PyConvexHull::from_points_internal(&cube_corners(-1.0, 1.0)).expect("cube hull");
+        assert!(
+            (hull.volume() - 8.0).abs() < 1e-12,
+            "volume = {}",
+            hull.volume()
+        );
+        assert!(
+            (hull.surface_area() - 24.0).abs() < 1e-12,
+            "area = {}",
+            hull.surface_area()
+        );
+    }
+
+    #[test]
+    fn test_convex_hull_drops_interior_points() {
+        let mut pts = cube_corners(0.0, 2.0);
+        pts.push([1.0, 1.0, 1.0]);
+        pts.push([0.5, 1.5, 1.0]);
+        pts.push([1.9, 0.1, 1.0]);
+        let hull = PyConvexHull::from_points_internal(&pts).expect("cube hull");
+        assert_eq!(
+            hull.vertices.len(),
+            8,
+            "interior points are not hull vertices"
+        );
+        assert!((hull.volume() - 8.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_convex_hull_volume_is_translation_invariant() {
+        let far = translated(&unit_tetra(), [1.0e6, -2.0e6, 3.0e6]);
+        let hull = PyConvexHull::from_points_internal(&far).expect("tetrahedron hull");
+        assert!(
+            (hull.volume() - 1.0 / 6.0).abs() < 1e-6,
+            "volume = {}",
+            hull.volume()
+        );
+    }
+
+    #[test]
+    fn test_convex_hull_rejects_degenerate_input() {
+        let coplanar = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.5, 0.5, 0.0],
         ];
-        let hull = PyConvexHull::from_points_internal(&pts);
-        assert!(hull.volume() > 0.0);
+        assert_eq!(
+            PyConvexHull::from_points_internal(&coplanar).err(),
+            Some(ConvexHullError::Degenerate)
+        );
+        let too_few = &unit_tetra()[..3];
+        assert_eq!(
+            PyConvexHull::from_points_internal(too_few).err(),
+            Some(ConvexHullError::TooFewPoints(3))
+        );
+        let mut with_nan = unit_tetra();
+        with_nan[2][1] = f64::NAN;
+        assert_eq!(
+            PyConvexHull::from_points_internal(&with_nan).err(),
+            Some(ConvexHullError::NonFinitePoint(2))
+        );
+    }
+
+    #[test]
+    fn test_convex_hull_from_points_python_entry_point() {
+        let rows: Vec<Vec<f64>> = unit_tetra().iter().map(|p| p.to_vec()).collect();
+        let hull = PyConvexHull::from_points(rows).expect("tetrahedron hull");
+        assert!((hull.volume() - 1.0 / 6.0).abs() < 1e-12);
+        // A row with fewer than three coordinates is an error, not a silently dropped point.
+        let mut short = unit_tetra().iter().map(|p| p.to_vec()).collect::<Vec<_>>();
+        short[1] = vec![1.0, 0.0];
+        assert!(PyConvexHull::from_points(short).is_err());
+        // Fewer than four points cannot enclose a volume.
+        assert!(PyConvexHull::from_points(vec![vec![0.0; 3]; 3]).is_err());
     }
 
     #[test]
     fn test_convex_hull_gjk_overlap() {
-        let pts1 = vec![
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ];
-        let pts2 = vec![
-            [0.5, 0.5, 0.5],
-            [1.5, 0.5, 0.5],
-            [0.5, 1.5, 0.5],
-            [0.5, 0.5, 1.5],
-        ];
-        let h1 = PyConvexHull::from_points_internal(&pts1);
-        let h2 = PyConvexHull::from_points_internal(&pts2);
+        // The second tetrahedron is the first one shifted by (0.25, 0.25, 0.25),
+        // so they share the region around (0.3, 0.3, 0.3).
+        let h1 = PyConvexHull::from_points_internal(&unit_tetra()).expect("hull 1");
+        let h2 = PyConvexHull::from_points_internal(&translated(&unit_tetra(), [0.25; 3]))
+            .expect("hull 2");
         assert!(h1.gjk_overlap(&h2));
+        assert!(h2.gjk_overlap(&h1));
+        assert!(h1.gjk_overlap(&h1));
     }
 
     #[test]
@@ -211,9 +310,54 @@ mod tests {
             [10.0, 10.1, 10.0],
             [10.0, 10.0, 10.1],
         ];
-        let h1 = PyConvexHull::from_points_internal(&pts1);
-        let h2 = PyConvexHull::from_points_internal(&pts2);
+        let h1 = PyConvexHull::from_points_internal(&pts1).expect("hull 1");
+        let h2 = PyConvexHull::from_points_internal(&pts2).expect("hull 2");
         assert!(!h1.gjk_overlap(&h2));
+    }
+
+    #[test]
+    fn test_convex_hull_gjk_is_not_a_bounding_sphere_test() {
+        // Tetrahedron 2 lies entirely in the half-space x + y + z >= 1.5 while
+        // tetrahedron 1 lies in x + y + z <= 1, so the hulls are disjoint. Their
+        // bounding spheres still overlap: the centroids are ~0.87 apart while
+        // both bounding radii are ~0.83.
+        let pts2 = vec![
+            [0.5, 0.5, 0.5],
+            [1.5, 0.5, 0.5],
+            [0.5, 1.5, 0.5],
+            [0.5, 0.5, 1.5],
+        ];
+        let h1 = PyConvexHull::from_points_internal(&unit_tetra()).expect("hull 1");
+        let h2 = PyConvexHull::from_points_internal(&pts2).expect("hull 2");
+        assert!(!h1.gjk_overlap(&h2));
+        assert!(!h2.gjk_overlap(&h1));
+    }
+
+    #[test]
+    fn test_convex_hull_gjk_detects_containment() {
+        let outer =
+            PyConvexHull::from_points_internal(&cube_corners(-2.0, 2.0)).expect("outer cube");
+        let inner =
+            PyConvexHull::from_points_internal(&cube_corners(-0.5, 0.5)).expect("inner cube");
+        assert!(outer.gjk_overlap(&inner));
+        assert!(inner.gjk_overlap(&outer));
+    }
+
+    #[test]
+    fn test_convex_hull_gjk_separated_cubes_along_axis() {
+        let a = PyConvexHull::from_points_internal(&cube_corners(0.0, 1.0)).expect("cube a");
+        let near = PyConvexHull::from_points_internal(&translated(
+            &cube_corners(0.0, 1.0),
+            [0.9, 0.0, 0.0],
+        ))
+        .expect("overlapping cube");
+        let far = PyConvexHull::from_points_internal(&translated(
+            &cube_corners(0.0, 1.0),
+            [1.1, 0.0, 0.0],
+        ))
+        .expect("separated cube");
+        assert!(a.gjk_overlap(&near));
+        assert!(!a.gjk_overlap(&far));
     }
 
     // --- PyTriangleMesh tests ---
@@ -549,7 +693,29 @@ mod tests {
     #[test]
     fn test_convex_hull_from_mesh_fn() {
         let mesh = unit_box_mesh();
-        let hull = convex_hull_from_mesh(&mesh);
-        assert!(!hull.vertices.is_empty());
+        let hull = convex_hull_from_mesh(&mesh).expect("unit box hull");
+        assert_eq!(hull.vertices.len(), 8);
+        assert!(
+            (hull.volume() - 1.0).abs() < 1e-12,
+            "volume = {}",
+            hull.volume()
+        );
+    }
+
+    #[test]
+    fn test_convex_hull_from_mesh_rejects_flat_mesh() {
+        let flat = PyTriangleMesh::from_raw_internal(
+            vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            vec![0, 1, 2, 0, 2, 3],
+        );
+        assert_eq!(
+            convex_hull_from_mesh(&flat).err(),
+            Some(ConvexHullError::Degenerate)
+        );
     }
 }

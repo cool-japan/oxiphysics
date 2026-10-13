@@ -875,145 +875,8 @@ fn collocation_recurse(
 // 6. Gaussian Process Regression for UQ
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Squared-exponential (RBF) kernel: k(x, x') = σ² exp(-‖x−x'‖² / (2ℓ²)).
-///
-/// # Arguments
-/// * `x` - First input vector.
-/// * `xp` - Second input vector.
-/// * `sigma_f` - Signal standard deviation σ_f.
-/// * `length_scale` - Length scale ℓ.
-pub fn rbf_kernel(x: &[f64], xp: &[f64], sigma_f: f64, length_scale: f64) -> f64 {
-    let sq_dist: f64 = x.iter().zip(xp.iter()).map(|(a, b)| (a - b).powi(2)).sum();
-    sigma_f * sigma_f * (-sq_dist / (2.0 * length_scale * length_scale)).exp()
-}
-
-/// A fitted Gaussian Process regression model.
-#[derive(Debug, Clone)]
-pub struct GaussianProcessSurrogate {
-    /// Training input points (row-major: n_train × n_dims).
-    pub x_train: Vec<Vec<f64>>,
-    /// Training output values.
-    pub y_train: Vec<f64>,
-    /// Alpha vector = (K + σ²_n I)^{-1} y  (pre-computed for prediction).
-    pub alpha: Vec<f64>,
-    /// Signal standard deviation σ_f.
-    pub sigma_f: f64,
-    /// Length scale ℓ.
-    pub length_scale: f64,
-    /// Noise standard deviation σ_n.
-    pub noise_std: f64,
-}
-
-impl GaussianProcessSurrogate {
-    /// Predict the posterior mean and variance at a new point `x_star`.
-    pub fn predict(&self, x_star: &[f64]) -> (f64, f64) {
-        let k_star: Vec<f64> = self
-            .x_train
-            .iter()
-            .map(|xi| rbf_kernel(xi, x_star, self.sigma_f, self.length_scale))
-            .collect();
-
-        let mean_pred: f64 = k_star
-            .iter()
-            .zip(self.alpha.iter())
-            .map(|(k, a)| k * a)
-            .sum();
-
-        // Predictive variance (simplified diagonal version via K_star_star - k*^T K^{-1} k*)
-        let k_ss = rbf_kernel(x_star, x_star, self.sigma_f, self.length_scale);
-        // We approximate K^{-1} k* via the already-computed (K + σ²I)^{-1} alpha approach
-        // For a full implementation use Cholesky; here we use the diagonal approximation.
-        let var_pred = (k_ss
-            - k_star.iter().map(|k| k * k).sum::<f64>() / (self.sigma_f * self.sigma_f + 1e-8))
-            .max(0.0);
-
-        (mean_pred, var_pred)
-    }
-}
-
-/// Fit a Gaussian Process surrogate using exact GP regression.
-///
-/// Solves (K + σ²_n I) α = y via simple Gaussian elimination.
-///
-/// # Arguments
-/// * `x_train` - Training inputs (one vector per sample).
-/// * `y_train` - Training outputs.
-/// * `sigma_f` - Signal standard deviation.
-/// * `length_scale` - RBF length scale.
-/// * `noise_std` - Observation noise standard deviation.
-pub fn fit_gp(
-    x_train: Vec<Vec<f64>>,
-    y_train: Vec<f64>,
-    sigma_f: f64,
-    length_scale: f64,
-    noise_std: f64,
-) -> GaussianProcessSurrogate {
-    let n = x_train.len();
-    // Build K + σ²_n I
-    let mut k = vec![0.0_f64; n * n];
-    for i in 0..n {
-        for j in 0..n {
-            k[i * n + j] = rbf_kernel(&x_train[i], &x_train[j], sigma_f, length_scale);
-        }
-        k[i * n + i] += noise_std * noise_std;
-    }
-    // Solve Kα = y
-    let alpha = gaussian_eliminate(&k, &y_train, n);
-    GaussianProcessSurrogate {
-        x_train,
-        y_train,
-        alpha,
-        sigma_f,
-        length_scale,
-        noise_std,
-    }
-}
-
-/// Solve A x = b via Gaussian elimination with partial pivoting.
-fn gaussian_eliminate(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
-    let mut mat = a.to_vec();
-    let mut rhs = b.to_vec();
-    for col in 0..n {
-        let mut max_val = mat[col * n + col].abs();
-        let mut max_row = col;
-        for row in (col + 1)..n {
-            if mat[row * n + col].abs() > max_val {
-                max_val = mat[row * n + col].abs();
-                max_row = row;
-            }
-        }
-        if max_row != col {
-            for k in 0..n {
-                mat.swap(col * n + k, max_row * n + k);
-            }
-            rhs.swap(col, max_row);
-        }
-        let pivot = mat[col * n + col];
-        if pivot.abs() < 1e-18 {
-            continue;
-        }
-        for row in (col + 1)..n {
-            let factor = mat[row * n + col] / pivot;
-            for k in col..n {
-                let tmp = mat[col * n + k] * factor;
-                mat[row * n + k] -= tmp;
-            }
-            rhs[row] -= rhs[col] * factor;
-        }
-    }
-    for col in (0..n).rev() {
-        let pivot = mat[col * n + col];
-        if pivot.abs() < 1e-18 {
-            continue;
-        }
-        rhs[col] /= pivot;
-        for row in 0..col {
-            let tmp = mat[row * n + col] * rhs[col];
-            rhs[row] -= tmp;
-        }
-    }
-    rhs
-}
+mod gaussian_process;
+pub use gaussian_process::{GaussianProcessSurrogate, fit_gp, rbf_kernel, try_fit_gp};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 7. Reliability Analysis (FORM / SORM)
@@ -1725,14 +1588,16 @@ mod tests {
         let x_train: Vec<Vec<f64>> = (0..5).map(|i| vec![i as f64]).collect();
         let y_train: Vec<f64> = x_train.iter().map(|x| x[0] * x[0]).collect();
         let gp = fit_gp(x_train.clone(), y_train.clone(), 2.0, 1.5, 0.01);
-        // Predict at training points — should be close to training values
+        // Predict at training points — with noise 0.01 the posterior mean
+        // interpolates and the posterior variance is at the noise level.
         for (i, xi) in x_train.iter().enumerate() {
-            let (pred_m, _pred_v) = gp.predict(xi);
+            let (pred_m, pred_v) = gp.predict(xi);
             assert!(
-                (pred_m - y_train[i]).abs() < 2.0,
+                (pred_m - y_train[i]).abs() < 0.1,
                 "i={i} pred={pred_m} true={}",
                 y_train[i]
             );
+            assert!(pred_v < 1e-3, "i={i} variance={pred_v}");
         }
     }
 

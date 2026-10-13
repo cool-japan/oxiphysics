@@ -62,7 +62,7 @@ fn projection_radius(half: [f64; 3], axes: [[f64; 3]; 3], l: [f64; 3]) -> f64 {
 /// world normals, so the SAT axis index is no longer needed downstream. The
 /// edge variant keeps both local edge-axis indices because the edge-edge witness
 /// path restricts its segment search to those parallel edges.
-enum BoxSatAxis {
+pub(crate) enum BoxSatAxis {
     /// Face normal of box A won the minimisation.
     FaceA,
     /// Face normal of box B won the minimisation.
@@ -72,13 +72,13 @@ enum BoxSatAxis {
 }
 
 /// Result of the detailed box-box separating-axis test.
-struct BoxSatResult {
+pub(crate) struct BoxSatResult {
     /// Penetration depth along `normal` (clamped non-negative).
-    depth: f64,
+    pub(crate) depth: f64,
     /// Unit minimum-translation normal, pointing FROM B TOWARD A.
-    normal: [f64; 3],
+    pub(crate) normal: [f64; 3],
     /// The axis that produced the minimum overlap.
-    axis: BoxSatAxis,
+    pub(crate) axis: BoxSatAxis,
 }
 
 /// Full separating-axis test for two oriented boxes in world space.
@@ -88,7 +88,7 @@ struct BoxSatResult {
 /// cross products. Face axes are evaluated first; an edge axis only wins if it
 /// beats the best face overlap by more than `edge_bias`, which prevents a
 /// resting box from selecting a numerically-equal edge axis and rocking.
-fn box_box_sat_detailed(
+pub(crate) fn box_box_sat_detailed(
     center_a: [f64; 3],
     axes_a: [[f64; 3]; 3],
     half_a: [f64; 3],
@@ -96,15 +96,33 @@ fn box_box_sat_detailed(
     axes_b: [[f64; 3]; 3],
     half_b: [f64; 3],
 ) -> Option<BoxSatResult> {
+    box_box_sat_with_margin(center_a, axes_a, half_a, center_b, axes_b, half_b, 0.0)
+}
+
+/// [`box_box_sat_detailed`] with a contact margin.
+///
+/// Boxes whose gap along every candidate axis is at most `margin` are still
+/// reported (as a zero-depth result); a gap larger than `margin` on any axis
+/// separates them. The axes of both boxes must be orthonormal.
+pub(crate) fn box_box_sat_with_margin(
+    center_a: [f64; 3],
+    axes_a: [[f64; 3]; 3],
+    half_a: [f64; 3],
+    center_b: [f64; 3],
+    axes_b: [[f64; 3]; 3],
+    half_b: [f64; 3],
+    margin: f64,
+) -> Option<BoxSatResult> {
     let center_diff = sub3(center_a, center_b);
 
-    // Overlap along a unit axis `l`; `None` if the boxes are separated on it.
+    // Overlap along a unit axis `l`; `None` if the boxes are separated on it
+    // by more than the margin. A gap inside the margin is a negative overlap.
     let overlap_on = |l: [f64; 3]| -> Option<f64> {
         let radius_a = projection_radius(half_a, axes_a, l);
         let radius_b = projection_radius(half_b, axes_b, l);
         let center_dist = dot3(center_diff, l);
         let separation = center_dist.abs() - (radius_a + radius_b);
-        if separation > 0.0 {
+        if separation > margin {
             None
         } else {
             Some(-separation)

@@ -16,6 +16,9 @@ pub mod functions;
 pub(crate) mod helpers;
 pub mod types;
 
+#[cfg(test)]
+mod vlm_tests;
+
 // Re-export all public items
 pub use functions::*;
 pub use types::*;

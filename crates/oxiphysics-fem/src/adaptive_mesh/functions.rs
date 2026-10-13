@@ -546,24 +546,58 @@ pub fn refine_mesh(mesh: &mut AdaptiveMesh2D, marked: &[usize]) {
         mesh.refine_element(idx);
     }
 }
-/// Coarsen leaf elements whose error falls below `coarsen_threshold`.
+/// Coarsen refined families whose error falls below `coarsen_threshold`.
+///
+/// Coarsening works on whole families, the inverse of
+/// [`AdaptiveMesh2D::refine_element`]: a refined element is restored as a leaf
+/// and its four children are retired only when **all four children are currently
+/// leaves and each has an error strictly below the threshold**.  Level-0
+/// elements have no parent and are never deactivated, so the leaves always keep
+/// tiling the domain (their total area, see
+/// [`AdaptiveMesh2D::total_leaf_area`], is unchanged).  Retired children remain in
+/// `mesh.elements`, so element ids stay valid and a later `refine_element` of the
+/// parent re-activates them instead of creating duplicates.
+///
+/// One level is coarsened per call: a parent restored by this call is not
+/// considered again until the next one.
 ///
 /// # Arguments
 /// * `mesh`               – mutable adaptive mesh
-/// * `coarsen_threshold`  – elements with error below this are coarsened
-/// * `errors`             – per-element error indicators (indexed by leaf order)
+/// * `coarsen_threshold`  – children with error below this are coarsened
+/// * `errors`             – per-element error indicators indexed by *leaf order*,
+///   i.e. `errors[i]` belongs to `mesh.leaf_elements()[i]` as evaluated before
+///   the call.  A leaf without an entry, or with a `NaN` entry, is never coarsened.
 pub fn coarsen_mesh(mesh: &mut AdaptiveMesh2D, coarsen_threshold: f64, errors: &[f64]) {
     let leaves = mesh.leaf_elements();
-    let coarsen_ids: Vec<usize> = leaves
+    let error_of_leaf: std::collections::HashMap<usize, f64> =
+        leaves.iter().copied().zip(errors.iter().copied()).collect();
+    let mut candidate_parents: Vec<usize> = error_of_leaf
         .iter()
-        .zip(errors.iter())
-        .filter(|&(_, &e)| e < coarsen_threshold)
-        .map(|(&id, _)| id)
+        .filter(|&(_, &error)| error < coarsen_threshold)
+        .filter_map(|(&id, _)| mesh.elements[id].parent)
         .collect();
-    for id in coarsen_ids {
-        if id < mesh.elements.len() {
-            mesh.elements[id].is_leaf = false;
+    candidate_parents.sort_unstable();
+    candidate_parents.dedup();
+    for parent in candidate_parents {
+        let Some(children) = mesh.elements[parent].children else {
+            continue;
+        };
+        if mesh.elements[parent].is_leaf {
+            continue;
         }
+        let family_is_ready = children.iter().all(|&child| {
+            mesh.elements[child].is_leaf
+                && error_of_leaf
+                    .get(&child)
+                    .is_some_and(|&error| error < coarsen_threshold)
+        });
+        if !family_is_ready {
+            continue;
+        }
+        for child in children {
+            mesh.elements[child].is_leaf = false;
+        }
+        mesh.elements[parent].is_leaf = true;
     }
 }
 /// Detect hanging (non-conforming) nodes in a 2-D adaptive mesh.
@@ -829,12 +863,14 @@ mod tests_2d {
         assert!(constraints.is_empty());
     }
     #[test]
-    fn test_coarsen_mesh_reduces_leaves() {
+    fn test_coarsen_mesh_leaves_unrefined_mesh_unchanged() {
+        // Level-0 elements have no parent: coarsening must never deactivate them
+        // (the pre-fix code turned all four leaves into non-leaves).
         let mut mesh = AdaptiveMesh2D::new_unit_square(2);
         let errors = vec![0.001, 0.002, 0.001, 0.001];
-        let before_leaves = mesh.leaf_elements().len();
         coarsen_mesh(&mut mesh, 0.01, &errors);
-        assert!(mesh.leaf_elements().len() <= before_leaves);
+        assert_eq!(mesh.leaf_elements(), vec![0, 1, 2, 3]);
+        assert!((mesh.total_leaf_area() - 1.0).abs() < 1e-12);
     }
     #[test]
     fn test_element2d_fields() {
@@ -843,10 +879,14 @@ mod tests_2d {
             nodes: vec![0, 1, 2, 3],
             level: 2,
             is_leaf: true,
+            parent: Some(1),
+            children: None,
         };
         assert_eq!(elem.id, 5);
         assert_eq!(elem.level, 2);
         assert!(elem.is_leaf);
+        assert_eq!(elem.parent, Some(1));
+        assert!(elem.children.is_none());
     }
     #[test]
     fn test_conforming_constraint_fields() {
@@ -858,5 +898,225 @@ mod tests_2d {
         assert_eq!(c.master_node, 0);
         assert_eq!(c.slave_node, 4);
         assert!((c.weight - 0.5).abs() < 1e-14);
+    }
+
+    // ── shared edge midpoints (refine_element) ───────────────────────────────
+
+    /// Smallest distance between any two nodes of the mesh.
+    fn min_node_distance(mesh: &AdaptiveMesh2D) -> f64 {
+        let mut best = f64::INFINITY;
+        for (i, a) in mesh.nodes.iter().enumerate() {
+            for b in mesh.nodes.iter().skip(i + 1) {
+                best = best.min(((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt());
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn test_refining_adjacent_elements_shares_the_common_edge_midpoint() {
+        // Elements 0 = [0,1,4,3] and 1 = [1,2,5,4] share the edge 1–4.
+        let mut mesh = AdaptiveMesh2D::new_unit_square(2);
+        assert_eq!(mesh.node_count(), 9);
+        mesh.refine_element(0);
+        assert_eq!(mesh.node_count(), 14, "centre + 4 edge midpoints");
+        mesh.refine_element(1);
+        assert_eq!(
+            mesh.node_count(),
+            18,
+            "second element adds its centre and only 3 new midpoints"
+        );
+        assert!(
+            min_node_distance(&mesh) > 1e-12,
+            "coincident nodes: {}",
+            min_node_distance(&mesh)
+        );
+        // Exactly one node sits on the shared edge's midpoint (0.5, 0.25), and
+        // both families use it.
+        let on_shared_edge: Vec<usize> = (0..mesh.node_count())
+            .filter(|&i| {
+                (mesh.nodes[i][0] - 0.5).abs() < 1e-14 && (mesh.nodes[i][1] - 0.25).abs() < 1e-14
+            })
+            .collect();
+        assert_eq!(on_shared_edge.len(), 1);
+        let shared = on_shared_edge[0];
+        assert_eq!(mesh.edge_midpoints.get(&(1, 4)), Some(&shared));
+        for family in [0usize, 1] {
+            let children = mesh.elements[family].children.expect("refined");
+            let uses_shared = children
+                .iter()
+                .any(|&c| mesh.elements[c].nodes.contains(&shared));
+            assert!(uses_shared, "family {family} does not use node {shared}");
+        }
+    }
+
+    #[test]
+    fn test_refinement_order_does_not_change_the_node_set() {
+        let mut forward = AdaptiveMesh2D::new_unit_square(2);
+        forward.refine_element(0);
+        forward.refine_element(1);
+        let mut backward = AdaptiveMesh2D::new_unit_square(2);
+        backward.refine_element(1);
+        backward.refine_element(0);
+        assert_eq!(forward.node_count(), 18);
+        assert_eq!(backward.node_count(), 18);
+    }
+
+    #[test]
+    fn test_uniform_refinement_produces_the_conforming_lattice() {
+        // Refining all four quads of a 2x2 mesh must give the 5x5 lattice
+        // (25 nodes); with per-element midpoints it produced 29.
+        let mut mesh = AdaptiveMesh2D::new_unit_square(2);
+        for id in 0..4 {
+            mesh.refine_element(id);
+        }
+        assert_eq!(mesh.node_count(), 25);
+        assert!(min_node_distance(&mesh) > 1e-12);
+        for iy in 0..5 {
+            for ix in 0..5 {
+                let (x, y) = (ix as f64 / 4.0, iy as f64 / 4.0);
+                let hits = mesh
+                    .nodes
+                    .iter()
+                    .filter(|p| (p[0] - x).abs() < 1e-12 && (p[1] - y).abs() < 1e-12)
+                    .count();
+                assert_eq!(hits, 1, "lattice point ({x}, {y}) occurs {hits} times");
+            }
+        }
+        assert_eq!(mesh.leaf_elements().len(), 16);
+        assert!((mesh.total_leaf_area() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_refinement_records_the_family_links() {
+        let mut mesh = AdaptiveMesh2D::new_unit_square(2);
+        mesh.refine_element(0);
+        assert_eq!(mesh.elements[0].children, Some([4, 5, 6, 7]));
+        assert_eq!(mesh.elements[0].parent, None);
+        for child in 4..8 {
+            assert_eq!(mesh.elements[child].parent, Some(0));
+            assert_eq!(mesh.elements[child].level, 1);
+            assert!(mesh.elements[child].children.is_none());
+            assert!((mesh.element_area(child) - 0.0625).abs() < 1e-14);
+        }
+        assert_eq!(mesh.leaf_elements(), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert!((mesh.total_leaf_area() - 1.0).abs() < 1e-12);
+    }
+
+    // ── family-wise coarsening (coarsen_mesh) ────────────────────────────────
+
+    #[test]
+    fn test_refine_then_coarsen_restores_four_leaves_with_unit_area() {
+        let mut mesh = AdaptiveMesh2D::new_unit_square(2);
+        mesh.refine_element(0);
+        assert_eq!(mesh.leaf_elements().len(), 7);
+        // Leaf order is [1, 2, 3, 4, 5, 6, 7]: the three coarse elements keep
+        // a large error, the four children of element 0 are accurate.
+        let errors = [1.0, 1.0, 1.0, 0.001, 0.001, 0.001, 0.001];
+        coarsen_mesh(&mut mesh, 0.01, &errors);
+        assert_eq!(mesh.leaf_elements(), vec![0, 1, 2, 3]);
+        assert!(mesh.elements[0].is_leaf);
+        for child in 4..8 {
+            assert!(!mesh.elements[child].is_leaf, "child {child} still active");
+        }
+        assert!((mesh.total_leaf_area() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_coarsening_needs_all_four_children_below_the_threshold() {
+        let mut mesh = AdaptiveMesh2D::new_unit_square(2);
+        mesh.refine_element(0);
+        let errors = [1.0, 1.0, 1.0, 0.001, 0.001, 0.001, 0.5];
+        coarsen_mesh(&mut mesh, 0.01, &errors);
+        assert_eq!(
+            mesh.leaf_elements().len(),
+            7,
+            "one inaccurate child blocks the family"
+        );
+        assert!(!mesh.elements[0].is_leaf);
+        assert!((mesh.total_leaf_area() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_coarsening_ignores_nan_and_missing_error_entries() {
+        let mut mesh = AdaptiveMesh2D::new_unit_square(2);
+        mesh.refine_element(0);
+        let with_nan = [1.0, 1.0, 1.0, 0.001, 0.001, 0.001, f64::NAN];
+        coarsen_mesh(&mut mesh, 0.01, &with_nan);
+        assert_eq!(mesh.leaf_elements().len(), 7);
+        // Only the first six leaves have an entry: the seventh is never coarsened.
+        let too_short = [1.0, 1.0, 1.0, 0.001, 0.001, 0.001];
+        coarsen_mesh(&mut mesh, 0.01, &too_short);
+        assert_eq!(mesh.leaf_elements().len(), 7);
+        coarsen_mesh(&mut mesh, 0.01, &[]);
+        assert_eq!(mesh.leaf_elements().len(), 7);
+        assert!((mesh.total_leaf_area() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_coarsening_removes_one_level_per_call() {
+        let mut mesh = AdaptiveMesh2D::new_unit_square(2);
+        mesh.refine_element(0);
+        mesh.refine_element(4); // child 4 of element 0 -> grandchildren 8..12
+        assert_eq!(mesh.leaf_elements().len(), 10);
+        assert!((mesh.total_leaf_area() - 1.0).abs() < 1e-12);
+
+        // Child 4 is not a leaf, so only the grandchildren's family coarsens.
+        coarsen_mesh(&mut mesh, 0.01, &[0.001; 10]);
+        assert_eq!(mesh.leaf_elements(), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert!((mesh.total_leaf_area() - 1.0).abs() < 1e-12);
+
+        // The next call restores element 0.
+        coarsen_mesh(&mut mesh, 0.01, &[0.001; 7]);
+        assert_eq!(mesh.leaf_elements(), vec![0, 1, 2, 3]);
+        assert!((mesh.total_leaf_area() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_refine_coarsen_refine_cycle_does_not_duplicate_nodes_or_elements() {
+        let mut mesh = AdaptiveMesh2D::new_unit_square(2);
+        mesh.refine_element(0);
+        let (nodes, elements) = (mesh.node_count(), mesh.element_count());
+        assert_eq!((nodes, elements), (14, 8));
+
+        coarsen_mesh(&mut mesh, 0.01, &[1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(mesh.leaf_elements(), vec![0, 1, 2, 3]);
+
+        mesh.refine_element(0);
+        assert_eq!(
+            mesh.node_count(),
+            nodes,
+            "re-refinement must reuse the nodes"
+        );
+        assert_eq!(
+            mesh.element_count(),
+            elements,
+            "re-refinement must reuse the children"
+        );
+        assert_eq!(mesh.leaf_elements(), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert!(min_node_distance(&mesh) > 1e-12);
+        assert!((mesh.total_leaf_area() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_total_leaf_area_is_one_after_mixed_adaptation() {
+        let mut mesh = AdaptiveMesh2D::new_unit_square(3);
+        for id in [0, 4, 8] {
+            mesh.refine_element(id);
+        }
+        let leaf_count = mesh.leaf_elements().len();
+        assert_eq!(leaf_count, 9 - 3 + 12);
+        assert!((mesh.total_leaf_area() - 1.0).abs() < 1e-12);
+        let errors = vec![0.0; leaf_count];
+        coarsen_mesh(&mut mesh, 0.5, &errors);
+        assert!((mesh.total_leaf_area() - 1.0).abs() < 1e-12);
+        assert_eq!(mesh.leaf_elements(), (0..9).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_element_area_handles_unknown_and_degenerate_elements() {
+        let mesh = AdaptiveMesh2D::new_unit_square(4);
+        assert!((mesh.element_area(0) - 1.0 / 16.0).abs() < 1e-14);
+        assert_eq!(mesh.element_area(999), 0.0);
     }
 }

@@ -73,6 +73,9 @@
 //! trait for programmatic queries. Stable APIs follow semver; unstable and
 //! experimental APIs may change across minor releases.
 
+// The umbrella crate contains no unsafe code; keep it that way.
+#![forbid(unsafe_code)]
+
 /// Core types, traits, and abstractions.
 pub use oxiphysics_core as core;
 
@@ -327,13 +330,15 @@ mod tests {
             .collect();
 
         let analysis = LinearStaticAnalysis::new();
-        let result = analysis.solve(
-            &mesh,
-            &material,
-            &dirichlet_bcs,
-            &neumann_bcs,
-            &Vec3::zeros(),
-        );
+        let result = analysis
+            .try_solve(
+                &mesh,
+                &material,
+                &dirichlet_bcs,
+                &neumann_bcs,
+                &Vec3::zeros(),
+            )
+            .expect("cantilever analysis must converge");
 
         // At least one free-end node should have a downward (negative y) displacement
         let max_y_disp = free_end_nodes
@@ -603,11 +608,10 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn test_gpu_lj_forces_match_cpu() {
+        use oxiphysics_gpu::compute::ComputeBackend;
         use oxiphysics_gpu::compute::ComputeKernel;
         use oxiphysics_gpu::compute::CpuBackend;
         use oxiphysics_gpu::kernels::md_force::LennardJonesKernel;
-
-        let _ = CpuBackend::new(); // backend exists
 
         let sigma = 1.0_f64;
         let epsilon = 1.0_f64;
@@ -617,16 +621,49 @@ mod tests {
         let positions = vec![0.0, 0.0, 0.0, 1.5, 0.0, 0.0, 3.0, 0.0, 0.0, 4.5, 0.0, 0.0];
         let params = vec![epsilon, sigma, cutoff];
 
-        let mut outputs = vec![Vec::new(), Vec::new()];
-        LennardJonesKernel.execute(&[&positions, &params], &mut outputs, 4);
+        // Reference: the kernel evaluated directly.
+        let mut direct = vec![Vec::new(), Vec::new()];
+        LennardJonesKernel.execute(&[&positions, &params], &mut direct, 4);
 
-        let forces = &outputs[0];
-        let pe = outputs[1][0];
+        // The same kernel dispatched through the CPU backend on its own buffers.
+        let backend = CpuBackend::new();
+        let pos_buf = backend.create_buffer(positions.len());
+        let par_buf = backend.create_buffer(params.len());
+        let force_buf = backend.create_buffer(12);
+        let energy_buf = backend.create_buffer(1);
+        backend
+            .write_buffer(pos_buf, &positions)
+            .expect("positions upload");
+        backend
+            .write_buffer(par_buf, &params)
+            .expect("parameter upload");
+        backend
+            .dispatch(
+                &LennardJonesKernel,
+                &[pos_buf, par_buf],
+                &[force_buf, energy_buf],
+                4,
+            )
+            .expect("LJ dispatch through the CPU backend");
+        let forces = backend.read_buffer(force_buf).expect("force readback");
+        let pe = backend.read_buffer(energy_buf).expect("energy readback")[0];
 
+        assert_eq!(
+            forces, direct[0],
+            "backend dispatch must reproduce the direct kernel forces"
+        );
+        assert_eq!(
+            pe, direct[1][0],
+            "backend dispatch must reproduce the direct kernel energy"
+        );
         assert_eq!(
             forces.len(),
             12,
             "Should have 4 atoms * 3 components = 12 force values"
+        );
+        assert!(
+            forces.iter().any(|&f| f != 0.0),
+            "the dispatched kernel must actually have produced forces"
         );
         assert!(pe.is_finite(), "Potential energy should be finite: {pe}");
 
@@ -1491,7 +1528,10 @@ mod tests {
                 let mut body = RigidBody::new(1.0);
                 body.transform =
                     Transform::from_position(Vec3::new(col as f64 * 2.0, 5.0, row as f64 * 2.0));
-                body.linear_damping = 0.1;
+                // Damping is a rate in 1/s: 20/3 1/s at 60 Hz is the factor
+                // 1 / (1 + dt * rate) = 0.9, the 10 % per-step loss this test
+                // was written with.
+                body.linear_damping = 20.0 / 3.0;
                 let h = bodies.insert(body);
                 handles.push(h);
 
@@ -1544,7 +1584,13 @@ mod tests {
             let y_center = 0.5 + i as f64 * 1.0; // box i centre: 0.5, 1.5, 2.5, 3.5, 4.5
             let mut boxb = RigidBody::new(1.0);
             boxb.transform = Transform::from_position(Vec3::new(0.0, y_center, 0.0));
-            boxb.linear_damping = 0.1;
+            // Damping rates are in 1/s. At 60 Hz, 20/3 1/s is the factor
+            // 1 / (1 + dt * rate) = 0.9 (the 10 % per-step velocity loss this
+            // test was written with) and 20/33 1/s is 0.99 (the 1 % per-step
+            // angular loss of the former default), so the stack keeps the
+            // damping it was tuned for.
+            boxb.linear_damping = 20.0 / 3.0;
+            boxb.angular_damping = 20.0 / 33.0;
             let bh = bodies.insert(boxb);
             let box_shape: Arc<dyn Shape> = Arc::new(BoxShape::new(Vec3::new(0.5, 0.5, 0.5)));
             colliders.insert(

@@ -4,7 +4,7 @@
 
 use std::f64::consts::PI;
 
-use super::functions::{brent, erf, lgamma};
+use super::functions::{brent, lgamma};
 use super::types::RootResult;
 
 /// Chebyshev polynomial T_n(x) of the first kind.
@@ -387,75 +387,141 @@ pub fn stirling_relative_error(n: f64) -> f64 {
     }
     (approx - exact).abs() / exact.abs()
 }
-/// Floating-point factorial helper (exact for n ≤ 22, then Stirling-grade f64).
-#[inline]
-fn factorial_f64(n: usize) -> f64 {
-    const TABLE: [f64; 23] = [
-        1.0,
-        1.0,
-        2.0,
-        6.0,
-        24.0,
-        120.0,
-        720.0,
-        5040.0,
-        40320.0,
-        362880.0,
-        3628800.0,
-        39916800.0,
-        479001600.0,
-        6227020800.0,
-        87178291200.0,
-        1307674368000.0,
-        20922789888000.0,
-        355687428096000.0,
-        6402373705728000.0,
-        121645100408832000.0,
-        2432902008176640000.0,
-        51090942171709440000.0,
-        1124000727777607680000.0,
-    ];
-    if n < TABLE.len() {
-        TABLE[n]
+/// Relative size below which a Boys-function series term is negligible.
+const BOYS_SERIES_RTOL: f64 = 1.0e-17;
+/// Hard cap on the number of Boys-function series terms.
+///
+/// Only a guard against runaway loops: for every finite argument whose result is
+/// representable the series terminates long before this count.
+const BOYS_SERIES_MAX_TERMS: usize = 100_000;
+/// Argument from which `F_0` is evaluated with its asymptotic form.
+const BOYS_ASYMPTOTIC_X: f64 = 25.0;
+/// Number of correction terms in the asymptotic `erfc` series used by `F_0`.
+const BOYS_ASYMPTOTIC_TERMS: u32 = 10;
+/// Rescaling threshold protecting the Boys-function series sum from overflow.
+const BOYS_RESCALE_LIMIT: f64 = 1.0e250;
+/// Factor applied when the series sum exceeds [`BOYS_RESCALE_LIMIT`].
+const BOYS_RESCALE_FACTOR: f64 = 1.0e-250;
+/// Natural logarithm of the inverse of [`BOYS_RESCALE_FACTOR`].
+const BOYS_RESCALE_LN: f64 = 250.0 * std::f64::consts::LN_10;
+
+/// Single Boys function `F_n(x)` for `x >= 0` from the non-alternating series
+///
+/// `F_n(x) = exp(-x) * sum_k (2x)^k / ((2n+1)(2n+3)...(2n+2k+1))`.
+///
+/// Every term is positive, so the sum is free of cancellation and accurate to a
+/// few ulp for any `x >= 0`.  (The alternating Maclaurin series
+/// `sum_k (-x)^k / (k! (2n+2k+1))` loses all precision once `x` exceeds a few
+/// units and diverges numerically long before `x = 25`.)
+fn boys_positive_series(x: f64, n: usize) -> f64 {
+    let two_x = 2.0 * x;
+    let mut term = 1.0 / (2 * n + 1) as f64;
+    let mut sum = term;
+    // The raw sum grows like exp(x); keep it scaled so that it cannot overflow.
+    let mut log_scale = 0.0_f64;
+    for k in 1..=BOYS_SERIES_MAX_TERMS {
+        term *= two_x / (2 * n + 2 * k + 1) as f64;
+        sum += term;
+        if sum > BOYS_RESCALE_LIMIT {
+            sum *= BOYS_RESCALE_FACTOR;
+            term *= BOYS_RESCALE_FACTOR;
+            log_scale += BOYS_RESCALE_LN;
+        }
+        if term < BOYS_SERIES_RTOL * sum {
+            break;
+        }
+    }
+    if log_scale == 0.0 {
+        (-x).exp() * sum
     } else {
-        lgamma((n + 1) as f64).exp()
+        (log_scale - x + sum.ln()).exp()
     }
 }
+
+/// Single Boys function `F_n(x)` for `x < 0`.
+///
+/// Uses the Maclaurin series `sum_k |x|^k / (k! (2n+2k+1))`, which has only
+/// positive terms when `x` is negative.  The result overflows to `+inf` for
+/// `x` below roughly `-700`, exactly like the mathematical function does in
+/// `f64` range.
+fn boys_negative_argument(x: f64, n: usize) -> f64 {
+    let abs_x = -x;
+    let mut power = 1.0_f64;
+    let mut sum = 1.0 / (2 * n + 1) as f64;
+    for k in 1..=BOYS_SERIES_MAX_TERMS {
+        power *= abs_x / k as f64;
+        let term = power / (2 * n + 2 * k + 1) as f64;
+        sum += term;
+        if !sum.is_finite() {
+            return f64::INFINITY;
+        }
+        if term < BOYS_SERIES_RTOL * sum {
+            break;
+        }
+    }
+    sum
+}
+
+/// `F_0(x)` for large `x` (`x >= 25`).
+///
+/// `F_0(x) = sqrt(pi/x)/2 * erf(sqrt(x))` is evaluated as
+/// `sqrt(pi/x)/2 - exp(-x)/(2x) * S(x)` where `S` is the asymptotic series of
+/// the complementary error function,
+/// `S(x) = sum_k (-1)^k (2k-1)!! / (2x)^k`.  For `x >= 25` the truncation error
+/// of ten terms is far below one ulp of the result.
+fn boys_f0_asymptotic(x: f64) -> f64 {
+    let inv_two_x = 0.5 / x;
+    let mut term = 1.0_f64;
+    let mut series = 1.0_f64;
+    for k in 1..=BOYS_ASYMPTOTIC_TERMS {
+        term *= -f64::from(2 * k - 1) * inv_two_x;
+        series += term;
+    }
+    0.5 * (PI / x).sqrt() - 0.5 * (-x).exp() / x * series
+}
+
 /// Compute Boys functions F_n(x) for n = 0..=`max_n`.
 ///
 /// Boys function: F_n(x) = ∫₀¹ t^{2n} exp(−xt²) dt.
 ///
-/// Uses asymptotic expansion with upward recursion for x ≥ 25.0,
-/// and Taylor series for x < 25.0.  Returns a `Vec<f64>` of length
-/// `max_n + 1` with `result[n] = F_n(x)`.
+/// Returns a `Vec<f64>` of length `max_n + 1` with `result[n] = F_n(x)`.
+///
+/// # Algorithm
+///
+/// * `x >= 25` with `max_n <= x`: the closed asymptotic form of `F_0`
+///   (`½·√(π/x)` minus an exponentially small correction) followed by the
+///   upward recursion `F_{n+1} = ((2n+1)·F_n − e^{−x}) / (2x)`, which is stable
+///   while `2n + 1 < 2x`.
+/// * Otherwise: the highest order `F_{max_n}` is summed from the positive series
+///   `F_n(x) = e^{−x} Σ_k (2x)^k / ((2n+1)(2n+3)…(2n+2k+1))` (no cancellation)
+///   and all lower orders follow from the always-stable downward recursion
+///   `F_n = (2x·F_{n+1} + e^{−x}) / (2n+1)`.
+/// * `x < 0` (not needed for the physical argument `x = p·R² ≥ 0`): every order is
+///   summed from its Maclaurin series, whose terms are all positive.
+///
+/// A `NaN` argument yields `NaN` for every order.
 pub fn boys_fn(x: f64, max_n: usize) -> Vec<f64> {
-    use std::f64::consts::PI;
     let mut f = vec![0.0_f64; max_n + 1];
-    if x >= 25.0 {
-        let sqrt_x = x.sqrt();
-        f[0] = if x >= 100.0 {
-            0.5 * (PI / x).sqrt()
-        } else {
-            0.5 * (PI / x).sqrt() * erf(sqrt_x)
-        };
-        let exp_neg_x = (-x).exp();
+    if x.is_nan() {
+        f.fill(f64::NAN);
+        return f;
+    }
+    if x < 0.0 {
+        for (n, slot) in f.iter_mut().enumerate() {
+            *slot = boys_negative_argument(x, n);
+        }
+        return f;
+    }
+    let exp_neg_x = (-x).exp();
+    if x >= BOYS_ASYMPTOTIC_X && (max_n as f64) <= x {
+        f[0] = boys_f0_asymptotic(x);
         for n in 0..max_n {
             f[n + 1] = ((2 * n + 1) as f64 * f[n] - exp_neg_x) / (2.0 * x);
         }
     } else {
-        const TERMS: usize = 30;
-        for (n, fn_val) in f.iter_mut().enumerate().take(max_n + 1) {
-            let mut sum = 1.0 / (2 * n + 1) as f64;
-            let mut power_neg_x = 1.0_f64;
-            for k in 1..=TERMS {
-                power_neg_x *= -x;
-                let term = power_neg_x / (factorial_f64(k) * (2 * n + 2 * k + 1) as f64);
-                sum += term;
-                if term.abs() < 1e-15 {
-                    break;
-                }
-            }
-            *fn_val = sum;
+        f[max_n] = boys_positive_series(x, max_n);
+        for n in (0..max_n).rev() {
+            f[n] = (2.0 * x * f[n + 1] + exp_neg_x) / (2 * n + 1) as f64;
         }
     }
     f

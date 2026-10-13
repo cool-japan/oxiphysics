@@ -31,6 +31,9 @@ fn main() {
             e: 0.97,
         },
         combined_slip_weight: 0.5,
+        // Magic Formula combined-slip weighting stiffness factors.
+        b_x_alpha: 12.0,
+        b_y_kappa: 10.0,
     };
     let suspension = LinearSuspension;
 

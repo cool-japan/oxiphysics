@@ -322,35 +322,114 @@ impl NetcdfTrajectoryBuilder {
         let ref_frame = &self.frames[0];
         self.frames.iter().map(|f| f.rmsd_from(ref_frame)).collect()
     }
-    /// Write a minimal CDL representation to a writer.
+    /// Write the trajectory as CDL text (the text form of NetCDF) to a writer.
+    ///
+    /// The layout follows the AMBER trajectory convention: an unlimited `frame`
+    /// dimension, the `atom` and `spatial` (3) dimensions, and one variable per
+    /// quantity.  The `data:` section holds `time` (one value per frame) and
+    /// `coordinates` (frame-major, then atom, then x/y/z).  `cell_lengths`
+    /// (frame, x/y/z) and `velocities` (like `coordinates`) are declared and
+    /// written only when **every** frame provides them; a quantity that only
+    /// some frames carry is left out instead of being padded with invented
+    /// values.  Each variable is written on a single line.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`std::io::ErrorKind::InvalidData`] error when the frames do
+    /// not all hold the same number of atoms (or a frame's velocities do not
+    /// match its positions), because such data cannot form a rectangular
+    /// NetCDF variable.  Errors of `writer` are passed through.
     pub fn write_cdl<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
         let n_atoms = self.n_atoms();
         let n_frames = self.frame_count();
-        writeln!(writer, "netcdf trajectory {{")?;
-        writeln!(writer, "dimensions:")?;
-        writeln!(writer, "\tatom = {n_atoms} ;")?;
-        writeln!(writer, "\tframe = UNLIMITED ; // currently {n_frames}")?;
-        writeln!(writer, "\tspatial = 3 ;")?;
-        writeln!(writer, "\tlabel = 5 ;")?;
-        writeln!(writer, "variables:")?;
+        for (idx, frame) in self.frames.iter().enumerate() {
+            if frame.n_atoms() != n_atoms {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "trajectory frame {idx} holds {} atoms but frame 0 holds {n_atoms}",
+                        frame.n_atoms()
+                    ),
+                ));
+            }
+            if let Some(vels) = &frame.velocities
+                && vels.len() != n_atoms
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "trajectory frame {idx} holds {} velocities for {n_atoms} atoms",
+                        vels.len()
+                    ),
+                ));
+            }
+        }
+        let has_cell = n_frames > 0 && self.frames.iter().all(|f| f.box_lengths.is_some());
+        let has_velocities =
+            n_atoms > 0 && n_frames > 0 && self.frames.iter().all(|f| f.velocities.is_some());
         let unit = if self.use_angstroms {
             "angstrom"
         } else {
             "nanometer"
         };
-        writeln!(writer, "\tdouble coordinates(frame, atom, spatial) ;")?;
-        writeln!(writer, "\t\tcoordinates:units = \"{unit}\" ;")?;
-        writeln!(writer, "\tdouble time(frame) ;")?;
-        writeln!(writer, "\t\ttime:units = \"picosecond\" ;")?;
-        writeln!(writer, "\tdouble cell_lengths(frame, spatial) ;")?;
-        writeln!(writer, "\t\tcell_lengths:units = \"{unit}\" ;")?;
-        writeln!(writer, "// global attributes:")?;
-        writeln!(writer, "\t:title = \"{}\" ;", self.title)?;
-        writeln!(writer, "\t:application = \"{}\" ;", self.application)?;
-        writeln!(writer, "\t:Conventions = \"AMBER\" ;")?;
-        writeln!(writer, "\t:ConventionVersion = \"1.0\" ;")?;
-        writeln!(writer, "}}")?;
-        Ok(())
+        let mut out = std::io::BufWriter::new(writer);
+        writeln!(out, "netcdf trajectory {{")?;
+        writeln!(out, "dimensions:")?;
+        writeln!(out, "\tframe = UNLIMITED ; // ({n_frames} currently)")?;
+        writeln!(out, "\tatom = {n_atoms} ;")?;
+        writeln!(out, "\tspatial = 3 ;")?;
+        writeln!(out, "variables:")?;
+        writeln!(out, "\tdouble coordinates(frame, atom, spatial) ;")?;
+        writeln!(out, "\t\tcoordinates:units = \"{unit}\" ;")?;
+        writeln!(out, "\tdouble time(frame) ;")?;
+        writeln!(out, "\t\ttime:units = \"picosecond\" ;")?;
+        if has_cell {
+            writeln!(out, "\tdouble cell_lengths(frame, spatial) ;")?;
+            writeln!(out, "\t\tcell_lengths:units = \"{unit}\" ;")?;
+        }
+        if has_velocities {
+            writeln!(out, "\tdouble velocities(frame, atom, spatial) ;")?;
+            writeln!(out, "\t\tvelocities:units = \"nanometer/picosecond\" ;")?;
+        }
+        writeln!(out, "// global attributes:")?;
+        writeln!(out, "\t:title = \"{}\" ;", escape_cdl_string(&self.title))?;
+        writeln!(
+            out,
+            "\t:application = \"{}\" ;",
+            escape_cdl_string(&self.application)
+        )?;
+        writeln!(out, "\t:Conventions = \"AMBER\" ;")?;
+        writeln!(out, "\t:ConventionVersion = \"1.0\" ;")?;
+        if n_frames > 0 {
+            writeln!(out, "data:")?;
+            write_cdl_values(
+                &mut out,
+                "coordinates",
+                self.frames
+                    .iter()
+                    .flat_map(|f| f.positions.iter().flat_map(|p| p.iter().copied())),
+            )?;
+            write_cdl_values(&mut out, "time", self.frames.iter().map(|f| f.time_ps))?;
+            if has_cell {
+                write_cdl_values(
+                    &mut out,
+                    "cell_lengths",
+                    self.frames.iter().filter_map(|f| f.box_lengths).flatten(),
+                )?;
+            }
+            if has_velocities {
+                write_cdl_values(
+                    &mut out,
+                    "velocities",
+                    self.frames
+                        .iter()
+                        .filter_map(|f| f.velocities.as_deref())
+                        .flat_map(|v| v.iter().flat_map(|a| a.iter().copied())),
+                )?;
+            }
+        }
+        writeln!(out, "}}")?;
+        out.flush()
     }
     /// Extract the time series (ps) of all frames.
     pub fn time_series(&self) -> Vec<f64> {
@@ -364,6 +443,43 @@ impl NetcdfTrajectoryBuilder {
     pub fn frame(&self, idx: usize) -> &TrajectoryFrame {
         &self.frames[idx]
     }
+}
+/// Escape a string for use inside a double-quoted CDL attribute value.
+fn escape_cdl_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+/// Write `\tname = v0, v1, ... ;` for a non-empty value sequence.
+///
+/// Writes nothing when `values` is empty: CDL has no syntax for an empty data
+/// statement.
+fn write_cdl_values<W: std::io::Write>(
+    out: &mut W,
+    name: &str,
+    values: impl Iterator<Item = f64>,
+) -> std::io::Result<()> {
+    let mut values = values.peekable();
+    if values.peek().is_none() {
+        return Ok(());
+    }
+    write!(out, "\t{name} = ")?;
+    for (i, v) in values.enumerate() {
+        if i > 0 {
+            out.write_all(b", ")?;
+        }
+        write!(out, "{v}")?;
+    }
+    writeln!(out, " ;")
 }
 /// An in-memory representation of a NetCDF-like dataset.
 #[derive(Debug, Clone)]

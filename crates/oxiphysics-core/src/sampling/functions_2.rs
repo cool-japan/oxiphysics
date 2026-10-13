@@ -760,31 +760,20 @@ pub fn rejection_sample_1d_auto(
     };
     rejection_sample_1d(f, a, b, envelope, n, rng)
 }
-/// Generate `n` points from a digit-scrambled Sobol sequence in `d` dimensions.
+/// Generate `n` points from a digitally shifted Sobol sequence in `d` dimensions.
 ///
-/// Each dimension is XOR-scrambled with a distinct 32-bit seed for better
-/// uniformity.
+/// Every coordinate of the Joe-Kuo Sobol sequence of [`SobolSequence`] is XORed
+/// with its own fixed 32-bit mask (a deterministic digital shift in base 2), so
+/// the origin is no longer a sample point.  A digital shift permutes the dyadic
+/// intervals at every level, hence the first `2^m` points still fall exactly
+/// once into each of the `2^m` equal sub-intervals of `\[0, 1)` in every
+/// coordinate.  `d` is clamped to the 128 tabulated dimensions.
 pub fn sobol_scrambled(n: usize, d: usize) -> Vec<Vec<f64>> {
-    pub(super) const BITS: usize = 32;
-    let n_dims = d.min(3);
-    let dir: Vec<Vec<u32>> = (0..n_dims).map(SobolSequence::direction_numbers).collect();
-    let seeds: Vec<u32> = (0..n_dims as u32)
-        .map(|k| k.wrapping_mul(2654435761).wrapping_add(1))
+    let directions = SobolSequence::direction_table(d);
+    let shifts: Vec<u32> = (1..=directions.len() as u32)
+        .map(|k| k.wrapping_mul(2654435761))
         .collect();
-    (0..n)
-        .map(|idx| {
-            let gray = idx ^ (idx >> 1);
-            (0..n_dims)
-                .map(|dd| {
-                    let x = (0..BITS)
-                        .filter(|&i| (gray >> i) & 1 == 1)
-                        .fold(0u32, |acc, i| acc ^ dir[dd][i]);
-                    let x_scrambled = x ^ seeds[dd];
-                    x_scrambled as f64 / (1u64 << BITS) as f64
-                })
-                .collect()
-        })
-        .collect()
+    SobolSequence::generate_block(&directions, &shifts, 0, n)
 }
 /// Sample mean of a slice.
 pub fn sample_mean(xs: &[f64]) -> f64 {

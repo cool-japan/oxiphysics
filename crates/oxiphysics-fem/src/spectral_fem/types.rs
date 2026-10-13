@@ -416,8 +416,10 @@ impl SemEllipticSolver {
                 }
             }
         }
-        Self::apply_dirichlet_bc(&mut k_global, &mut rhs, 0);
-        Self::apply_dirichlet_bc(&mut k_global, &mut rhs, ng - 1);
+        if let Some(last) = ng.checked_sub(1) {
+            Self::apply_dirichlet_bc(&mut k_global, &mut rhs, 0);
+            Self::apply_dirichlet_bc(&mut k_global, &mut rhs, last);
+        }
         SemEllipticSolver {
             mesh,
             mapping,
@@ -441,25 +443,30 @@ impl SemEllipticSolver {
         }
     }
     /// Load the RHS from a source function f(x) via GLL quadrature.
+    ///
+    /// The load entry of global node `g` is the GLL-quadrature value of
+    /// `∫ f φ_g dx`, i.e. `Σ_e w_i · J_e · f(x_i)` summed over the elements
+    /// sharing the node.  `SpectralElement1D::mass_matrix_diagonal` already
+    /// carries the Jacobian `J_e = L_e / 2`, so the diagonal entry multiplies
+    /// `f` directly.  The homogeneous Dirichlet end nodes are zeroed.
     pub fn load_rhs<F: Fn(f64) -> f64>(&mut self, f: F) {
         let ng = self.mapping.n_global;
         self.rhs = vec![0.0; ng];
         let mut x_offset = 0.0;
         for e in 0..self.mesh.n_elem() {
             let elem = SpectralElement1D::new(self.mesh.degrees[e], self.mesh.lengths[e]);
-            let j = elem.jacobian();
-            let _n_loc = elem.nodes.len();
             let m_diag = elem.mass_matrix_diagonal();
             for (i, (&node, &mdi)) in elem.nodes.iter().zip(m_diag.iter()).enumerate() {
                 let x_phys = x_offset + (node + 1.0) / 2.0 * self.mesh.lengths[e];
                 let gi = self.mapping.conn[e][i];
-                self.rhs[gi] += mdi / j * f(x_phys);
+                self.rhs[gi] += mdi * f(x_phys);
             }
             x_offset += self.mesh.lengths[e];
         }
-        self.rhs[0] = 0.0;
-        let last = self.mapping.n_global - 1;
-        self.rhs[last] = 0.0;
+        if let Some(last) = ng.checked_sub(1) {
+            self.rhs[0] = 0.0;
+            self.rhs[last] = 0.0;
+        }
     }
     /// Solve the assembled system K u = rhs using Gaussian elimination.
     pub fn solve(&self) -> Vec<f64> {

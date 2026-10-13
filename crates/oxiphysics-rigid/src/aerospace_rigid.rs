@@ -7,6 +7,12 @@
 //! (aileron/elevator/rudder), ISA atmosphere model, wind effects, stability
 //! derivatives, trim solver, flight envelope analysis, and Mach number effects.
 //!
+//! The aerodynamic model is driven by the *air-relative* velocity (ground
+//! velocity minus the wind at the aircraft's altitude and time, see
+//! [`AircraftState::air_data`]), and the body-frame translational equations
+//! include the `omega x v` transport term, so the ballistic motion of a rotating
+//! body is reproduced (to the first-order accuracy of the integrator).
+//!
 //! All geometry is represented with `[f64; 3]` arrays (no nalgebra dependency).
 //!
 //! # Example
@@ -47,10 +53,19 @@ fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 /// Subtract.
-#[cfg(test)]
 #[inline]
 fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+/// Cross product `a x b`.
+#[inline]
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 /// Scale.
@@ -70,6 +85,12 @@ fn quat_normalize(q: [f64; 4]) -> [f64; 4] {
     }
 }
 
+/// Quaternion conjugate (the inverse of a unit quaternion). Convention: q = \[x, y, z, w\].
+#[inline]
+fn quat_conjugate(q: [f64; 4]) -> [f64; 4] {
+    [-q[0], -q[1], -q[2], q[3]]
+}
+
 /// Quaternion Hamilton product. Convention: q = \[x, y, z, w\].
 fn quat_mul(q1: [f64; 4], q2: [f64; 4]) -> [f64; 4] {
     let [x1, y1, z1, w1] = q1;
@@ -84,7 +105,7 @@ fn quat_mul(q1: [f64; 4], q2: [f64; 4]) -> [f64; 4] {
 
 /// Rotate a vector by a quaternion: v' = q * \[v, 0\] * q_conj.
 fn quat_rotate(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
-    let q_conj = [-q[0], -q[1], -q[2], q[3]];
+    let q_conj = quat_conjugate(q);
     let vq = [v[0], v[1], v[2], 0.0];
     let tmp = quat_mul(q, vq);
     let result = quat_mul(tmp, q_conj);
@@ -578,6 +599,45 @@ pub struct AircraftState {
     pub angular_velocity: [f64; 3],
     /// Control surface deflections.
     pub controls: ControlSurfaces,
+    /// Simulation time \[s\], advanced by [`integrate_aircraft`]. It is the
+    /// time argument of [`WindModel::wind_at`], so gusts evolve as the
+    /// simulation runs.
+    pub time: f64,
+}
+
+/// Flight condition of the aircraft relative to the *air mass*.
+///
+/// The aerodynamic forces and moments depend on the velocity of the aircraft
+/// with respect to the surrounding air, not with respect to the ground; the two
+/// differ by the local wind. Build one with [`AircraftState::air_data`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AirData {
+    /// Velocity relative to the air mass, resolved in the body frame
+    /// `[u, v, w]` \[m/s\].
+    pub velocity_body: [f64; 3],
+    /// True airspeed `|v_air|` \[m/s\].
+    pub airspeed: f64,
+    /// Angle of attack \[rad\].
+    pub alpha: f64,
+    /// Sideslip angle \[rad\].
+    pub beta: f64,
+    /// Dynamic pressure `0.5 * rho * |v_air|^2` \[Pa\].
+    pub dynamic_pressure: f64,
+    /// Mach number of the air-relative flow.
+    pub mach: f64,
+}
+
+/// Angle of attack and sideslip `(alpha, beta)` \[rad\] of a body-frame flow
+/// velocity `[u, v, w]`: `alpha = atan2(w, u)`, `beta = asin(v / |V|)`.
+/// Both are zero for a vanishing flow.
+fn flow_angles(velocity_body: [f64; 3]) -> (f64, f64) {
+    let speed = norm3(velocity_body);
+    if speed < 1e-30 {
+        return (0.0, 0.0);
+    }
+    let alpha = velocity_body[2].atan2(velocity_body[0]);
+    let beta = (velocity_body[1] / speed).clamp(-1.0, 1.0).asin();
+    (alpha, beta)
 }
 
 impl AircraftState {
@@ -591,6 +651,7 @@ impl AircraftState {
             attitude: [0.0, 0.0, 0.0, 1.0],
             angular_velocity: [0.0; 3],
             controls: ControlSurfaces::default(),
+            time: 0.0,
         }
     }
 
@@ -602,7 +663,8 @@ impl AircraftState {
         state
     }
 
-    /// True airspeed \[m/s\].
+    /// Speed of the aircraft relative to the ground \[m/s\]; equal to the true
+    /// airspeed in calm air. Use [`AircraftState::air_data`] when there is wind.
     pub fn true_airspeed(&self) -> f64 {
         norm3(self.velocity_body)
     }
@@ -612,31 +674,57 @@ impl AircraftState {
         -self.position[2] // NED convention: z is positive down
     }
 
-    /// Angle of attack \[rad\].
+    /// Angle of attack of the ground-relative velocity \[rad\] (calm air).
+    /// Use [`AircraftState::air_data`] when there is wind.
     pub fn alpha(&self) -> f64 {
-        let u = self.velocity_body[0];
-        let w = self.velocity_body[2];
-        if u.abs() < 1e-30 { 0.0 } else { (w / u).atan() }
+        flow_angles(self.velocity_body).0
     }
 
-    /// Sideslip angle \[rad\].
+    /// Sideslip angle of the ground-relative velocity \[rad\] (calm air).
+    /// Use [`AircraftState::air_data`] when there is wind.
     pub fn beta(&self) -> f64 {
-        let v_total = self.true_airspeed();
-        if v_total < 1e-30 {
-            0.0
-        } else {
-            (self.velocity_body[1] / v_total).asin()
-        }
+        flow_angles(self.velocity_body).1
     }
 
-    /// Mach number.
+    /// Mach number of the ground-relative velocity (calm air).
     pub fn mach(&self) -> f64 {
         mach_number(self.true_airspeed(), self.altitude())
     }
 
-    /// Dynamic pressure \[Pa\].
+    /// Dynamic pressure of the ground-relative velocity \[Pa\] (calm air).
     pub fn dynamic_pressure(&self) -> f64 {
         dynamic_pressure(self.true_airspeed(), self.altitude())
+    }
+
+    /// Wind velocity at the aircraft's current altitude and time, resolved in
+    /// the body frame \[m/s\].
+    ///
+    /// [`WindModel::wind_at`] returns the wind in the NED frame; the attitude
+    /// quaternion maps body to NED, so its conjugate maps the wind back.
+    pub fn wind_body(&self, wind: &WindModel) -> [f64; 3] {
+        let wind_ned = wind.wind_at(self.altitude(), self.time);
+        quat_rotate(quat_conjugate(self.attitude), wind_ned)
+    }
+
+    /// Flight condition relative to the air mass: the body-frame velocity minus
+    /// the body-frame wind, and the airspeed, flow angles, dynamic pressure and
+    /// Mach number derived from it.
+    ///
+    /// An aircraft drifting with the wind (`velocity == wind`) has zero airspeed
+    /// and therefore feels no aerodynamic force, whatever its ground speed.
+    pub fn air_data(&self, wind: &WindModel) -> AirData {
+        let velocity_air = sub3(self.velocity_body, self.wind_body(wind));
+        let airspeed = norm3(velocity_air);
+        let altitude = self.altitude();
+        let (alpha, beta) = flow_angles(velocity_air);
+        AirData {
+            velocity_body: velocity_air,
+            airspeed,
+            alpha,
+            beta,
+            dynamic_pressure: dynamic_pressure(airspeed, altitude),
+            mach: mach_number(airspeed, altitude),
+        }
     }
 
     /// Current load factor (lift / weight).
@@ -674,14 +762,19 @@ impl AircraftState {
 /// Compute aerodynamic forces in body frame \[N\].
 ///
 /// Returns `(lift, drag, side_force)` resolved into body-frame `[Fx, Fy, Fz]`.
+///
+/// The angle of attack, sideslip and dynamic pressure are evaluated from the
+/// velocity relative to the air mass (ground velocity minus `wind` at the
+/// aircraft's altitude and time, see [`AircraftState::air_data`]).
 pub fn compute_aero_forces(
     state: &AircraftState,
     config: &AircraftConfig,
-    _wind: &WindModel,
+    wind: &WindModel,
 ) -> [f64; 3] {
-    let alpha = state.alpha();
-    let beta = state.beta();
-    let q_bar = state.dynamic_pressure();
+    let air = state.air_data(wind);
+    let alpha = air.alpha;
+    let beta = air.beta;
+    let q_bar = air.dynamic_pressure;
     let s = config.wing_area;
 
     let cl = config.cl(alpha);
@@ -703,10 +796,19 @@ pub fn compute_aero_forces(
 }
 
 /// Compute aerodynamic moments in body frame \[N*m\].
-pub fn compute_aero_moments(state: &AircraftState, config: &AircraftConfig) -> [f64; 3] {
-    let alpha = state.alpha();
-    let beta = state.beta();
-    let q_bar = state.dynamic_pressure();
+///
+/// Like [`compute_aero_forces`], the flow angles, dynamic pressure and the
+/// non-dimensional body rates use the velocity relative to the air mass, so the
+/// moments respond to `wind`.
+pub fn compute_aero_moments(
+    state: &AircraftState,
+    config: &AircraftConfig,
+    wind: &WindModel,
+) -> [f64; 3] {
+    let air = state.air_data(wind);
+    let alpha = air.alpha;
+    let beta = air.beta;
+    let q_bar = air.dynamic_pressure;
     let s = config.wing_area;
     let b = config.wing_span;
     let c = config.mean_chord;
@@ -715,7 +817,7 @@ pub fn compute_aero_moments(state: &AircraftState, config: &AircraftConfig) -> [
     let stab = &config.stability;
 
     // Dimensionless rates
-    let v = state.true_airspeed().max(1.0);
+    let v = air.airspeed.max(1.0);
     let p_hat = p * b / (2.0 * v);
     let q_hat = q * c / (2.0 * v);
     let r_hat = r * b / (2.0 * v);
@@ -759,9 +861,32 @@ pub fn euler_rotational(omega: [f64; 3], inertia: [f64; 3], moments: [f64; 3]) -
     [p_dot, q_dot, r_dot]
 }
 
+/// Translational acceleration of a body-fixed frame \[m/s^2\].
+///
+/// Newton's second law in a rotating frame, `m (dv/dt + omega x v) = F`, gives
+/// `dv/dt = F / m - omega x v`, where `v` and `F` are the body-frame velocity
+/// and force and `omega` the body angular velocity. The `omega x v` transport
+/// term turns the velocity vector with the body; without it a freely moving
+/// rotating body would be accelerated even when no force acts on it.
+pub fn body_frame_acceleration(
+    force_body: [f64; 3],
+    mass: f64,
+    angular_velocity: [f64; 3],
+    velocity_body: [f64; 3],
+) -> [f64; 3] {
+    sub3(
+        scale3(force_body, 1.0 / mass),
+        cross3(angular_velocity, velocity_body),
+    )
+}
+
 /// Integrate the 6-DOF aircraft state by one time step.
 ///
-/// Uses semi-implicit Euler integration.
+/// Uses semi-implicit Euler integration. The aerodynamic forces and moments are
+/// evaluated from the velocity relative to the air mass (`wind` sampled at the
+/// state's altitude and `state.time`), the translational dynamics include the
+/// `omega x v` transport term of the rotating body frame (see
+/// [`body_frame_acceleration`]), and `state.time` is advanced by `dt`.
 pub fn integrate_aircraft(
     state: &mut AircraftState,
     config: &AircraftConfig,
@@ -769,26 +894,25 @@ pub fn integrate_aircraft(
     dt: f64,
 ) {
     let aero_force = compute_aero_forces(state, config, wind);
-    let aero_moment = compute_aero_moments(state, config);
+    let aero_moment = compute_aero_moments(state, config, wind);
 
     // Thrust along body x-axis
     let thrust = [config.max_thrust * state.controls.throttle, 0.0, 0.0];
 
     // Gravity in NED frame, then rotate to body
     let gravity_ned = [0.0, 0.0, state.mass * G0]; // NED: z down
-    let q_inv = [
-        -state.attitude[0],
-        -state.attitude[1],
-        -state.attitude[2],
-        state.attitude[3],
-    ];
-    let gravity_body = quat_rotate(q_inv, gravity_ned);
+    let gravity_body = quat_rotate(quat_conjugate(state.attitude), gravity_ned);
 
     // Total force in body frame
     let total_force = add3(add3(aero_force, thrust), gravity_body);
 
-    // Linear acceleration
-    let accel = scale3(total_force, 1.0 / state.mass);
+    // Linear acceleration in the rotating body frame (includes -omega x v)
+    let accel = body_frame_acceleration(
+        total_force,
+        state.mass,
+        state.angular_velocity,
+        state.velocity_body,
+    );
 
     // Angular acceleration
     let alpha_ang = euler_rotational(state.angular_velocity, state.inertia, aero_moment);
@@ -812,6 +936,7 @@ pub fn integrate_aircraft(
         state.attitude[3] + 0.5 * dq[3] * dt,
     ];
     state.attitude = quat_normalize(state.attitude);
+    state.time += dt;
 }
 
 // ── Trim solver ───────────────────────────────────────────────────────────────
@@ -1463,6 +1588,317 @@ mod tests {
         let pos_after = state.position;
         let delta = norm3(sub3(pos_after, pos_before));
         assert!(delta > 0.0, "aircraft should move");
+    }
+
+    // ── Wind and body-frame transport (F3957) ────────────────────────────────
+
+    /// Attitude quaternion \[x, y, z, w\] of a pure yaw by `angle` about the NED
+    /// z (down) axis; body x then points along the heading.
+    fn yaw_quaternion(angle: f64) -> [f64; 4] {
+        [0.0, 0.0, (0.5 * angle).sin(), (0.5 * angle).cos()]
+    }
+
+    fn close(a: f64, b: f64, rel_tol: f64) -> bool {
+        (a - b).abs() <= rel_tol * a.abs().max(b.abs()).max(1e-12)
+    }
+
+    fn flying_north(airspeed: f64) -> AircraftState {
+        AircraftState::level_flight(1500.0, airspeed, 3000.0)
+    }
+
+    #[test]
+    fn air_data_in_calm_air_equals_ground_relative_values() {
+        let mut s = flying_north(60.0);
+        s.velocity_body = [60.0, 4.0, 8.0];
+        let air = s.air_data(&WindModel::calm());
+        assert!(close(air.airspeed, s.true_airspeed(), 1e-12));
+        assert!(close(air.alpha, s.alpha(), 1e-12));
+        assert!(close(air.beta, s.beta(), 1e-12));
+        assert!(close(air.dynamic_pressure, s.dynamic_pressure(), 1e-12));
+        assert!(close(air.mach, s.mach(), 1e-12));
+        assert!(norm3(sub3(air.velocity_body, s.velocity_body)) < 1e-12);
+        assert!(air.alpha > 0.0 && air.beta > 0.0);
+    }
+
+    #[test]
+    fn headwind_and_tailwind_shift_airspeed_by_the_wind_speed() {
+        let s = flying_north(60.0);
+        // Heading north at identity attitude: wind blowing south is a headwind.
+        let head = s.air_data(&WindModel::steady([-10.0, 0.0, 0.0]));
+        assert!((head.airspeed - 70.0).abs() < 1e-12, "{}", head.airspeed);
+        let tail = s.air_data(&WindModel::steady([10.0, 0.0, 0.0]));
+        assert!((tail.airspeed - 50.0).abs() < 1e-12, "{}", tail.airspeed);
+        // Dynamic pressure follows the air-relative speed, not the ground speed.
+        assert!(close(
+            head.dynamic_pressure,
+            dynamic_pressure(70.0, s.altitude()),
+            1e-12
+        ));
+        assert!(close(
+            tail.dynamic_pressure,
+            dynamic_pressure(50.0, s.altitude()),
+            1e-12
+        ));
+        // Neither changes the flow direction.
+        assert!(head.alpha.abs() < 1e-12 && head.beta.abs() < 1e-12);
+        assert!(tail.alpha.abs() < 1e-12 && tail.beta.abs() < 1e-12);
+    }
+
+    #[test]
+    fn updraft_raises_the_angle_of_attack() {
+        let s = flying_north(60.0);
+        // NED z points down, so a negative z wind component is an updraft.
+        let air = s.air_data(&WindModel::steady([0.0, 0.0, -5.0]));
+        assert!(
+            (air.alpha - 5.0_f64.atan2(60.0)).abs() < 1e-12,
+            "{}",
+            air.alpha
+        );
+        assert!(air.alpha > 0.0);
+    }
+
+    #[test]
+    fn wind_is_rotated_into_the_body_frame() {
+        let mut s = flying_north(60.0);
+        s.attitude = yaw_quaternion(PI / 2.0); // heading east
+        // Wind blowing east is a tailwind for an eastbound aircraft.
+        let tail = WindModel::steady([0.0, 10.0, 0.0]);
+        let wb = s.wind_body(&tail);
+        assert!((wb[0] - 10.0).abs() < 1e-12 && wb[1].abs() < 1e-12 && wb[2].abs() < 1e-12);
+        assert!((s.air_data(&tail).airspeed - 50.0).abs() < 1e-12);
+        // Wind blowing north hits the right wing (body y points south): positive
+        // sideslip, with the airspeed vector gaining a +y component.
+        let from_right = WindModel::steady([10.0, 0.0, 0.0]);
+        let air = s.air_data(&from_right);
+        assert!((s.wind_body(&from_right)[1] + 10.0).abs() < 1e-12);
+        assert!((air.velocity_body[1] - 10.0).abs() < 1e-12);
+        assert!(air.beta > 0.0);
+        assert!((air.beta - (10.0_f64 / (3700.0_f64).sqrt()).asin()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn aero_forces_and_moments_depend_only_on_air_relative_velocity() {
+        let config = AircraftConfig::generic_ga();
+        let mut calm = flying_north(60.0);
+        calm.velocity_body = [60.0, 3.0, 8.0];
+        calm.angular_velocity = [0.05, -0.04, 0.03];
+        calm.controls = ControlSurfaces::primary(0.02, -0.03, 0.01, 0.0);
+        // Same air-relative flow, but 10 m/s higher over the ground in a tailwind.
+        let mut windy = calm.clone();
+        windy.velocity_body = [70.0, 3.0, 8.0];
+        let tailwind = WindModel::steady([10.0, 0.0, 0.0]);
+        let f_calm = compute_aero_forces(&calm, &config, &WindModel::calm());
+        let f_windy = compute_aero_forces(&windy, &config, &tailwind);
+        let m_calm = compute_aero_moments(&calm, &config, &WindModel::calm());
+        let m_windy = compute_aero_moments(&windy, &config, &tailwind);
+        for k in 0..3 {
+            assert!(
+                close(f_calm[k], f_windy[k], 1e-9),
+                "F[{k}]: {f_calm:?} vs {f_windy:?}"
+            );
+            assert!(
+                close(m_calm[k], m_windy[k], 1e-9),
+                "M[{k}]: {m_calm:?} vs {m_windy:?}"
+            );
+        }
+        // Ignoring the wind (the old behaviour) would give a different force.
+        let f_ignoring_wind = compute_aero_forces(&windy, &config, &WindModel::calm());
+        assert!(norm3(sub3(f_ignoring_wind, f_windy)) > 100.0);
+    }
+
+    #[test]
+    fn drifting_with_the_wind_feels_no_aerodynamic_force() {
+        let config = AircraftConfig::generic_ga();
+        let mut s = flying_north(0.0);
+        s.velocity_body = [10.0, 0.0, 0.0];
+        s.controls = ControlSurfaces::primary(0.1, 0.1, 0.1, 0.0);
+        let wind = WindModel::steady([10.0, 0.0, 0.0]);
+        let air = s.air_data(&wind);
+        assert!(air.airspeed < 1e-12);
+        assert!(air.alpha == 0.0 && air.beta == 0.0);
+        assert!(norm3(compute_aero_forces(&s, &config, &wind)) < 1e-9);
+        assert!(norm3(compute_aero_moments(&s, &config, &wind)) < 1e-9);
+    }
+
+    #[test]
+    fn crosswind_produces_sideslip_and_a_restoring_side_force() {
+        let config = AircraftConfig::generic_ga();
+        let s = flying_north(60.0);
+        // Air moving west: relative to the air the aircraft moves east (+y body).
+        let wind = WindModel::steady([0.0, -10.0, 0.0]);
+        let air = s.air_data(&wind);
+        let beta = (10.0_f64 / (3700.0_f64).sqrt()).asin();
+        assert!((air.beta - beta).abs() < 1e-12);
+        let force = compute_aero_forces(&s, &config, &wind);
+        let expected_side =
+            air.dynamic_pressure * config.wing_area * config.stability.cy_beta * beta;
+        assert!(
+            close(force[1], expected_side, 1e-12),
+            "{} vs {expected_side}",
+            force[1]
+        );
+        assert!(force[1] < 0.0, "side force must oppose positive sideslip");
+        // Weathercock stability: positive sideslip gives a positive yawing moment.
+        let moment = compute_aero_moments(&s, &config, &wind);
+        assert!(moment[2] > 0.0, "yawing moment {}", moment[2]);
+    }
+
+    #[test]
+    fn gust_is_sampled_at_the_state_time() {
+        let mut wind = WindModel::calm();
+        wind.gust_amplitude = 5.0;
+        wind.gust_frequency = 2.0;
+        let mut s = flying_north(60.0);
+        assert!(
+            (s.air_data(&wind).airspeed - 60.0).abs() < 1e-12,
+            "no gust at t = 0"
+        );
+        s.time = PI / 4.0; // sin(2 t) = 1: a 5 m/s tailwind gust
+        assert!((s.air_data(&wind).airspeed - 55.0).abs() < 1e-12);
+        s.time = 3.0 * PI / 4.0; // sin(2 t) = -1: a 5 m/s headwind gust
+        assert!((s.air_data(&wind).airspeed - 65.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn integrate_aircraft_advances_the_simulation_time() {
+        let config = AircraftConfig::generic_ga();
+        let wind = WindModel::calm();
+        let mut s = flying_north(60.0);
+        assert_eq!(s.time, 0.0);
+        for _ in 0..10 {
+            integrate_aircraft(&mut s, &config, &wind, 0.01);
+        }
+        assert!((s.time - 0.1).abs() < 1e-12, "time = {}", s.time);
+    }
+
+    #[test]
+    fn body_frame_acceleration_contains_the_transport_term() {
+        let v = [60.0, -3.0, 8.0];
+        let w = [0.1, 0.5, -0.2];
+        // Without force the acceleration is -omega x v, perpendicular to v, so
+        // the speed (the norm of the body-frame velocity) is stationary.
+        let a = body_frame_acceleration([0.0; 3], 1500.0, w, v);
+        let wxv = cross3(w, v);
+        for k in 0..3 {
+            assert!((a[k] + wxv[k]).abs() < 1e-12);
+        }
+        assert!(dot3(a, v).abs() < 1e-9, "a.v = {}", dot3(a, v));
+        // A pure pitch rate q turns the (u, w) components: du/dt = -q w, dw/dt = q u.
+        let a = body_frame_acceleration([0.0; 3], 1500.0, [0.0, 0.5, 0.0], [60.0, 0.0, 8.0]);
+        assert!((a[0] - (-0.5 * 8.0)).abs() < 1e-12 && (a[2] - (0.5 * 60.0)).abs() < 1e-12);
+        // With a force, F/m is added.
+        let a = body_frame_acceleration([3000.0, 0.0, -1500.0], 1500.0, w, v);
+        assert!((a[0] - (2.0 - wxv[0])).abs() < 1e-12);
+        assert!((a[2] - (-1.0 - wxv[2])).abs() < 1e-12);
+    }
+
+    #[test]
+    fn rotating_body_without_aerodynamics_follows_a_ballistic_path() {
+        // With the wing removed there is no aerodynamic force or moment and no
+        // thrust, so only gravity acts. Whatever the body does, the NED velocity
+        // must change by g*t along "down" and the path must be a parabola.
+        // Dropping the omega x v term makes the body-frame velocity rotate with
+        // the airframe, so the NED velocity would swing by about q*|v|*t = 30 m/s.
+        let mut config = AircraftConfig::generic_ga();
+        config.wing_area = 0.0;
+        let wind = WindModel::calm();
+        let mut s = AircraftState::level_flight(1500.0, 60.0, 3000.0);
+        s.velocity_body = [60.0, 0.0, 5.0];
+        s.angular_velocity = [0.0, 0.5, 0.0]; // constant pitch rate
+        let v0 = s.velocity_ned();
+        let p0 = s.position;
+        let dt = 1.0e-3;
+        let steps = 1000;
+        for _ in 0..steps {
+            integrate_aircraft(&mut s, &config, &wind, dt);
+        }
+        let t = dt * steps as f64;
+        let v_expected = [v0[0], v0[1], v0[2] + G0 * t];
+        let v = s.velocity_ned();
+        assert!(
+            norm3(sub3(v, v_expected)) < 5.0e-2,
+            "v_ned = {v:?}, expected {v_expected:?}"
+        );
+        let p_expected = [
+            p0[0] + v0[0] * t,
+            p0[1] + v0[1] * t,
+            p0[2] + v0[2] * t + 0.5 * G0 * t * t,
+        ];
+        assert!(
+            norm3(sub3(s.position, p_expected)) < 0.1,
+            "p = {:?}, expected {p_expected:?}",
+            s.position
+        );
+        // The airframe really did rotate (about 0.5 rad), and the speed follows
+        // the inertial dynamics.
+        assert!((s.angular_velocity[1] - 0.5).abs() < 1e-12);
+        let speed_expected = norm3(v_expected);
+        assert!((norm3(s.velocity_body) - speed_expected).abs() < 5.0e-2);
+    }
+
+    #[test]
+    fn steady_wind_shifts_the_ground_motion_by_the_wind_vector() {
+        // Same air-relative flight, once in calm air at 60 m/s and once in a
+        // 10 m/s headwind at 50 m/s over the ground: every aerodynamic input is
+        // identical, so the ground velocity must stay 10 m/s lower (the wind
+        // vector) throughout, and the ground track falls behind by 10 m/s * t.
+        let config = AircraftConfig::generic_ga();
+        let dt = 0.005;
+        let steps = 400;
+        let wind_ned = [-10.0, 0.0, 0.0];
+        let fly = |wind: &WindModel, ground_speed: f64| {
+            let mut s = flying_north(ground_speed);
+            s.controls = ControlSurfaces::primary(0.01, -0.03, 0.0, 0.4);
+            for _ in 0..steps {
+                integrate_aircraft(&mut s, &config, wind, dt);
+            }
+            s
+        };
+        let calm_wind = WindModel::calm();
+        let head_wind = WindModel::steady(wind_ned);
+        let calm = fly(&calm_wind, 60.0);
+        let windy = fly(&head_wind, 50.0);
+        let t = dt * steps as f64;
+        let velocity_shift = sub3(windy.velocity_ned(), calm.velocity_ned());
+        assert!(
+            norm3(sub3(velocity_shift, wind_ned)) < 0.1,
+            "ground velocity shift {velocity_shift:?}, expected {wind_ned:?}"
+        );
+        let position_shift = sub3(windy.position, calm.position);
+        assert!(
+            norm3(sub3(position_shift, scale3(wind_ned, t))) < 0.2,
+            "ground track shift {position_shift:?}, expected {:?}",
+            scale3(wind_ned, t)
+        );
+        let airspeed_calm = calm.air_data(&calm_wind).airspeed;
+        let airspeed_windy = windy.air_data(&head_wind).airspeed;
+        assert!(
+            (airspeed_calm - airspeed_windy).abs() < 0.1,
+            "airspeeds {airspeed_calm} vs {airspeed_windy}"
+        );
+    }
+
+    #[test]
+    fn headwind_increases_the_drag_deceleration_in_the_integrator() {
+        let config = AircraftConfig::generic_ga();
+        let dt = 0.01;
+        let u_after = |wind: &WindModel| {
+            let mut s = flying_north(60.0);
+            integrate_aircraft(&mut s, &config, wind, dt);
+            s.velocity_body[0]
+        };
+        let u_calm = u_after(&WindModel::calm());
+        let u_headwind = u_after(&WindModel::steady([-20.0, 0.0, 0.0]));
+        let u_tailwind = u_after(&WindModel::steady([20.0, 0.0, 0.0]));
+        assert!(u_calm < 60.0, "drag must decelerate the aircraft");
+        assert!(
+            u_headwind < u_calm,
+            "headwind: {u_headwind} vs calm {u_calm}"
+        );
+        assert!(
+            u_tailwind > u_calm,
+            "tailwind: {u_tailwind} vs calm {u_calm}"
+        );
     }
 
     // ── Breguet range ────────────────────────────────────────────────────────

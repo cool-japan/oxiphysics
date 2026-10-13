@@ -61,15 +61,87 @@ pub fn minimum_image_vec(dr: [f64; 3], box_len: [f64; 3]) -> [f64; 3] {
 // CellList
 // ---------------------------------------------------------------------------
 
+/// Upper bound on the number of cells a [`CellList`] allocates.
+///
+/// A (nonsensically) tiny cutoff relative to the box would otherwise request
+/// an astronomically large grid.  Coarsening the grid only makes cells wider,
+/// which keeps the neighbor search exact (just less selective).
+const MAX_CELLS: usize = 1 << 22;
+
+/// Number of cells along one axis of length `length` for a search `cutoff`.
+///
+/// `floor(length / cutoff)` cells (at least one), so that the equal cell width
+/// `length / n` is never smaller than `cutoff`.  A degenerate (non-finite or
+/// non-positive) `length` or `cutoff` yields a single cell, which is always
+/// correct, merely unselective.
+fn axis_cell_count(length: f64, cutoff: f64) -> usize {
+    if !length.is_finite() || !cutoff.is_finite() || length <= 0.0 || cutoff <= 0.0 {
+        return 1;
+    }
+    let mut n = ((length / cutoff).floor() as usize).max(1);
+    // `length / cutoff` is a rounded quotient: when it sits a hair below an
+    // integer `floor` may overshoot by one, leaving cells a rounding error
+    // narrower than the cutoff.
+    while n > 1 && length / (n as f64) < cutoff {
+        n -= 1;
+    }
+    n
+}
+
+/// Cell coordinate along one axis for the in-box offset `offset ∈ [0, length]`.
+fn axis_cell(offset: f64, cell_size: f64, n_cells: usize) -> usize {
+    if cell_size > 0.0 {
+        ((offset / cell_size) as usize).min(n_cells - 1)
+    } else {
+        0
+    }
+}
+
+/// Distinct cell indices `{i - 1, i, i + 1} mod n` along one axis.
+///
+/// With fewer than three cells the periodic wrap maps several offsets onto
+/// the same cell; listing each cell once keeps a neighbor from being reported
+/// twice.  The order matches the offsets `-1, 0, +1`.
+struct AxisStencil {
+    cells: [usize; 3],
+    len: usize,
+}
+
+impl AxisStencil {
+    fn new(i: usize, n: usize) -> Self {
+        let candidates = [(i + n - 1) % n, i, (i + 1) % n];
+        let mut cells = [0_usize; 3];
+        let mut len = 0;
+        for c in candidates {
+            if !cells[..len].contains(&c) {
+                cells[len] = c;
+                len += 1;
+            }
+        }
+        Self { cells, len }
+    }
+
+    fn as_slice(&self) -> &[usize] {
+        &self.cells[..self.len]
+    }
+}
+
 /// Cell list for O(N) neighbor search.
 ///
-/// The simulation box `[box_lo, box_hi]` is divided into cells of size
-/// `>= cutoff`.  Each cell stores the indices of the atoms it contains.
-/// Neighbor searches only need to examine the 3x3x3 = 27 surrounding cells.
+/// The simulation box `[box_lo, box_hi]` is divided into `nx × ny × nz` cells.
+/// Along axis `d` there are `n_d = floor(L_d / cutoff)` cells (at least one) of
+/// equal width `L_d / n_d >= cutoff`, so the last cell is never narrower than
+/// the cutoff and two atoms closer than `cutoff` (under the periodic minimum
+/// image convention) always lie in the same or in adjacent cells.  Each cell
+/// stores the indices of the atoms it contains; a neighbor search only has to
+/// examine the (at most) 3x3x3 = 27 surrounding cells.
+///
+/// Atoms outside `[box_lo, box_hi]` are assigned to the cell of their periodic
+/// image, consistent with the minimum-image distances used for the search.
 #[derive(Debug, Clone)]
 pub struct CellList {
-    /// Cell edge length (>= cutoff radius).
-    pub cell_size: f64,
+    /// Cell edge length along each axis (each `>=` the cutoff radius).
+    pub cell_size: [f64; 3],
     /// Number of cells in the x direction.
     pub nx: usize,
     /// Number of cells in the y direction.
@@ -85,24 +157,45 @@ pub struct CellList {
 }
 
 impl CellList {
-    /// Create a new (empty) cell list.
+    /// Create a new (empty) cell list for neighbor searches up to `cutoff`.
+    ///
+    /// [`CellList::neighbors_of`] and [`CellList::all_pairs`] are exact for any
+    /// squared cutoff up to `cutoff²`.
     pub fn new(box_lo: [f64; 3], box_hi: [f64; 3], cutoff: f64) -> Self {
-        let lx = box_hi[0] - box_lo[0];
-        let ly = box_hi[1] - box_lo[1];
-        let lz = box_hi[2] - box_lo[2];
+        let lengths = [
+            box_hi[0] - box_lo[0],
+            box_hi[1] - box_lo[1],
+            box_hi[2] - box_lo[2],
+        ];
+        let mut counts = [
+            axis_cell_count(lengths[0], cutoff),
+            axis_cell_count(lengths[1], cutoff),
+            axis_cell_count(lengths[2], cutoff),
+        ];
+        // Coarsen the grid (wider cells stay correct) if it would be absurdly large.
+        while counts[0]
+            .checked_mul(counts[1])
+            .and_then(|xy| xy.checked_mul(counts[2]))
+            .is_none_or(|total| total > MAX_CELLS)
+        {
+            let widest = (0..3).max_by_key(|&d| counts[d]).unwrap_or(0);
+            if counts[widest] <= 1 {
+                break;
+            }
+            counts[widest] = counts[widest].div_ceil(2);
+        }
+        let cell_size = [
+            lengths[0] / counts[0] as f64,
+            lengths[1] / counts[1] as f64,
+            lengths[2] / counts[2] as f64,
+        ];
 
-        let nx = ((lx / cutoff).ceil() as usize).max(1);
-        let ny = ((ly / cutoff).ceil() as usize).max(1);
-        let nz = ((lz / cutoff).ceil() as usize).max(1);
-
-        let cell_size = cutoff;
-
-        let total = nx * ny * nz;
+        let total = counts[0] * counts[1] * counts[2];
         Self {
             cell_size,
-            nx,
-            ny,
-            nz,
+            nx: counts[0],
+            ny: counts[1],
+            nz: counts[2],
             box_lo,
             box_hi,
             cells: vec![Vec::new(); total],
@@ -115,37 +208,38 @@ impl CellList {
             cell.clear();
         }
         for (i, pos) in positions.iter().enumerate() {
-            if let Some((ix, iy, iz)) = self.cell_index(pos) {
-                let idx = self.flat_idx(ix, iy, iz);
-                self.cells[idx].push(i);
-            } else {
-                let ix = self.clamp_cell(pos[0], self.box_lo[0], self.nx);
-                let iy = self.clamp_cell(pos[1], self.box_lo[1], self.ny);
-                let iz = self.clamp_cell(pos[2], self.box_lo[2], self.nz);
-                let idx = self.flat_idx(ix, iy, iz);
-                self.cells[idx].push(i);
-            }
+            let (ix, iy, iz) = self.wrapped_cell(pos);
+            let idx = self.flat_idx(ix, iy, iz);
+            self.cells[idx].push(i);
         }
     }
 
     /// Return the (ix, iy, iz) cell coordinates for `pos`, or `None` if out of box.
     pub fn cell_index(&self, pos: &[f64; 3]) -> Option<(usize, usize, usize)> {
-        let lx = self.box_hi[0] - self.box_lo[0];
-        let ly = self.box_hi[1] - self.box_lo[1];
-        let lz = self.box_hi[2] - self.box_lo[2];
+        let inside = pos
+            .iter()
+            .zip(self.box_lo.iter().zip(self.box_hi.iter()))
+            .all(|(&x, (&lo, &hi))| x - lo >= 0.0 && x - lo <= hi - lo);
+        inside.then(|| self.wrapped_cell(pos))
+    }
 
-        let fx = pos[0] - self.box_lo[0];
-        let fy = pos[1] - self.box_lo[1];
-        let fz = pos[2] - self.box_lo[2];
-
-        if fx < 0.0 || fx > lx || fy < 0.0 || fy > ly || fz < 0.0 || fz > lz {
-            return None;
+    /// Cell coordinates of the periodic image of `pos` inside the box.
+    fn wrapped_cell(&self, pos: &[f64; 3]) -> (usize, usize, usize) {
+        let counts = [self.nx, self.ny, self.nz];
+        let mut idx = [0_usize; 3];
+        for d in 0..3 {
+            let length = self.box_hi[d] - self.box_lo[d];
+            let mut offset = pos[d] - self.box_lo[d];
+            if offset < 0.0 || offset > length {
+                offset = if length > 0.0 {
+                    offset.rem_euclid(length)
+                } else {
+                    0.0
+                };
+            }
+            idx[d] = axis_cell(offset, self.cell_size[d], counts[d]);
         }
-
-        let ix = ((fx / self.cell_size) as usize).min(self.nx - 1);
-        let iy = ((fy / self.cell_size) as usize).min(self.ny - 1);
-        let iz = ((fz / self.cell_size) as usize).min(self.nz - 1);
-        Some((ix, iy, iz))
+        (idx[0], idx[1], idx[2])
     }
 
     /// Compute the flat cell index from 3-D cell coordinates.
@@ -153,13 +247,11 @@ impl CellList {
         ix + iy * self.nx + iz * self.nx * self.ny
     }
 
-    /// Clamp a coordinate to a valid cell index.
-    fn clamp_cell(&self, coord: f64, lo: f64, n: usize) -> usize {
-        let f = (coord - lo) / self.cell_size;
-        if f < 0.0 { 0 } else { (f as usize).min(n - 1) }
-    }
-
     /// Find all atoms within `cutoff_sq` (squared cutoff) of atom `i`.
+    ///
+    /// Each neighbor is reported exactly once, with its squared minimum-image
+    /// distance and displacement vector `r_j - r_i`.  `cutoff_sq` must not
+    /// exceed the squared cutoff the list was created with.
     pub fn neighbors_of(
         &self,
         i: usize,
@@ -173,27 +265,16 @@ impl CellList {
             self.box_hi[2] - self.box_lo[2],
         ];
 
-        let (ix, iy, iz) = self.cell_index(&pos_i).unwrap_or_else(|| {
-            (
-                self.clamp_cell(pos_i[0], self.box_lo[0], self.nx),
-                self.clamp_cell(pos_i[1], self.box_lo[1], self.ny),
-                self.clamp_cell(pos_i[2], self.box_lo[2], self.nz),
-            )
-        });
+        let (ix, iy, iz) = self.wrapped_cell(&pos_i);
+        let xs = AxisStencil::new(ix, self.nx);
+        let ys = AxisStencil::new(iy, self.ny);
+        let zs = AxisStencil::new(iz, self.nz);
 
         let mut result = Vec::new();
 
-        for dix in -1_isize..=1 {
-            for diy in -1_isize..=1 {
-                for diz in -1_isize..=1 {
-                    let nx = self.nx as isize;
-                    let ny = self.ny as isize;
-                    let nz = self.nz as isize;
-
-                    let jx = ((ix as isize + dix).rem_euclid(nx)) as usize;
-                    let jy = ((iy as isize + diy).rem_euclid(ny)) as usize;
-                    let jz = ((iz as isize + diz).rem_euclid(nz)) as usize;
-
+        for &jx in xs.as_slice() {
+            for &jy in ys.as_slice() {
+                for &jz in zs.as_slice() {
                     let cell_idx = self.flat_idx(jx, jy, jz);
                     for &j in &self.cells[cell_idx] {
                         if j == i {
@@ -691,7 +772,7 @@ mod tests {
             [0.1, 0.9, 0.9],
             [0.9, 0.9, 0.9],
         ];
-        let mut cl = CellList::new([0.0; 3], [1.0; 3], 0.6);
+        let mut cl = CellList::new([0.0; 3], [1.0; 3], 0.5);
         cl.build(&positions);
 
         assert_eq!(cl.nx, 2);
@@ -700,6 +781,17 @@ mod tests {
 
         let total: usize = cl.cells.iter().map(|c| c.len()).sum();
         assert_eq!(total, 8, "All 8 atoms must be in the cell list");
+        // Each atom sits in its own octant.
+        assert!(cl.cells.iter().all(|c| c.len() == 1));
+    }
+
+    #[test]
+    fn test_cell_list_never_makes_cells_narrower_than_the_cutoff() {
+        // Two cells would be 0.5 wide, narrower than the 0.6 cutoff, so a neighbor two
+        // cells away could be in range: the grid must fall back to a single cell.
+        let cl = CellList::new([0.0; 3], [1.0; 3], 0.6);
+        assert_eq!((cl.nx, cl.ny, cl.nz), (1, 1, 1));
+        assert!((cl.cell_size[0] - 1.0).abs() < 1e-15);
     }
 
     #[test]
@@ -1568,5 +1660,279 @@ mod tests_new_nl {
         let hints = NeighborListGpuHints::from_verlet(&vl, &positions, box_len, false);
         // One pair (0,1) stored in half list: only 1 entry
         assert_eq!(hints.total_entries(), 1);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests: periodic cell geometry
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests_cell_geometry {
+    use super::*;
+    use rand::{RngExt, SeedableRng};
+
+    /// Squared minimum-image distance computed exactly like `CellList::neighbors_of`.
+    fn pair_dsq(positions: &[[f64; 3]], i: usize, j: usize, box_len: [f64; 3]) -> f64 {
+        let dr_raw = [
+            positions[j][0] - positions[i][0],
+            positions[j][1] - positions[i][1],
+            positions[j][2] - positions[i][2],
+        ];
+        let dr = minimum_image_vec(dr_raw, box_len);
+        dr[0] * dr[0] + dr[1] * dr[1] + dr[2] * dr[2]
+    }
+
+    fn box_lengths(lo: [f64; 3], hi: [f64; 3]) -> [f64; 3] {
+        [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]]
+    }
+
+    /// All pairs `i < j` within `cutoff_sq`, found by the O(N²) double loop.
+    fn brute_force_pairs(
+        positions: &[[f64; 3]],
+        lo: [f64; 3],
+        hi: [f64; 3],
+        cutoff_sq: f64,
+    ) -> Vec<(usize, usize)> {
+        let box_len = box_lengths(lo, hi);
+        let mut pairs = Vec::new();
+        for i in 0..positions.len() {
+            for j in (i + 1)..positions.len() {
+                if pair_dsq(positions, i, j, box_len) <= cutoff_sq {
+                    pairs.push((i, j));
+                }
+            }
+        }
+        pairs
+    }
+
+    fn random_positions(n: usize, lo: [f64; 3], hi: [f64; 3], seed: u64) -> Vec<[f64; 3]> {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        (0..n)
+            .map(|_| {
+                [
+                    rng.random_range(lo[0]..hi[0]),
+                    rng.random_range(lo[1]..hi[1]),
+                    rng.random_range(lo[2]..hi[2]),
+                ]
+            })
+            .collect()
+    }
+
+    fn sorted(mut pairs: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+        pairs.sort_unstable();
+        pairs
+    }
+
+    fn cell_list_pairs(
+        cl: &CellList,
+        positions: &[[f64; 3]],
+        cutoff_sq: f64,
+    ) -> Vec<(usize, usize)> {
+        cl.all_pairs(positions, cutoff_sq)
+            .into_iter()
+            .map(|(i, j, _)| (i, j))
+            .collect()
+    }
+
+    #[test]
+    fn cells_are_never_narrower_than_the_cutoff() {
+        for &length in &[1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.4, 7.3, 10.0] {
+            for &cutoff in &[0.7, 1.0, 1.3] {
+                let cl = CellList::new([0.0; 3], [length; 3], cutoff);
+                let expected = ((length / cutoff).floor() as usize).max(1);
+                assert_eq!(cl.nx, expected, "L = {length}, rc = {cutoff}");
+                for d in 0..3 {
+                    // A box shorter than the cutoff is one cell spanning the whole box.
+                    let narrowest_allowed = cutoff.min(length);
+                    assert!(
+                        cl.cell_size[d] >= narrowest_allowed * (1.0 - 1e-12),
+                        "cell width {} < cutoff {cutoff} for L = {length}",
+                        cl.cell_size[d]
+                    );
+                    assert!((cl.cell_size[d] * expected as f64 - length).abs() < 1e-12);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_remainder_cell_no_longer_hides_periodic_neighbors() {
+        // Regression: L = 3.5, rc = 1 used ceil(L/rc) = 4 cells with a 0.5-wide last cell, so
+        // atoms at x = 2.9 (cell 2) and x = 0.3 (cell 0) -- 0.9 apart through the periodic
+        // boundary -- were two cells apart and never compared.
+        let positions = [[2.9, 1.0, 1.0], [0.3, 1.0, 1.0]];
+        let mut cl = CellList::new([0.0; 3], [3.5; 3], 1.0);
+        cl.build(&positions);
+        let pairs = cl.all_pairs(&positions, 1.0);
+        assert_eq!(pairs.len(), 1, "pairs = {pairs:?}");
+        let (i, j, dsq) = pairs[0];
+        assert_eq!((i, j), (0, 1));
+        assert!((dsq - 0.81).abs() < 1e-12, "dsq = {dsq}");
+    }
+
+    #[test]
+    fn fewer_than_three_cells_per_axis_report_each_neighbor_once() {
+        // Regression: with one or two cells along an axis the offsets -1 and +1 wrap to the
+        // same cell, so the stencil visited it twice and pushed every neighbor twice.
+        for &length in &[1.5, 2.2, 2.9] {
+            let lo = [0.0; 3];
+            let hi = [length; 3];
+            let positions = random_positions(40, lo, hi, 5);
+            let mut cl = CellList::new(lo, hi, 1.0);
+            cl.build(&positions);
+            for i in 0..positions.len() {
+                let nbrs = cl.neighbors_of(i, &positions, 1.0);
+                let mut ids: Vec<usize> = nbrs.iter().map(|&(j, _, _)| j).collect();
+                let before = ids.len();
+                ids.sort_unstable();
+                ids.dedup();
+                assert_eq!(
+                    ids.len(),
+                    before,
+                    "duplicate neighbors of atom {i}, L = {length}"
+                );
+            }
+            assert_eq!(
+                sorted(cell_list_pairs(&cl, &positions, 1.0)),
+                brute_force_pairs(&positions, lo, hi, 1.0),
+                "L = {length}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_atoms_in_a_box_barely_larger_than_the_cutoff_give_one_pair() {
+        // L = 1.5, rc = 1: a single cell.  The atoms are 1.3 apart along x in the box, but
+        // only 0.2 apart through the periodic boundary, and must be reported exactly once
+        // even though every stencil offset wraps onto the same cell.
+        let positions = [[0.1, 0.5, 0.5], [1.4, 0.5, 0.5]];
+        let mut cl = CellList::new([0.0; 3], [1.5; 3], 1.0);
+        cl.build(&positions);
+        assert_eq!((cl.nx, cl.ny, cl.nz), (1, 1, 1));
+        let pairs = cl.all_pairs(&positions, 1.0);
+        assert_eq!(pairs.len(), 1, "pairs = {pairs:?}");
+        assert_eq!((pairs[0].0, pairs[0].1), (0, 1));
+        assert!((pairs[0].2 - 0.04).abs() < 1e-12, "dsq = {}", pairs[0].2);
+        let nbrs = cl.neighbors_of(0, &positions, 1.0);
+        assert_eq!(nbrs.len(), 1);
+        assert!((nbrs[0].2[0] + 0.2).abs() < 1e-12, "dr = {:?}", nbrs[0].2);
+        // Atoms 1.21 apart (> rc) through the closest image are not neighbors.
+        let far = [[0.1, 0.1, 0.1], [0.8, 0.8, 0.8]];
+        cl.build(&far);
+        assert!(cl.all_pairs(&far, 1.0).is_empty());
+    }
+
+    #[test]
+    fn cell_list_matches_brute_force_for_many_box_shapes() {
+        let boxes: [([f64; 3], f64); 7] = [
+            ([3.5, 3.5, 3.5], 1.0),
+            ([7.3, 5.9, 4.1], 1.3),
+            ([2.2, 9.1, 3.0], 1.0),
+            ([6.0, 6.0, 6.0], 2.0),
+            ([4.4, 4.4, 4.4], 1.1),
+            ([1.7, 8.0, 2.99], 1.0),
+            ([5.0, 5.0, 5.0], 0.8),
+        ];
+        for (b, (lengths, cutoff)) in boxes.iter().enumerate() {
+            let lo = [-1.0, 0.5, 2.0];
+            let hi = [lo[0] + lengths[0], lo[1] + lengths[1], lo[2] + lengths[2]];
+            let positions = random_positions(300, lo, hi, 100 + b as u64);
+            let mut cl = CellList::new(lo, hi, *cutoff);
+            cl.build(&positions);
+            let found = cell_list_pairs(&cl, &positions, cutoff * cutoff);
+            let reference = brute_force_pairs(&positions, lo, hi, cutoff * cutoff);
+            assert_eq!(sorted(found), reference, "box {lengths:?}, cutoff {cutoff}");
+        }
+    }
+
+    #[test]
+    fn verlet_list_pair_count_matches_brute_force_for_500_atoms() {
+        let lo = [0.0; 3];
+        let hi = [7.3, 5.9, 4.1];
+        let (cutoff, skin) = (1.3, 0.2);
+        let positions = random_positions(500, lo, hi, 2026);
+        let mut vl = VerletList::new(lo, hi, cutoff, skin);
+        vl.build(&positions);
+        let effective_sq = (cutoff + skin) * (cutoff + skin);
+        let reference = brute_force_pairs(&positions, lo, hi, effective_sq);
+        assert_eq!(vl.n_pairs(), reference.len());
+        let mut listed = Vec::new();
+        for (i, nbrs) in vl.neighbors.iter().enumerate() {
+            for &j in nbrs {
+                assert!(j > i);
+                listed.push((i, j));
+            }
+        }
+        assert_eq!(sorted(listed), reference);
+    }
+
+    #[test]
+    fn atoms_outside_the_box_are_binned_by_their_periodic_image() {
+        // x = -0.1 and x = 3.9 are periodic images of 3.4 and 0.4 in a 3.5-wide box.
+        let positions = [
+            [-0.1, 1.0, 1.0],
+            [3.2, 1.0, 1.0],
+            [3.9, 2.0, 2.0],
+            [0.3, 2.0, 2.0],
+        ];
+        let lo = [0.0; 3];
+        let hi = [3.5; 3];
+        let mut cl = CellList::new(lo, hi, 1.0);
+        cl.build(&positions);
+        let found = sorted(cell_list_pairs(&cl, &positions, 1.0));
+        assert_eq!(found, brute_force_pairs(&positions, lo, hi, 1.0));
+        assert_eq!(found, vec![(0, 1), (2, 3)]);
+    }
+
+    #[test]
+    fn cell_index_reports_none_outside_the_box_but_binning_still_works() {
+        let cl = CellList::new([0.0; 3], [3.5; 3], 1.0);
+        assert!(cl.cell_index(&[1.0, 1.0, 1.0]).is_some());
+        assert!(cl.cell_index(&[3.5, 3.5, 3.5]).is_some());
+        assert!(cl.cell_index(&[-0.1, 1.0, 1.0]).is_none());
+        assert!(cl.cell_index(&[1.0, 3.6, 1.0]).is_none());
+        // A non-finite coordinate is not inside the box either.
+        assert!(cl.cell_index(&[f64::NAN, 1.0, 1.0]).is_none());
+        assert!(cl.cell_index(&[1.0, f64::INFINITY, 1.0]).is_none());
+    }
+
+    #[test]
+    fn degenerate_cutoffs_fall_back_to_a_single_exact_cell() {
+        let lo = [0.0; 3];
+        let hi = [4.0; 3];
+        let positions = random_positions(60, lo, hi, 9);
+        let reference = brute_force_pairs(&positions, lo, hi, 1.0);
+        for &cutoff in &[0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mut cl = CellList::new(lo, hi, cutoff);
+            assert_eq!((cl.nx, cl.ny, cl.nz), (1, 1, 1), "cutoff = {cutoff}");
+            cl.build(&positions);
+            assert_eq!(sorted(cell_list_pairs(&cl, &positions, 1.0)), reference);
+        }
+    }
+
+    #[test]
+    fn absurdly_small_cutoff_does_not_request_an_absurd_grid() {
+        let cl = CellList::new([0.0; 3], [10.0; 3], 1e-9);
+        assert!(cl.nx * cl.ny * cl.nz <= MAX_CELLS);
+        assert!(cl.cell_size.iter().all(|&w| w >= 1e-9));
+    }
+
+    #[test]
+    fn half_neighbor_list_matches_brute_force_in_a_small_periodic_box() {
+        let lo = [0.0; 3];
+        let hi = [3.5; 3];
+        let positions = random_positions(80, lo, hi, 77);
+        let hnl = HalfNeighborList::build(&positions, lo, hi, 1.0);
+        assert_eq!(
+            hnl.n_pairs(),
+            brute_force_pairs(&positions, lo, hi, 1.0).len()
+        );
+        for &(i, j, dr, dist) in hnl.iter() {
+            assert!(i < j);
+            let from_dr = (dr[0] * dr[0] + dr[1] * dr[1] + dr[2] * dr[2]).sqrt();
+            assert!((dist - from_dr).abs() < 1e-14);
+            assert!(dist <= 1.0);
+        }
     }
 }

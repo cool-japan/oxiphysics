@@ -577,9 +577,11 @@ pub struct UrdfInertial {
     pub mass: f64,
     /// Centre of mass position `[x,y,z]`.
     pub com: Vec3,
-    /// Inertia tensor diagonal `[ixx, iyy, izz]` (kg·m²).
+    /// Inertia tensor diagonal `[ixx, iyy, izz]` (kg·m²), expressed in the
+    /// link frame about the centre of mass. [`parse_urdf`](super::parse_urdf)
+    /// has already folded the `<inertial><origin rpy>` rotation into it.
     pub inertia_diag: Vec3,
-    /// Off-diagonal inertia `[ixy, ixz, iyz]` (kg·m²).
+    /// Off-diagonal inertia `[ixy, ixz, iyz]` (kg·m²) in the same frame.
     pub inertia_off: Vec3,
 }
 /// Geometry kind attached to a URDF link's visual or collision element.

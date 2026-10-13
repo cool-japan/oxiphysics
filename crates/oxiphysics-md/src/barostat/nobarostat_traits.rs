@@ -20,6 +20,7 @@ impl Barostat for NoBarostat {
         _atoms: &mut AtomSet,
         _pbox: &mut PeriodicBox,
         _target_pressure: f64,
+        _virial: f64,
         _dt: f64,
     ) {
     }

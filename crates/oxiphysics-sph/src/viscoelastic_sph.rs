@@ -196,12 +196,14 @@ impl ViscoelasticParticle {
 /// Describes a dilute polymer solution with a single relaxation time λ,
 /// polymer viscosity η_p, and solvent viscosity η_s.
 ///
-/// The stress evolution equation is:
+/// The stress evolution equation (from `τ + λ τ^∇ = 2 η_p D`) is:
 /// ```text
-/// Dτ/Dt = -τ/λ + 2 η_p D + τ · L^T + L · τ
+/// Dτ/Dt = -τ/λ + (2 η_p / λ) D + τ · L^T + L · τ
 /// ```
 /// where `L = ∇u` is the velocity gradient and `D = (L + L^T)/2` is the
-/// rate-of-strain tensor.
+/// rate-of-strain tensor.  The polymer source term carries the factor `1/λ`
+/// so that every term has units of Pa/s; in steady simple shear the model
+/// reproduces `τ_xy = η_p γ̇` and `N₁ = 2 η_p λ γ̇²`.
 #[derive(Debug, Clone)]
 pub struct OldroydBModel {
     /// Polymer relaxation time (s).
@@ -224,7 +226,7 @@ impl OldroydBModel {
 
     /// Compute the upper-convected time derivative (UCT) of the stress.
     ///
-    /// Returns Dτ/Dt = UCT(τ, L) - τ/λ + 2 η_p D.
+    /// Returns Dτ/Dt = UCT(τ, L) - τ/λ + (2 η_p / λ) D.
     pub fn stress_rate(&self, stress: &[[f64; 3]; 3], vel_grad: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
         let uct = Self::upper_convected_derivative(stress, vel_grad);
         // Rate-of-strain tensor D = (L + L^T) / 2
@@ -236,7 +238,7 @@ impl OldroydBModel {
             }
         }
         let relaxation = matrix3_scale(stress, -1.0 / self.lambda);
-        let polymer_input = matrix3_scale(&d, 2.0 * self.eta_p);
+        let polymer_input = matrix3_scale(&d, 2.0 * self.eta_p / self.lambda);
         matrix3_add(&matrix3_add(&uct, &relaxation), &polymer_input)
     }
 
@@ -314,7 +316,7 @@ impl FenePModel {
 
     /// Compute the stress rate for the FENE-P model.
     ///
-    /// Dτ/Dt = UCT(τ, L) - f(τ) τ / λ + 2 η_p D
+    /// Dτ/Dt = UCT(τ, L) - f(τ) τ / λ + (2 η_p / λ) D
     pub fn stress_rate(&self, stress: &[[f64; 3]; 3], vel_grad: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
         let uct = upper_convected_derivative(stress, vel_grad);
         let f = Self::peterlin_factor(stress, self.b);
@@ -326,7 +328,7 @@ impl FenePModel {
             }
         }
         let relaxation = matrix3_scale(stress, -f / self.lambda);
-        let polymer_input = matrix3_scale(&d, 2.0 * self.eta_p);
+        let polymer_input = matrix3_scale(&d, 2.0 * self.eta_p / self.lambda);
         matrix3_add(&matrix3_add(&uct, &relaxation), &polymer_input)
     }
 }
@@ -343,7 +345,7 @@ impl FenePModel {
 ///
 /// Stress evolution:
 /// ```text
-/// Dτ/Dt = UCT(τ, L) - (τ + α λ/η_p τ·τ) / λ + 2 η_p D
+/// Dτ/Dt = UCT(τ, L) - (τ + α λ/η_p τ·τ) / λ + (2 η_p / λ) D
 /// ```
 #[derive(Debug, Clone)]
 pub struct GiesekusModel {
@@ -370,7 +372,7 @@ impl GiesekusModel {
 
     /// Compute the Giesekus stress rate.
     ///
-    /// Returns Dτ/Dt = UCT - (τ + α λ/η_p τ·τ)/λ + 2 η_p D.
+    /// Returns Dτ/Dt = UCT - (τ + α λ/η_p τ·τ)/λ + (2 η_p / λ) D.
     pub fn stress_rate(&self, stress: &[[f64; 3]; 3], vel_grad: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
         let uct = upper_convected_derivative(stress, vel_grad);
         let lt = matrix3_transpose(vel_grad);
@@ -385,7 +387,7 @@ impl GiesekusModel {
         let nonlinear = matrix3_scale(&tau_sq, self.alpha * self.lambda / self.eta_p);
         let linear_part = matrix3_add(stress, &nonlinear);
         let relaxation = matrix3_scale(&linear_part, -1.0 / self.lambda);
-        let polymer_input = matrix3_scale(&d, 2.0 * self.eta_p);
+        let polymer_input = matrix3_scale(&d, 2.0 * self.eta_p / self.lambda);
         matrix3_add(&matrix3_add(&uct, &relaxation), &polymer_input)
     }
 }
@@ -1076,5 +1078,195 @@ mod tests {
     fn giesekus_alpha_in_valid_range() {
         let m = GiesekusModel::default_polymer();
         assert!(m.alpha >= 0.0 && m.alpha <= 0.5);
+    }
+
+    // --- polymer source term carries the 1/λ factor (units: Pa/s) ---
+
+    /// Integrate `rate_fn` with forward Euler starting from zero stress.
+    fn integrate_from_rest(
+        rate_fn: impl Fn(&[[f64; 3]; 3]) -> [[f64; 3]; 3],
+        dt: f64,
+        steps: usize,
+    ) -> [[f64; 3]; 3] {
+        let mut tau = zero_stress();
+        for _ in 0..steps {
+            let rate = rate_fn(&tau);
+            tau = matrix3_add(&tau, &matrix3_scale(&rate, dt));
+        }
+        tau
+    }
+
+    #[test]
+    fn polymer_source_rate_at_rest_is_eta_p_gamma_dot_over_lambda() {
+        // τ = 0, simple shear γ̇ = 2: dτ_xy/dt = (2 η_p / λ) D_xy = η_p γ̇ / λ.
+        let lambda = 0.1;
+        let eta_p = 0.01;
+        let gamma_dot = 2.0;
+        let l = simple_vel_grad(gamma_dot);
+        let expected = eta_p * gamma_dot / lambda;
+        let tau = zero_stress();
+
+        let oldroyd = OldroydBModel {
+            lambda,
+            eta_p,
+            eta_s: 0.001,
+        };
+        let fene = FenePModel {
+            lambda,
+            eta_p,
+            eta_s: 0.001,
+            b: 100.0,
+        };
+        let giesekus = GiesekusModel {
+            lambda,
+            alpha: 0.2,
+            eta_p,
+            eta_s: 0.001,
+        };
+        for (name, rate) in [
+            ("Oldroyd-B", oldroyd.stress_rate(&tau, &l)),
+            ("FENE-P", fene.stress_rate(&tau, &l)),
+            ("Giesekus", giesekus.stress_rate(&tau, &l)),
+        ] {
+            assert!(
+                (rate[0][1] - expected).abs() < 1e-12 && (rate[1][0] - expected).abs() < 1e-12,
+                "{name}: dτ_xy/dt = {} but η_p γ̇ / λ = {expected}",
+                rate[0][1]
+            );
+            for (i, row) in rate.iter().enumerate() {
+                for (j, &val) in row.iter().enumerate() {
+                    if (i, j) != (0, 1) && (i, j) != (1, 0) {
+                        assert!(val.abs() < 1e-12, "{name}: rate[{i}][{j}] = {val}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn oldroyd_b_steady_simple_shear_matches_viscometric_functions() {
+        // Steady simple shear: τ_xy = η_p γ̇, N1 = τ_xx - τ_yy = 2 η_p λ γ̇², N2 = 0.
+        for (lambda, eta_p, gamma_dot) in [(0.1, 0.01, 1.0), (0.5, 0.02, 2.0)] {
+            let model = OldroydBModel {
+                lambda,
+                eta_p,
+                eta_s: 0.001,
+            };
+            let l = simple_vel_grad(gamma_dot);
+            let dt = lambda / 1000.0;
+            let steps = 20_000; // t = 20 λ
+            let tau = integrate_from_rest(|t| model.stress_rate(t, &l), dt, steps);
+            let tau_xy_expected = eta_p * gamma_dot;
+            let n1_expected = 2.0 * eta_p * lambda * gamma_dot * gamma_dot;
+            let n1 = tau[0][0] - tau[1][1];
+            assert!(
+                (tau[0][1] - tau_xy_expected).abs() < 0.01 * tau_xy_expected,
+                "λ={lambda}: τ_xy = {} expected {tau_xy_expected}",
+                tau[0][1]
+            );
+            assert!(
+                (n1 - n1_expected).abs() < 0.01 * n1_expected,
+                "λ={lambda}: N1 = {n1} expected {n1_expected}"
+            );
+            let n2 = tau[1][1] - tau[2][2];
+            assert!(n2.abs() < 1e-12, "N2 must vanish for Oldroyd-B, got {n2}");
+        }
+    }
+
+    #[test]
+    fn fene_p_with_huge_extensibility_matches_oldroyd_b() {
+        let lambda = 0.2;
+        let eta_p = 0.03;
+        let oldroyd = OldroydBModel {
+            lambda,
+            eta_p,
+            eta_s: 0.001,
+        };
+        let fene = FenePModel {
+            lambda,
+            eta_p,
+            eta_s: 0.001,
+            b: 1.0e12,
+        };
+        let tau = [[0.4, 0.15, 0.0], [0.15, 0.2, 0.0], [0.0, 0.0, 0.1]];
+        let l = simple_vel_grad(3.0);
+        let rate_o = oldroyd.stress_rate(&tau, &l);
+        let rate_f = fene.stress_rate(&tau, &l);
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (rate_o[i][j] - rate_f[i][j]).abs() < 1e-9 * (1.0 + rate_o[i][j].abs()),
+                    "FENE-P(b→∞) != Oldroyd-B at [{i}][{j}]: {} vs {}",
+                    rate_f[i][j],
+                    rate_o[i][j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn giesekus_steady_shear_stress_is_shear_thinning() {
+        let lambda = 0.1;
+        let eta_p = 0.01;
+        let model = GiesekusModel {
+            lambda,
+            alpha: 0.2,
+            eta_p,
+            eta_s: 0.001,
+        };
+        let viscosity_at = |gamma_dot: f64| {
+            let l = simple_vel_grad(gamma_dot);
+            let tau = integrate_from_rest(|t| model.stress_rate(t, &l), 1.0e-4, 30_000);
+            tau[0][1] / gamma_dot
+        };
+        let eta_low = viscosity_at(0.1);
+        let eta_high = viscosity_at(50.0);
+        assert!(
+            (eta_low - eta_p).abs() < 0.02 * eta_p,
+            "zero-shear viscosity should be η_p, got {eta_low}"
+        );
+        assert!(
+            eta_high < 0.5 * eta_p,
+            "Giesekus must shear-thin: η(50/s) = {eta_high}, η_p = {eta_p}"
+        );
+    }
+
+    /// Steady uniaxial-extension Trouton ratio of an Oldroyd-B fluid.
+    fn oldroyd_b_trouton_steady(lambda: f64, strain_rate: f64) -> f64 {
+        let eta_p = 0.01;
+        let eta_s = 0.001;
+        let wi = lambda * strain_rate;
+        let eta_e = eta_p * (2.0 / (1.0 - 2.0 * wi) + 1.0 / (1.0 + wi)) + 3.0 * eta_s;
+        eta_e / (3.0 * (eta_p + eta_s))
+    }
+
+    #[test]
+    fn extensional_flow_trouton_ratio_tends_to_one_at_low_weissenberg() {
+        let results = viscoelastic_extensional_flow_test(0.1, 0.01, 2.0, 1.0e-3);
+        let (_, trouton) = *results.last().expect("non-empty history");
+        assert!(
+            (trouton - 1.0).abs() < 0.02,
+            "Trouton ratio at Wi = 1e-3 must be ≈ 1, got {trouton}"
+        );
+        let analytic = oldroyd_b_trouton_steady(0.1, 0.01);
+        assert!(
+            (trouton - analytic).abs() < 1e-6,
+            "Trouton {trouton} vs steady-state Oldroyd-B value {analytic}"
+        );
+    }
+
+    #[test]
+    fn extensional_flow_trouton_matches_steady_state_at_moderate_weissenberg() {
+        // Wi = λ ε̇ = 0.2: Trouton = (η_p [2/(1-2Wi) + 1/(1+Wi)] + 3 η_s) / (3 η_total).
+        let lambda = 0.1;
+        let strain_rate = 2.0;
+        let results = viscoelastic_extensional_flow_test(lambda, strain_rate, 3.0, 1.0e-3);
+        let (_, trouton) = *results.last().expect("non-empty history");
+        let analytic = oldroyd_b_trouton_steady(lambda, strain_rate);
+        assert!(analytic > 1.3 && analytic < 1.4, "analytic = {analytic}");
+        assert!(
+            (trouton - analytic).abs() < 1e-4 * analytic,
+            "Trouton {trouton} vs steady-state Oldroyd-B value {analytic}"
+        );
     }
 }

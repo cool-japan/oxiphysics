@@ -7,6 +7,10 @@ use oxiphysics_core::math::Real;
 
 use crate::constraint::SoftConstraint;
 use crate::particle::{SoftBody, SoftParticle};
+use crate::{Error, Result};
+
+#[cfg(test)]
+mod lambda_reset_tests;
 
 // ---------------------------------------------------------------------------
 // Constraint kind enum
@@ -102,7 +106,8 @@ pub enum SleepState {
 /// The solver performs the following pipeline per call to [`XpbdSolver::solve`]:
 ///
 /// 1. Predict positions using semi-implicit Euler integration.
-/// 2. For each sub-step, project all constraints.
+/// 2. For each sub-step, reset every constraint's Lagrange multiplier
+///    ([`SoftConstraint::reset_lambda`]) and project all constraints.
 /// 3. Update velocities from corrected positions.
 /// 4. Apply velocity damping.
 #[derive(Debug, Clone)]
@@ -228,6 +233,10 @@ impl XpbdSolver {
             }
 
             // 2. Project constraints (multiple iterations per sub-step).
+            //    XPBD Lagrange multipliers restart from zero in every sub-step.
+            for c in constraints.iter_mut() {
+                c.reset_lambda();
+            }
             for _iter in 0..self.num_iterations {
                 for c in constraints.iter_mut() {
                     c.project(&mut body.particles, dt_sub);
@@ -256,7 +265,10 @@ impl XpbdSolver {
     /// Integrate particle positions forward by `dt` without constraint projection.
     ///
     /// Useful when you want to call the integration and projection phases
-    /// separately (e.g. from a higher-level PBD loop).
+    /// separately (e.g. from a higher-level PBD loop). When you project the
+    /// constraints yourself, call [`SoftConstraint::reset_lambda`] on every
+    /// constraint once per sub-step, before its first projection, as
+    /// [`XpbdSolver::solve`] does.
     pub fn integrate_positions(&self, body: &mut SoftBody, dt: Real) {
         for p in &mut body.particles {
             if p.is_static() {
@@ -436,7 +448,11 @@ pub fn solve_with_ordering(
             p.position += p.velocity * dt_sub;
         }
 
-        // 2. Project constraints with ordering
+        // 2. Project constraints with ordering.
+        //    XPBD Lagrange multipliers restart from zero in every sub-step.
+        for c in constraints.iter_mut() {
+            c.reset_lambda();
+        }
         for iter in 0..solver.num_iterations {
             match ordering {
                 ConstraintOrdering::Sequential => {
@@ -545,11 +561,19 @@ impl WarmstartCache {
 ///
 /// This is essentially what the standard XPBD loop does, but packaged
 /// as a separate utility for clarity and testability.
+///
+/// Optionally every sweep over the constraints is over-relaxed (see
+/// [`GaussSeidelSolver::omega`] and [`GaussSeidelSolver::solve`]).
 #[derive(Debug, Clone)]
 pub struct GaussSeidelSolver {
     /// Number of iterations.
     pub iterations: usize,
-    /// Successive over-relaxation factor (1.0 = standard GS, >1 = SOR).
+    /// Successive over-relaxation factor applied to the displacement of every
+    /// sweep (1.0 = standard Gauss-Seidel, > 1 = over-relaxation, < 1 =
+    /// under-relaxation).
+    ///
+    /// The relaxed iteration only converges for `0 < omega < 2`;
+    /// [`GaussSeidelSolver::try_with_sor`] enforces that range.
     pub omega: Real,
 }
 
@@ -563,27 +587,68 @@ impl GaussSeidelSolver {
     }
 
     /// Create with SOR factor.
+    ///
+    /// `omega` is stored as given. A factor outside the open interval
+    /// `(0, 2)` makes the relaxed sweep iteration diverge or stall; use
+    /// [`GaussSeidelSolver::try_with_sor`] to have it validated.
     pub fn with_sor(iterations: usize, omega: Real) -> Self {
         Self { iterations, omega }
     }
 
-    /// Project all constraints `iterations` times.
+    /// Create with a validated SOR factor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameter`] unless `0 < omega < 2`. NaN and
+    /// infinite factors are rejected as well.
+    pub fn try_with_sor(iterations: usize, omega: Real) -> Result<Self> {
+        if omega.is_finite() && omega > 0.0 && omega < 2.0 {
+            Ok(Self { iterations, omega })
+        } else {
+            Err(Error::InvalidParameter(format!(
+                "SOR relaxation factor must satisfy 0 < omega < 2, got {omega}"
+            )))
+        }
+    }
+
+    /// Run `iterations` Gauss-Seidel sweeps over `constraints` for one
+    /// sub-step of length `dt_sub`.
+    ///
+    /// One call is one XPBD sub-step, so every constraint's Lagrange
+    /// multiplier is reset ([`SoftConstraint::reset_lambda`]) before the first
+    /// sweep and then accumulates over the sweeps.
+    ///
+    /// With `omega != 1` each sweep is over-relaxed. Let `x_before` be the
+    /// particle positions at the start of the sweep and `x_after` the
+    /// positions once every constraint has been projected once; the sweep then
+    /// leaves the dynamic particles at
+    /// `x_before + omega * (x_after - x_before)`. Only the displacement
+    /// produced by the constraint projections is scaled; the motion a particle
+    /// already made before the call (inertial prediction, i.e. the distance
+    /// from `prev_position`) is never touched.
     pub fn solve(
         &self,
         particles: &mut [SoftParticle],
         constraints: &mut [Box<dyn SoftConstraint>],
         dt_sub: Real,
     ) {
+        for c in constraints.iter_mut() {
+            c.reset_lambda();
+        }
+        let relax = (self.omega - 1.0).abs() > 1e-10;
+        let mut before = Vec::with_capacity(if relax { particles.len() } else { 0 });
         for _ in 0..self.iterations {
+            if relax {
+                before.clear();
+                before.extend(particles.iter().map(|p| p.position));
+            }
             for c in constraints.iter_mut() {
                 c.project(particles, dt_sub);
             }
-            // Apply SOR if omega != 1
-            if (self.omega - 1.0).abs() > 1e-10 {
-                for p in particles.iter_mut() {
+            if relax {
+                for (p, x_before) in particles.iter_mut().zip(before.iter()) {
                     if !p.is_static() {
-                        let displacement = p.position - p.prev_position;
-                        p.position = p.prev_position + displacement * self.omega;
+                        p.position = x_before + (p.position - x_before) * self.omega;
                     }
                 }
             }

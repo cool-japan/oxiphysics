@@ -20,6 +20,8 @@ pub(super) const CX: [i32; 9] = [0, 1, 0, -1, 0, 1, -1, -1, 1];
 pub(super) const CY: [i32; 9] = [0, 0, 1, 0, -1, 1, 1, -1, -1];
 /// Bounce-back partner directions for D2Q9.
 pub(super) const BB: [usize; 9] = [0, 3, 4, 1, 2, 7, 8, 5, 6];
+/// Specular-reflection partner directions for a wall normal to y: `(c_x, c_y) → (c_x, −c_y)`.
+pub(super) const MIRROR_Y: [usize; 9] = [0, 1, 4, 3, 2, 8, 7, 6, 5];
 /// Von Kármán constant κ for the log-law.
 pub const KAPPA_VK: f64 = 0.41;
 /// Log-law additive constant B.
@@ -28,6 +30,84 @@ pub const B_LL: f64 = 5.2;
 pub const Y_PLUS_TRANSITION: f64 = 11.3;
 /// Log-region upper bound y⁺ (approximate).
 pub const Y_PLUS_LOG_UPPER: f64 = 300.0;
+/// Law of the wall `u⁺(y⁺)` used by this module: the viscous sublayer
+/// `u⁺ = y⁺` below [`Y_PLUS_TRANSITION`] and the log-law
+/// `u⁺ = ln(y⁺)/κ + B` above it.
+///
+/// Returns 0 for `y⁺ ≤ 0`.
+#[inline]
+pub fn law_of_the_wall_u_plus(y_plus: f64) -> f64 {
+    if y_plus <= 0.0 {
+        0.0
+    } else if y_plus < Y_PLUS_TRANSITION {
+        y_plus
+    } else {
+        y_plus.ln() / KAPPA_VK + B_LL
+    }
+}
+/// Friction velocity `u_τ` implied by the law of the wall.
+///
+/// Solves `|u| = u_τ · u⁺(y u_τ / ν)` for `u_τ`, where `u` is the velocity
+/// parallel to the wall measured at the wall distance `y` and `u⁺` is
+/// [`law_of_the_wall_u_plus`].  The wall shear stress follows as
+/// `τ_w = ρ u_τ²`.
+///
+/// In the viscous sublayer the relation is explicit, `u_τ = √(ν |u| / y)`.
+/// Otherwise the log-law branch `g(u_τ) = u_τ (ln(y u_τ/ν)/κ + B) − |u|` is
+/// increasing and convex in `u_τ`, so a Newton iteration with the analytic
+/// derivative converges monotonically once it is to the right of the root; a
+/// bracket `[ν Y⁺_t / y, |u| / 11]` that always contains the root guards every
+/// step (bisection takes over if Newton leaves it).
+///
+/// The two branches of `u⁺` differ by about 0.19 at [`Y_PLUS_TRANSITION`], so
+/// for a narrow window of velocities (`|u|` between 11.1 and 11.3 times
+/// `ν Y⁺_t / y`) both branches have a root; the sublayer root is returned.
+///
+/// Returns 0 for a vanishing or non-finite velocity and for non-positive
+/// `y` or `ν`.
+pub fn wall_friction_velocity(u_tangential: f64, y: f64, nu: f64) -> f64 {
+    let speed = u_tangential.abs();
+    if !(speed.is_finite() && y.is_finite() && nu.is_finite())
+        || speed <= 0.0
+        || y <= 0.0
+        || nu <= 0.0
+    {
+        return 0.0;
+    }
+    let u_tau_viscous = (nu * speed / y).sqrt();
+    if y * u_tau_viscous / nu < Y_PLUS_TRANSITION {
+        return u_tau_viscous;
+    }
+    // Log-law branch.  The sublayer root is invalid here, hence |u| is at least
+    // 11.3² ν / y and the log root lies strictly right of `lo`.
+    let g = |u_tau: f64| u_tau * ((y * u_tau / nu).ln() / KAPPA_VK + B_LL) - speed;
+    let dg = |u_tau: f64| (y * u_tau / nu).ln() / KAPPA_VK + B_LL + 1.0 / KAPPA_VK;
+    let mut lo = Y_PLUS_TRANSITION * nu / y;
+    let mut hi = speed / 11.0;
+    let mut u_tau = u_tau_viscous.clamp(lo, hi);
+    for _ in 0..100 {
+        let value = g(u_tau);
+        if value == 0.0 {
+            return u_tau;
+        }
+        if value < 0.0 {
+            lo = u_tau;
+        } else {
+            hi = u_tau;
+        }
+        let newton = u_tau - value / dg(u_tau);
+        let next = if newton > lo && newton < hi {
+            newton
+        } else {
+            0.5 * (lo + hi)
+        };
+        if (next - u_tau).abs() <= 1e-14 * next {
+            return next;
+        }
+        u_tau = next;
+    }
+    u_tau
+}
 /// Compute the D2Q9 equilibrium distribution.
 ///
 /// `f_eq = w_q * ρ * [1 + 3(e·u) + 9/2(e·u)² - 3/2|u|²]`

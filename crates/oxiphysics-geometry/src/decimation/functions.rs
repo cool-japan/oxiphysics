@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::qem_engine::{CollapsePolicy, QemEngine};
 use super::types::{DecimationMetrics, EdgeFeature, QuadricMatrix, SimpleMesh};
 
 pub(super) fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -292,49 +293,29 @@ pub fn classify_feature_vertices(mesh: &SimpleMesh, threshold_rad: f64) -> Vec<b
 /// (those for which `is_feature[v] == true` will never be the removed vertex).
 ///
 /// Reduces until at most `target_triangles` remain or no more safe collapses
-/// are available.
+/// are available.  An edge whose end points are both feature vertices is never
+/// collapsed; when only one is a feature vertex it survives.  The pass uses the
+/// incremental Garland–Heckbert engine (quadrics merged on collapse, vertex-to-face
+/// adjacency, lazily invalidated edge queue), so it costs `O(F log F)` for a mesh
+/// with `F` triangles, and ties are broken on the vertex pair, so the result is
+/// deterministic.  The mesh is left unchanged when a triangle references a vertex
+/// outside it.
 pub fn simplify_with_features(mesh: &mut SimpleMesh, is_feature: &[bool], target_triangles: usize) {
-    while mesh.triangle_count() > target_triangles {
-        let quadrics = compute_vertex_quadrics(mesh);
-        let mut edge_set: std::collections::HashSet<(usize, usize)> =
-            std::collections::HashSet::new();
-        for &[a, b, c] in &mesh.triangles {
-            edge_set.insert((a.min(b), a.max(b)));
-            edge_set.insert((b.min(c), b.max(c)));
-            edge_set.insert((a.min(c), a.max(c)));
-        }
-        let mut best_cost = f64::MAX;
-        let mut best_v1 = usize::MAX;
-        let mut best_v2 = usize::MAX;
-        let mut best_pos = [0.0f64; 3];
-        for (v1, v2) in &edge_set {
-            let can_remove_v2 = !is_feature.get(*v2).copied().unwrap_or(false);
-            let can_remove_v1 = !is_feature.get(*v1).copied().unwrap_or(false);
-            if !can_remove_v2 && !can_remove_v1 {
-                continue;
-            }
-            let (v_kept, v_rem) = if can_remove_v2 {
-                (*v1, *v2)
-            } else {
-                (*v2, *v1)
-            };
-            let (cost, pos) = edge_collapse_cost(
-                mesh.vertices[v_kept],
-                mesh.vertices[v_rem],
-                &quadrics[v_kept],
-                &quadrics[v_rem],
-            );
-            if cost < best_cost {
-                best_cost = cost;
-                best_v1 = v_kept;
-                best_v2 = v_rem;
-                best_pos = pos;
-            }
-        }
-        if best_v1 == usize::MAX {
+    let flags: Vec<bool> = (0..mesh.vertex_count())
+        .map(|v| is_feature.get(v).copied().unwrap_or(false))
+        .collect();
+    let Some(mut engine) = QemEngine::new(mesh, CollapsePolicy::KeepFlagged(flags)) else {
+        return;
+    };
+    let mut collapsed = false;
+    while engine.live_triangles() > target_triangles {
+        if engine.collapse_cheapest(f64::INFINITY).is_none() {
             break;
         }
-        collapse_edge(mesh, best_v1, best_v2, best_pos);
+        collapsed = true;
+    }
+    if collapsed {
+        engine.write_back(mesh);
     }
 }
 /// Compute the Hausdorff-like error between two meshes (approximate).

@@ -32,6 +32,9 @@ pub mod sdftwist_traits;
 pub mod sdfunion_traits;
 pub mod types;
 
+#[cfg(test)]
+mod isosurface_tests;
+
 // Re-export all types
 pub use functions::*;
 pub use types::*;

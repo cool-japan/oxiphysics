@@ -313,19 +313,32 @@ impl SpatialInertia {
 
 /// Spatial coordinate transform (Plücker transform) between two frames.
 ///
-/// Transforms spatial vectors from one coordinate frame to another using the
-/// Plücker coordinate representation:
+/// A `SpatialTransform` stores the **pose** of a child frame `C` relative to a
+/// parent frame `P`:
+///
+/// - `rot` (`R`) maps child coordinates to parent coordinates
+///   (`x_P = R · x_C + r`),
+/// - `trans` (`r`) is the child origin expressed in parent coordinates.
+///
+/// The corresponding Plücker *motion* transform from parent to child
+/// coordinates (`C X_P` in Featherstone's notation) uses `E = Rᵀ`:
 ///
 /// ```text
-/// X * v_motion = [ R·ω ;  R·(v - r×ω) ]
-/// X^T * f_force = [ R^T·(n - r×f) ;  R^T·f ]    (force transform)
+/// C X_P · [ω; v] = [ Rᵀ·ω ;  Rᵀ·(v − r×ω) ]
 /// ```
 ///
-/// where `R` is the rotation matrix and `r` is the translation from the
-/// parent frame origin to the child frame origin (expressed in parent frame).
+/// and the matching *force* transform from child to parent coordinates
+/// (`P X_C^* = (C X_P)ᵀ`) is
+///
+/// ```text
+/// (C X_P)ᵀ · [n; f] = [ R·n + r×(R·f) ;  R·f ]
+/// ```
+///
+/// Composition ([`SpatialTransform::compose`]) chains poses, so
+/// `world_pose_of_child = world_pose_of_parent.compose(&parent_pose_of_child)`.
 #[derive(Debug, Clone, Copy)]
 pub struct SpatialTransform {
-    /// Rotation matrix from child to parent (row-major, R\[i\]\[j\]).
+    /// Rotation matrix from child to parent coordinates (row-major, R\[i\]\[j\]).
     pub rot: [[f64; 3]; 3],
     /// Translation from parent origin to child origin, in parent coordinates \[m\].
     pub trans: [f64; 3],
@@ -343,49 +356,28 @@ impl SpatialTransform {
         Self { rot, trans }
     }
 
-    /// Apply Plücker motion transform: `X * v_motion`.
+    /// Apply the Plücker motion transform `C X_P`: express a parent-frame
+    /// motion vector in child coordinates.
     ///
-    /// `v'_ang = R · ω`
-    /// `v'_lin = R · (v_lin − r × ω)`
+    /// `ω' = Rᵀ · ω`
+    /// `v' = Rᵀ · (v − r × ω)`
     pub fn apply_velocity(&self, v: &SpatialVec) -> SpatialVec {
-        let r_omega = mat3_vec(self.rot, v.angular);
+        let rt = mat3_transpose(self.rot);
+        let omega_child = mat3_vec(rt, v.angular);
         let r_cross_omega = cross3(self.trans, v.angular);
         let v_minus = sub3(v.linear, r_cross_omega);
-        let r_v_minus = mat3_vec(self.rot, v_minus);
-        SpatialVec::new(r_omega, r_v_minus)
+        let v_child = mat3_vec(rt, v_minus);
+        SpatialVec::new(omega_child, v_child)
     }
 
-    /// Apply force transform: `X^{−T} * f = X^* · f` (co-vector transform).
+    /// Apply the force transform `(C X_P)ᵀ = P X_C^*`: express a child-frame
+    /// force vector in parent coordinates (used by the inward RNEA/ABA passes).
     ///
-    /// For a force vector `f = [n; f_lin]`:
-    ///
-    /// `f'_ang = R · n + (R · r) × (R · f_lin)`
-    /// `f'_lin = R · f_lin`
-    ///
-    /// Equivalently (same as transpose of inverse of motion transform):
-    ///
-    /// `n' = R · n + r × R · f_lin`  (in parent frame)
-    /// `f' = R · f_lin`
-    ///
-    /// Wait — the correct Featherstone force transform for X^T is:
-    ///
-    /// `[n']   [  R    0 ] [n ]   [   R·n          ]`
-    /// `[f'] = [ -r×R  R ] [f ] = [ -r × (R·n) + R·f ]`
-    ///
-    /// But `X^T` applied to a *covector* (force) from child to parent is:
-    ///
-    /// `n' = R^T · n − (R^T · r) × (R^T · f)`
-    ///
-    /// The direction depends on convention. Here we implement the transform that
-    /// carries a force **from child frame to parent frame**, which matches the
-    /// inward pass of RNEA:
-    ///
-    /// `n'_parent = R^T · n_child + r × R^T · f_child`
-    /// `f'_parent = R^T · f_child`
+    /// `f' = R · f`
+    /// `n' = R · n + r × (R · f)`
     pub fn apply_force(&self, f: &SpatialVec) -> SpatialVec {
-        let rt = mat3_transpose(self.rot);
-        let f_parent = mat3_vec(rt, f.linear);
-        let n_rotated = mat3_vec(rt, f.angular);
+        let f_parent = mat3_vec(self.rot, f.linear);
+        let n_rotated = mat3_vec(self.rot, f.angular);
         let r_cross_f = cross3(self.trans, f_parent);
         let n_parent = add3(n_rotated, r_cross_f);
         SpatialVec::new(n_parent, f_parent)
@@ -460,29 +452,30 @@ impl SpatialTransform {
         }
     }
 
-    /// Apply the inertia transform: `X * I * X^T` (transform inertia to new frame).
+    /// Express a child-frame spatial inertia in parent coordinates.
     ///
-    /// Used to express body inertia in the parent frame.
+    /// The mass is unchanged, the COM becomes `c' = R·c + r`, and the
+    /// rotational inertia about the parent origin follows from the
+    /// parallel-axis theorem applied about the COM:
+    ///
+    /// ```text
+    /// I'_O = R·I_O·Rᵀ + m·[ (|r|² + 2 r·c')·E − r rᵀ − r c'ᵀ − c' rᵀ ]
+    /// ```
+    ///
+    /// This equals `(C X_P)ᵀ · I · C X_P` (see
+    /// [`SpatialInertia6x6::transform_to_parent`]).
     pub fn transform_inertia(&self, inertia: &SpatialInertia) -> SpatialInertia {
-        // New mass is unchanged.
-        // New com in parent frame: R · com_child + trans
-        let new_com = add3(mat3_vec(self.rot, inertia.com), self.trans);
-        // New inertia about parent origin (apply parallel-axis via frame change).
-        // I'_origin_parent = R · I_origin_child · R^T + parallel_axis_correction_for_translation
-        let rt = mat3_transpose(self.rot);
-        let ri = mat3_mul(self.rot, inertia.rot_inertia_origin);
-        let rirt = mat3_mul(ri, rt);
-        // Now add parallel-axis for the translation from child_origin → parent_origin
-        // I'_parent = R·I_child_origin·R^T + m*(|trans|^2 I - trans ⊗ trans)
-        // where trans is the vector from parent origin to child origin (self.trans)
         let m = inertia.mass;
+        let c_rot = mat3_vec(self.rot, inertia.com);
+        let new_com = add3(c_rot, self.trans);
+        let rt = mat3_transpose(self.rot);
+        let mut io = mat3_mul(mat3_mul(self.rot, inertia.rot_inertia_origin), rt);
         let t = self.trans;
-        let tt = t[0] * t[0] + t[1] * t[1] + t[2] * t[2];
-        let mut io = rirt;
-        for i in 0..3 {
-            for j in 0..3 {
+        let diag = dot3(t, t) + 2.0 * dot3(t, c_rot);
+        for (i, io_row) in io.iter_mut().enumerate() {
+            for (j, io_ij) in io_row.iter_mut().enumerate() {
                 let delta = if i == j { 1.0 } else { 0.0 };
-                io[i][j] += m * (tt * delta - t[i] * t[j]);
+                *io_ij += m * (diag * delta - t[i] * t[j] - t[i] * c_rot[j] - c_rot[i] * t[j]);
             }
         }
         SpatialInertia {
@@ -587,46 +580,35 @@ impl SpatialInertia6x6 {
         Self { data: d }
     }
 
-    /// Transform inertia from child frame to parent frame using the motion transform `X`.
+    /// Express a child-frame articulated/spatial inertia in parent coordinates.
     ///
-    /// Given `X` as the **parent-to-child** motion transform (i.e., `v_child = X * v_parent`),
-    /// this computes the child's inertia expressed in the parent frame:
-    ///
-    /// ```text
-    /// I_parent = X^T * I_child * X
-    /// ```
-    ///
-    /// where `X` is the 6×6 Plücker motion matrix:
+    /// `x` is the pose of the child frame relative to the parent (see
+    /// [`SpatialTransform`]). With the parent→child motion transform
     ///
     /// ```text
-    /// X = [  R      0  ]
-    ///     [ -R·r×   R  ]
+    /// X = C X_P = [  Rᵀ       0  ]
+    ///             [ −Rᵀ·r×    Rᵀ ]
     /// ```
     ///
-    /// and `r` is the translation from parent origin to child origin in parent coordinates.
+    /// the inertia seen from the parent is `I_parent = Xᵀ · I_child · X`.
     pub fn transform_to_parent(&self, x: &SpatialTransform) -> Self {
-        // Build 6×6 Plücker motion transform X (parent→child)
-        // v_child = X * v_parent: [R·ω_p; R·(v_p - r×ω_p)]
-        let r = x.rot;
+        let e = mat3_transpose(x.rot); // E = Rᵀ (parent → child rotation)
         let rx = skew(x.trans); // r× = skew(r)
 
-        // neg_r_rx = -R · r× (lower-left block of X)
-        let mut neg_r_rx = [[0.0f64; 3]; 3];
+        // neg_e_rx = −E · r× (lower-left block of X)
+        let mut neg_e_rx = [[0.0f64; 3]; 3];
         for i in 0..3 {
             for j in 0..3 {
-                neg_r_rx[i][j] = -(r[i][0] * rx[0][j] + r[i][1] * rx[1][j] + r[i][2] * rx[2][j]);
+                neg_e_rx[i][j] = -(e[i][0] * rx[0][j] + e[i][1] * rx[1][j] + e[i][2] * rx[2][j]);
             }
         }
 
-        // x6[i][j] = X[i][j]
-        // [R  0 ]  → top-left (0..3, 0..3) = R, top-right (0..3, 3..6) = 0
-        // [-Rrx R] → bottom-left (3..6, 0..3) = -R·r×, bottom-right (3..6, 3..6) = R
         let mut x6 = [[0.0f64; 6]; 6];
         for i in 0..3 {
             for j in 0..3 {
-                x6[i][j] = r[i][j];
-                x6[i + 3][j] = neg_r_rx[i][j];
-                x6[i + 3][j + 3] = r[i][j];
+                x6[i][j] = e[i][j];
+                x6[i + 3][j] = neg_e_rx[i][j];
+                x6[i + 3][j + 3] = e[i][j];
             }
         }
 
@@ -865,7 +847,7 @@ mod transform_tests2 {
         let si_child = SpatialInertia::from_com(m, com_child, [[0.0_f64; 3]; 3]);
         let i6_child = SpatialInertia6x6::from_packed(&si_child);
 
-        // Build the parent-to-child transform: X_T(translate r) then X_J(rotate angle)
+        // Pose of the child in the parent: X_T (translate r) then X_J (rotate angle)
         let x_t = SpatialTransform::from_translation(r);
         let x_j = SpatialTransform::from_axis_angle([0.0, 0.0, 1.0], angle);
         let x_full = x_t.compose(&x_j);
@@ -873,22 +855,9 @@ mod transform_tests2 {
         // Transform the inertia to parent frame
         let i6_parent = i6_child.transform_to_parent(&x_full);
 
-        // Expected: com in parent frame
-        // Child origin is at r=[1,0,0] in parent frame.
-        // com_child=[0.4,0,0] in child frame, rotated by R_j2, translated by r.
-        // com_parent = R_j2^T * com_child + r  -- wait, which direction?
-        //
-        // Actually: com_parent = r + R_j2^T * com_child
-        //  No! The transform is parent-to-child, so:
-        //  v_child = R * v_parent + ...
-        //  To go from child frame to parent frame:
-        //  v_parent = R^T * v_child (for rotation)
-        //
-        // A point at com_child in child frame is at com_parent = r + R^T * com_child
-        // where R = x_full.rot (parent→child rotation).
-        let r_mat = x_full.rot;
-        let r_t = mat3_transpose(r_mat);
-        let com_parent = add3(r, mat3_vec(r_t, com_child));
+        // `x_full` is the pose of the child frame in the parent frame, so a
+        // child-frame point maps to the parent frame as `r + R·com_child`.
+        let com_parent = add3(x_full.trans, mat3_vec(x_full.rot, com_child));
 
         // Expected inertia: mass at com_parent in parent frame (with zero I_com)
         let si_expected = SpatialInertia::from_com(m, com_parent, [[0.0_f64; 3]; 3]);
@@ -905,6 +874,117 @@ mod transform_tests2 {
                     i6_expected.data[i][j]
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod convention_tests {
+    use super::*;
+
+    fn sample_pose() -> SpatialTransform {
+        SpatialTransform::from_translation([0.4, -0.7, 1.1])
+            .compose(&SpatialTransform::from_axis_angle([0.3, -0.5, 0.8], 1.234))
+    }
+
+    fn i6_close(a: &SpatialInertia6x6, b: &SpatialInertia6x6, eps: f64) {
+        for i in 0..6 {
+            for j in 0..6 {
+                assert!(
+                    (a.data[i][j] - b.data[i][j]).abs() < eps,
+                    "[{i}][{j}]: {:.12} vs {:.12}",
+                    a.data[i][j],
+                    b.data[i][j]
+                );
+            }
+        }
+    }
+
+    /// Power is frame-invariant: `(X·v)·f_child == v·(Xᵀ·f_child)`.
+    #[test]
+    fn test_motion_and_force_transforms_are_dual() {
+        let x = sample_pose();
+        let v_parent = SpatialVec::new([0.3, -1.2, 0.5], [2.0, 0.1, -0.7]);
+        let f_child = SpatialVec::new([-0.4, 0.9, 1.3], [0.6, -2.2, 0.8]);
+        let lhs = x.apply_velocity(&v_parent).dot(&f_child);
+        let rhs = v_parent.dot(&x.apply_force(&f_child));
+        assert!((lhs - rhs).abs() < 1e-12, "power mismatch {lhs} vs {rhs}");
+    }
+
+    /// `apply_velocity` re-expresses a rigid motion: the child-frame linear
+    /// part is the velocity of the child origin, in child coordinates.
+    #[test]
+    fn test_apply_velocity_matches_point_velocity() {
+        let x = sample_pose();
+        let omega = [0.2, -0.4, 0.9];
+        let v_o = [1.0, 0.5, -0.3]; // velocity of the parent origin (parent coords)
+        let v_child = x.apply_velocity(&SpatialVec::new(omega, v_o));
+        // Child origin velocity in parent coords: v_o + ω × r.
+        let v_point = add3(v_o, cross3(omega, x.trans));
+        let rt = mat3_transpose(x.rot);
+        let expected_lin = mat3_vec(rt, v_point);
+        let expected_ang = mat3_vec(rt, omega);
+        for k in 0..3 {
+            assert!((v_child.linear[k] - expected_lin[k]).abs() < 1e-12);
+            assert!((v_child.angular[k] - expected_ang[k]).abs() < 1e-12);
+        }
+    }
+
+    /// `apply_velocity` composes like the poses it is built from.
+    #[test]
+    fn test_apply_velocity_respects_composition() {
+        let a = sample_pose();
+        let b = SpatialTransform::from_translation([-0.2, 0.3, 0.5])
+            .compose(&SpatialTransform::from_axis_angle([1.0, 0.2, 0.0], -0.6));
+        let v = SpatialVec::new([0.7, 0.1, -0.3], [0.2, -0.9, 1.4]);
+        let chained = b.apply_velocity(&a.apply_velocity(&v));
+        let direct = a.compose(&b).apply_velocity(&v);
+        for k in 0..3 {
+            assert!((chained.angular[k] - direct.angular[k]).abs() < 1e-12);
+            assert!((chained.linear[k] - direct.linear[k]).abs() < 1e-12);
+        }
+    }
+
+    /// Full (non-diagonal) inertia: `transform_to_parent` equals the explicit
+    /// parent-frame inertia built from the rotated COM and `R·I_com·Rᵀ`, and
+    /// `transform_inertia` (packed form) agrees with both.
+    #[test]
+    fn test_transform_to_parent_rotates_full_inertia() {
+        let x = sample_pose();
+        let m = 1.8;
+        let com = [0.15, -0.25, 0.4];
+        let i_com = [[0.21, 0.03, -0.05], [0.03, 0.17, 0.02], [-0.05, 0.02, 0.11]];
+        let si = SpatialInertia::from_com(m, com, i_com);
+
+        let got = SpatialInertia6x6::from_packed(&si).transform_to_parent(&x);
+
+        let com_parent = add3(x.trans, mat3_vec(x.rot, com));
+        let i_com_parent = mat3_mul(mat3_mul(x.rot, i_com), mat3_transpose(x.rot));
+        let expected =
+            SpatialInertia6x6::from_packed(&SpatialInertia::from_com(m, com_parent, i_com_parent));
+        i6_close(&got, &expected, 1e-12);
+
+        let packed = SpatialInertia6x6::from_packed(&x.transform_inertia(&si));
+        i6_close(&packed, &expected, 1e-12);
+    }
+
+    /// `I·v` transforms consistently: `Xᵀ·(I_child·(X·v)) == I_parent·v`.
+    #[test]
+    fn test_inertia_transform_consistent_with_motion_and_force() {
+        let x = sample_pose();
+        let si = SpatialInertia::from_com(
+            2.3,
+            [0.3, 0.1, -0.2],
+            [[0.3, 0.01, 0.0], [0.01, 0.2, -0.03], [0.0, -0.03, 0.25]],
+        );
+        let i_child = SpatialInertia6x6::from_packed(&si);
+        let i_parent = i_child.transform_to_parent(&x);
+        let v = SpatialVec::new([0.4, -0.8, 0.3], [-1.1, 0.6, 0.9]);
+        let via_child = x.apply_force(&i_child.mul_vec6(&x.apply_velocity(&v)));
+        let direct = i_parent.mul_vec6(&v);
+        for k in 0..3 {
+            assert!((via_child.angular[k] - direct.angular[k]).abs() < 1e-12);
+            assert!((via_child.linear[k] - direct.linear[k]).abs() < 1e-12);
         }
     }
 }

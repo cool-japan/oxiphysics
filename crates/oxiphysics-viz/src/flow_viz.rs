@@ -632,17 +632,52 @@ pub fn lic_2d(u: &[f64], v: &[f64], nx: usize, ny: usize, n_steps: usize) -> Vec
 // Seed point generation
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Draw a uniform sample from the interval spanned by `a` and `b` (in either
+/// order) without ever panicking.
+///
+/// `rand` rejects empty and non-finite ranges, which a flat axis (`a == b`, as
+/// in a 2-D slab) or a bad bound would otherwise produce.  A degenerate
+/// interval yields that single value, an interval whose span overflows `f64`
+/// yields its midpoint, and non-finite bounds yield `0.0`.
+fn sample_interval<R: rand::Rng + ?Sized>(rng: &mut R, a: f64, b: f64) -> f64 {
+    if !a.is_finite() || !b.is_finite() {
+        return 0.0;
+    }
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    if hi > lo && (hi - lo).is_finite() {
+        rng.random_range(lo..hi)
+    } else {
+        0.5 * lo + 0.5 * hi
+    }
+}
+
 /// Generate `n` uniformly distributed seed points within an axis-aligned box.
 ///
-/// `bounds` is `\[\[x_min, x_max\\], \[y_min, y_max\], \[z_min, z_max\]]`.
+/// `bounds` is `[[x_min, x_max], [y_min, y_max], [z_min, z_max]]`.  A flat
+/// axis (`min == max`, e.g. a 2-D slab) puts every seed on that coordinate and
+/// reversed bounds are swapped.  Randomness comes from the thread-local
+/// generator; use [`seeding_uniform_with_rng`] for reproducible seeds.
 pub fn seeding_uniform(bounds: [[f64; 2]; 3], n: usize) -> Vec<[f64; 3]> {
     let mut rng = rand::rng();
+    seeding_uniform_with_rng(bounds, n, &mut rng)
+}
+
+/// Generate `n` uniformly distributed seed points within an axis-aligned box,
+/// drawing randomness from `rng`.
+///
+/// Identical to [`seeding_uniform`] except for the generator, so seeding e.g. a
+/// `StdRng` makes the seed points reproducible.
+pub fn seeding_uniform_with_rng<R: rand::Rng + ?Sized>(
+    bounds: [[f64; 2]; 3],
+    n: usize,
+    rng: &mut R,
+) -> Vec<[f64; 3]> {
     (0..n)
         .map(|_| {
             [
-                rng.random_range(bounds[0][0]..bounds[0][1]),
-                rng.random_range(bounds[1][0]..bounds[1][1]),
-                rng.random_range(bounds[2][0]..bounds[2][1]),
+                sample_interval(rng, bounds[0][0], bounds[0][1]),
+                sample_interval(rng, bounds[1][0], bounds[1][1]),
+                sample_interval(rng, bounds[2][0], bounds[2][1]),
             ]
         })
         .collect()
@@ -1358,6 +1393,54 @@ mod tests {
     fn test_seeding_uniform_zero_seeds() {
         let seeds = seeding_uniform([[0.0, 1.0]; 3], 0);
         assert!(seeds.is_empty());
+    }
+
+    #[test]
+    fn test_seeding_uniform_flat_axis_does_not_panic() {
+        // A 2-D slab: z-bounds [0, 0] used to be an empty range and panic.
+        let seeds = seeding_uniform([[0.0, 2.0], [-1.0, 1.0], [0.0, 0.0]], 64);
+        assert_eq!(seeds.len(), 64);
+        for p in &seeds {
+            assert_eq!(p[2], 0.0);
+            assert!((0.0..=2.0).contains(&p[0]) && (-1.0..=1.0).contains(&p[1]));
+        }
+        // Every axis flat: all seeds coincide with the point.
+        for p in seeding_uniform([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], 5) {
+            assert_eq!(p, [1.0, 2.0, 3.0]);
+        }
+    }
+
+    #[test]
+    fn test_seeding_uniform_reversed_and_non_finite_bounds_do_not_panic() {
+        let seeds = seeding_uniform([[3.0, 1.0], [f64::NAN, 1.0], [0.0, f64::INFINITY]], 50);
+        assert_eq!(seeds.len(), 50);
+        for p in &seeds {
+            assert!(
+                (1.0..=3.0).contains(&p[0]),
+                "reversed bounds are swapped: {p:?}"
+            );
+            assert_eq!(p[1], 0.0, "non-finite bound gives 0 on that axis");
+            assert_eq!(p[2], 0.0, "non-finite bound gives 0 on that axis");
+        }
+        // A span that overflows f64 falls back to the midpoint.
+        let wide = seeding_uniform([[-1.7e308, 1.7e308], [0.0, 1.0], [0.0, 1.0]], 3);
+        assert!(wide.iter().all(|p| p[0] == 0.0));
+    }
+
+    #[test]
+    fn test_seeding_uniform_with_rng_is_reproducible() {
+        use rand::SeedableRng;
+        let bounds = [[0.0, 1.0], [-2.0, 2.0], [5.0, 6.0]];
+        let a = seeding_uniform_with_rng(bounds, 32, &mut rand::rngs::StdRng::seed_from_u64(42));
+        let b = seeding_uniform_with_rng(bounds, 32, &mut rand::rngs::StdRng::seed_from_u64(42));
+        let c = seeding_uniform_with_rng(bounds, 32, &mut rand::rngs::StdRng::seed_from_u64(43));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        for p in &a {
+            assert!((0.0..1.0).contains(&p[0]));
+            assert!((-2.0..2.0).contains(&p[1]));
+            assert!((5.0..6.0).contains(&p[2]));
+        }
     }
 
     #[test]

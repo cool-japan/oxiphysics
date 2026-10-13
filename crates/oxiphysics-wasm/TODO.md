@@ -148,3 +148,105 @@ Focus: ship a small, fast, well-typed npm artifact; multi-worker scaling; local-
 | WebGPU compute in browser | oxiphysics-gpu SPH pipeline (gpu v0.2.0) |
 | Streaming scene loading | oxiarc-zstd snapshot containers (io v0.2.0) |
 | npm publish / demos artifact | existing `npm-publish.yml` only (CI policy) |
+
+<!-- AUDIT-2026-10-12 BEGIN -->
+## Audit 2026-10-12 — verified findings (Phase 32 remediation)
+
+Verified: 107 (critical 4, high 21, medium 61, low 21); 26 further raw findings pending second-round verification. IDs refer to the audit ledger; `[x]` = fixed.
+
+### Critical (4)
+- [x] **F5318** (critical, bug, easy/small) `engine/mod.rs:936` — Sphere-sphere contact normal inverted: approaching spheres pass through
+- [x] **F5319** (critical, bug, medium/medium) `engine/mod.rs:1007` — WASM narrowphase: sphere-sphere normal reversed; boxes/capsules never collide
+- [x] **F5368** (critical, panic, easy/small) `profiler_bridge.rs:158` — Profiler uses std::time::Instant, which panics on wasm32-unknown-unknown
+- [x] **F5380** (critical, bug, easy/small) `rope_bridge.rs:201` — Rope Verlet 'damping' amplifies velocity by (1+d) each step
+
+### High (21)
+- [ ] **F5296** (high, fabrication, medium/medium) `constraint_bridge.rs:634` — WasmConstraintSolver::solve is a scalar placeholder; TargetPosition stored as velocity
+- [ ] **F5297** (high, fabrication, hard/large) `constraint_bridge.rs:641` — WasmConstraintSolver::solve fabricated: unit mass, single pass, fake decay
+- [ ] **F5302** (high, bug, medium/small) `engine/constraint.rs:167` — EngineConstraintSolver: wrong bias sign, double inverse mass, no effective mass
+- [x] **F5306** (high, bug, medium/medium) `engine/mod.rs:288` — Handles carry no generation: stale handles silently control reused bodies
+- [x] **F5308** (high, fabrication, medium/medium) `engine/mod.rs:384` — apply_torque is a no-op: torque is accumulated and then discarded
+- [x] **F5309** (high, api, easy/medium) `engine/mod.rs:576` — add_collider, add_dynamic_body and set_fixed_dt accept invalid input silently
+- [x] **F5310** (high, stub, medium/medium) `engine/mod.rs:682` — raycast ignores every non-sphere collider and misses from inside
+- [x] **F5312** (high, bug, easy/small) `engine/mod.rs:735` — WASM step() caps substeps but still advances time by full dt
+- [ ] **F5317** (high, bug, easy/small) `engine/mod.rs:928` — Sphere-sphere contact normal reversed: spheres attract and interpenetrate
+- [x] **F5335** (high, fabrication, medium/medium) `fluid_bridge.rs:441` — WasmSphSimulation::step computes pressure, then applies only gravity
+- [x] **F5339** (high, fabrication, easy/small) `fluid_bridge.rs:774` — LBM set_boundary and set_inlet_velocity are physics no-ops
+- [x] **F5343** (high, panic, easy/small) `io_bridge.rs:212` — export_stl_ascii panics on out-of-range face indices from JS
+- [x] **F5360** (high, panic, easy/small) `navmesh_wasm.rs:46` — WasmNavMeshJs.from_flat accepts out-of-range indices then traps
+- [x] **F5370** (high, panic, easy/small) `profiler_bridge.rs:290` — WASM-exported profiler calls Instant::now, panics on wasm32
+- [ ] **F5397** (high, fabrication, medium/medium) `simulation_api/types_3.rs:281` — WasmWorld stores joints but step() never solves them
+- [ ] **F5398** (high, fabrication, medium/medium) `simulation_api/types_3.rs:316` — WasmWorld stores joints but never enforces them; impulse is fabricated
+- [ ] **F5399** (high, missing-feature, hard/large) `simulation_api/types_3.rs:339` — WasmWorld collides only sphere-vs-plane; boxes, sphere pairs and sensors are mishandled
+- [x] **F5413** (high, panic, easy/small) `web_worker.rs:475` — SharedStateBuffer per-body accessors unchecked: region corruption then trap
+- [x] **F5414** (high, panic, easy/small) `web_worker.rs:519` — SharedStateBuffer writes unchecked: corrupts memory, then panics past max_bodies
+- [x] **F5417** (high, panic, easy/small) `web_worker.rs:908` — WorkerRuntime writes past SharedStateBuffer capacity, corrupting data then panicking
+- [ ] **F5420** (high, bug, easy/trivial) `webgl_bridge.rs:389` — Capsule mesh index buffer references a nonexistent vertex row
+
+### Medium (61)
+- [ ] **F5288** (medium, missing-feature, hard/large) `crates/oxiphysics-wasm/Cargo.toml:24` — WASM crate is a separate mini-engine, described as bindings
+- [ ] **F5291** (medium, bug, easy/small) `analytics_bridge.rs:866` — AnalyticsDashboard ignores max_history/sample_interval: unbounded growth
+- [ ] **F5294** (medium, fabrication, easy/small) `body_query.rs:229` — Body AABB hard-coded to 0.5 m sphere, ignores colliders
+- [ ] **F5295** (medium, bug, medium/small) `character_bridge.rs:326` — move_and_slide_simple ignores toi and removes separating motion
+- [ ] **F5298** (medium, bug, easy/small) `constraint_bridge.rs:690` — Motor TargetPosition is written into motor_target_velocity
+- [ ] **F5299** (medium, fabrication, easy/small) `constraint_bridge.rs:1223` — Ragdoll build() returns handles that refer to nothing
+- [ ] **F5305** (medium, stub, medium/medium) `engine/lbm.rs:162` — WasmLbmSim is inert: no lid/walls/forcing; clones buffer every step
+- [ ] **F5311** (medium, bug, easy/small) `engine/mod.rs:725` — Contacts duplicated per substep; time over-advances; forces only hit substep 1
+- [ ] **F5313** (medium, bug, medium/medium) `engine/mod.rs:764` — Generation counters never checked; stale body handles alias new bodies
+- [ ] **F5314** (medium, bug, medium/small) `engine/mod.rs:865` — Resting bodies never sleep; contacts never wake sleeping bodies
+- [ ] **F5315** (medium, fabrication, medium/medium) `engine/mod.rs:877` — Applied torques discarded; no inertia tensor; impulse-at-point ignores inertia
+- [ ] **F5316** (medium, perf, medium/medium) `engine/mod.rs:895` — Rigid narrowphase all-pairs O(C²); configured broadphase silently dropped
+- [ ] **F5320** (medium, fabrication, easy/small) `engine/mod.rs:1026` — Every contact reported is_new=true; contact_begin fires every frame
+- [ ] **F5321** (medium, fabrication, easy/small) `engine/sph.rs:139` — WasmSphSim has no boundaries; sph-pool demo wall clamp is a stub
+- [ ] **F5322** (medium, perf, medium/medium) `engine/sph.rs:151` — WasmSphSim step is O(n²) all-pairs with per-step allocations
+- [ ] **F5323** (medium, bug, easy/small) `engine/vehicle.rs:190` — Braking at rest drives vehicle backwards; lateral grip absent
+- [ ] **F5324** (medium, fabrication, easy/small) `engine/wasm_engine.rs:139` — Performance metrics fabricated: fps=1/dt, timing fields always zero
+- [ ] **F5332** (medium, bug, easy/small) `events.rs:654` — PhysicsEventEngine emits duplicate CollisionStart; O(C²+B²) diff
+- [ ] **F5333** (medium, perf, medium/medium) `fluid_bridge.rs:37` — compute_sph_densities is O(n²) and takes sqrt before the cutoff
+- [ ] **F5334** (medium, bug, easy/trivial) `fluid_bridge.rs:186` — Wendland C2 kernel: 8x normalisation and nonzero beyond support
+- [ ] **F5336** (medium, bug, medium/medium) `fluid_bridge.rs:725` — D2Q9/MRT LBM configs silently run D3Q19 BGK
+- [ ] **F5337** (medium, api, medium/medium) `fluid_bridge.rs:731` — WasmLbmSimulation::new skips validate(); lattice and collision ignored
+- [ ] **F5340** (medium, bug, easy/small) `fluid_bridge.rs:1399` — Streamline step_size=0 hangs/OOMs; arc length not honoured
+- [ ] **F5344** (medium, api, easy/medium) `js_api/functions.rs:49` — create_engine_from_json silently falls back to Earth on partial JSON
+- [ ] **F5348** (medium, bug, easy/trivial) `material_bridge.rs:423` — Ogden initial shear modulus omits exponents α_i
+- [ ] **F5349** (medium, bug, medium/small) `material_bridge.rs:593` — Brittle damage threshold is a stress; Gurson nucleation is fake
+- [ ] **F5350** (medium, bug, easy/trivial) `material_bridge.rs:664` — Basquin cycles_to_failure returns reversals (2N_f), not cycles
+- [ ] **F5353** (medium, bug, easy/trivial) `material_bridge.rs:1204` — Mie-Grüneisen double-subtracts Hugoniot energy and uses Γ0ρ
+- [ ] **F5354** (medium, bug, easy/small) `material_bridge.rs:1219` — Tillotson EOS compressed branch misplaces η²; expanded branch missing
+- [ ] **F5355** (medium, bug, easy/trivial) `math_helpers/functions.rs:483` — catmull_rom never traverses last segment; n=2 is constant
+- [ ] **F5359** (medium, missing-feature, medium/medium) `navmesh_bridge.rs:392` — funnel_smooth is a centroid chain, not a funnel string-pull
+- [ ] **F5361** (medium, panic, easy/small) `navmesh_wasm.rs:59` — Out-of-range triangle indices from JS panic navmesh queries
+- [ ] **F5364** (medium, perf, easy/small) `particle_system.rs:961` — Particle spawn does O(N) slot scan and alive recount per particle
+- [ ] **F5365** (medium, bug, medium/medium) `particle_system.rs:1002` — Particle config gravity and collision_radius are never used
+- [ ] **F5366** (medium, fabrication, hard/large) `physics_config.rs:247` — Broadphase/solver choices and most SimulationConfig knobs silently ignored
+- [ ] **F5367** (medium, fabrication, medium/medium) `physics_config.rs:453` — WASM solver/CCD/warm-start/broadphase settings are no-op knobs
+- [ ] **F5371** (medium, fabrication, medium/small) `renderer/core.rs:271` — Renderer AABB hint hardcoded radius 0.5; include_velocities ignored
+- [ ] **F5373** (medium, panic, easy/small) `renderer/pipeline.rs:538` — Depth sort comparator non-total on NaN; may panic, recomputes keys
+- [ ] **F5375** (medium, missing-feature, medium/medium) `rollback_bridge.rs:20` — WASM rollback session cannot roll back; peer-input types unused
+- [ ] **F5376** (medium, missing-feature, easy/small) `rollback_bridge.rs:156` — Rollback session cannot roll back; TickNotInBuffer never returned
+- [ ] **F5378** (medium, bug, easy/trivial) `rollback_bridge.rs:415` — check_desync(f64) flags identical states as desynced for ~all hashes
+- [ ] **F5379** (medium, fabrication, medium/small) `rope_bridge.rs:110` — Rope bending_stiffness is public but never used
+- [ ] **F5381** (medium, bug, easy/trivial) `rope_wasm.rs:69` — Rope apply_impulse omits dt, giving Δv = iv/dt
+- [ ] **F5382** (medium, fabrication, medium/small) `sim_controls/controller.rs:71` — SimulationController steps no physics; accumulator unbounded
+- [ ] **F5385** (medium, missing-feature, easy/small) `sim_controls/exporter.rs:172` — Binary export lossy with no decoder; Csv format unimplemented
+- [ ] **F5386** (medium, bug, easy/trivial) `sim_controls/exporter.rs:194` — VTK export has no CELLS/CELL_TYPES or point data
+- [ ] **F5388** (medium, panic, easy/small) `sim_controls/profiler.rs:112` — PhysicsProfiler capacity-0 panic and wrong windowed average
+- [ ] **F5389** (medium, panic, easy/small) `sim_controls/replay.rs:149` — ReplayBuffer capacity-0 panic, O(n) eviction, cursor drift
+- [ ] **F5392** (medium, missing-feature, medium/medium) `simulation_api/types.rs:255` — Scene snapshot documented save/restore but has no restore path
+- [ ] **F5393** (medium, fabrication, medium/small) `simulation_api/types.rs:324` — Rigid-body inertia hardcoded as 0.4·m regardless of collider
+- [ ] **F5394** (medium, bug, easy/small) `simulation_api/types.rs:372` — Forces/torques on sleeping bodies are discarded and never wake them
+- [ ] **F5395** (medium, fabrication, medium/medium) `simulation_api/types.rs:402` — WasmSimulationConfig solver/velocity/damping knobs are ignored
+- [ ] **F5400** (medium, bug, easy/small) `simulation_api/types_3.rs:400` — Sphere-plane response: XZ-only friction, sensors and static bodies pushed
+- [ ] **F5401** (medium, fabrication, easy/small) `simulation_api/types_3.rs:413` — WasmWorld contact events report depth as impulse; friction ignores the normal
+- [ ] **F5402** (medium, missing-feature, medium/medium) `simulation_api/types_3.rs:537` — raycast misses boxes/capsules and rays starting inside spheres
+- [ ] **F5408** (medium, fabrication, medium/medium) `types.rs:785` — Most SimulationConfig and PhysicsConfig knobs are ignored by the engine
+- [ ] **F5409** (medium, fabrication, easy/small) `wasm_bench.rs:104` — Unsourced hardcoded 'Rapier reference' numbers used for speed ratios
+- [ ] **F5411** (medium, fabrication, easy/small) `wasm_bench.rs:539` — wasm32 benchmarks report fabricated throughput of iterations×1e12 steps/s
+- [ ] **F5412** (medium, fabrication, medium/medium) `web_worker.rs:428` — SharedStateBuffer 'spinlock'/SharedArrayBuffer is a plain Vec flag
+- [ ] **F5416** (medium, fabrication, easy/medium) `web_worker.rs:856` — WorkerRuntime 'ballistic' gravity is linear in time; static boxes fall
+- [ ] **F5419** (medium, fabrication, medium/small) `webgl_bridge.rs:179` — WebGL render frame scales/colours are constants, not collider sizes
+
+### Low (21) — tracked in the external ledger
+F5289, F5290, F5300, F5303, F5304, F5307, F5327, F5328, F5329, F5338, F5341, F5346, F5347, F5356, F5369, F5377, F5391, F5396, F5404, F5406, F5407
+
+<!-- AUDIT-2026-10-12 END -->

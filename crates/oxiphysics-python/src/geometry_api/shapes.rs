@@ -3,6 +3,7 @@
 
 //! Primitive shapes and convex hull types.
 
+use oxiphysics::geometry::convex_hull::{ConvexHull3D, gjk_intersect};
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
@@ -65,12 +66,6 @@ pub(super) fn centroid(pts: &[[f64; 3]]) -> [f64; 3] {
         s[2] += p[2];
     }
     [s[0] / n, s[1] / n, s[2] / n]
-}
-
-pub(super) fn bounding_radius(pts: &[[f64; 3]], center: [f64; 3]) -> f64 {
-    pts.iter()
-        .map(|&p| len3(sub3(p, center)))
-        .fold(0.0f64, f64::max)
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +259,40 @@ impl PyShapeWrapper {
 // PyConvexHull
 // ---------------------------------------------------------------------------
 
+/// Reasons a convex hull cannot be built from a point set.
+///
+/// Every variant surfaces in Python as a `ValueError`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConvexHullError {
+    /// Fewer than the four points a tetrahedron needs.
+    #[error("a convex hull needs at least 4 points, got {0}")]
+    TooFewPoints(usize),
+    /// A point row has fewer than three coordinates.
+    #[error("point {index} has {got} coordinates, expected at least 3")]
+    ShortPoint {
+        /// Index of the offending point.
+        index: usize,
+        /// Number of coordinates it carries.
+        got: usize,
+    },
+    /// A coordinate is NaN or infinite.
+    #[error("point {0} has a non-finite coordinate")]
+    NonFinitePoint(usize),
+    /// All points are coplanar (or collinear), so they enclose no volume.
+    #[error("the points are coplanar or collinear and enclose no volume")]
+    Degenerate,
+}
+
+impl From<ConvexHullError> for PyErr {
+    fn from(err: ConvexHullError) -> PyErr {
+        pyo3::exceptions::PyValueError::new_err(err.to_string())
+    }
+}
+
 /// A convex hull computed from a point cloud.
+///
+/// The hull is the Quickhull of the input: `vertices` are the extreme points
+/// (a subset of the input) and `faces` are outward-facing triangles.
 #[pyclass(skip_from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyConvexHull {
@@ -276,36 +304,48 @@ pub struct PyConvexHull {
 
 #[pymethods]
 impl PyConvexHull {
-    /// Compute a convex hull from a set of flat points (list of `[x, y, z]` lists).
+    /// Compute the convex hull of a set of points (a list of `[x, y, z]` lists).
+    ///
+    /// Raises `ValueError` when a point has fewer than three coordinates or a
+    /// non-finite one, when there are fewer than four points, or when all
+    /// points are coplanar.
     #[staticmethod]
-    pub fn from_points(points: Vec<Vec<f64>>) -> Self {
-        let pts: Vec<[f64; 3]> = points
-            .into_iter()
-            .filter_map(|p| {
-                if p.len() >= 3 {
-                    Some([p[0], p[1], p[2]])
-                } else {
-                    None
+    pub fn from_points(points: Vec<Vec<f64>>) -> PyResult<Self> {
+        let mut pts: Vec<[f64; 3]> = Vec::with_capacity(points.len());
+        for (index, p) in points.iter().enumerate() {
+            match p.as_slice() {
+                [x, y, z, ..] => pts.push([*x, *y, *z]),
+                _ => {
+                    return Err(ConvexHullError::ShortPoint {
+                        index,
+                        got: p.len(),
+                    }
+                    .into());
                 }
-            })
-            .collect();
-        Self::from_points_internal(&pts)
+            }
+        }
+        Ok(Self::from_points_internal(&pts)?)
     }
 
-    /// Approximate volume of the convex hull.
+    /// Volume enclosed by the convex hull.
     pub fn volume(&self) -> f64 {
-        let n = self.faces.len() / 3;
+        if self.vertices.is_empty() {
+            return 0.0;
+        }
+        // Signed tetrahedra from the vertex centroid: exact for a closed
+        // outward-oriented surface and well conditioned far from the origin.
+        let c = centroid(&self.vertices);
         let mut vol = 0.0;
-        for i in 0..n {
-            let a = self.vertices[self.faces[i * 3]];
-            let b = self.vertices[self.faces[i * 3 + 1]];
-            let c = self.vertices[self.faces[i * 3 + 2]];
-            vol += dot3(a, cross3(b, c));
+        for tri in self.faces.chunks_exact(3) {
+            let a = sub3(self.vertices[tri[0]], c);
+            let b = sub3(self.vertices[tri[1]], c);
+            let d = sub3(self.vertices[tri[2]], c);
+            vol += dot3(a, cross3(b, d));
         }
         (vol / 6.0).abs()
     }
 
-    /// Approximate surface area of the convex hull.
+    /// Surface area of the convex hull.
     pub fn surface_area(&self) -> f64 {
         let n = self.faces.len() / 3;
         let mut area = 0.0;
@@ -320,17 +360,13 @@ impl PyConvexHull {
         area
     }
 
-    /// Test whether two convex hulls overlap (bounding-sphere approximation).
+    /// Test whether two convex hulls overlap.
+    ///
+    /// Runs the GJK algorithm (`oxiphysics.geometry.convex_hull.gjk_intersect`)
+    /// on the hull vertices, so the answer concerns the hulls themselves and
+    /// not their bounding spheres.
     pub fn gjk_overlap(&self, other: &PyConvexHull) -> bool {
-        if self.vertices.is_empty() || other.vertices.is_empty() {
-            return false;
-        }
-        let c1 = centroid(&self.vertices);
-        let c2 = centroid(&other.vertices);
-        let r1 = bounding_radius(&self.vertices, c1);
-        let r2 = bounding_radius(&other.vertices, c2);
-        let dist = len3(sub3(c1, c2));
-        dist < r1 + r2
+        gjk_intersect(&self.engine_hull(), &other.engine_hull())
     }
 
     /// Get vertices as a list of [x, y, z] lists.
@@ -345,40 +381,30 @@ impl PyConvexHull {
 }
 
 impl PyConvexHull {
-    /// Internal constructor from a slice of points.
-    pub fn from_points_internal(points: &[[f64; 3]]) -> Self {
-        if points.is_empty() {
-            return Self {
-                vertices: vec![],
-                faces: vec![],
-            };
+    /// Build the convex hull of a slice of points with the engine's Quickhull.
+    pub fn from_points_internal(points: &[[f64; 3]]) -> Result<Self, ConvexHullError> {
+        if points.len() < 4 {
+            return Err(ConvexHullError::TooFewPoints(points.len()));
         }
-        let mut min = points[0];
-        let mut max = points[0];
-        for &p in points {
-            for i in 0..3 {
-                if p[i] < min[i] {
-                    min[i] = p[i];
-                }
-                if p[i] > max[i] {
-                    max[i] = p[i];
-                }
-            }
+        if let Some(index) = points.iter().position(|p| p.iter().any(|c| !c.is_finite())) {
+            return Err(ConvexHullError::NonFinitePoint(index));
         }
-        let vertices = vec![
-            [min[0], min[1], min[2]],
-            [max[0], min[1], min[2]],
-            [max[0], max[1], min[2]],
-            [min[0], max[1], min[2]],
-            [min[0], min[1], max[2]],
-            [max[0], min[1], max[2]],
-            [max[0], max[1], max[2]],
-            [min[0], max[1], max[2]],
-        ];
-        let faces = vec![
-            0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 5, 1, 0, 4, 5, 2, 7, 3, 2, 6, 7, 0, 3, 7, 0, 7,
-            4, 1, 5, 6, 1, 6, 2,
-        ];
-        Self { vertices, faces }
+        let hull = ConvexHull3D::build(points).ok_or(ConvexHullError::Degenerate)?;
+        Ok(Self {
+            vertices: hull.vertices,
+            faces: hull.faces.into_iter().flatten().collect(),
+        })
+    }
+
+    /// The same hull as an engine [`ConvexHull3D`] (for GJK).
+    fn engine_hull(&self) -> ConvexHull3D {
+        ConvexHull3D {
+            vertices: self.vertices.clone(),
+            faces: self
+                .faces
+                .chunks_exact(3)
+                .map(|tri| [tri[0], tri[1], tri[2]])
+                .collect(),
+        }
     }
 }

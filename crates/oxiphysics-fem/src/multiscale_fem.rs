@@ -18,8 +18,6 @@
 //! - [`MultiresolutionFem`] — wavelet-based multiresolution analysis
 //! - [`SubstructureMethod`] — Craig-Bampton substructuring
 
-use std::f64::consts::PI;
-
 // ---------------------------------------------------------------------------
 // Math helpers (private)
 // ---------------------------------------------------------------------------
@@ -72,8 +70,9 @@ fn dense_cg(a: &[Vec<f64>], b: &[f64], tol: f64, max_iter: usize) -> Vec<f64> {
 
 /// Representative Volume Element (RVE) — periodic unit cell geometry.
 ///
-/// A cubic RVE with n³ Gauss points represents the microstructure.
-/// Periodic boundary conditions are enforced on all faces.
+/// A cubic cell containing one centred spherical inclusion of volume fraction
+/// φ in a matrix.  [`RveGeometry::homogenize_periodic`] meshes it with n³ hex8
+/// voxels and solves the periodic cell problems for the effective stiffness.
 #[derive(Debug, Clone)]
 pub struct RveGeometry {
     /// Physical side length of the unit cell (m).
@@ -145,18 +144,10 @@ impl RveGeometry {
 
     /// Local elastic modulus at a given point: inclusion or matrix.
     ///
-    /// Points within a sphere of radius r_i centered at (L/2, L/2, L/2) are
-    /// inclusions; the rest are matrix.
+    /// Points within a sphere of radius r_i = L·(3φ/4π)^{1/3} centred at
+    /// (L/2, L/2, L/2) are inclusion; the rest are matrix.
     pub fn local_modulus(&self, x: f64, y: f64, z: f64) -> f64 {
-        let cx = self.side_length / 2.0;
-        let r_incl =
-            self.side_length * (3.0 * self.inclusion_fraction / (4.0 * PI)).powf(1.0 / 3.0);
-        let dist = ((x - cx).powi(2) + (y - cx).powi(2) + (z - cx).powi(2)).sqrt();
-        if dist <= r_incl {
-            self.e_inclusion
-        } else {
-            self.e_matrix
-        }
+        self.local_phase(x, y, z).0
     }
 }
 
@@ -176,9 +167,13 @@ pub struct FeSquared {
     /// RVE geometry shared by all macro Gauss points.
     pub rve: RveGeometry,
     /// Homogenized (effective) 6×6 stiffness matrix (Voigt notation).
+    ///
+    /// Holds the isotropic matrix stiffness until [`FeSquared::homogenize`] runs.
     pub effective_stiffness: Vec<Vec<f64>>,
     /// Number of macro elements.
     pub n_macro: usize,
+    /// Cached periodic RVE solution (filled by [`FeSquared::homogenize`]).
+    pub homogenization: Option<RveHomogenization>,
 }
 
 impl FeSquared {
@@ -197,16 +192,30 @@ impl FeSquared {
             rve,
             effective_stiffness: eff,
             n_macro,
+            homogenization: None,
         }
     }
 
-    /// Run macro iteration: homogenize each RVE and assemble effective moduli.
-    pub fn homogenize(&mut self) {
-        let c_eff = self.rve.voigt_effective_stiffness();
+    /// Solve the periodic RVE cell problems (once; the result is cached) and
+    /// update the effective stiffness and every macro element tangent.
+    ///
+    /// # Errors
+    /// Propagates the errors of [`RveGeometry::homogenize_periodic`].
+    pub fn homogenize(&mut self) -> crate::error::Result<()> {
+        let c_eff = match &self.homogenization {
+            Some(h) => h.effective_stiffness.clone(),
+            None => {
+                let h = self.rve.homogenize_periodic()?;
+                let c = h.effective_stiffness.clone();
+                self.homogenization = Some(h);
+                c
+            }
+        };
         self.effective_stiffness = c_eff;
         for elem in &mut self.macro_elements {
             elem.update_tangent(&self.effective_stiffness);
         }
+        Ok(())
     }
 
     /// Apply macro strain E and return homogenized macro stress Σ.
@@ -278,7 +287,9 @@ impl MacroElement {
 /// Micro-scale FEM solver for one RVE.
 ///
 /// Applies a prescribed macro-strain to the RVE and returns the
-/// volume-averaged (homogenized) stress tensor.
+/// volume-averaged (homogenized) stress tensor.  The periodic voxel-FE cell
+/// problems are solved once (see [`RveGeometry::homogenize_periodic`]); by
+/// linearity every later macro strain is answered from the cached solution.
 #[derive(Debug, Clone)]
 pub struct MicroSolver {
     /// RVE geometry.
@@ -287,6 +298,8 @@ pub struct MicroSolver {
     pub macro_strain: [f64; 6],
     /// Resulting average stress (Voigt 6-vector).
     pub avg_stress: [f64; 6],
+    /// Cached periodic RVE solution.
+    pub homogenization: Option<RveHomogenization>,
 }
 
 impl MicroSolver {
@@ -296,24 +309,37 @@ impl MicroSolver {
             rve,
             macro_strain: [0.0; 6],
             avg_stress: [0.0; 6],
+            homogenization: None,
         }
     }
 
-    /// Apply macro strain and solve (simplified linear elastic homogenization).
-    pub fn solve(&mut self, macro_strain: [f64; 6]) {
+    fn ensure_homogenized(&mut self) -> crate::error::Result<&RveHomogenization> {
+        if self.homogenization.is_none() {
+            self.homogenization = Some(self.rve.homogenize_periodic()?);
+        }
+        self.homogenization
+            .as_ref()
+            .ok_or_else(|| crate::error::Error::General("RVE homogenization missing".into()))
+    }
+
+    /// Apply the macro strain E and compute the volume-averaged micro stress
+    /// Σ = ⟨σ(E + B ũ)⟩ of the periodic RVE solution.
+    ///
+    /// # Errors
+    /// Propagates the errors of [`RveGeometry::homogenize_periodic`].
+    pub fn solve(&mut self, macro_strain: [f64; 6]) -> crate::error::Result<()> {
+        let stress = self.ensure_homogenized()?.average_stress(&macro_strain);
         self.macro_strain = macro_strain;
-        let c = self.rve.voigt_effective_stiffness();
-        for (i, avg_si) in self.avg_stress.iter_mut().enumerate() {
-            *avg_si = 0.0;
-            for (j, &msj) in macro_strain.iter().enumerate() {
-                *avg_si += c[i][j] * msj;
-            }
-        }
+        self.avg_stress = stress;
+        Ok(())
     }
 
-    /// Return effective tangent dΣ/dE (the homogenized 6×6 stiffness).
-    pub fn effective_tangent(&self) -> Vec<Vec<f64>> {
-        self.rve.voigt_effective_stiffness()
+    /// Effective tangent dΣ/dE (the homogenized 6×6 stiffness).
+    ///
+    /// # Errors
+    /// Propagates the errors of [`RveGeometry::homogenize_periodic`].
+    pub fn effective_tangent(&mut self) -> crate::error::Result<Vec<Vec<f64>>> {
+        Ok(self.ensure_homogenized()?.effective_stiffness.clone())
     }
 }
 
@@ -338,9 +364,8 @@ fn initial_isotropic_stiffness(e: f64, nu: f64) -> Vec<Vec<f64>> {
 }
 
 impl RveGeometry {
-    /// Compute Voigt-averaged 6×6 effective stiffness for this RVE.
-    ///
-    /// Uses a simple rule-of-mixtures (Voigt bound).
+    /// Voigt (uniform-strain) upper bound of the effective stiffness:
+    /// the rule of mixtures `φ C_i + (1−φ) C_m` for the nominal fraction φ.
     pub fn voigt_effective_stiffness(&self) -> Vec<Vec<f64>> {
         let phi = self.inclusion_fraction;
         let c_i = initial_isotropic_stiffness(self.e_inclusion, self.nu_inclusion);
@@ -893,99 +918,18 @@ impl MultiresolutionFem {
 }
 
 // ---------------------------------------------------------------------------
-// SubstructureMethod
+// Periodic RVE homogenization — see `rve_homogenization.rs`
 // ---------------------------------------------------------------------------
 
-/// Craig-Bampton substructuring for large structural models.
-///
-/// Reduces each substructure to its interface DOFs plus a small set of
-/// fixed-interface normal modes.
-#[derive(Debug, Clone)]
-pub struct SubstructureMethod {
-    /// Number of interface (boundary) DOFs.
-    pub n_interface: usize,
-    /// Number of kept interior modes per substructure.
-    pub n_modes: usize,
-    /// Number of substructures.
-    pub n_sub: usize,
-    /// Modal frequencies (rad/s) for each substructure.
-    pub modal_freqs: Vec<Vec<f64>>,
-    /// Static constraint modes (n_interface × n_interface).
-    pub constraint_modes: Vec<Vec<f64>>,
-    /// Normal modes for each substructure (n_modes × n_interior).
-    pub normal_modes: Vec<Vec<Vec<f64>>>,
-}
+mod rve_homogenization;
+pub use rve_homogenization::{RveHomogenization, RveMicroFields};
 
-impl SubstructureMethod {
-    /// Create a Craig-Bampton substructure model.
-    ///
-    /// # Arguments
-    /// * `n_interface` – number of interface DOFs
-    /// * `n_modes`     – number of fixed-interface modes to keep
-    /// * `n_sub`       – number of substructures
-    /// * `base_freq`   – base frequency for synthetic modal spectrum
-    pub fn new(n_interface: usize, n_modes: usize, n_sub: usize, base_freq: f64) -> Self {
-        // Synthetic modal frequencies: ωₖ = base_freq · k for k = 1..n_modes
-        let modal_freqs: Vec<Vec<f64>> = (0..n_sub)
-            .map(|_| (1..=n_modes).map(|k| base_freq * k as f64).collect())
-            .collect();
-        // Identity-like constraint modes
-        let constraint_modes = (0..n_interface)
-            .map(|i| {
-                let mut row = vec![0.0f64; n_interface];
-                row[i] = 1.0;
-                row
-            })
-            .collect();
-        let normal_modes = vec![vec![vec![1.0; n_interface]; n_modes]; n_sub];
-        Self {
-            n_interface,
-            n_modes,
-            n_sub,
-            modal_freqs,
-            constraint_modes,
-            normal_modes,
-        }
-    }
+// ---------------------------------------------------------------------------
+// SubstructureMethod (Craig-Bampton) — see `craig_bampton.rs`
+// ---------------------------------------------------------------------------
 
-    /// Total reduced DOF count per substructure: n_interface + n_modes.
-    pub fn reduced_dof(&self) -> usize {
-        self.n_interface + self.n_modes
-    }
-
-    /// Total system DOF after Craig-Bampton reduction.
-    pub fn total_reduced_dof(&self) -> usize {
-        self.n_interface + self.n_sub * self.n_modes
-    }
-
-    /// Assemble reduced mass matrix (diagonal approximation).
-    ///
-    /// Returns a (total_reduced_dof × total_reduced_dof) diagonal mass matrix.
-    pub fn reduced_mass(&self) -> Vec<f64> {
-        let n = self.total_reduced_dof();
-        // Interface mass = 1 per DOF; modal mass = 1 (mass-normalized modes)
-        vec![1.0f64; n]
-    }
-
-    /// Modal participation factor Γₖ = φₖᵀ · M · r for mode k of substructure s.
-    ///
-    /// Here simplified: Γₖ = ωₖ (proportional to frequency).
-    pub fn participation_factor(&self, sub: usize, mode: usize) -> f64 {
-        if sub >= self.n_sub || mode >= self.n_modes {
-            return 0.0;
-        }
-        self.modal_freqs[sub][mode]
-    }
-
-    /// Check that the modal count matches n_modes.
-    pub fn mode_count(&self, sub: usize) -> usize {
-        if sub < self.n_sub {
-            self.modal_freqs[sub].len()
-        } else {
-            0
-        }
-    }
-}
+mod craig_bampton;
+pub use craig_bampton::{CraigBamptonComponent, SubstructureInput, SubstructureMethod};
 
 // ---------------------------------------------------------------------------
 // Volume averaging
@@ -1112,9 +1056,22 @@ mod tests {
     #[test]
     fn test_fe2_homogenize_runs() {
         let rve = RveGeometry::new(1.0, 4, 0.3, 200.0, 70.0, 0.3, 0.33);
-        let mut fe2 = FeSquared::new(rve, 4);
-        fe2.homogenize();
-        assert!(fe2.effective_stiffness[0][0] > 0.0);
+        let mut fe2 = FeSquared::new(rve.clone(), 4);
+        fe2.homogenize().expect("homogenize");
+        let reference = rve.homogenize_periodic().expect("rve");
+        for i in 0..6 {
+            for j in 0..6 {
+                let c = fe2.effective_stiffness[i][j];
+                assert!((c - reference.effective_stiffness[i][j]).abs() < 1e-9 * 200.0);
+                assert!((fe2.macro_elements[0].tangent[i][j] - c).abs() < 1e-12);
+            }
+        }
+        // FE² stiffness lies strictly below the Voigt rule of mixtures of the
+        // voxelised microstructure.
+        let mut voxelised = rve.clone();
+        voxelised.inclusion_fraction = reference.inclusion_voxel_fraction;
+        assert!(fe2.effective_stiffness[0][0] < voxelised.voigt_effective_stiffness()[0][0]);
+        assert!(fe2.homogenization.is_some());
     }
 
     #[test]
@@ -1147,8 +1104,19 @@ mod tests {
         let rve = RveGeometry::new(1.0, 4, 0.3, 200.0, 70.0, 0.3, 0.33);
         let mut ms = MicroSolver::new(rve);
         let strain = [1e-3, 0.0, 0.0, 0.0, 0.0, 0.0];
-        ms.solve(strain);
+        ms.solve(strain).expect("micro solve");
         assert!(ms.avg_stress[0] > 0.0);
+        let tangent = ms.effective_tangent().expect("tangent");
+        for (s, row) in ms.avg_stress.iter().zip(tangent.iter()) {
+            assert!((s - row[0] * 1e-3).abs() < 1e-15);
+        }
+        // Linearity: doubling the strain doubles the stress.
+        let first = ms.avg_stress;
+        ms.solve([2e-3, 0.0, 0.0, 0.0, 0.0, 0.0])
+            .expect("micro solve");
+        for (s, f) in ms.avg_stress.iter().zip(first.iter()) {
+            assert!((s - 2.0 * f).abs() < 1e-12);
+        }
     }
 
     // ---- HomogenizationScheme ---------------------------------------------
@@ -1387,50 +1355,6 @@ mod tests {
         let e_orig: f64 = signal.iter().map(|x| x * x).sum();
         let e_decomp: f64 = approx.iter().chain(detail.iter()).map(|x| x * x).sum();
         assert!((e_orig - e_decomp).abs() < 1e-10);
-    }
-
-    // ---- SubstructureMethod -----------------------------------------------
-
-    #[test]
-    fn test_substructure_new() {
-        let cb = SubstructureMethod::new(6, 4, 3, 100.0);
-        assert_eq!(cb.n_sub, 3);
-        assert_eq!(cb.n_modes, 4);
-    }
-
-    #[test]
-    fn test_substructure_mode_count() {
-        let cb = SubstructureMethod::new(6, 5, 2, 100.0);
-        assert_eq!(cb.mode_count(0), 5);
-        assert_eq!(cb.mode_count(1), 5);
-    }
-
-    #[test]
-    fn test_substructure_reduced_dof() {
-        let cb = SubstructureMethod::new(6, 4, 3, 100.0);
-        assert_eq!(cb.reduced_dof(), 10); // 6 + 4
-    }
-
-    #[test]
-    fn test_substructure_total_reduced_dof() {
-        let cb = SubstructureMethod::new(6, 4, 3, 100.0);
-        assert_eq!(cb.total_reduced_dof(), 6 + 3 * 4);
-    }
-
-    #[test]
-    fn test_substructure_modal_freqs_increasing() {
-        let cb = SubstructureMethod::new(6, 5, 2, 50.0);
-        let freqs = &cb.modal_freqs[0];
-        for w in freqs.windows(2) {
-            assert!(w[1] > w[0]);
-        }
-    }
-
-    #[test]
-    fn test_substructure_participation_factor() {
-        let cb = SubstructureMethod::new(6, 4, 3, 100.0);
-        let pf = cb.participation_factor(0, 0);
-        assert!(pf > 0.0);
     }
 
     // ---- Volume averaging / Hill-Mandel -----------------------------------

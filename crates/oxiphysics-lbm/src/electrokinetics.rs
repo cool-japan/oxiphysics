@@ -271,8 +271,15 @@ impl PoissonSolver {
 
 /// Nernst-Planck advection-diffusion-migration solver for ion concentration.
 ///
-/// Equation (dimensionless LBM units):
-///   ∂c/∂t + u·∇c = D∇²c − (Dze/kBT) ∇·(c ∇φ)
+/// The ionic flux is `J = −D∇c − (D z e / k_B T) c ∇φ + c u`, so the
+/// concentration obeys
+///
+///   ∂c/∂t + u·∇c = D∇²c + (D z e / k_B T) ∇·(c ∇φ)
+///
+/// Cations (`z > 0`) therefore migrate towards lower potential (along the
+/// electric field `E = −∇φ`) and anions towards higher potential; the
+/// Boltzmann distribution `c ∝ exp(−z e φ / k_B T)` is the zero-flux steady
+/// state.
 #[derive(Debug, Clone)]
 pub struct NernstPlanckDistribution {
     /// Grid size nx.
@@ -302,6 +309,11 @@ impl NernstPlanckDistribution {
 
     /// Perform one explicit finite-difference step of the NP equation.
     ///
+    /// Only interior cells are updated; the outermost ring keeps its value.
+    /// The migration term `(D z e / k_B T) ∇·(c ∇φ)` is discretised in
+    /// conservative form with face-averaged concentrations,
+    /// `c_{i+1/2} = (c_i + c_{i+1}) / 2`.
+    ///
     /// `phi`   — electric potential (V).
     /// `ux/uy` — fluid velocity (m s⁻¹).
     /// `dt`    — time step (s).
@@ -309,11 +321,13 @@ impl NernstPlanckDistribution {
     pub fn step(&mut self, phi: &[f64], ux: &[f64], uy: &[f64], dt: f64, dx: f64) {
         let nx = self.nx;
         let ny = self.ny;
+        if nx < 3 || ny < 3 {
+            return;
+        }
         let d = self.species.diffusivity;
         let z = self.species.valence as f64;
         let mobility = z * E_CHARGE * d / (K_B * self.temperature);
         let c = self.concentration.clone();
-        let inv_2dx = 0.5 / dx;
         let inv_dx2 = 1.0 / (dx * dx);
 
         for iy in 1..ny - 1 {
@@ -333,20 +347,19 @@ impl NernstPlanckDistribution {
                 let dcy = if uy[idx] > 0.0 { ci - cs } else { cn - ci } / dx;
                 let adv = ux[idx] * dcx + uy[idx] * dcy;
 
-                // Electromigration − ∇·(c · mobility · ∇φ)
-                let dphi_x = (phi[iy * nx + ix + 1] - phi[iy * nx + ix - 1]) * inv_2dx;
-                let dphi_y = (phi[(iy + 1) * nx + ix] - phi[(iy - 1) * nx + ix]) * inv_2dx;
+                // Electromigration + mobility ∇·(c ∇φ), conservative with
+                // face-averaged concentrations.
+                let phi_c = phi[idx];
                 let drift_x = mobility
-                    * (ce * (phi[iy * nx + ix + 1] - phi[idx])
-                        - cw * (phi[idx] - phi[iy * nx + ix - 1]))
-                    / (dx * dx);
+                    * (0.5 * (ce + ci) * (phi[iy * nx + ix + 1] - phi_c)
+                        - 0.5 * (ci + cw) * (phi_c - phi[iy * nx + ix - 1]))
+                    * inv_dx2;
                 let drift_y = mobility
-                    * (cn * (phi[(iy + 1) * nx + ix] - phi[idx])
-                        - cs * (phi[idx] - phi[(iy - 1) * nx + ix]))
-                    / (dx * dx);
-                let _ = (dphi_x, dphi_y); // used conceptually above
+                    * (0.5 * (cn + ci) * (phi[(iy + 1) * nx + ix] - phi_c)
+                        - 0.5 * (ci + cs) * (phi_c - phi[(iy - 1) * nx + ix]))
+                    * inv_dx2;
 
-                self.concentration[idx] = ci + dt * (d * lap_c - adv - drift_x - drift_y);
+                self.concentration[idx] = ci + dt * (d * lap_c - adv + drift_x + drift_y);
                 // clamp to non-negative
                 if self.concentration[idx] < 0.0 {
                     self.concentration[idx] = 0.0;
@@ -476,6 +489,24 @@ impl DiffuseDoubleLayer {
 // ElectrophoreticMobility
 // ---------------------------------------------------------------------------
 
+/// Henry's function `f(κa)` in Ohshima's (1994) approximation, valid for all `κa`.
+///
+/// ```text
+/// f(κa) = 1 + 1 / (2 (1 + 2.5 / (κa (1 + 2 exp(−κa))))³)
+/// ```
+///
+/// `f → 1` in the Hückel limit (`κa → 0`) and `f → 3/2` in the Smoluchowski
+/// limit (`κa → ∞`); in between the function increases monotonically.  Every
+/// electrophoretic-mobility model of this crate that needs Henry's function
+/// shares this single implementation.
+pub(crate) fn henry_function_ohshima(kappa_a: f64) -> f64 {
+    if kappa_a < 1e-12 {
+        return 1.0;
+    }
+    let denom = 1.0 + 2.5 / (kappa_a * (1.0 + 2.0 * (-kappa_a).exp()));
+    1.0 + 1.0 / (2.0 * denom.powi(3))
+}
+
 /// Electrophoretic mobility via Henry's equation:
 ///   μ_ep = (2 ε ζ / 3 η) f(κa)
 ///
@@ -504,11 +535,7 @@ impl ElectrophoreticMobility {
     ///
     /// f(κa) = 1 + 1 / (2(1 + 2.5/(κa(1 + 2exp(−κa))))³)
     pub fn henry_function(kappa_a: f64) -> f64 {
-        if kappa_a < 1e-12 {
-            return 1.0; // Hückel limit
-        }
-        let denom = 1.0 + 2.5 / (kappa_a * (1.0 + 2.0 * (-kappa_a).exp()));
-        1.0 + 1.0 / (2.0 * denom.powi(3))
+        henry_function_ohshima(kappa_a)
     }
 
     /// Electrophoretic mobility μ_ep (m² V⁻¹ s⁻¹).
@@ -976,6 +1003,123 @@ mod tests {
                 let idx = iy * 5 + ix;
                 assert!((np.concentration[idx] - c_before[idx]).abs() < 1e-20);
             }
+        }
+    }
+
+    /// Helpers for the electromigration regression tests: a quasi-1-D strip
+    /// with a Gaussian ion bump on a zero background, a linear potential
+    /// `phi = grad_phi * x` and no flow.
+    fn centroid_x(np: &NernstPlanckDistribution, row: usize) -> f64 {
+        let mut mass = 0.0;
+        let mut moment = 0.0;
+        for ix in 0..np.nx {
+            let c = np.concentration[row * np.nx + ix];
+            mass += c;
+            moment += c * ix as f64;
+        }
+        moment / mass
+    }
+
+    fn gaussian_bump_centroid_shift(valence: i32, grad_phi: f64) -> (f64, f64) {
+        // The outermost ring of cells is held fixed by `step`, so the strip
+        // is tall enough that those rows do not reach the measured mid row.
+        let (nx, ny) = (96, 25);
+        let temperature = 298.15;
+        let diffusivity = 1e-9;
+        let (dx, dt, steps) = (1e-6, 1e-4, 80);
+        let species = IonSpecies::new("probe", valence, diffusivity, 0.0);
+        let mut np = NernstPlanckDistribution::new(nx, ny, species, temperature);
+        for iy in 0..ny {
+            for ix in 0..nx {
+                let x = ix as f64 - 48.0;
+                np.concentration[iy * nx + ix] = (-x * x / (2.0 * 36.0)).exp();
+            }
+        }
+        let phi: Vec<f64> = (0..nx * ny)
+            .map(|k| grad_phi * (k % nx) as f64 * dx)
+            .collect();
+        let zero = vec![0.0; nx * ny];
+        let mid_row = ny / 2;
+        let start = centroid_x(&np, mid_row);
+        for _ in 0..steps {
+            np.step(&phi, &zero, &zero, dt, dx);
+        }
+        let shift_cells = centroid_x(&np, mid_row) - start;
+        let mobility_abs = (valence as f64).abs() * E_CHARGE * diffusivity / (K_B * temperature);
+        let expected_cells =
+            -(valence as f64).signum() * mobility_abs * grad_phi * dt * steps as f64 / dx;
+        (shift_cells, expected_cells)
+    }
+
+    #[test]
+    fn test_nernst_planck_cation_migrates_towards_lower_potential() {
+        // phi increases with x, so cations (z = +1) drift towards -x at
+        // v = (z e D / kT) |grad phi|.
+        let (shift, expected) = gaussian_bump_centroid_shift(1, 1.0e4);
+        assert!(expected < -3.0, "test setup: expected drift {expected}");
+        assert!(
+            (shift - expected).abs() < 0.05 * expected.abs(),
+            "cation centroid shift {shift} cells, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn test_nernst_planck_anion_migrates_towards_higher_potential() {
+        let (shift, expected) = gaussian_bump_centroid_shift(-1, 1.0e4);
+        assert!(expected > 3.0, "test setup: expected drift {expected}");
+        assert!(
+            (shift - expected).abs() < 0.05 * expected.abs(),
+            "anion centroid shift {shift} cells, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn test_nernst_planck_boltzmann_distribution_is_stationary() {
+        // c = c0 exp(-z e phi / kT) carries zero net flux, so the migration
+        // term must cancel the diffusion of the non-uniform profile.
+        let (nx, ny) = (64, 7);
+        let temperature = 298.15;
+        let (dx, dt) = (1e-6, 1e-4);
+        let thermal_voltage = K_B * temperature / E_CHARGE;
+        for &valence in &[1_i32, -1] {
+            let species = IonSpecies::new("probe", valence, 1e-9, 10.0);
+            let mut np = NernstPlanckDistribution::new(nx, ny, species, temperature);
+            let mut phi = vec![0.0; nx * ny];
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    let p = 0.5
+                        * thermal_voltage
+                        * (std::f64::consts::PI * ix as f64 / (nx - 1) as f64).sin();
+                    phi[iy * nx + ix] = p;
+                    np.concentration[iy * nx + ix] =
+                        10.0 * (-(valence as f64) * p / thermal_voltage).exp();
+                }
+            }
+            let zero = vec![0.0; nx * ny];
+            let before = np.concentration.clone();
+            np.step(&phi, &zero, &zero, dt, dx);
+            let boltzmann_change = before
+                .iter()
+                .zip(&np.concentration)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f64, f64::max);
+
+            // Reference: the same profile relaxing by diffusion alone.
+            let species = IonSpecies::new("probe", valence, 1e-9, 10.0);
+            let mut diffusion_only = NernstPlanckDistribution::new(nx, ny, species, temperature);
+            diffusion_only.concentration = before.clone();
+            diffusion_only.step(&vec![0.0; nx * ny], &zero, &zero, dt, dx);
+            let diffusion_change = before
+                .iter()
+                .zip(&diffusion_only.concentration)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f64, f64::max);
+            assert!(diffusion_change > 1e-6, "test setup: no diffusion signal");
+            assert!(
+                boltzmann_change < 0.05 * diffusion_change,
+                "z = {valence}: Boltzmann profile changed by {boltzmann_change}, \
+                 diffusion alone by {diffusion_change}"
+            );
         }
     }
 

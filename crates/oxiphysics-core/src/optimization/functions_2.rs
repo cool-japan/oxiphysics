@@ -790,9 +790,10 @@ mod tests {
     }
     #[test]
     fn test_bfgs_rosenbrock() {
-        let res = bfgs(rosenbrock, rosenbrock_grad, vec![-1.0, 1.0], 1e-6, 2000);
-        assert!((res.x[0] - 1.0).abs() < 0.01, "x[0]={}", res.x[0]);
-        assert!((res.x[1] - 1.0).abs() < 0.01, "x[1]={}", res.x[1]);
+        let res = bfgs(rosenbrock, rosenbrock_grad, vec![-1.0, 1.0], 1e-6, 200);
+        assert!(res.converged, "n_iter={}, x={:?}", res.n_iter, res.x);
+        assert!((res.x[0] - 1.0).abs() < 1e-5, "x[0]={}", res.x[0]);
+        assert!((res.x[1] - 1.0).abs() < 1e-5, "x[1]={}", res.x[1]);
     }
     #[test]
     fn test_bfgs_f_val_at_min() {
@@ -1071,5 +1072,211 @@ mod tests {
                 assert!(diff < 1e-10, "cov[{i},{j}] != cov[{j},{i}]: diff={diff}");
             }
         }
+    }
+}
+#[cfg(test)]
+mod bfgs_tests {
+    use super::super::*;
+    use std::cell::RefCell;
+
+    fn rosenbrock(x: &[f64]) -> f64 {
+        (1.0 - x[0]).powi(2) + 100.0 * (x[1] - x[0].powi(2)).powi(2)
+    }
+    fn rosenbrock_grad(x: &[f64]) -> Vec<f64> {
+        vec![
+            -2.0 * (1.0 - x[0]) - 400.0 * x[0] * (x[1] - x[0].powi(2)),
+            200.0 * (x[1] - x[0].powi(2)),
+        ]
+    }
+    fn himmelblau(x: &[f64]) -> f64 {
+        (x[0] * x[0] + x[1] - 11.0).powi(2) + (x[0] + x[1] * x[1] - 7.0).powi(2)
+    }
+    fn himmelblau_grad(x: &[f64]) -> Vec<f64> {
+        let a = x[0] * x[0] + x[1] - 11.0;
+        let b = x[0] + x[1] * x[1] - 7.0;
+        vec![4.0 * x[0] * a + 2.0 * b, 2.0 * a + 4.0 * x[1] * b]
+    }
+    fn mat_vec(h: &[Vec<f64>], v: &[f64]) -> Vec<f64> {
+        h.iter()
+            .map(|row| row.iter().zip(v.iter()).map(|(a, b)| a * b).sum())
+            .collect()
+    }
+
+    #[test]
+    fn update_in_one_dimension_equals_the_secant_ratio() {
+        // H+ = s / y for every H in one dimension (secant equation); the previous
+        // formula gave H - s/y = -1 for H = 1, s = 1, y = 0.5, an ascent direction.
+        for h0 in [1.0, 7.5, 0.01] {
+            let mut h = vec![vec![h0]];
+            assert!(bfgs_update_inverse_hessian(&mut h, &[1.0], &[0.5]));
+            assert!((h[0][0] - 2.0).abs() < 1e-12, "h0={h0}: H+={}", h[0][0]);
+        }
+    }
+    #[test]
+    fn update_satisfies_the_secant_equation_and_preserves_positive_definiteness() {
+        let mut h = vec![
+            vec![2.0, 0.3, -0.1],
+            vec![0.3, 1.5, 0.2],
+            vec![-0.1, 0.2, 0.8],
+        ];
+        let s = [0.4, -0.7, 0.25];
+        let y = [0.9, -0.5, 0.6];
+        assert!(bfgs_update_inverse_hessian(&mut h, &s, &y));
+        let hy = mat_vec(&h, &y);
+        for (i, row) in h.iter().enumerate() {
+            assert!((hy[i] - s[i]).abs() < 1e-12, "H+ y != s at {i}");
+            for (j, value) in row.iter().enumerate() {
+                assert!((value - h[j][i]).abs() < 1e-14, "H+ not symmetric");
+            }
+        }
+        for a in [-1.0, -0.3, 0.0, 0.7, 1.0] {
+            for b in [-1.0, 0.0, 0.4, 1.0] {
+                for c in [-1.0, 0.0, 0.5, 1.0] {
+                    let v = [a, b, c];
+                    if a == 0.0 && b == 0.0 && c == 0.0 {
+                        continue;
+                    }
+                    let quad: f64 = mat_vec(&h, &v)
+                        .iter()
+                        .zip(v.iter())
+                        .map(|(p, q)| p * q)
+                        .sum();
+                    assert!(quad > 0.0, "v^T H+ v = {quad} for v = {v:?}");
+                }
+            }
+        }
+    }
+    #[test]
+    fn update_is_skipped_when_the_curvature_condition_fails() {
+        let original = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        let cases: [([f64; 2], [f64; 2]); 4] = [
+            ([1.0, 0.0], [-1.0, 0.0]),
+            ([1.0, 0.0], [0.0, 2.0]),
+            ([0.0, 0.0], [1.0, 1.0]),
+            ([1.0, f64::NAN], [1.0, 1.0]),
+        ];
+        for (s, y) in cases {
+            let mut h = original.clone();
+            assert!(
+                !bfgs_update_inverse_hessian(&mut h, &s, &y),
+                "s={s:?} y={y:?}"
+            );
+            assert_eq!(h, original);
+        }
+    }
+    #[test]
+    fn update_rejects_mismatched_dimensions() {
+        let mut h = vec![vec![1.0]];
+        assert!(!bfgs_update_inverse_hessian(
+            &mut h,
+            &[1.0, 2.0],
+            &[1.0, 2.0]
+        ));
+        let mut h = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        assert!(!bfgs_update_inverse_hessian(&mut h, &[1.0, 2.0], &[1.0]));
+        let mut ragged = vec![vec![1.0, 0.0], vec![0.0]];
+        assert!(!bfgs_update_inverse_hessian(
+            &mut ragged,
+            &[1.0, 2.0],
+            &[1.0, 2.0]
+        ));
+    }
+    #[test]
+    fn rosenbrock_from_the_classic_start_converges_within_200_iterations() {
+        let res = bfgs(rosenbrock, rosenbrock_grad, vec![-1.2, 1.0], 1e-6, 200);
+        assert!(res.converged, "n_iter={}, x={:?}", res.n_iter, res.x);
+        assert!(res.n_iter <= 200);
+        assert!((res.x[0] - 1.0).abs() < 1e-5, "x0={}", res.x[0]);
+        assert!((res.x[1] - 1.0).abs() < 1e-5, "x1={}", res.x[1]);
+        assert!(res.f_val < 1e-10, "f={}", res.f_val);
+    }
+    #[test]
+    fn himmelblau_converges_to_a_minimum() {
+        let res = bfgs(himmelblau, himmelblau_grad, vec![1.0, 1.0], 1e-8, 200);
+        assert!(res.converged, "n_iter={}, x={:?}", res.n_iter, res.x);
+        assert!(res.f_val < 1e-14, "f={}", res.f_val);
+        assert!((res.x[0] - 3.0).abs() < 1e-6, "x={:?}", res.x);
+        assert!((res.x[1] - 2.0).abs() < 1e-6, "x={:?}", res.x);
+    }
+    #[test]
+    fn ill_conditioned_quadratic_converges_quickly() {
+        let f = |x: &[f64]| 0.5 * (x[0] * x[0] + 100.0 * x[1] * x[1]);
+        let g = |x: &[f64]| vec![x[0], 100.0 * x[1]];
+        let res = bfgs(f, g, vec![10.0, 1.0], 1e-9, 100);
+        assert!(res.converged, "n_iter={}", res.n_iter);
+        assert!(res.n_iter <= 30, "n_iter={}", res.n_iter);
+        assert!(
+            res.x[0].abs() < 1e-8 && res.x[1].abs() < 1e-8,
+            "x={:?}",
+            res.x
+        );
+    }
+    #[test]
+    fn non_convex_double_well_reaches_a_minimum() {
+        let f = |x: &[f64]| (x[0] * x[0] - 1.0).powi(2) + x[1] * x[1];
+        let g = |x: &[f64]| vec![4.0 * x[0] * (x[0] * x[0] - 1.0), 2.0 * x[1]];
+        let res = bfgs(f, g, vec![0.1, 1.0], 1e-8, 200);
+        assert!(res.converged, "n_iter={}", res.n_iter);
+        assert!((res.x[0].abs() - 1.0).abs() < 1e-6, "x={:?}", res.x);
+        assert!(res.x[1].abs() < 1e-6, "x={:?}", res.x);
+        assert!(res.f_val < 1e-12, "f={}", res.f_val);
+    }
+    #[test]
+    fn first_update_rescales_the_initial_inverse_hessian() {
+        // f = 50 x^2: after the first step the one-dimensional secant update leaves
+        // H = 1/f'' exactly, so the second step is the Newton step to the minimum.
+        let res = bfgs(
+            |x| 50.0 * x[0] * x[0],
+            |x| vec![100.0 * x[0]],
+            vec![1.0],
+            1e-12,
+            50,
+        );
+        assert!(res.converged);
+        assert!(res.n_iter <= 4, "n_iter={}", res.n_iter);
+        assert!(res.x[0].abs() < 1e-12, "x={}", res.x[0]);
+    }
+    #[test]
+    fn objective_is_not_re_evaluated_at_the_accepted_point() {
+        let points: RefCell<Vec<Vec<f64>>> = RefCell::new(Vec::new());
+        let f = |x: &[f64]| {
+            points.borrow_mut().push(x.to_vec());
+            rosenbrock(x)
+        };
+        let res = bfgs(f, rosenbrock_grad, vec![-1.2, 1.0], 1e-6, 200);
+        let points = points.borrow();
+        assert!(points.len() > 2);
+        for pair in points.windows(2) {
+            assert_ne!(
+                pair[0], pair[1],
+                "the same point was evaluated twice in a row"
+            );
+        }
+        assert_eq!(res.f_val, rosenbrock(&res.x));
+    }
+    #[test]
+    fn stops_without_converging_when_the_gradient_contradicts_the_objective() {
+        // The gradient claims f decreases to the left but f = x^2 increases past 0:
+        // no step length satisfies the Armijo condition, even for steepest descent.
+        let res = bfgs(|x| x[0] * x[0], |_x| vec![1.0], vec![3.0], 1e-8, 1000);
+        assert!(!res.converged);
+        assert!(res.n_iter < 20, "n_iter={}", res.n_iter);
+        assert!(res.x[0].abs() < 1e-12, "x={}", res.x[0]);
+    }
+    #[test]
+    fn zero_gradient_at_the_start_is_converged_immediately() {
+        let res = bfgs(|_x| 1.0, |_x| vec![0.0, 0.0], vec![1.0, 2.0], 0.0, 10);
+        assert!(res.converged);
+        assert_eq!(res.n_iter, 1);
+        assert_eq!(res.x, vec![1.0, 2.0]);
+        assert_eq!(res.f_val, 1.0);
+    }
+    #[test]
+    fn converged_flag_reflects_the_gradient_at_the_returned_point() {
+        // One iteration is enough to land on the minimum of a unit-curvature bowl,
+        // but only the gradient check after the last step can notice it.
+        let res = bfgs(|x| 0.5 * x[0] * x[0], |x| vec![x[0]], vec![1.0], 1e-10, 1);
+        assert!(res.x[0].abs() < 1e-12, "x={}", res.x[0]);
+        assert!(res.converged);
     }
 }

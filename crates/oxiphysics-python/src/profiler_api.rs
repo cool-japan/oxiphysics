@@ -7,6 +7,7 @@
 
 use oxiphysics::profiler::ProfilerSession;
 use pyo3::prelude::*;
+use std::sync::{Mutex, PoisonError};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PyProfilerSession
@@ -14,21 +15,35 @@ use pyo3::prelude::*;
 
 /// Per-frame scope profiler.
 ///
-/// Call `begin_frame`, then use `record_scope` to manually record timing data,
-/// then `end_frame_json` to retrieve the summary.
+/// Call `begin_frame`, then `end_frame_json` / `end_frame_csv` /
+/// `end_frame_folded_stacks` to retrieve the summary of the frame.
 ///
-/// Note: The RAII `scope` API uses raw pointers and cannot be safely bridged
-/// to Python. Use `record_scope_ns` to inject timing data from Python.
+/// Note: scopes are opened in Rust through RAII `ScopeGuard`s, which borrow the
+/// underlying `ProfilerSession` and therefore cannot be handed to Python. This
+/// binding exposes only the frame lifecycle (`begin_frame`, `end_frame_*`) and
+/// `node_count`; it has no method to record scopes from Python yet.
 #[pyclass(name = "ProfilerSession")]
 pub struct PyProfilerSession {
-    inner: ProfilerSession,
+    /// `ProfilerSession` is `Send` but not `Sync` (its scope bookkeeping is
+    /// per-thread state), while a `#[pyclass]` must be both, so it sits behind
+    /// a mutex. The `&mut self` methods reach it through `Mutex::get_mut`,
+    /// which does not lock.
+    inner: Mutex<ProfilerSession>,
 }
 
 impl Default for PyProfilerSession {
     fn default() -> Self {
         Self {
-            inner: ProfilerSession::new(),
+            inner: Mutex::new(ProfilerSession::new()),
         }
+    }
+}
+
+impl PyProfilerSession {
+    /// Exclusive access to the session (a poisoned mutex is still usable: the
+    /// session holds no invariant a panic could have broken).
+    fn session(&mut self) -> &mut ProfilerSession {
+        self.inner.get_mut().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -42,14 +57,14 @@ impl PyProfilerSession {
 
     /// Begin a new frame, clearing all previous data.
     pub fn begin_frame(&mut self) {
-        self.inner.begin_frame();
+        self.session().begin_frame();
     }
 
     /// End the current frame and return the [`FrameReport`] as JSON.
     ///
     /// Returns a JSON string with `frame_ns` and the `root` scope tree.
     pub fn end_frame_json(&mut self) -> PyResult<String> {
-        let report = self.inner.end_frame();
+        let report = self.session().end_frame();
         serde_json::to_string(&report)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
@@ -58,19 +73,22 @@ impl PyProfilerSession {
     ///
     /// Columns: `name,call_count,total_ns,max_ns`
     pub fn end_frame_csv(&mut self) -> String {
-        let report = self.inner.end_frame();
+        let report = self.session().end_frame();
         report.to_csv()
     }
 
     /// End the current frame and return the folded-stacks string for flamegraph.pl.
     pub fn end_frame_folded_stacks(&mut self) -> String {
-        let report = self.inner.end_frame();
+        let report = self.session().end_frame();
         report.to_folded_stacks()
     }
 
     /// Number of arena nodes recorded in the current (in-progress) frame.
     pub fn node_count(&self) -> usize {
-        self.inner.node_count()
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .node_count()
     }
 }
 

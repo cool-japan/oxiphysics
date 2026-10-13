@@ -183,6 +183,13 @@ impl KalmanFusion2D {
         self.cov = new_cov;
     }
     /// Update step with a GPS position measurement `[x, y]`.
+    ///
+    /// The observation matrix is `H = [I₂ 0]` and the measurement noise is
+    /// `R = r_gps² · I₂`.  The state is corrected with the Kalman gain
+    /// `K = P·Hᵀ·S⁻¹` and the covariance is propagated with the Joseph form
+    /// `P⁺ = (I − K·H)·P·(I − K·H)ᵀ + K·R·Kᵀ`, which reduces *all* entries of
+    /// the covariance (including the velocity variance and the position-velocity
+    /// cross terms) and keeps `P` symmetric positive semi-definite.
     pub fn update_gps(&mut self, gps: [f64; 2]) {
         let s_xx = self.cov[0] + self.r_gps * self.r_gps;
         let s_xy = self.cov[1];
@@ -205,21 +212,40 @@ impl KalmanFusion2D {
             k[i][1] = ph[i][0] * s_inv[1] + ph[i][1] * s_inv[3];
         }
         let innov = [gps[0] - self.state[0], gps[1] - self.state[1]];
-        for (i, (s, k_i)) in self.state.iter_mut().zip(k.iter()).enumerate() {
-            let _ = i;
+        for (s, k_i) in self.state.iter_mut().zip(k.iter()) {
             *s += k_i[0] * innov[0] + k_i[1] * innov[1];
         }
-        let mut new_cov = self.cov;
-        for i in 0..4 {
-            for j in 0..4 {
-                let kh = k[i][0] * if j == 0 { 1.0 } else { 0.0 }
-                    + k[i][1] * if j == 1 { 1.0 } else { 0.0 };
-                new_cov[i * 4 + j] = self.cov[i * 4 + j] - kh * self.cov[j * 4 + j];
+        // A = I − K·H.  H only observes the first two states, so A differs from
+        // the identity in columns 0 and 1 only.
+        let mut a = [[0.0f64; 4]; 4];
+        for (i, (a_row, k_row)) in a.iter_mut().zip(k.iter()).enumerate() {
+            a_row[i] = 1.0;
+            a_row[0] -= k_row[0];
+            a_row[1] -= k_row[1];
+        }
+        // A·P
+        let mut ap = [[0.0f64; 4]; 4];
+        for (ap_row, a_row) in ap.iter_mut().zip(a.iter()) {
+            for (j, entry) in ap_row.iter_mut().enumerate() {
+                *entry = (0..4).map(|l| a_row[l] * self.cov[l * 4 + j]).sum();
             }
         }
+        // (A·P)·Aᵀ + K·R·Kᵀ with R = r_gps²·I₂
+        let r = self.r_gps * self.r_gps;
+        let mut new_cov = [0.0f64; 16];
         for i in 0..4 {
-            if new_cov[i * 4 + i] < 0.0 {
-                new_cov[i * 4 + i] = 0.0;
+            for j in 0..4 {
+                let apa: f64 = (0..4).map(|l| ap[i][l] * a[j][l]).sum();
+                let krk = r * (k[i][0] * k[j][0] + k[i][1] * k[j][1]);
+                new_cov[i * 4 + j] = apa + krk;
+            }
+        }
+        // Remove the rounding asymmetry so that P stays exactly symmetric.
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                let mean = 0.5 * (new_cov[i * 4 + j] + new_cov[j * 4 + i]);
+                new_cov[i * 4 + j] = mean;
+                new_cov[j * 4 + i] = mean;
             }
         }
         self.cov = new_cov;
@@ -588,8 +614,11 @@ pub struct TelemetryBuffer {
 }
 impl TelemetryBuffer {
     /// Create a new telemetry buffer with the given capacity.
+    ///
+    /// A capacity of `0` is promoted to `1` so that the buffer always holds
+    /// at least the most recent sample.
     pub fn new(capacity: usize) -> Self {
-        assert!(capacity > 0, "capacity must be > 0");
+        let capacity = capacity.max(1);
         Self {
             buf: vec![(0.0, 0.0); capacity],
             head: 0,
@@ -607,13 +636,18 @@ impl TelemetryBuffer {
             self.count += 1;
         }
     }
-    /// Return a slice of the last `n` samples in chronological order.
+    /// Return the newest `n` samples in chronological order (oldest first).
     ///
+    /// The ring is unrolled starting at the slot of the `n`-th newest sample,
+    /// so the result is correct both before and after the buffer has wrapped.
     /// If fewer than `n` samples are available, all available samples are
     /// returned.
-    pub fn last_n(&self, n: usize) -> &[(f64, f64)] {
+    pub fn last_n(&self, n: usize) -> Vec<(f64, f64)> {
         let take = n.min(self.count);
-        &self.buf[..take]
+        let start = (self.head + self.capacity - take) % self.capacity;
+        (0..take)
+            .map(|k| self.buf[(start + k) % self.capacity])
+            .collect()
     }
     /// Number of samples currently stored.
     pub fn len(&self) -> usize {

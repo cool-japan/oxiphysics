@@ -5,17 +5,25 @@
 //!
 //! This module provides:
 //! - [`RotatingFrameLbm`]: D2Q9 LBM in rotating frame with Coriolis forcing.
-//! - [`ShallowWaterLbm`]: Lattice Boltzmann shallow-water equations.
+//! - [`ShallowWaterLbm`]: Lattice Boltzmann shallow-water equations (Zhou 2004).
 //! - [`RossbyWaveSim`]: Rossby wave simulation on beta-plane.
-//! - [`MantelConvection`]: Boussinesq convection in Earth's mantle.
+//! - [`MantelConvection`]: Rayleigh-Benard (Boussinesq) convection in Earth's mantle.
 //! - [`ThermohalineCirculation`]: Double-diffusive oceanic circulation.
-//! - [`AtmosphericBoundaryLayer`]: Turbulent ABL with Monin-Obukhov similarity.
+//! - [`AtmosphericBoundaryLayer`]: Neutral ABL with Smagorinsky LES and a log-law wall model.
 //! - [`GravityCurrent`]: Density-driven gravity current front tracking.
 //! - [`TidalSimulation`]: Tidal forcing with bottom friction.
 //! - [`GeostrophicAdjustment`]: Geostrophic balance and adjustment process.
 //! - [`PlanetaryWave`]: Barotropic and baroclinic planetary wave propagation.
 
 use std::f64::consts::PI;
+
+mod boundary_layer;
+mod convection;
+mod shallow_water;
+
+pub use boundary_layer::AtmosphericBoundaryLayer;
+pub use convection::{MantelConvection, ThermohalineCirculation};
+pub use shallow_water::ShallowWaterLbm;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // D2Q9 lattice constants
@@ -109,6 +117,65 @@ fn stream_periodic(f: &[Vec<[f64; NQ]>], nx: usize, ny: usize) -> Vec<Vec<[f64; 
                 let sx = ((ix as isize - cx).rem_euclid(nx as isize)) as usize;
                 let sy = ((iy as isize - cy).rem_euclid(ny as isize)) as usize;
                 *val = f[sx][sy][q];
+            }
+        }
+    }
+    f_new
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Advection–diffusion equilibrium and walled streaming
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Direction with the vertical velocity component reversed,
+/// `(c_x, c_y) → (c_x, −c_y)`; used for free-slip (specular) walls.
+const MIRROR_Y: [usize; NQ] = [0, 1, 4, 3, 2, 8, 7, 6, 5];
+
+/// Equilibrium of a passive scalar `t` advected with the velocity
+/// `(ux, uy)`: `g_q = w_q t (1 + c_q·u / cs²)`.
+///
+/// It is linear in the velocity, so the second moment is `t cs² δ_ab` and the
+/// scalar obeys the advection–diffusion equation with diffusivity
+/// `cs² (τ − 1/2)`; the zeroth moment is `t` and the first moment `t u`.
+#[inline]
+fn geq_linear(t: f64, ux: f64, uy: f64) -> [f64; NQ] {
+    let mut g = [0.0f64; NQ];
+    for q in 0..NQ {
+        g[q] = W[q] * t * (1.0 + (CX[q] * ux + CY[q] * uy) / CS2);
+    }
+    g
+}
+
+/// Streaming periodic in x with half-way reflecting walls at the planes
+/// `y = −1/2` and `y = ny − 1/2`.
+///
+/// A link that would leave the domain through a wall is replaced by the
+/// reflected population of the node it started from: the population that left
+/// in direction `reflect[q]` re-enters as direction `q`.  With `reflect =`
+/// [`OPP`] this is half-way bounce-back (no-slip for momentum, no-flux for
+/// scalars); with [`MIRROR_Y`] it is specular reflection (free-slip), where the
+/// reflected population lands one cell further along the wall by the
+/// tangential velocity component.  Mass is conserved exactly.
+fn stream_walled_y(
+    f: &[Vec<[f64; NQ]>],
+    nx: usize,
+    ny: usize,
+    reflect: &[usize; NQ],
+) -> Vec<Vec<[f64; NQ]>> {
+    let mut f_new = vec![vec![[0.0f64; NQ]; ny]; nx];
+    for (ix, row) in f_new.iter_mut().enumerate() {
+        for (iy, cell) in row.iter_mut().enumerate() {
+            for (q, val) in cell.iter_mut().enumerate() {
+                let sy = iy as isize - CY[q] as isize;
+                if (0..ny as isize).contains(&sy) {
+                    let sx = (ix as isize - CX[q] as isize).rem_euclid(nx as isize) as usize;
+                    *val = f[sx][sy as usize][q];
+                } else {
+                    let rq = reflect[q];
+                    let shift = (0.5 * (CX[q] + CX[rq])) as isize;
+                    let sx = (ix as isize - shift).rem_euclid(nx as isize) as usize;
+                    *val = f[sx][iy][rq];
+                }
             }
         }
     }
@@ -269,142 +336,6 @@ impl RotatingFrameLbm {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. ShallowWaterLbm — lattice Boltzmann shallow-water equations
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Shallow-water LBM using height-velocity formulation.
-///
-/// The shallow-water equations are recovered from the LBM in the long-wave
-/// limit with gravity wave speed `c = sqrt(g*H)`.  This is a 1D formulation
-/// (D1Q3) extended to 2D with D2Q9 moments.
-pub struct ShallowWaterLbm {
-    /// Grid width.
-    pub nx: usize,
-    /// Grid height.
-    pub ny: usize,
-    /// BGK relaxation frequency.
-    pub omega: f64,
-    /// Gravitational acceleration in lattice units.
-    pub gravity: f64,
-    /// Mean water depth.
-    pub h_mean: f64,
-    /// Distribution functions representing height field.
-    pub f: Vec<Vec<[f64; NQ]>>,
-    /// Bottom topography (depth perturbation).
-    pub bathymetry: Vec<Vec<f64>>,
-}
-
-impl ShallowWaterLbm {
-    /// Create a new shallow-water LBM domain.
-    ///
-    /// # Arguments
-    /// * `nx`, `ny` — domain size.
-    /// * `omega` — relaxation frequency.
-    /// * `gravity` — gravitational acceleration (lattice units).
-    /// * `h_mean` — mean water depth.
-    pub fn new(nx: usize, ny: usize, omega: f64, gravity: f64, h_mean: f64) -> Self {
-        let f = vec![vec![feq(h_mean, 0.0, 0.0); ny]; nx];
-        let bathymetry = vec![vec![0.0f64; ny]; nx];
-        Self {
-            nx,
-            ny,
-            omega,
-            gravity,
-            h_mean,
-            f,
-            bathymetry,
-        }
-    }
-
-    /// Set a Gaussian dam-break initial condition.
-    ///
-    /// Elevates water height by `amplitude` at grid center.
-    pub fn dam_break_ic(&mut self, amplitude: f64) {
-        let cx = self.nx as f64 * 0.5;
-        let cy = self.ny as f64 * 0.5;
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                let r2 = (ix as f64 - cx).powi(2) + (iy as f64 - cy).powi(2);
-                let h = self.h_mean + amplitude * (-r2 / 50.0).exp();
-                self.f[ix][iy] = feq(h, 0.0, 0.0);
-            }
-        }
-    }
-
-    /// Shallow-water equilibrium with gravity wave dispersion.
-    fn feq_sw(h: f64, ux: f64, uy: f64, _gravity: f64) -> [f64; NQ] {
-        let mut f = [0.0f64; NQ];
-        let u2 = ux * ux + uy * uy;
-        for q in 0..NQ {
-            let cu = CX[q] * ux + CY[q] * uy;
-            f[q] = W[q] * h * (1.0 + cu / CS2 + cu * cu / (2.0 * CS2 * CS2) - u2 / (2.0 * CS2));
-        }
-        f
-    }
-
-    /// Advance one timestep.
-    pub fn step(&mut self) {
-        let omega = self.omega;
-        let g = self.gravity;
-        let h_mean = self.h_mean;
-        // Collision
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                let (h, ux, uy) = macroscopic(&self.f[ix][iy]);
-                let h_eff = (h - self.bathymetry[ix][iy]).max(1e-6);
-                let feq_arr = Self::feq_sw(h_eff, ux, uy, g);
-                // Pressure-gradient forcing from bathymetry slope
-                let bx = if ix + 1 < self.nx {
-                    self.bathymetry[ix + 1][iy] - self.bathymetry[ix][iy]
-                } else {
-                    0.0
-                };
-                let by = if iy + 1 < self.ny {
-                    self.bathymetry[ix][iy + 1] - self.bathymetry[ix][iy]
-                } else {
-                    0.0
-                };
-                let fx = -g * h_mean * bx;
-                let fy = -g * h_mean * by;
-                for (f_q, feq_q) in self.f[ix][iy].iter_mut().zip(feq_arr.iter()) {
-                    *f_q += omega * (*feq_q - *f_q);
-                }
-                let mut tmp = self.f[ix][iy];
-                guo_force(&mut tmp, fx, fy, ux, uy, omega);
-                self.f[ix][iy] = tmp;
-            }
-        }
-        // Streaming
-        self.f = stream_periodic(&self.f, self.nx, self.ny);
-    }
-
-    /// Return the height field as a flat vector.
-    pub fn height_field(&self) -> Vec<f64> {
-        let mut h = Vec::with_capacity(self.nx * self.ny);
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                let (rho, _ux, _uy) = macroscopic(&self.f[ix][iy]);
-                h.push(rho);
-            }
-        }
-        h
-    }
-
-    /// Compute total energy (kinetic + potential).
-    pub fn total_energy(&self) -> f64 {
-        let g = self.gravity;
-        let mut e = 0.0;
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                let (h, ux, uy) = macroscopic(&self.f[ix][iy]);
-                e += 0.5 * h * (ux * ux + uy * uy) + 0.5 * g * h * h;
-            }
-        }
-        e
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // 3. RossbyWaveSim — Rossby wave on beta-plane
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -522,421 +453,6 @@ impl RossbyWaveSim {
             return 0.0;
         }
         -self.beta / k2
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 4. MantelConvection — Boussinesq convection in Earth's mantle
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Boussinesq thermal convection model for Earth's mantle.
-///
-/// Uses a double-distribution LBM: one for momentum (D2Q9) and one for
-/// temperature (D2Q5 collapsed to D2Q9 with passive scalar weights).
-/// The buoyancy force is `F_y = Ra·Pr·θ` with Boussinesq approximation.
-pub struct MantelConvection {
-    /// Grid width.
-    pub nx: usize,
-    /// Grid height.
-    pub ny: usize,
-    /// Momentum relaxation frequency.
-    pub omega_f: f64,
-    /// Temperature relaxation frequency.
-    pub omega_t: f64,
-    /// Rayleigh number.
-    pub ra: f64,
-    /// Prandtl number.
-    pub pr: f64,
-    /// Momentum distribution functions.
-    pub f: Vec<Vec<[f64; NQ]>>,
-    /// Temperature distribution functions (D2Q9 proxy).
-    pub g: Vec<Vec<[f64; NQ]>>,
-    /// Temperature field (cached).
-    pub temp: Vec<Vec<f64>>,
-}
-
-impl MantelConvection {
-    /// Create a Boussinesq mantel convection simulation.
-    ///
-    /// The Rayleigh number `Ra` controls convective vigour; for Earth's mantle
-    /// `Ra ~ 10^6 – 10^8`.  The Prandtl number `Pr ~ 10^23` (effective) but
-    /// for LBM we use `Pr ~ 1 – 100` at reduced resolution.
-    pub fn new(nx: usize, ny: usize, omega_f: f64, omega_t: f64, ra: f64, pr: f64) -> Self {
-        let f = vec![vec![feq(1.0, 0.0, 0.0); ny]; nx];
-        let g = vec![vec![feq(0.5, 0.0, 0.0); ny]; nx];
-        let temp = vec![vec![0.5f64; ny]; nx];
-        Self {
-            nx,
-            ny,
-            omega_f,
-            omega_t,
-            ra,
-            pr,
-            f,
-            g,
-            temp,
-        }
-    }
-
-    /// Set a conductive profile (linear temperature 0..1 from top to bottom).
-    pub fn conductive_ic(&mut self) {
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                let t = 1.0 - iy as f64 / (self.ny - 1) as f64;
-                self.temp[ix][iy] = t;
-                self.g[ix][iy] = feq(t, 0.0, 0.0);
-            }
-        }
-    }
-
-    /// Temperature equilibrium distribution.
-    fn geq(t: f64, ux: f64, uy: f64) -> [f64; NQ] {
-        feq(t, ux, uy)
-    }
-
-    /// Advance one coupled timestep.
-    pub fn step(&mut self) {
-        let omega_f = self.omega_f;
-        let omega_t = self.omega_t;
-        let ra = self.ra;
-        let pr = self.pr;
-        // Temperature collision
-        let mut g_new = self.g.clone();
-        for (ix, (g_new_row, g_row)) in g_new.iter_mut().zip(self.g.iter()).enumerate() {
-            for (iy, (g_new_cell, g_cell)) in g_new_row.iter_mut().zip(g_row.iter()).enumerate() {
-                let (t, ux, uy) = macroscopic(g_cell);
-                let geq_arr = Self::geq(t, ux, uy);
-                for (gn_q, (g_q, geq_q)) in
-                    g_new_cell.iter_mut().zip(g_cell.iter().zip(geq_arr.iter()))
-                {
-                    *gn_q = g_q + omega_t * (geq_q - g_q);
-                }
-                self.temp[ix][iy] = t;
-                let _ = (ux, uy, pr);
-            }
-        }
-        self.g = stream_periodic(&g_new, self.nx, self.ny);
-        // Momentum collision with buoyancy
-        for (ix, f_row) in self.f.iter_mut().enumerate() {
-            for (iy, cell) in f_row.iter_mut().enumerate() {
-                let (rho, ux, uy) = macroscopic(cell);
-                let feq_arr = feq(rho, ux, uy);
-                let theta = self.temp[ix][iy] - 0.5;
-                let buoy = ra * pr * theta;
-                let fx = 0.0;
-                let fy = buoy;
-                for (f_q, feq_q) in cell.iter_mut().zip(feq_arr.iter()) {
-                    *f_q += omega_f * (*feq_q - *f_q);
-                }
-                let mut tmp = *cell;
-                guo_force(&mut tmp, fx, fy, ux, uy, omega_f);
-                *cell = tmp;
-            }
-        }
-        self.f = stream_periodic(&self.f, self.nx, self.ny);
-        // Fixed temperature top/bottom walls
-        for ix in 0..self.nx {
-            let t_bot = 1.0;
-            let t_top = 0.0;
-            self.g[ix][0] = feq(t_bot, 0.0, 0.0);
-            self.g[ix][self.ny - 1] = feq(t_top, 0.0, 0.0);
-        }
-    }
-
-    /// Compute Nusselt number from heat flux at bottom wall.
-    pub fn nusselt_number(&self) -> f64 {
-        let ny = self.ny;
-        let flux: f64 = (0..self.nx)
-            .map(|ix| {
-                let t1 = self.temp[ix][0];
-                let t2 = self.temp[ix][1.min(ny - 1)];
-                t1 - t2
-            })
-            .sum::<f64>()
-            / self.nx as f64;
-        // Nu = q / (ΔT/H) where ΔT=1, H=ny
-        flux * self.ny as f64
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 5. ThermohalineCirculation — double-diffusive oceanic convection
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Double-diffusive thermohaline circulation model.
-///
-/// Two scalar fields (temperature T, salinity S) drive density via
-/// `ρ = ρ₀(1 - αT + βS)`.  Uses three coupled D2Q9 distributions.
-pub struct ThermohalineCirculation {
-    /// Grid width.
-    pub nx: usize,
-    /// Grid height.
-    pub ny: usize,
-    /// Momentum relaxation rate.
-    pub omega_f: f64,
-    /// Thermal diffusion relaxation rate.
-    pub omega_t: f64,
-    /// Saline diffusion relaxation rate.
-    pub omega_s: f64,
-    /// Thermal expansion coefficient.
-    pub alpha_t: f64,
-    /// Haline contraction coefficient.
-    pub beta_s: f64,
-    /// Momentum distribution.
-    pub f: Vec<Vec<[f64; NQ]>>,
-    /// Temperature distribution.
-    pub g_t: Vec<Vec<[f64; NQ]>>,
-    /// Salinity distribution.
-    pub g_s: Vec<Vec<[f64; NQ]>>,
-}
-
-impl ThermohalineCirculation {
-    /// Construct a thermohaline circulation model.
-    pub fn new(
-        nx: usize,
-        ny: usize,
-        omega_f: f64,
-        omega_t: f64,
-        omega_s: f64,
-        alpha_t: f64,
-        beta_s: f64,
-    ) -> Self {
-        let f = vec![vec![feq(1.0, 0.0, 0.0); ny]; nx];
-        let g_t = vec![vec![feq(0.5, 0.0, 0.0); ny]; nx];
-        let g_s = vec![vec![feq(0.5, 0.0, 0.0); ny]; nx];
-        Self {
-            nx,
-            ny,
-            omega_f,
-            omega_t,
-            omega_s,
-            alpha_t,
-            beta_s,
-            f,
-            g_t,
-            g_s,
-        }
-    }
-
-    /// Advance one step.
-    pub fn step(&mut self) {
-        let omega_f = self.omega_f;
-        let omega_t = self.omega_t;
-        let omega_s = self.omega_s;
-        let alpha_t = self.alpha_t;
-        let beta_s = self.beta_s;
-        // Collect T, S
-        let mut temp_arr = vec![vec![0.0f64; self.ny]; self.nx];
-        let mut sal_arr = vec![vec![0.0f64; self.ny]; self.nx];
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                let (t, _ux, _uy) = macroscopic(&self.g_t[ix][iy]);
-                let (s, _ux2, _uy2) = macroscopic(&self.g_s[ix][iy]);
-                temp_arr[ix][iy] = t;
-                sal_arr[ix][iy] = s;
-            }
-        }
-        // Temperature collision
-        for g_t_row in self.g_t.iter_mut() {
-            for cell in g_t_row.iter_mut() {
-                let (t, ux, uy) = macroscopic(cell);
-                let geq_arr = feq(t, ux, uy);
-                let _ = (ux, uy);
-                for (f_q, geq_q) in cell.iter_mut().zip(geq_arr.iter()) {
-                    *f_q += omega_t * (*geq_q - *f_q);
-                }
-            }
-        }
-        self.g_t = stream_periodic(&self.g_t, self.nx, self.ny);
-        // Salinity collision
-        for g_s_row in self.g_s.iter_mut() {
-            for cell in g_s_row.iter_mut() {
-                let (s, ux, uy) = macroscopic(cell);
-                let geq_arr = feq(s, ux, uy);
-                let _ = (ux, uy);
-                for (f_q, geq_q) in cell.iter_mut().zip(geq_arr.iter()) {
-                    *f_q += omega_s * (*geq_q - *f_q);
-                }
-            }
-        }
-        self.g_s = stream_periodic(&self.g_s, self.nx, self.ny);
-        // Momentum with density buoyancy
-        for (ix, f_row) in self.f.iter_mut().enumerate() {
-            for (iy, cell) in f_row.iter_mut().enumerate() {
-                let (rho, ux, uy) = macroscopic(cell);
-                let feq_arr = feq(rho, ux, uy);
-                let t = temp_arr[ix][iy];
-                let s = sal_arr[ix][iy];
-                let rho_prime = -alpha_t * (t - 0.5) + beta_s * (s - 0.5);
-                let fy = -rho_prime * 0.01;
-                for (f_q, feq_q) in cell.iter_mut().zip(feq_arr.iter()) {
-                    *f_q += omega_f * (*feq_q - *f_q);
-                }
-                let mut tmp = *cell;
-                guo_force(&mut tmp, 0.0, fy, ux, uy, omega_f);
-                *cell = tmp;
-            }
-        }
-        self.f = stream_periodic(&self.f, self.nx, self.ny);
-    }
-
-    /// Return density anomaly field `ρ' = -αT' + βS'`.
-    pub fn density_anomaly(&self) -> Vec<Vec<f64>> {
-        let mut out = vec![vec![0.0f64; self.ny]; self.nx];
-        for (out_row, (g_t_row, g_s_row)) in
-            out.iter_mut().zip(self.g_t.iter().zip(self.g_s.iter()))
-        {
-            for (out_val, (g_t_cell, g_s_cell)) in
-                out_row.iter_mut().zip(g_t_row.iter().zip(g_s_row.iter()))
-            {
-                let (t, _a, _b) = macroscopic(g_t_cell);
-                let (s, _c, _d) = macroscopic(g_s_cell);
-                *out_val = -self.alpha_t * (t - 0.5) + self.beta_s * (s - 0.5);
-            }
-        }
-        out
-    }
-
-    /// Diagnose thermohaline overturning circulation strength.
-    pub fn overturning_strength(&self) -> f64 {
-        let ny = self.ny;
-        let ny2 = ny / 2;
-        let psi: f64 = (0..self.nx)
-            .map(|ix| {
-                let (_rho, ux, _uy) = macroscopic(&self.f[ix][ny2]);
-                ux
-            })
-            .sum();
-        psi.abs()
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 6. AtmosphericBoundaryLayer — turbulent ABL
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Atmospheric boundary layer simulation with Monin-Obukhov similarity.
-///
-/// Implements a modified Smagorinsky LES approach suitable for neutral and
-/// stable ABL.  Wall stress uses log-law with roughness length `z0`.
-pub struct AtmosphericBoundaryLayer {
-    /// Grid width.
-    pub nx: usize,
-    /// Grid height.
-    pub ny: usize,
-    /// BGK relaxation frequency (background viscosity).
-    pub omega_base: f64,
-    /// Smagorinsky constant Cs.
-    pub cs_smag: f64,
-    /// Roughness length z0 in lattice units.
-    pub z0: f64,
-    /// Geostrophic wind speed (driving).
-    pub u_geo: f64,
-    /// Distribution functions.
-    pub f: Vec<Vec<[f64; NQ]>>,
-    /// Turbulent viscosity field.
-    pub nu_t: Vec<Vec<f64>>,
-}
-
-impl AtmosphericBoundaryLayer {
-    /// Construct a new ABL simulation domain.
-    pub fn new(nx: usize, ny: usize, omega_base: f64, cs_smag: f64, z0: f64, u_geo: f64) -> Self {
-        let f = vec![vec![feq(1.0, u_geo, 0.0); ny]; nx];
-        let nu_t = vec![vec![0.0f64; ny]; nx];
-        Self {
-            nx,
-            ny,
-            omega_base,
-            cs_smag,
-            z0,
-            u_geo,
-            f,
-            nu_t,
-        }
-    }
-
-    /// Compute local strain-rate magnitude |S|.
-    fn strain_rate(&self, ix: usize, iy: usize) -> f64 {
-        let nx = self.nx;
-        let ny = self.ny;
-        let ixp = (ix + 1) % nx;
-        let ixm = (ix + nx - 1) % nx;
-        let iyp = (iy + 1) % ny;
-        let iym = (iy + ny - 1) % ny;
-        let (_r, uxpx, _) = macroscopic(&self.f[ixp][iy]);
-        let (_r, uxmx, _) = macroscopic(&self.f[ixm][iy]);
-        let (_r, _, uypy) = macroscopic(&self.f[ix][iyp]);
-        let (_r, _, uymy) = macroscopic(&self.f[ix][iym]);
-        let (_r, uxpy, _) = macroscopic(&self.f[ix][iyp]);
-        let (_r, uxmy, _) = macroscopic(&self.f[ix][iym]);
-        let (_r, _, uypx) = macroscopic(&self.f[ixp][iy]);
-        let (_r, _, uymx) = macroscopic(&self.f[ixm][iy]);
-        let s11 = 0.5 * (uxpx - uxmx);
-        let s22 = 0.5 * (uypy - uymy);
-        let s12 = 0.25 * ((uxpy - uxmy) + (uypx - uymx));
-        (2.0 * (s11 * s11 + s22 * s22 + 2.0 * s12 * s12)).sqrt()
-    }
-
-    /// Update turbulent viscosity using Smagorinsky model.
-    pub fn update_turbulent_viscosity(&mut self) {
-        let cs = self.cs_smag;
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                let smag = self.strain_rate(ix, iy);
-                self.nu_t[ix][iy] = cs * cs * smag;
-            }
-        }
-    }
-
-    /// Advance one timestep with Smagorinsky LES.
-    pub fn step(&mut self) {
-        self.update_turbulent_viscosity();
-        let omega_base = self.omega_base;
-        let u_geo = self.u_geo;
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                let nu_t_local = self.nu_t[ix][iy];
-                let nu_eff = (1.0 / omega_base - 0.5) * CS2 + nu_t_local;
-                let omega_eff = clamp(1.0 / (nu_eff / CS2 + 0.5), 0.01, 1.99);
-                let (rho, ux, uy) = macroscopic(&self.f[ix][iy]);
-                let feq_arr = feq(rho, ux, uy);
-                for (f_q, feq_q) in self.f[ix][iy].iter_mut().zip(feq_arr.iter()) {
-                    *f_q += omega_eff * (*feq_q - *f_q);
-                }
-            }
-        }
-        // Geostrophic forcing at top
-        for ix in 0..self.nx {
-            let (_rho, ux, _uy) = macroscopic(&self.f[ix][self.ny - 1]);
-            let du = u_geo - ux;
-            for (f_q, w_q) in self.f[ix][self.ny - 1].iter_mut().zip(W.iter()) {
-                *f_q += 0.01 * du * w_q;
-            }
-        }
-        // Log-law wall stress at bottom
-        for ix in 0..self.nx {
-            let (_rho, ux, _uy) = macroscopic(&self.f[ix][1]);
-            let z = 1.0;
-            let kappa = 0.41;
-            let u_star = ux * kappa / (z / self.z0 + 1.0).ln().max(1e-6);
-            let tau_wall = u_star * u_star;
-            let _ = tau_wall;
-            let old = self.f[ix][0];
-            for (q, f_q) in self.f[ix][0].iter_mut().enumerate() {
-                *f_q = old[OPP[q]];
-            }
-        }
-        self.f = stream_periodic(&self.f, self.nx, self.ny);
-    }
-
-    /// Return vertically-averaged horizontal wind profile.
-    pub fn wind_profile(&self) -> Vec<f64> {
-        (0..self.ny)
-            .map(|iy| {
-                let ux_sum: f64 = (0..self.nx).map(|ix| macroscopic(&self.f[ix][iy]).1).sum();
-                ux_sum / self.nx as f64
-            })
-            .collect()
     }
 }
 
@@ -1630,41 +1146,6 @@ mod tests {
         assert_eq!(vf.len(), 8 * 10);
     }
 
-    // ── ShallowWaterLbm ───────────────────────────────────────────────────────
-
-    #[test]
-    fn test_shallow_water_construction() {
-        let sw = ShallowWaterLbm::new(16, 16, 1.0, 0.01, 1.0);
-        assert_eq!(sw.nx, 16);
-    }
-
-    #[test]
-    fn test_shallow_water_dam_break_height() {
-        let mut sw = ShallowWaterLbm::new(16, 16, 1.0, 0.01, 1.0);
-        sw.dam_break_ic(0.5);
-        let h = sw.height_field();
-        let max_h = h.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        assert!(max_h > 1.0, "dam break should increase max height");
-    }
-
-    #[test]
-    fn test_shallow_water_energy_finite() {
-        let sw = ShallowWaterLbm::new(16, 16, 1.0, 0.01, 1.0);
-        let e = sw.total_energy();
-        assert!(e.is_finite() && e >= 0.0);
-    }
-
-    #[test]
-    fn test_shallow_water_step_runs() {
-        let mut sw = ShallowWaterLbm::new(16, 16, 1.0, 0.01, 1.0);
-        sw.dam_break_ic(0.1);
-        for _ in 0..3 {
-            sw.step();
-        }
-        let h = sw.height_field();
-        assert!(h.iter().all(|&v| v.is_finite() && v > 0.0));
-    }
-
     // ── RossbyWaveSim ─────────────────────────────────────────────────────────
 
     #[test]
@@ -1702,69 +1183,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    // ── MantelConvection ──────────────────────────────────────────────────────
-
-    #[test]
-    fn test_mantel_construction() {
-        let m = MantelConvection::new(16, 16, 1.0, 1.0, 1e4, 7.0);
-        assert_eq!(m.nx, 16);
-    }
-
-    #[test]
-    fn test_mantel_conductive_ic() {
-        let mut m = MantelConvection::new(16, 16, 1.0, 1.0, 1e4, 7.0);
-        m.conductive_ic();
-        assert!((m.temp[0][0] - 1.0).abs() < 1e-12, "bottom should be hot");
-        assert!(
-            (m.temp[0][m.ny - 1] - 0.0).abs() < 1e-12,
-            "top should be cold"
-        );
-    }
-
-    #[test]
-    fn test_mantel_nusselt_conductive() {
-        let mut m = MantelConvection::new(16, 16, 1.0, 1.0, 1e3, 7.0);
-        m.conductive_ic();
-        let nu = m.nusselt_number();
-        assert!(nu.is_finite() && nu > 0.0);
-    }
-
-    #[test]
-    fn test_mantel_step_runs() {
-        let mut m = MantelConvection::new(8, 8, 1.0, 1.0, 1e3, 7.0);
-        m.conductive_ic();
-        for _ in 0..3 {
-            m.step();
-        }
-        assert!(m.temp.iter().flatten().all(|&t| t.is_finite()));
-    }
-
-    // ── ThermohalineCirculation ───────────────────────────────────────────────
-
-    #[test]
-    fn test_thermohaline_construction() {
-        let thc = ThermohalineCirculation::new(16, 16, 1.0, 1.0, 0.8, 0.1, 0.08);
-        assert_eq!(thc.nx, 16);
-    }
-
-    #[test]
-    fn test_thermohaline_density_anomaly() {
-        let thc = ThermohalineCirculation::new(8, 8, 1.0, 1.0, 0.8, 0.1, 0.08);
-        let da = thc.density_anomaly();
-        assert_eq!(da.len(), 8);
-        assert_eq!(da[0].len(), 8);
-    }
-
-    #[test]
-    fn test_thermohaline_step_finite() {
-        let mut thc = ThermohalineCirculation::new(8, 8, 1.0, 1.0, 0.8, 0.1, 0.08);
-        for _ in 0..5 {
-            thc.step();
-        }
-        let da = thc.density_anomaly();
-        assert!(da.iter().flatten().all(|&v| v.is_finite()));
     }
 
     // ── GravityCurrent ────────────────────────────────────────────────────────

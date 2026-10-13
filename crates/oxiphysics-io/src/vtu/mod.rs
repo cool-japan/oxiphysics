@@ -2,9 +2,11 @@
 
 pub mod functions;
 pub mod functions_2;
+pub mod reader;
 pub mod types;
 pub mod vtuwriter_traits;
 
 // Re-export all types
 pub use functions::*;
+pub use reader::*;
 pub use types::*;

@@ -20,6 +20,7 @@ impl Default for PhysicsWorld {
             config: PhysicsConfig::default(),
             fixed_dt: 1.0 / 60.0,
             accumulator: 0.0,
+            max_substeps: 8,
             bodies: BodyArena::new(),
             constraints: Vec::new(),
             events: VecDeque::new(),

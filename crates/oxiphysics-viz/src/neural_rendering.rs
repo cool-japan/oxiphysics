@@ -708,29 +708,52 @@ impl Gaussian3D {
         }
     }
 
+    /// Rotation matrix `R` (row-major, `R[row][col]`) described by the
+    /// quaternion `[w, x, y, z]` stored in [`rotation`](Self::rotation).
+    ///
+    /// The quaternion is normalised first, so a scaled quaternion describes
+    /// the same orientation as its unit counterpart.  A zero-length or
+    /// non-finite quaternion carries no orientation and yields the identity.
+    /// The columns of `R` are the principal axes of the Gaussian in world
+    /// space; column `k` carries the standard deviation `scale[k]`.
+    pub fn rotation_matrix(&self) -> [[f64; 3]; 3] {
+        let [qw, qx, qy, qz] = self.rotation;
+        let norm = (qw * qw + qx * qx + qy * qy + qz * qz).sqrt();
+        if !norm.is_finite() || norm < 1e-12 {
+            return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        }
+        let (w, x, y, z) = (qw / norm, qx / norm, qy / norm, qz / norm);
+        [
+            [
+                1.0 - 2.0 * (y * y + z * z),
+                2.0 * (x * y - w * z),
+                2.0 * (x * z + w * y),
+            ],
+            [
+                2.0 * (x * y + w * z),
+                1.0 - 2.0 * (x * x + z * z),
+                2.0 * (y * z - w * x),
+            ],
+            [
+                2.0 * (x * z - w * y),
+                2.0 * (y * z + w * x),
+                1.0 - 2.0 * (x * x + y * y),
+            ],
+        ]
+    }
+
     /// Compute 3×3 covariance matrix from scale and rotation.
     ///
-    /// Σ = R * S * S^T * R^T where S = diag(scale).
+    /// Σ = R * S * S^T * R^T where S = diag(scale) and `R` is
+    /// [`rotation_matrix`](Self::rotation_matrix) (the quaternion is normalised).
     pub fn covariance(&self) -> [[f64; 3]; 3] {
-        let [w, x, y, z] = self.rotation;
-        // Rotation matrix from quaternion.
-        let r00 = 1.0 - 2.0 * (y * y + z * z);
-        let r01 = 2.0 * (x * y - w * z);
-        let r02 = 2.0 * (x * z + w * y);
-        let r10 = 2.0 * (x * y + w * z);
-        let r11 = 1.0 - 2.0 * (x * x + z * z);
-        let r12 = 2.0 * (y * z - w * x);
-        let r20 = 2.0 * (x * z - w * y);
-        let r21 = 2.0 * (y * z + w * x);
-        let r22 = 1.0 - 2.0 * (x * x + y * y);
-
         let [sx, sy, sz] = self.scale;
         // S^2 (diagonal).
         let s2 = [sx * sx, sy * sy, sz * sz];
 
         // Σ = R * diag(s2) * R^T.
         let mut cov = [[0.0f64; 3]; 3];
-        let r = [[r00, r01, r02], [r10, r11, r12], [r20, r21, r22]];
+        let r = self.rotation_matrix();
 
         // rs = R * diag(s2).
         let mut rs = [[0.0f64; 3]; 3];
@@ -750,21 +773,21 @@ impl Gaussian3D {
         cov
     }
 
-    /// Evaluate the Gaussian density at a 3D offset from center.
+    /// Evaluate the (unnormalised) Gaussian density at a 3D offset from the
+    /// centre, honouring both the anisotropic scale and the orientation.
+    ///
+    /// Returns `exp(-d²/2)` with `d² = offsetᵀ Σ⁻¹ offset` the squared
+    /// Mahalanobis distance.  Since `Σ = R diag(s²) Rᵀ`, its inverse is
+    /// `R diag(1/s²) Rᵀ`, so `d² = Σₖ (Rᵀ offset)ₖ² / sₖ²`.  A small epsilon is
+    /// added to each `sₖ²` so that a collapsed axis stays finite.
     pub fn eval_density(&self, offset: [f64; 3]) -> f64 {
-        let cov = self.covariance();
-        // Mahalanobis distance squared: d^T * Σ^-1 * d.
-        // For diagonal approximation use scale directly.
-        let [sx, sy, sz] = self.scale;
-        let inv_s2 = [
-            1.0 / (sx * sx + 1e-10),
-            1.0 / (sy * sy + 1e-10),
-            1.0 / (sz * sz + 1e-10),
-        ];
-        let _ = cov; // covariance is computed but full inverse deferred
-        let md2 = offset[0] * offset[0] * inv_s2[0]
-            + offset[1] * offset[1] * inv_s2[1]
-            + offset[2] * offset[2] * inv_s2[2];
+        let r = self.rotation_matrix();
+        // Offset expressed in the Gaussian's principal-axis frame: Rᵀ · offset.
+        let mut md2 = 0.0_f64;
+        for (k, s) in self.scale.iter().enumerate() {
+            let local = r[0][k] * offset[0] + r[1][k] * offset[1] + r[2][k] * offset[2];
+            md2 += local * local / (s * s + 1e-10);
+        }
         (-0.5 * md2).exp()
     }
 }
@@ -1478,486 +1501,4 @@ fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (f64, f64, f64) {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── PositionalEncoding ────────────────────────────────────────────────
-
-    #[test]
-    fn test_pe_scalar_output_dim() {
-        let pe = PositionalEncoding::new(4, false);
-        let enc = pe.encode_scalar(0.5);
-        assert_eq!(enc.len(), 8); // 2 * 4 freqs, no input
-    }
-
-    #[test]
-    fn test_pe_scalar_with_input_dim() {
-        let pe = PositionalEncoding::new(4, true);
-        let enc = pe.encode_scalar(0.5);
-        assert_eq!(enc.len(), 9); // 1 + 2*4
-    }
-
-    #[test]
-    fn test_pe_point_output_dim() {
-        let pe = PositionalEncoding::new(10, true);
-        let enc = pe.encode_point([0.1, 0.2, 0.3]);
-        assert_eq!(enc.len(), pe.point_output_dim());
-        assert_eq!(enc.len(), 3 * (1 + 2 * 10));
-    }
-
-    #[test]
-    fn test_pe_sin_cos_pairs() {
-        let pe = PositionalEncoding::new(1, false);
-        let enc = pe.encode_scalar(0.0);
-        // freq=1, x=0: sin(0) = 0, cos(0) = 1
-        assert!(enc[0].abs() < 1e-10, "sin(0) = 0");
-        assert!((enc[1] - 1.0).abs() < 1e-10, "cos(0) = 1");
-    }
-
-    #[test]
-    fn test_pe_frequency_doubling() {
-        let pe = PositionalEncoding::new(3, false);
-        assert_eq!(pe.frequencies.len(), 3);
-        assert!((pe.frequencies[0] - 1.0).abs() < 1e-10);
-        assert!((pe.frequencies[1] - 2.0).abs() < 1e-10);
-        assert!((pe.frequencies[2] - 4.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_pe_different_inputs_produce_different_encodings() {
-        let pe = PositionalEncoding::new(6, true);
-        let a = pe.encode_scalar(0.1);
-        let b = pe.encode_scalar(0.9);
-        let diff: f64 = a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).sum();
-        assert!(
-            diff > 0.01,
-            "different inputs should produce different encodings"
-        );
-    }
-
-    // ── MlpLayer ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_mlp_layer_output_dim() {
-        let layer = MlpLayer::new(8, 4);
-        let input = vec![0.5; 8];
-        let out = layer.forward_relu(&input);
-        assert_eq!(out.len(), 4);
-    }
-
-    #[test]
-    fn test_mlp_relu_non_negative() {
-        let layer = MlpLayer::new(4, 8);
-        let input = vec![-1.0, 1.0, -0.5, 0.5];
-        let out = layer.forward_relu(&input);
-        for &v in &out {
-            assert!(v >= 0.0, "ReLU output must be non-negative, got {}", v);
-        }
-    }
-
-    #[test]
-    fn test_mlp_sigmoid_range() {
-        let layer = MlpLayer::new(4, 4);
-        let input = vec![1.0, -1.0, 0.0, 2.0];
-        let out = layer.forward_sigmoid(&input);
-        for &v in &out {
-            assert!(
-                (0.0..=1.0).contains(&v),
-                "sigmoid output must be in [0,1], got {}",
-                v
-            );
-        }
-    }
-
-    // ── NeuralRadianceField ───────────────────────────────────────────────
-
-    #[test]
-    fn test_nerf_query_density_nonneg() {
-        let nerf = NeuralRadianceField::new(4, 2, 32, 0.1, 10.0);
-        let (density, _color) = nerf.query([0.1, 0.2, 0.3], [0.0, 0.0, 1.0]);
-        assert!(
-            density >= 0.0,
-            "density must be non-negative, got {}",
-            density
-        );
-    }
-
-    #[test]
-    fn test_nerf_query_color_range() {
-        let nerf = NeuralRadianceField::new(4, 2, 32, 0.1, 10.0);
-        let (_density, color) = nerf.query([0.5, 0.5, 0.5], [1.0, 0.0, 0.0]);
-        for &c in &color {
-            assert!(
-                (0.0..=1.0).contains(&c),
-                "color must be in [0,1], got {}",
-                c
-            );
-        }
-    }
-
-    #[test]
-    fn test_nerf_pos_enc_dim() {
-        let nerf = NeuralRadianceField::new(10, 4, 64, 0.1, 10.0);
-        assert_eq!(nerf.pos_enc_dim(), 3 * (1 + 2 * 10));
-    }
-
-    // ── NeRfVolume ────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_nerf_volume_stratified_sample_count() {
-        let vol = NeRfVolume::new(64, 128);
-        let ts = vol.stratified_sample(0.1, 10.0, 64, false);
-        assert_eq!(ts.len(), 64);
-    }
-
-    #[test]
-    fn test_nerf_volume_samples_in_range() {
-        let vol = NeRfVolume::new(32, 0);
-        let near = 0.5;
-        let far = 8.0;
-        let ts = vol.stratified_sample(near, far, 32, false);
-        for &t in &ts {
-            assert!(t >= near && t <= far, "t={} out of [{},{}]", t, near, far);
-        }
-    }
-
-    #[test]
-    fn test_nerf_volume_render_ray_alpha_range() {
-        let nerf = NeuralRadianceField::new(4, 2, 16, 0.1, 5.0);
-        let vol = NeRfVolume::new(16, 0);
-        let result = vol.render_ray(&nerf, [0.0; 3], [0.0, 0.0, 1.0]);
-        assert!(
-            result.alpha >= 0.0 && result.alpha <= 1.0,
-            "alpha out of range: {}",
-            result.alpha
-        );
-    }
-
-    #[test]
-    fn test_nerf_volume_render_ray_color_range() {
-        let nerf = NeuralRadianceField::new(4, 2, 16, 0.1, 5.0);
-        let vol = NeRfVolume::new(16, 0);
-        let result = vol.render_ray(&nerf, [0.0; 3], [0.0, 0.0, 1.0]);
-        for &c in &result.color {
-            assert!((0.0..=1.0).contains(&c), "color out of range: {}", c);
-        }
-    }
-
-    #[test]
-    fn test_nerf_volume_integral_empty_samples() {
-        let vol = NeRfVolume::new(8, 0);
-        let result = vol.volume_render_integral(&[]);
-        assert_eq!(result.num_samples, 0);
-        assert_eq!(result.alpha, 0.0);
-    }
-
-    // ── InstantNgp ────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_instant_ngp_encode_length() {
-        let ngp = InstantNgp::new(8, 16, 1.5, 512);
-        let enc = ngp.encode([0.5, 0.5, 0.5]);
-        assert_eq!(enc.len(), 8 * 2); // 2 features per level
-    }
-
-    #[test]
-    fn test_instant_ngp_query_density_nonneg() {
-        let ngp = InstantNgp::new(4, 8, 2.0, 256);
-        let (density, _) = ngp.query([0.3, 0.4, 0.5]);
-        assert!(density >= 0.0, "density must be non-negative: {}", density);
-    }
-
-    #[test]
-    fn test_instant_ngp_param_count_positive() {
-        let ngp = InstantNgp::new(4, 8, 2.0, 256);
-        let params = ngp.param_count();
-        assert!(params > 0, "param count must be positive: {}", params);
-    }
-
-    #[test]
-    fn test_hash_grid_level_hash_deterministic() {
-        let level = HashGridLevel::new(16, 512);
-        let h1 = level.hash_coords(3, 7, 11);
-        let h2 = level.hash_coords(3, 7, 11);
-        assert_eq!(h1, h2, "hash must be deterministic");
-    }
-
-    #[test]
-    fn test_hash_grid_lookup_in_range() {
-        let level = HashGridLevel::new(8, 128);
-        let f = level.lookup(0.5, 0.5, 0.5);
-        // Table initialized to zeros so result should be zero.
-        assert_eq!(f, [0.0f32; 2]);
-    }
-
-    // ── GaussianSplatting ─────────────────────────────────────────────────
-
-    #[test]
-    fn test_gaussian_covariance_symmetric() {
-        let g = Gaussian3D::new(
-            [0.0; 3],
-            [1.0, 0.5, 0.2],
-            0.8,
-            [0.1, 0.2, 0.3],
-            [1.0, 0.0, 0.0, 0.0],
-        );
-        let cov = g.covariance();
-        for (i, row) in cov.iter().enumerate() {
-            for (j, &val) in row.iter().enumerate() {
-                assert!(
-                    (val - cov[j][i]).abs() < 1e-10,
-                    "covariance not symmetric at ({},{}) : {} vs {}",
-                    i,
-                    j,
-                    val,
-                    cov[j][i]
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_gaussian_density_max_at_center() {
-        let g = Gaussian3D::new([0.0; 3], [1.0; 3], 1.0, [1.0; 3], [1.0, 0.0, 0.0, 0.0]);
-        let center_density = g.eval_density([0.0; 3]);
-        let offset_density = g.eval_density([2.0, 0.0, 0.0]);
-        assert!(
-            center_density > offset_density,
-            "center density {} must exceed offset density {}",
-            center_density,
-            offset_density
-        );
-    }
-
-    #[test]
-    fn test_gaussian_splatting_empty_scene_white() {
-        let scene = GaussianSplatting::new();
-        let color = scene.render_ray([0.0; 3], [0.0, 0.0, 1.0]);
-        // Empty scene = pure white background
-        for &c in &color {
-            assert!(
-                (c - 1.0).abs() < 1e-10,
-                "empty scene should be white, got {}",
-                c
-            );
-        }
-    }
-
-    #[test]
-    fn test_gaussian_splatting_bounding_sphere_empty() {
-        let scene = GaussianSplatting::new();
-        let (_center, radius) = scene.bounding_sphere();
-        assert_eq!(radius, 0.0);
-    }
-
-    #[test]
-    fn test_gaussian_splatting_bounding_sphere_nonempty() {
-        let mut scene = GaussianSplatting::new();
-        scene.add(Gaussian3D::new(
-            [1.0, 0.0, 0.0],
-            [1.0; 3],
-            0.5,
-            [0.1; 3],
-            [1.0, 0.0, 0.0, 0.0],
-        ));
-        scene.add(Gaussian3D::new(
-            [-1.0, 0.0, 0.0],
-            [0.5; 3],
-            0.5,
-            [0.1; 3],
-            [1.0, 0.0, 0.0, 0.0],
-        ));
-        let (center, radius) = scene.bounding_sphere();
-        assert!(radius > 0.0, "bounding radius must be positive");
-        let _ = center; // used
-    }
-
-    // ── NeuralSdf ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_neural_sdf_normal_unit_length() {
-        let sdf = NeuralSdf::new(4, 32);
-        let n = sdf.normal([0.5, 0.5, 0.5]);
-        let mag = len3(n);
-        // Normal may be zero-vector if SDF gradient is zero, otherwise unit.
-        if mag > 1e-8 {
-            assert!(
-                (mag - 1.0).abs() < 1e-4,
-                "normal magnitude should be ≈1, got {:.6}",
-                mag
-            );
-        }
-    }
-
-    #[test]
-    fn test_neural_sdf_query_fields() {
-        let sdf = NeuralSdf::new(4, 32);
-        let res = sdf.query([0.0, 0.0, 0.0]);
-        // Just verify that is_inside matches distance sign.
-        assert_eq!(res.is_inside, res.distance < 0.0);
-    }
-
-    #[test]
-    fn test_neural_sdf_sphere_trace_or_none() {
-        let sdf = NeuralSdf::new(2, 16);
-        // Sphere trace may or may not find a surface; just ensure no panic.
-        let _result = sdf.sphere_trace([0.0; 3], [1.0, 0.0, 0.0], 32, 0.01);
-    }
-
-    // ── DeepRenderImage ───────────────────────────────────────────────────
-
-    #[test]
-    fn test_deep_render_image_init() {
-        let img = DeepRenderImage::new(16, 8);
-        assert_eq!(img.width, 16);
-        assert_eq!(img.height, 8);
-        assert_eq!(img.pixels.len(), 128);
-    }
-
-    #[test]
-    fn test_deep_render_image_set_get_pixel() {
-        let mut img = DeepRenderImage::new(4, 4);
-        img.set_pixel(2, 3, [0.5, 0.25, 0.75], 1.0, 0.9);
-        let px = img.get_pixel(2, 3);
-        assert!((px[0] - 0.5).abs() < 1e-6);
-        assert!((px[1] - 0.25).abs() < 1e-6);
-        assert!((px[2] - 0.75).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_deep_render_image_rgba8_length() {
-        let img = DeepRenderImage::new(4, 4);
-        let bytes = img.to_rgba8();
-        assert_eq!(bytes.len(), 4 * 4 * 4); // 4 channels per pixel
-    }
-
-    #[test]
-    fn test_deep_render_image_mean_luminance_black() {
-        let img = DeepRenderImage::new(8, 8);
-        assert!(
-            img.mean_luminance().abs() < 1e-6,
-            "all-black image should have zero luminance"
-        );
-    }
-
-    // ── NeuralDenoiser ────────────────────────────────────────────────────
-
-    #[test]
-    fn test_neural_denoiser_kernel_weights_sum_to_one() {
-        let d = NeuralDenoiser::new(DenoiserKernel::Gaussian, 3);
-        let sum: f64 = d.kernel_weights.iter().sum();
-        assert!(
-            (sum - 1.0).abs() < 1e-10,
-            "kernel weights should sum to 1, got {:.6}",
-            sum
-        );
-    }
-
-    #[test]
-    fn test_neural_denoiser_output_same_size() {
-        let d = NeuralDenoiser::new(DenoiserKernel::ATrous, 2);
-        let img = DeepRenderImage::new(8, 8);
-        let out = d.denoise(&img);
-        assert_eq!(out.width, img.width);
-        assert_eq!(out.height, img.height);
-    }
-
-    // ── StyleTransferViz ─────────────────────────────────────────────────
-
-    #[test]
-    fn test_style_transfer_gram_diagonal_nonneg() {
-        let st = StyleTransferViz::new(1.0, 0.01, 100);
-        let features = vec![vec![1.0, 0.0, 0.5], vec![0.0, 1.0, 0.5]];
-        let gram = st.compute_gram(&features);
-        assert_eq!(gram.len(), 4); // 2x2
-        // Diagonal elements (self dot products) should be non-negative.
-        assert!(gram[0] >= 0.0 && gram[3] >= 0.0);
-    }
-
-    #[test]
-    fn test_style_transfer_loss_zero_for_equal_grams() {
-        let st = StyleTransferViz::new(1.0, 1.0, 10);
-        let gram = vec![1.0, 0.0, 0.0, 1.0];
-        let loss = st.style_loss(&gram, &gram);
-        assert!(
-            loss.abs() < 1e-10,
-            "identical grams should have zero style loss"
-        );
-    }
-
-    // ── LatentSpaceViz ────────────────────────────────────────────────────
-
-    #[test]
-    fn test_latent_space_viz_add_point() {
-        let mut viz = LatentSpaceViz::new(30.0, 100, 5);
-        viz.add_point(vec![1.0, 0.0, 0.0], 0);
-        viz.add_point(vec![0.0, 1.0, 0.0], 1);
-        assert_eq!(viz.points.len(), 2);
-    }
-
-    #[test]
-    fn test_latent_space_viz_embedding_distance_zero_self() {
-        let viz = LatentSpaceViz::new(10.0, 50, 3);
-        let emb = vec![1.0, 2.0, 3.0];
-        let d = viz.embedding_distance(&emb, &emb);
-        assert!(d.abs() < 1e-10, "self-distance should be zero, got {}", d);
-    }
-
-    #[test]
-    fn test_latent_space_viz_distance_matrix_diagonal_zero() {
-        let mut viz = LatentSpaceViz::new(10.0, 50, 3);
-        viz.add_point(vec![1.0, 0.0], 0);
-        viz.add_point(vec![0.0, 1.0], 1);
-        let dm = viz.distance_matrix();
-        assert!(dm[0][0].abs() < 1e-10, "diagonal should be zero");
-        assert!(dm[1][1].abs() < 1e-10, "diagonal should be zero");
-    }
-
-    #[test]
-    fn test_latent_space_viz_cluster_color_range() {
-        let viz = LatentSpaceViz::new(10.0, 50, 8);
-        for i in 0..8 {
-            let c = viz.cluster_color(i);
-            for &v in &c {
-                assert!(
-                    (0.0..=1.0).contains(&v),
-                    "color component {} out of [0,1]",
-                    v
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_latent_space_viz_pca_projection() {
-        let mut viz = LatentSpaceViz::new(10.0, 50, 3);
-        viz.add_point(vec![1.0, 2.0, 3.0], 0);
-        viz.add_point(vec![4.0, 5.0, 6.0], 1);
-        viz.project_pca();
-        // After centering, mean should be near zero.
-        let mx: f64 = viz.points.iter().map(|p| p.projected[0]).sum::<f64>() / 2.0;
-        let my: f64 = viz.points.iter().map(|p| p.projected[1]).sum::<f64>() / 2.0;
-        assert!(mx.abs() < 1e-10, "projected x-mean should be 0, got {}", mx);
-        assert!(my.abs() < 1e-10, "projected y-mean should be 0, got {}", my);
-    }
-
-    #[test]
-    fn test_hsl_to_rgb_pure_red() {
-        let (r, g, b) = hsl_to_rgb(0.0, 1.0, 0.5);
-        assert!((r - 1.0).abs() < 1e-6, "r should be 1 for hue=0");
-        assert!(g.abs() < 1e-6, "g should be 0 for hue=0");
-        assert!(b.abs() < 1e-6, "b should be 0 for hue=0");
-    }
-
-    #[test]
-    fn test_nerf_volume_stratified_monotone() {
-        let vol = NeRfVolume::new(16, 0);
-        let ts = vol.stratified_sample(0.1, 10.0, 16, false);
-        for i in 1..ts.len() {
-            assert!(
-                ts[i] > ts[i - 1],
-                "samples must be monotonically increasing"
-            );
-        }
-    }
-}
+mod tests;

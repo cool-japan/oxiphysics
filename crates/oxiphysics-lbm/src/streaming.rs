@@ -20,40 +20,90 @@
 use crate::grid::{LbmGrid2D, LbmGrid3D};
 
 // ---------------------------------------------------------------------------
+// Periodic shift helpers
+// ---------------------------------------------------------------------------
+
+/// Reduce the lattice velocity component `c` to a non-negative cyclic shift
+/// in `[0, n)` along an axis of `n` cells (`n > 0`).
+#[inline]
+fn cyclic_shift(c: i32, n: usize) -> usize {
+    i64::from(c).rem_euclid(n as i64) as usize
+}
+
+/// Make sure `scratch` holds `q` planes of exactly `n` values.
+///
+/// This is a no-op after the first call, so streaming never allocates in the
+/// steady state.  It also repairs a scratch buffer that was emptied or
+/// resized by code that rebuilt the grid by hand.
+fn ensure_scratch(scratch: &mut Vec<Vec<f64>>, q: usize, n: usize) {
+    scratch.resize_with(q, Vec::new);
+    for plane in scratch.iter_mut() {
+        if plane.len() != n {
+            plane.clear();
+            plane.resize(n, 0.0);
+        }
+    }
+}
+
+/// Copy the `nx × ny` plane `src` into `dst`, moving every value by
+/// `(sx, sy)` cells with periodic wrap-around (`0 <= sx < nx`, `0 <= sy < ny`).
+///
+/// `dst[(y + sy) mod ny][(x + sx) mod nx] = src[y][x]`.  The wrap is handled
+/// by splitting each row (or, for `sx == 0`, the whole plane) into two
+/// contiguous spans, so the inner work is `copy_from_slice` and there is no
+/// per-cell index arithmetic.
+#[inline]
+fn shift_plane_into(dst: &mut [f64], src: &[f64], nx: usize, ny: usize, sx: usize, sy: usize) {
+    debug_assert_eq!(dst.len(), nx * ny);
+    debug_assert_eq!(src.len(), nx * ny);
+    if sx == 0 {
+        // Whole rows move together: two contiguous blocks cover the plane.
+        let split = (ny - sy) * nx;
+        dst[sy * nx..].copy_from_slice(&src[..split]);
+        dst[..sy * nx].copy_from_slice(&src[split..]);
+        return;
+    }
+    let split = nx - sx;
+    for (y, src_row) in src.chunks_exact(nx).enumerate() {
+        let dy = if y + sy >= ny { y + sy - ny } else { y + sy };
+        let dst_row = &mut dst[dy * nx..(dy + 1) * nx];
+        dst_row[sx..].copy_from_slice(&src_row[..split]);
+        dst_row[..sx].copy_from_slice(&src_row[split..]);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 2D periodic streaming
 // ---------------------------------------------------------------------------
 
 /// Stream distributions on a 2D grid with periodic boundaries.
 ///
-/// Uses a temporary buffer to avoid overwriting data that has not
-/// yet been read.
+/// Every direction `i` is a cyclic shift of its plane by the lattice velocity
+/// `c_i`.  The shift is written into the grid's scratch buffer
+/// ([`LbmGrid2D::f_tmp`]) with contiguous span copies and the per-direction
+/// buffers are then swapped, so a step performs no allocation and no
+/// per-cell modular arithmetic.  The rest direction does not move and is left
+/// untouched.
 pub fn stream_2d(grid: &mut LbmGrid2D) {
     let nx = grid.nx;
     let ny = grid.ny;
-    let q = grid.lattice.q();
     let n = nx * ny;
-
-    // Allocate temporary buffer.
-    let mut f_new: Vec<Vec<f64>> = vec![vec![0.0; n]; q];
-
-    for (i, f_new_i) in f_new.iter_mut().enumerate().take(q) {
-        let c = grid.lattice.velocity_2d(i);
-        let cx = c[0];
-        let cy = c[1];
-
-        for y in 0..ny {
-            for x in 0..nx {
-                // Source cell (where the distribution comes from).
-                let src_x = ((x as i64 - cx as i64).rem_euclid(nx as i64)) as usize;
-                let src_y = ((y as i64 - cy as i64).rem_euclid(ny as i64)) as usize;
-                let dst = y * nx + x;
-                let src = src_y * nx + src_x;
-                f_new_i[dst] = grid.f[i][src];
-            }
-        }
+    if n == 0 {
+        return;
     }
+    let q = grid.lattice.q();
+    ensure_scratch(&mut grid.f_tmp, q, n);
 
-    grid.f = f_new;
+    for i in 0..q {
+        let c = grid.lattice.velocity_2d(i);
+        let sx = cyclic_shift(c[0], nx);
+        let sy = cyclic_shift(c[1], ny);
+        if sx == 0 && sy == 0 {
+            continue;
+        }
+        shift_plane_into(&mut grid.f_tmp[i], &grid.f[i], nx, ny, sx, sy);
+        std::mem::swap(&mut grid.f[i], &mut grid.f_tmp[i]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -61,36 +111,47 @@ pub fn stream_2d(grid: &mut LbmGrid2D) {
 // ---------------------------------------------------------------------------
 
 /// Stream distributions on a 3D grid with periodic boundaries.
+///
+/// Same scheme as [`stream_2d`]: each direction is shifted plane by plane
+/// into [`LbmGrid3D::f_tmp`] and the buffers are swapped, so no memory is
+/// allocated per step.
 pub fn stream_3d(grid: &mut LbmGrid3D) {
     let nx = grid.nx;
     let ny = grid.ny;
     let nz = grid.nz;
+    let plane = nx * ny;
+    let n = plane * nz;
+    if n == 0 {
+        return;
+    }
     let q = grid.lattice.q();
-    let n = nx * ny * nz;
+    ensure_scratch(&mut grid.f_tmp, q, n);
 
-    let mut f_new: Vec<Vec<f64>> = vec![vec![0.0; n]; q];
-
-    for (i, f_new_i) in f_new.iter_mut().enumerate().take(q) {
+    for i in 0..q {
         let c = grid.lattice.velocity_3d(i);
-        let cx = c[0];
-        let cy = c[1];
-        let cz = c[2];
-
-        for z in 0..nz {
-            for y in 0..ny {
-                for x in 0..nx {
-                    let src_x = ((x as i64 - cx as i64).rem_euclid(nx as i64)) as usize;
-                    let src_y = ((y as i64 - cy as i64).rem_euclid(ny as i64)) as usize;
-                    let src_z = ((z as i64 - cz as i64).rem_euclid(nz as i64)) as usize;
-                    let dst = z * ny * nx + y * nx + x;
-                    let src = src_z * ny * nx + src_y * nx + src_x;
-                    f_new_i[dst] = grid.f[i][src];
-                }
+        let sx = cyclic_shift(c[0], nx);
+        let sy = cyclic_shift(c[1], ny);
+        let sz = cyclic_shift(c[2], nz);
+        if sx == 0 && sy == 0 && sz == 0 {
+            continue;
+        }
+        {
+            let src = &grid.f[i];
+            let dst = &mut grid.f_tmp[i];
+            for z in 0..nz {
+                let dz = if z + sz >= nz { z + sz - nz } else { z + sz };
+                shift_plane_into(
+                    &mut dst[dz * plane..(dz + 1) * plane],
+                    &src[z * plane..(z + 1) * plane],
+                    nx,
+                    ny,
+                    sx,
+                    sy,
+                );
             }
         }
+        std::mem::swap(&mut grid.f[i], &mut grid.f_tmp[i]);
     }
-
-    grid.f = f_new;
 }
 
 // ---------------------------------------------------------------------------
@@ -285,55 +346,52 @@ pub fn stream_aa_2d(grid: &mut LbmGrid2D, is_even: bool) {
 // Swap scheme streaming 2D
 // ---------------------------------------------------------------------------
 
-/// Swap-scheme streaming for 2D grids.
+/// Swap-scheme streaming for 2D grids (Mattila et al., 2007).
 ///
-/// The swap scheme is a memory-efficient in-place streaming method
-/// that swaps distributions between neighboring cells along each
-/// lattice direction pair (i, opp(i)).  Unlike the AA pattern this
-/// performs a full streaming step in one call.
+/// A memory-free, in-place streaming step that is exactly equivalent to
+/// [`stream_2d`].  For every pair of opposite directions `(i, ī)` with
+/// `c_ī = −c_i`:
+///
+/// 1. the two populations are exchanged at every node (an O(1) swap of the
+///    two direction buffers), so that the slot of `ī` holds the outgoing
+///    `f_i` and the slot of `i` holds the outgoing `f_ī`;
+/// 2. the slot `ī` of node `x` is swapped with the slot `i` of node
+///    `x + c_i`, which delivers `f_i(x)` to `x + c_i` and `f_ī(x + c_i)` to
+///    `x` in one operation.
+///
+/// On a periodic lattice the swaps of step 2 touch pairwise disjoint slots,
+/// so no temporary copy of the distributions is needed and the visiting order
+/// is irrelevant.  The rest direction does not move.
 pub fn stream_swap_2d(grid: &mut LbmGrid2D) {
     let nx = grid.nx;
     let ny = grid.ny;
+    if nx == 0 || ny == 0 {
+        return;
+    }
     let q = grid.lattice.q();
 
-    let mut pairs: Vec<(usize, usize)> = Vec::new();
-    let mut visited = vec![false; q];
     for i in 0..q {
         let opp = grid.lattice.opposite(i);
-        if i == opp {
+        if opp <= i {
+            // Rest direction, or the second member of an already handled pair.
             continue;
         }
-        if !visited[i] {
-            pairs.push((i, opp));
-            visited[i] = true;
-            visited[opp] = true;
-        }
-    }
-
-    // First pass: swap f[i] <-> f[opp] (direction reversal at same cell)
-    let n = nx * ny;
-    for &(i, opp) in &pairs {
-        for k in 0..n {
-            let tmp = grid.f[i][k];
-            grid.f[i][k] = grid.f[opp][k];
-            grid.f[opp][k] = tmp;
-        }
-    }
-
-    // Second pass: propagate each direction (now holding opposite data)
-    // via standard push into temporary buffer, then copy back.
-    let f_old = grid.f.clone();
-    for &(i, _opp) in &pairs {
         let c = grid.lattice.velocity_2d(i);
-        let cx = c[0] as i64;
-        let cy = c[1] as i64;
+        let sx = cyclic_shift(c[0], nx);
+        let sy = cyclic_shift(c[1], ny);
+
+        // Step 1: exchange f_i and f_ī at every node.
+        grid.f.swap(i, opp);
+
+        // Step 2: swap slot ī of node x with slot i of node x + c_i.
+        let (low, high) = grid.f.split_at_mut(opp);
+        let f_i = &mut low[i];
+        let f_opp = &mut high[0];
         for y in 0..ny {
+            let dy = if y + sy >= ny { y + sy - ny } else { y + sy };
             for x in 0..nx {
-                let k_src = y * nx + x;
-                let dx = ((x as i64 + cx).rem_euclid(nx as i64)) as usize;
-                let dy = ((y as i64 + cy).rem_euclid(ny as i64)) as usize;
-                let k_dst = dy * nx + dx;
-                grid.f[i][k_dst] = f_old[i][k_src];
+                let dx = if x + sx >= nx { x + sx - nx } else { x + sx };
+                std::mem::swap(&mut f_opp[y * nx + x], &mut f_i[dy * nx + dx]);
             }
         }
     }
@@ -1426,5 +1484,274 @@ mod tests {
             (mass_before - mass_after).abs() < 1e-12,
             "Shift should conserve mass"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests_periodic_streaming {
+    use super::*;
+    use crate::lattice::LatticeType;
+
+    /// Deterministic pseudo-random values in [0, 1) (64-bit LCG).
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> f64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (self.0 >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    fn random_grid_2d(nx: usize, ny: usize, seed: u64) -> LbmGrid2D {
+        let mut rng = Lcg(seed);
+        let mut grid = LbmGrid2D::new(nx, ny, LatticeType::D2Q9);
+        for f_i in grid.f.iter_mut() {
+            for v in f_i.iter_mut() {
+                *v = rng.next();
+            }
+        }
+        grid
+    }
+
+    fn random_grid_3d(nx: usize, ny: usize, nz: usize, lt: LatticeType, seed: u64) -> LbmGrid3D {
+        let mut rng = Lcg(seed);
+        let mut grid = LbmGrid3D::new(nx, ny, nz, lt);
+        for f_i in grid.f.iter_mut() {
+            for v in f_i.iter_mut() {
+                *v = rng.next();
+            }
+        }
+        grid
+    }
+
+    /// Straightforward per-cell reference: f_new_i(x) = f_i(x - c_i) (periodic).
+    fn reference_stream_2d(grid: &LbmGrid2D) -> Vec<Vec<f64>> {
+        let (nx, ny) = (grid.nx as i64, grid.ny as i64);
+        (0..grid.lattice.q())
+            .map(|i| {
+                let c = grid.lattice.velocity_2d(i);
+                let mut plane = vec![0.0; (nx * ny) as usize];
+                for y in 0..ny {
+                    for x in 0..nx {
+                        let sx = (x - i64::from(c[0])).rem_euclid(nx);
+                        let sy = (y - i64::from(c[1])).rem_euclid(ny);
+                        plane[(y * nx + x) as usize] = grid.f[i][(sy * nx + sx) as usize];
+                    }
+                }
+                plane
+            })
+            .collect()
+    }
+
+    fn reference_stream_3d(grid: &LbmGrid3D) -> Vec<Vec<f64>> {
+        let (nx, ny, nz) = (grid.nx as i64, grid.ny as i64, grid.nz as i64);
+        (0..grid.lattice.q())
+            .map(|i| {
+                let c = grid.lattice.velocity_3d(i);
+                let mut plane = vec![0.0; (nx * ny * nz) as usize];
+                for z in 0..nz {
+                    for y in 0..ny {
+                        for x in 0..nx {
+                            let sx = (x - i64::from(c[0])).rem_euclid(nx);
+                            let sy = (y - i64::from(c[1])).rem_euclid(ny);
+                            let sz = (z - i64::from(c[2])).rem_euclid(nz);
+                            plane[(z * ny * nx + y * nx + x) as usize] =
+                                grid.f[i][(sz * ny * nx + sy * nx + sx) as usize];
+                        }
+                    }
+                }
+                plane
+            })
+            .collect()
+    }
+
+    fn max_abs_diff(a: &[Vec<f64>], b: &[Vec<f64>]) -> f64 {
+        a.iter()
+            .zip(b)
+            .flat_map(|(x, y)| x.iter().zip(y).map(|(u, v)| (u - v).abs()))
+            .fold(0.0, f64::max)
+    }
+
+    fn buffer_addresses(grid_f: &[Vec<f64>], grid_tmp: &[Vec<f64>]) -> Vec<usize> {
+        let mut addrs: Vec<usize> = grid_f
+            .iter()
+            .chain(grid_tmp)
+            .map(|v| v.as_ptr() as usize)
+            .collect();
+        addrs.sort_unstable();
+        addrs
+    }
+
+    #[test]
+    fn stream_2d_matches_the_per_cell_reference_on_awkward_sizes() {
+        for (nx, ny) in [(1, 1), (1, 5), (5, 1), (2, 2), (3, 2), (7, 5), (16, 9)] {
+            let mut grid = random_grid_2d(nx, ny, (nx * 31 + ny) as u64);
+            let expected = reference_stream_2d(&grid);
+            stream_2d(&mut grid);
+            assert_eq!(
+                max_abs_diff(&grid.f, &expected),
+                0.0,
+                "stream_2d mismatch on {nx}x{ny}"
+            );
+        }
+    }
+
+    #[test]
+    fn stream_3d_matches_the_per_cell_reference_for_d3q19_and_d3q27() {
+        for lt in [LatticeType::D3Q19, LatticeType::D3Q27] {
+            for (nx, ny, nz) in [(1, 1, 1), (2, 3, 1), (1, 4, 3), (5, 4, 3), (4, 4, 4)] {
+                let mut grid = random_grid_3d(nx, ny, nz, lt, (nx * 100 + ny * 10 + nz) as u64);
+                let expected = reference_stream_3d(&grid);
+                stream_3d(&mut grid);
+                assert_eq!(
+                    max_abs_diff(&grid.f, &expected),
+                    0.0,
+                    "stream_3d mismatch for {lt:?} on {nx}x{ny}x{nz}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stream_2d_moves_every_direction_to_the_right_neighbour() {
+        let (nx, ny) = (6, 5);
+        for i in 1..9 {
+            let mut grid = LbmGrid2D::new(nx, ny, LatticeType::D2Q9);
+            for f_i in grid.f.iter_mut() {
+                f_i.fill(0.0);
+            }
+            let k = grid.idx(0, 4);
+            grid.f[i][k] = 1.0;
+            stream_2d(&mut grid);
+            let c = grid.lattice.velocity_2d(i);
+            let x = (c[0]).rem_euclid(nx as i32) as usize;
+            let y = (4 + c[1]).rem_euclid(ny as i32) as usize;
+            assert_eq!(grid.f[i][grid.idx(x, y)], 1.0, "direction {i}");
+            let total: f64 = grid.f.iter().flatten().sum();
+            assert_eq!(total, 1.0, "direction {i}: population duplicated or lost");
+        }
+    }
+
+    #[test]
+    fn stream_2d_and_3d_reuse_their_buffers_instead_of_allocating() {
+        let mut grid = random_grid_2d(32, 24, 7);
+        let before = buffer_addresses(&grid.f, &grid.f_tmp);
+        for _ in 0..5 {
+            stream_2d(&mut grid);
+        }
+        assert_eq!(
+            before,
+            buffer_addresses(&grid.f, &grid.f_tmp),
+            "stream_2d allocated a new distribution buffer"
+        );
+
+        let mut grid = random_grid_3d(8, 6, 5, LatticeType::D3Q19, 9);
+        let before = buffer_addresses(&grid.f, &grid.f_tmp);
+        for _ in 0..5 {
+            stream_3d(&mut grid);
+        }
+        assert_eq!(
+            before,
+            buffer_addresses(&grid.f, &grid.f_tmp),
+            "stream_3d allocated a new distribution buffer"
+        );
+    }
+
+    #[test]
+    fn streaming_recovers_from_an_empty_or_resized_scratch_buffer() {
+        let mut grid = random_grid_2d(9, 7, 11);
+        let expected = reference_stream_2d(&grid);
+        grid.f_tmp = Vec::new();
+        stream_2d(&mut grid);
+        assert_eq!(max_abs_diff(&grid.f, &expected), 0.0);
+
+        let mut grid = random_grid_3d(5, 4, 3, LatticeType::D3Q19, 12);
+        let expected = reference_stream_3d(&grid);
+        grid.f_tmp = vec![vec![1.0; 3]; 2];
+        stream_3d(&mut grid);
+        assert_eq!(max_abs_diff(&grid.f, &expected), 0.0);
+
+        // A scratch buffer left over from a larger grid (more planes, longer
+        // planes) is trimmed to the current shape instead of being used as is.
+        let mut grid = random_grid_2d(6, 5, 13);
+        let expected = reference_stream_2d(&grid);
+        grid.f_tmp = vec![vec![7.0; 1000]; 12];
+        stream_2d(&mut grid);
+        assert_eq!(max_abs_diff(&grid.f, &expected), 0.0);
+        assert_eq!(grid.f_tmp.len(), 9);
+        assert!(grid.f_tmp.iter().all(|plane| plane.len() == 30));
+    }
+
+    #[test]
+    fn streaming_an_empty_grid_is_a_no_op() {
+        let mut grid = LbmGrid2D::new(0, 4, LatticeType::D2Q9);
+        stream_2d(&mut grid);
+        stream_swap_2d(&mut grid);
+        let mut grid = LbmGrid3D::new(3, 0, 2, LatticeType::D3Q19);
+        stream_3d(&mut grid);
+    }
+
+    #[test]
+    fn stream_2d_keeps_the_rest_population_in_place() {
+        let mut grid = random_grid_2d(6, 4, 21);
+        let rest = grid.f[0].clone();
+        stream_2d(&mut grid);
+        assert_eq!(grid.f[0], rest);
+    }
+
+    #[test]
+    fn stream_swap_2d_equals_stream_2d_on_random_fields() {
+        for (nx, ny) in [(1, 1), (2, 2), (1, 6), (7, 1), (7, 5), (8, 6), (13, 11)] {
+            let mut swapped = random_grid_2d(nx, ny, (nx * 17 + ny * 3) as u64);
+            let mut streamed = swapped.clone();
+            stream_swap_2d(&mut swapped);
+            stream_2d(&mut streamed);
+            let diff = max_abs_diff(&swapped.f, &streamed.f);
+            assert!(diff < 1e-14, "swap vs stream on {nx}x{ny}: diff {diff}");
+        }
+    }
+
+    #[test]
+    fn stream_swap_2d_streams_every_direction_the_right_way() {
+        // Mass alone cannot reveal a direction mix-up: track single spikes.
+        let (nx, ny) = (7, 6);
+        for i in 1..9 {
+            let mut grid = LbmGrid2D::new(nx, ny, LatticeType::D2Q9);
+            for f_i in grid.f.iter_mut() {
+                f_i.fill(0.0);
+            }
+            let k = grid.idx(3, 2);
+            grid.f[i][k] = 1.0;
+            stream_swap_2d(&mut grid);
+            let c = grid.lattice.velocity_2d(i);
+            let x = (3 + c[0]).rem_euclid(nx as i32) as usize;
+            let y = (2 + c[1]).rem_euclid(ny as i32) as usize;
+            assert_eq!(
+                grid.f[i][grid.idx(x, y)],
+                1.0,
+                "direction {i} must arrive at ({x},{y}) in its own slot"
+            );
+            let total: f64 = grid.f.iter().flatten().sum();
+            assert_eq!(total, 1.0, "direction {i}: population duplicated or lost");
+        }
+    }
+
+    #[test]
+    fn stream_swap_2d_conserves_momentum_and_has_a_round_trip() {
+        let mut grid = random_grid_2d(6, 4, 99);
+        let px_before = total_momentum_x_2d(&grid);
+        let py_before = total_momentum_y_2d(&grid);
+        let snapshot = snapshot_2d(&grid);
+        for _ in 0..12 {
+            // lcm(6, 4) = 12 steps of an (1,1) diagonal direction return home,
+            // and every other direction returns after 6 or 4 steps.
+            stream_swap_2d(&mut grid);
+        }
+        assert!((total_momentum_x_2d(&grid) - px_before).abs() < 1e-12);
+        assert!((total_momentum_y_2d(&grid) - py_before).abs() < 1e-12);
+        let diff = max_diff_snapshots(&snapshot, &snapshot_2d(&grid));
+        assert!(diff < 1e-14, "12 swap steps must be the identity: {diff}");
     }
 }

@@ -15,6 +15,11 @@ thiserror = { workspace = true }
 oxiphysics-core = { workspace = true }
 oxiphysics-articulated = { workspace = true }
 oxiarc-zstd = { workspace = true }
+oxiarc-deflate = { workspace = true }
+oxixml-xml = { workspace = true }
+# `float_roundtrip` makes the JSON reader parse every f64 correctly rounded, so
+# restart files round-trip bit-exactly.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 
 [dev-dependencies]
 oxiarc-zstd = { workspace = true }

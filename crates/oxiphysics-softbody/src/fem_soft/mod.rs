@@ -21,6 +21,12 @@ pub mod stress;
 pub mod svd_helpers;
 
 #[cfg(test)]
+mod raw_corot_tests;
+#[cfg(test)]
+mod rayleigh_tests;
+#[cfg(test)]
+mod stiffness_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_extended;

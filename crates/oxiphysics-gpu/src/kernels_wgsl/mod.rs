@@ -33,6 +33,9 @@ pub const RADIX_SCATTER_PAIRS_WGSL: &str = include_str!("radix_scatter_pairs.wgs
 /// SPH spatial-hash cell-key generation (`sph_cell_list` entry point).
 pub const SPH_CELL_LIST_WGSL: &str = include_str!("sph_cell_list.wgsl");
 
+/// SPH cell-list bucket histogram over up to 65536 buckets (`sph_cell_histogram` entry point).
+pub const SPH_CELL_HISTOGRAM_WGSL: &str = include_str!("sph_cell_histogram.wgsl");
+
 /// SPH density summation over the cell-list (`sph_density` entry point).
 pub const SPH_DENSITY_GRID_WGSL: &str = include_str!("sph_density.wgsl");
 

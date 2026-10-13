@@ -2,6 +2,8 @@
 
 pub mod functions;
 pub mod functions_2;
+#[cfg(test)]
+mod normal_tests;
 pub mod pointcloud_traits;
 pub mod types;
 

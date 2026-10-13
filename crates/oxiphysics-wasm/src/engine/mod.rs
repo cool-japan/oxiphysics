@@ -10,43 +10,105 @@
 //! ## Architecture
 //!
 //! The engine maintains:
-//! - A `Vec`BodyEntry` of body states (position, velocity, forces, etc.)
+//! - A `Vec<BodyEntry>` of body states (position, velocity, forces, inertia, ...)
 //! - A `Vec<ColliderEntry>` of collider shapes attached to bodies
 //! - A `Vec<ContactResult>` list refreshed each step
-//! - A `Vec`u32` free-list for handle reuse
+//! - Free lists of recycled body and collider slots
 //!
-//! Integration uses symplectic Euler (velocity Verlet variant) which is
-//! stable for small time steps and straightforward to implement.
+//! ## Handles
+//!
+//! Bodies and colliders are addressed by opaque `u32` handles.  A handle packs
+//! the slot index (low 20 bits) together with a generation counter (high 12
+//! bits) that is bumped every time the slot is recycled, so a handle that was
+//! returned for a body that has since been removed can never be used to
+//! control whatever body reuses its slot: the stale handle is rejected with
+//! [`Error::InvalidHandle`].  On an engine that never removes anything the
+//! `n`-th body simply has handle `n`.  At most [`MAX_SLOTS`] bodies and
+//! [`MAX_SLOTS`] colliders can exist at once ([`Error::CapacityExceeded`]).
+//!
+//! ## Time stepping
+//!
+//! [`WasmPhysicsEngine::step`] adds the elapsed time to a fixed-step
+//! accumulator and then runs as many substeps of exactly
+//! [`SimulationConfig::fixed_dt`] as fit (at most
+//! [`SimulationConfig::max_substeps`]); [`WasmPhysicsEngine::time`] advances by
+//! the time that was really integrated.  The left-over fraction of a step is
+//! exposed through [`WasmPhysicsEngine::interpolation_alpha`] for render
+//! interpolation.  If the cap is hit the surplus time is dropped (and reported
+//! in [`DebugInfo::dropped_time`](crate::types::DebugInfo::dropped_time))
+//! instead of letting the simulation fall further and further behind.
+//!
+//! ## Dynamics
+//!
+//! Each substep integrates with symplectic Euler.  Rotation follows Euler's
+//! equations for a rigid body: external torques are mapped through the
+//! world-space inverse inertia tensor (computed from the attached colliders)
+//! and a gyroscopic term is applied implicitly, so non-spherical bodies
+//! precess correctly and remain stable at large spin rates.  Contacts are
+//! resolved with linear impulses (normal, Coulomb friction) plus positional
+//! correction; contact impulses do not exert torque.
+//!
+//! ## Collision shapes
+//!
+//! Spheres, oriented boxes, capsules, cylinders and planes collide with each
+//! other (the `narrowphase` module documents the algorithm used per pair:
+//! closed-form tests for sphere, capsule and plane pairs, SAT with face
+//! clipping for boxes, GJK/EPA for the remaining convex pairs).  Ray queries
+//! support the same shapes.  Convex-hull colliders carry no vertex data in
+//! [`ColliderConfig`] and are rejected.
 //!
 //! ## Example
 //!
 //! ```no_run
 //! use oxiphysics_wasm::WasmPhysicsEngine;
 //!
+//! # fn main() -> Result<(), oxiphysics_wasm::Error> {
 //! let mut engine = WasmPhysicsEngine::new(0.0, -9.81, 0.0);
-//! let body = engine.add_dynamic_body(1.0, 0.0, 10.0, 0.0);
-//! engine.step(1.0 / 60.0);
+//! let body = engine.add_dynamic_body(1.0, 0.0, 10.0, 0.0)?;
+//! engine.step(1.0 / 60.0)?;
 //! let pos = engine.get_position(body);
 //! assert!(pos[1] < 10.0); // body fell due to gravity
+//! # Ok(())
+//! # }
 //! ```
 
 // Sub-modules
 mod bindings;
 mod constraint;
 mod float64_view;
+mod geom;
+mod gjk;
+mod handles;
+mod inertia;
+mod js_exports;
 mod lbm;
+mod narrowphase;
+mod raycast;
+mod shapes;
 mod sph;
+mod validation;
 mod vehicle;
 mod wasm_engine;
 mod wasm_types;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_collision;
+#[cfg(test)]
+mod tests_dynamics;
+#[cfg(test)]
+mod tests_handles;
+#[cfg(test)]
+mod tests_raycast;
+#[cfg(test)]
+mod tests_validation;
 
 // Re-export everything from submodules
 pub use bindings::{ContactInfoEntry, WasmBindings, WasmContactList};
 pub use constraint::{ContactData, EngineConstraintSolver, WasmConstraint};
 pub use float64_view::Float64View;
+pub use handles::MAX_SLOTS;
 pub use lbm::{EngineWasmLbmConfig, WasmLbmSim};
 pub use sph::WasmSphSim;
 pub use vehicle::{VehicleState, WasmVehicleSim};
@@ -61,11 +123,32 @@ pub use wasm_types::{
 
 use wasm_bindgen::prelude::*;
 
+use self::geom::{
+    MAT3_ZERO, Mat3, Vec3, add, cross, dot, length, length_sq, madd, mat_add, mat_inverse, mat_mul,
+    mat_scale, mat_skew, mat_t_vec, mat_transpose, mat_vec, normalized, quat_from_axis_angle,
+    quat_mul, quat_normalized, quat_to_mat3, scale, sub,
+};
+use self::handles::{decode_handle, encode_handle, next_generation};
+use self::inertia::{ShapePart, compound_inertia};
+use self::narrowphase::{bounds_overlap, collide};
+use self::raycast::{point_at, ray_shape};
+use self::shapes::{Shape, WorldShape};
+use self::validation::{
+    non_negative_param, require_finite3, validate_body_config, validate_collider_config,
+    validate_dynamic_mass,
+};
 use crate::error::{Error, Result};
 use crate::types::{
-    BodyState, ColliderConfig, ColliderShapeType, ContactResult, DebugInfo, RaycastResult,
-    RigidBodyConfig, SimulationConfig, Vec3Wasm,
+    BodyState, ColliderConfig, ContactResult, DebugInfo, RaycastResult, RigidBodyConfig,
+    SimulationConfig,
 };
+
+/// Relative slack of the fixed-step accumulator test.
+///
+/// Time that sums to one ulp short of `fixed_dt` (for example `0.3 - 0.1 - 0.1`
+/// against `0.1`) still triggers the substep instead of being deferred to the
+/// next call.
+const STEP_EPSILON: f64 = 1e-9;
 
 // ---------------------------------------------------------------------------
 // Internal body storage
@@ -80,16 +163,24 @@ struct BodyEntry {
     rotation: [f64; 4],
     /// Current linear velocity.
     velocity: [f64; 3],
-    /// Current angular velocity.
+    /// Current angular velocity (world frame, rad/s).
     angular_velocity: [f64; 3],
-    /// Accumulated force for this step.
+    /// Force accumulated for the next `step()` (world frame).
     force: [f64; 3],
-    /// Accumulated torque for this step.
+    /// Torque accumulated for the next `step()` (world frame).
     torque: [f64; 3],
     /// Mass (0 for static).
     mass: f64,
     /// Inverse mass (0 for static).
     inv_mass: f64,
+    /// Rotational inertia tensor in the body frame (zero until the body has a
+    /// collider that encloses a volume).
+    inertia_local: Mat3,
+    /// Inverse of `inertia_local` (zero when the body has no inertia, in
+    /// which case torques and angular impulses have no effect).
+    inv_inertia_local: Mat3,
+    /// Whether `inertia_local` / `inv_inertia_local` are valid.
+    has_inertia: bool,
     /// Linear damping.
     linear_damping: f64,
     /// Angular damping.
@@ -110,11 +201,12 @@ struct BodyEntry {
     sleeping: bool,
     /// Time the body has been below sleep thresholds (seconds).
     sleep_timer: f64,
-    /// Generation counter for safe handle reuse.
+    /// Generation of the slot; part of every handle that refers to this body.
     generation: u32,
 }
 
 impl BodyEntry {
+    /// Build a body from an already validated configuration.
     fn from_config(cfg: &RigidBodyConfig, generation: u32) -> Self {
         let inv_mass = if cfg.mass > 0.0 { 1.0 / cfg.mass } else { 0.0 };
         Self {
@@ -126,6 +218,9 @@ impl BodyEntry {
             torque: [0.0; 3],
             mass: cfg.mass,
             inv_mass,
+            inertia_local: MAT3_ZERO,
+            inv_inertia_local: MAT3_ZERO,
+            has_inertia: false,
             linear_damping: cfg.linear_damping,
             angular_damping: cfg.angular_damping,
             restitution: cfg.restitution,
@@ -145,15 +240,93 @@ impl BodyEntry {
         !self.is_static && !self.is_kinematic && self.mass > 0.0
     }
 
-    /// Kinetic energy (translational only).
+    /// Kinetic energy: the translational part `m v^2 / 2` plus the rotational
+    /// part `w . (I w) / 2` (evaluated in the body frame; zero for a body
+    /// without rotational inertia).
     fn kinetic_energy(&self) -> f64 {
         if self.mass <= 0.0 {
             return 0.0;
         }
-        let v2 = self.velocity[0] * self.velocity[0]
-            + self.velocity[1] * self.velocity[1]
-            + self.velocity[2] * self.velocity[2];
-        0.5 * self.mass * v2
+        let translational = 0.5 * self.mass * length_sq(self.velocity);
+        let rotational = if self.has_inertia {
+            let w_body = mat_t_vec(&quat_to_mat3(self.rotation), self.angular_velocity);
+            0.5 * dot(w_body, mat_vec(&self.inertia_local, w_body))
+        } else {
+            0.0
+        };
+        translational + rotational
+    }
+
+    /// Inverse inertia tensor in world coordinates, `R * I_body^-1 * R^T`.
+    fn world_inv_inertia(&self) -> Mat3 {
+        let r = quat_to_mat3(self.rotation);
+        mat_mul(&mat_mul(&r, &self.inv_inertia_local), &mat_transpose(&r))
+    }
+
+    /// Change the angular velocity over `dt` by the applied torque and the
+    /// gyroscopic term.
+    ///
+    /// The angular velocity is expressed in the world frame, so Euler's
+    /// equations `I w' + w x (I w) = tau` read, in the body frame,
+    /// `w_b' = I_b^-1 (R^T tau - w_b x (I_b w_b))`.  The torque is applied
+    /// through the world-space inverse inertia; the gyroscopic term is solved
+    /// implicitly with a single Newton step (unconditionally stable, exact
+    /// for isotropic inertia where the term vanishes).
+    fn accelerate_rotation(&mut self, dt: f64) {
+        if self.has_inertia {
+            let r = quat_to_mat3(self.rotation);
+            let inv_world = mat_mul(&mat_mul(&r, &self.inv_inertia_local), &mat_transpose(&r));
+            self.angular_velocity =
+                madd(self.angular_velocity, mat_vec(&inv_world, self.torque), dt);
+
+            let w_body = mat_t_vec(&r, self.angular_velocity);
+            let i_body = &self.inertia_local;
+            let l_body = mat_vec(i_body, w_body);
+            // Residual of the implicit gyroscopic equation at the current w,
+            // and its Jacobian  I + dt ([w]x I - [I w]x).
+            let residual = scale(cross(w_body, l_body), dt);
+            let jacobian = mat_add(
+                i_body,
+                &mat_scale(
+                    &mat_add(
+                        &mat_mul(&mat_skew(w_body), i_body),
+                        &mat_scale(&mat_skew(l_body), -1.0),
+                    ),
+                    dt,
+                ),
+            );
+            if let Some(jacobian_inv) = mat_inverse(&jacobian) {
+                let delta_body = mat_vec(&jacobian_inv, residual);
+                self.angular_velocity = sub(self.angular_velocity, mat_vec(&r, delta_body));
+            }
+        }
+    }
+
+    /// Advance the orientation by the world-frame angular velocity.
+    ///
+    /// The exact rotation `exp(dt * w)` is composed on the left of the current
+    /// orientation (`q' = dq * q`), the convention for a world-space `w`.
+    fn integrate_orientation(&mut self, dt: f64) {
+        let speed = length(self.angular_velocity);
+        let angle = speed * dt;
+        if !angle.is_finite() || angle <= 0.0 {
+            return;
+        }
+        let dq = if angle < 1e-9 {
+            // First-order expansion keeps the tiny-angle case free of 0/0.
+            let half_dt = 0.5 * dt;
+            [
+                self.angular_velocity[0] * half_dt,
+                self.angular_velocity[1] * half_dt,
+                self.angular_velocity[2] * half_dt,
+                1.0,
+            ]
+        } else {
+            quat_from_axis_angle(scale(self.angular_velocity, 1.0 / speed), angle)
+        };
+        if let Some(q) = quat_normalized(quat_mul(dq, self.rotation)) {
+            self.rotation = q;
+        }
     }
 }
 
@@ -164,13 +337,17 @@ impl BodyEntry {
 /// Internal collider state stored in the engine.
 #[derive(Debug, Clone)]
 struct ColliderEntry {
-    /// Handle of the owning body.
-    body_index: u32,
-    /// Shape configuration.
+    /// Handle of the owning body (generation included).
+    body_handle: u32,
+    /// Validated shape configuration (unit plane normal and quaternion).
     config: ColliderConfig,
+    /// Local geometry derived from `config`.
+    shape: Shape,
+    /// Rotation of the collider relative to its body.
+    local_rotation: Mat3,
     /// Whether this slot is occupied.
     active: bool,
-    /// Generation counter.
+    /// Generation of the slot; part of every handle that refers to it.
     generation: u32,
 }
 
@@ -178,7 +355,11 @@ struct ColliderEntry {
 // Contact manifold
 // ---------------------------------------------------------------------------
 
-/// Simple axis-aligned sphere-sphere contact detection result.
+/// A contact found by the narrow phase and waiting to be resolved.
+///
+/// `body_a` / `body_b` are body handles; `normal` is the unit normal pointing
+/// from body B toward body A (the convention of
+/// [`ContactResult`](crate::types::ContactResult)).
 #[derive(Debug, Clone)]
 struct ManifoldPair {
     body_a: u32,
@@ -187,6 +368,18 @@ struct ManifoldPair {
     depth: f64,
     point_a: [f64; 3],
     point_b: [f64; 3],
+}
+
+/// Counters of one collision pass (one fixed substep).
+#[derive(Debug, Clone, Copy, Default)]
+struct PassStats {
+    /// Collider pairs on different bodies that were examined.
+    candidate_pairs: u32,
+    /// Pairs whose bounding spheres overlap and that went through the narrow
+    /// phase.
+    narrowphase_tests: u32,
+    /// Contacts found and resolved.
+    contacts: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +400,10 @@ struct ManifoldPair {
 /// 4. Advance simulation with `step(dt)`.
 /// 5. Query state with `get_position(handle)`, `get_velocity(handle)`, etc.
 /// 6. Remove bodies with `remove_body(handle)` or reset with `reset()`.
+///
+/// Every operation that creates something (`add_*`) validates its input and
+/// reports problems as an [`Error`] (an exception in JavaScript) instead of
+/// storing nonsensical state.
 #[wasm_bindgen]
 #[derive(Debug, Clone)]
 pub struct WasmPhysicsEngine {
@@ -224,6 +421,12 @@ pub struct WasmPhysicsEngine {
     contacts: Vec<ContactResult>,
     /// Total accumulated simulation time (seconds).
     time: f64,
+    /// Elapsed time handed to `step()` that has not been consumed by a fixed
+    /// substep yet (always below `fixed_dt` between calls).
+    accumulator: f64,
+    /// Maximum number of slots in each of the body and collider tables
+    /// ([`MAX_SLOTS`]; lowered only by tests).
+    slot_limit: usize,
     /// Simulation configuration (time step, solver settings, etc.).
     config: SimulationConfig,
     /// Debug/performance information from the last step.
@@ -249,30 +452,33 @@ impl WasmPhysicsEngine {
             gravity: [gx, gy, gz],
             ..Default::default()
         };
-        Self {
-            gravity: [gx, gy, gz],
-            bodies: Vec::new(),
-            body_free_list: Vec::new(),
-            colliders: Vec::new(),
-            collider_free_list: Vec::new(),
-            contacts: Vec::new(),
-            time: 0.0,
-            config,
-            debug_info: DebugInfo::default(),
-        }
+        Self::with_valid_config(config)
     }
 
     /// Create an engine from a `SimulationConfig`.
-    pub fn from_config(config: SimulationConfig) -> Self {
-        let gravity = config.gravity;
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of [`SimulationConfig::validate`] when the
+    /// configuration is unusable (non-positive or non-finite `fixed_dt`, zero
+    /// `max_substeps`, non-finite gravity, negative thresholds, ...).
+    pub fn from_config(config: SimulationConfig) -> Result<Self> {
+        config.validate()?;
+        Ok(Self::with_valid_config(config))
+    }
+
+    /// Build an engine around a configuration that is known to be valid.
+    fn with_valid_config(config: SimulationConfig) -> Self {
         Self {
-            gravity,
+            gravity: config.gravity,
             bodies: Vec::new(),
             body_free_list: Vec::new(),
             colliders: Vec::new(),
             collider_free_list: Vec::new(),
             contacts: Vec::new(),
             time: 0.0,
+            accumulator: 0.0,
+            slot_limit: MAX_SLOTS,
             config,
             debug_info: DebugInfo::default(),
         }
@@ -283,20 +489,50 @@ impl WasmPhysicsEngine {
     // -----------------------------------------------------------------------
 
     /// Add a rigid body using a [`RigidBodyConfig`] and return its handle.
-    pub fn add_rigid_body(&mut self, config: &RigidBodyConfig) -> u32 {
+    ///
+    /// A mass of exactly `0` creates a static body (or a kinematic one when
+    /// `is_kinematic` is set); any positive mass creates a dynamic body whose
+    /// rotational inertia follows from the colliders attached later.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::InvalidMass`] - the mass is negative or not finite;
+    /// * [`Error::InvalidRestitution`] / [`Error::InvalidFriction`] - a
+    ///   material coefficient is out of range;
+    /// * [`Error::InvalidParameter`] - a position, velocity, damping value or
+    ///   the orientation is not finite (or the quaternion has zero length);
+    /// * [`Error::CapacityExceeded`] - all [`MAX_SLOTS`] body slots are in use.
+    pub fn add_rigid_body(&mut self, config: &RigidBodyConfig) -> Result<u32> {
+        let config = validate_body_config(config)?;
         if let Some(idx) = self.body_free_list.pop() {
-            let old_gen = self.bodies[idx].generation;
-            self.bodies[idx] = BodyEntry::from_config(config, old_gen + 1);
-            idx as u32
-        } else {
-            let idx = self.bodies.len();
-            self.bodies.push(BodyEntry::from_config(config, 0));
-            idx as u32
+            let slot = self
+                .bodies
+                .get_mut(idx)
+                .ok_or_else(|| Error::internal("body free list references a missing slot"))?;
+            let generation = next_generation(slot.generation);
+            *slot = BodyEntry::from_config(&config, generation);
+            return Ok(encode_handle(idx, generation));
         }
+        if self.bodies.len() >= self.slot_limit {
+            return Err(Error::CapacityExceeded {
+                max: self.slot_limit,
+            });
+        }
+        let idx = self.bodies.len();
+        self.bodies.push(BodyEntry::from_config(&config, 0));
+        Ok(encode_handle(idx, 0))
     }
 
     /// Add a dynamic (movable) body and return its handle.
-    pub fn add_dynamic_body(&mut self, mass: f64, x: f64, y: f64, z: f64) -> u32 {
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidMass`] unless `mass` is finite and strictly positive
+    /// (a zero mass would silently create a static body - use
+    /// [`add_static_body`](Self::add_static_body) for that), plus the errors
+    /// of [`add_rigid_body`](Self::add_rigid_body).
+    pub fn add_dynamic_body(&mut self, mass: f64, x: f64, y: f64, z: f64) -> Result<u32> {
+        validate_dynamic_mass(mass)?;
         let cfg = RigidBodyConfig::new()
             .with_mass(mass)
             .with_position(x, y, z);
@@ -304,28 +540,53 @@ impl WasmPhysicsEngine {
     }
 
     /// Add a static (immovable) body and return its handle.
-    pub fn add_static_body(&mut self, x: f64, y: f64, z: f64) -> u32 {
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`add_rigid_body`](Self::add_rigid_body).
+    pub fn add_static_body(&mut self, x: f64, y: f64, z: f64) -> Result<u32> {
         let cfg = RigidBodyConfig::static_body().with_position(x, y, z);
         self.add_rigid_body(&cfg)
     }
 
-    /// Remove the body with the given handle.
+    /// Remove the body with the given handle together with all its colliders.
+    ///
+    /// The slot (and the slots of its colliders) is recycled with a new
+    /// generation, so every handle that referred to the removed body or its
+    /// colliders becomes invalid.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidHandle`] if the handle does not refer to a live body
+    /// (never allocated, already removed, or stale).
     pub fn remove_body(&mut self, handle: u32) -> Result<()> {
-        let idx = handle as usize;
-        match self.bodies.get_mut(idx) {
-            Some(body) if body.active => {
-                body.active = false;
-                for col in &mut self.colliders {
-                    if col.active && col.body_index == handle {
-                        col.active = false;
-                    }
-                }
-                self.body_free_list.push(idx);
-                Ok(())
-            }
-            Some(_) => Err(Error::InvalidHandle(handle)),
-            None => Err(Error::InvalidHandle(handle)),
+        let idx = self.body_slot(handle).ok_or(Error::InvalidHandle(handle))?;
+        if let Some(body) = self.bodies.get_mut(idx) {
+            body.active = false;
         }
+        for (collider_idx, collider) in self.colliders.iter_mut().enumerate() {
+            if collider.active && collider.body_handle == handle {
+                collider.active = false;
+                self.collider_free_list.push(collider_idx);
+            }
+        }
+        self.body_free_list.push(idx);
+        Ok(())
+    }
+
+    /// `true` if `handle` refers to a live body of this engine.
+    pub fn contains_body(&self, handle: u32) -> bool {
+        self.body_slot(handle).is_some()
+    }
+
+    /// Slot index of the body a handle refers to (`None` for dead or stale
+    /// handles).
+    fn body_slot(&self, handle: u32) -> Option<usize> {
+        let (idx, generation) = decode_handle(handle);
+        self.bodies
+            .get(idx)
+            .filter(|b| b.active && b.generation == generation)
+            .map(|_| idx)
     }
 
     /// Return the number of **active** bodies (not counting freed slots).
@@ -343,65 +604,114 @@ impl WasmPhysicsEngine {
     // -----------------------------------------------------------------------
 
     /// Set the linear velocity of a body.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidHandle`] for a dead or stale handle,
+    /// [`Error::InvalidParameter`] if a component is not finite (the body is
+    /// left untouched).
     pub fn set_velocity(&mut self, handle: u32, vx: f64, vy: f64, vz: f64) -> Result<()> {
-        self.get_body_mut(handle).map(|b| {
-            b.velocity = [vx, vy, vz];
-            b.sleeping = false;
-            b.sleep_timer = 0.0;
-        })
+        let body = self.get_body_mut(handle)?;
+        require_finite3("velocity", [vx, vy, vz])?;
+        body.velocity = [vx, vy, vz];
+        body.sleeping = false;
+        body.sleep_timer = 0.0;
+        Ok(())
     }
 
     /// Set the angular velocity of a body (radians/second).
+    ///
+    /// # Errors
+    ///
+    /// As [`set_velocity`](Self::set_velocity).
     pub fn set_angular_velocity(&mut self, handle: u32, wx: f64, wy: f64, wz: f64) -> Result<()> {
-        self.get_body_mut(handle).map(|b| {
-            b.angular_velocity = [wx, wy, wz];
-            b.sleeping = false;
-            b.sleep_timer = 0.0;
-        })
+        let body = self.get_body_mut(handle)?;
+        require_finite3("angular_velocity", [wx, wy, wz])?;
+        body.angular_velocity = [wx, wy, wz];
+        body.sleeping = false;
+        body.sleep_timer = 0.0;
+        Ok(())
     }
 
     /// Set the position of a body directly (teleport).
+    ///
+    /// # Errors
+    ///
+    /// As [`set_velocity`](Self::set_velocity).
     pub fn set_position(&mut self, handle: u32, x: f64, y: f64, z: f64) -> Result<()> {
-        self.get_body_mut(handle).map(|b| {
-            b.position = [x, y, z];
-        })
+        let body = self.get_body_mut(handle)?;
+        require_finite3("position", [x, y, z])?;
+        body.position = [x, y, z];
+        Ok(())
     }
 
-    /// Apply a world-space force to a body for the current step.
+    /// Apply a world-space force to a body.
+    ///
+    /// Forces accumulate and act during **every** fixed substep of the next
+    /// [`step`](Self::step) call, after which they are cleared (so the force
+    /// has to be re-applied each frame).
+    ///
+    /// # Errors
+    ///
+    /// As [`set_velocity`](Self::set_velocity).
     pub fn apply_force(&mut self, handle: u32, fx: f64, fy: f64, fz: f64) -> Result<()> {
-        self.get_body_mut(handle).map(|b| {
-            b.force[0] += fx;
-            b.force[1] += fy;
-            b.force[2] += fz;
-            b.sleeping = false;
-            b.sleep_timer = 0.0;
-        })
+        let body = self.get_body_mut(handle)?;
+        require_finite3("force", [fx, fy, fz])?;
+        body.force = add(body.force, [fx, fy, fz]);
+        body.sleeping = false;
+        body.sleep_timer = 0.0;
+        Ok(())
     }
 
-    /// Apply a world-space torque to a body for the current step.
+    /// Apply a world-space torque to a body.
+    ///
+    /// Like [`apply_force`](Self::apply_force), the torque acts during every
+    /// fixed substep of the next [`step`](Self::step) call and is then
+    /// cleared.  It accelerates the body through its world-space inverse
+    /// inertia tensor, which is derived from the shapes of the attached
+    /// colliders; a body without a collider that encloses a volume (for
+    /// example one that only carries planes) has infinite rotational inertia
+    /// and is not spun up by torques.
+    ///
+    /// # Errors
+    ///
+    /// As [`set_velocity`](Self::set_velocity).
     pub fn apply_torque(&mut self, handle: u32, tx: f64, ty: f64, tz: f64) -> Result<()> {
-        self.get_body_mut(handle).map(|b| {
-            b.torque[0] += tx;
-            b.torque[1] += ty;
-            b.torque[2] += tz;
-            b.sleeping = false;
-        })
+        let body = self.get_body_mut(handle)?;
+        require_finite3("torque", [tx, ty, tz])?;
+        body.torque = add(body.torque, [tx, ty, tz]);
+        body.sleeping = false;
+        body.sleep_timer = 0.0;
+        Ok(())
     }
 
     /// Apply an instantaneous linear impulse to a body.
+    ///
+    /// # Errors
+    ///
+    /// As [`set_velocity`](Self::set_velocity).
     pub fn apply_impulse(&mut self, handle: u32, ix: f64, iy: f64, iz: f64) -> Result<()> {
-        self.get_body_mut(handle).map(|b| {
-            if b.inv_mass > 0.0 {
-                b.velocity[0] += ix * b.inv_mass;
-                b.velocity[1] += iy * b.inv_mass;
-                b.velocity[2] += iz * b.inv_mass;
-                b.sleeping = false;
-                b.sleep_timer = 0.0;
-            }
-        })
+        let body = self.get_body_mut(handle)?;
+        require_finite3("impulse", [ix, iy, iz])?;
+        if body.inv_mass > 0.0 {
+            body.velocity = madd(body.velocity, [ix, iy, iz], body.inv_mass);
+            body.sleeping = false;
+            body.sleep_timer = 0.0;
+        }
+        Ok(())
     }
 
-    /// Apply an impulse at a point relative to the body center (generates torque).
+    /// Apply an impulse `(ix, iy, iz)` at the world-space offset `(rx, ry, rz)`
+    /// from the body centre.
+    ///
+    /// The linear velocity changes by `J / m` and the angular velocity by
+    /// `I^-1 (r x J)` with the world-space inverse inertia tensor `I^-1`, so
+    /// an off-centre impulse spins the body according to its mass
+    /// distribution.
+    ///
+    /// # Errors
+    ///
+    /// As [`set_velocity`](Self::set_velocity).
     pub fn apply_impulse_at_point(
         &mut self,
         handle: u32,
@@ -412,18 +722,19 @@ impl WasmPhysicsEngine {
         ry: f64,
         rz: f64,
     ) -> Result<()> {
-        self.get_body_mut(handle).map(|b| {
-            if b.inv_mass > 0.0 {
-                b.velocity[0] += ix * b.inv_mass;
-                b.velocity[1] += iy * b.inv_mass;
-                b.velocity[2] += iz * b.inv_mass;
-                b.angular_velocity[0] += ry * iz - rz * iy;
-                b.angular_velocity[1] += rz * ix - rx * iz;
-                b.angular_velocity[2] += rx * iy - ry * ix;
-                b.sleeping = false;
-                b.sleep_timer = 0.0;
-            }
-        })
+        let body = self.get_body_mut(handle)?;
+        require_finite3("impulse", [ix, iy, iz])?;
+        require_finite3("offset", [rx, ry, rz])?;
+        if body.inv_mass > 0.0 {
+            let impulse = [ix, iy, iz];
+            body.velocity = madd(body.velocity, impulse, body.inv_mass);
+            let angular_impulse = cross([rx, ry, rz], impulse);
+            let delta_w = mat_vec(&body.world_inv_inertia(), angular_impulse);
+            body.angular_velocity = add(body.angular_velocity, delta_w);
+            body.sleeping = false;
+            body.sleep_timer = 0.0;
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -472,13 +783,13 @@ impl WasmPhysicsEngine {
         })
     }
 
-    /// Return all active body handles as a `Vec`u32`.
+    /// Return the handles of all active bodies as a `Vec<u32>`.
     pub fn get_all_body_handles(&self) -> Vec<u32> {
         self.bodies
             .iter()
             .enumerate()
             .filter(|(_, b)| b.active)
-            .map(|(i, _)| i as u32)
+            .map(|(i, b)| encode_handle(i, b.generation))
             .collect()
     }
 
@@ -505,12 +816,18 @@ impl WasmPhysicsEngine {
         result
     }
 
-    /// Return the contact results from the last `step()` call.
+    /// Return the contact results from the last `step()` call that ran at
+    /// least one substep.
+    ///
+    /// Every fixed substep contributes its own contacts, so a `step()` that
+    /// catches up with several substeps lists a pair that stays in contact
+    /// once per substep; a call that is too short to fill a substep leaves the
+    /// previous list untouched.
     pub fn get_contacts(&self) -> &[ContactResult] {
         &self.contacts
     }
 
-    /// Return the number of contacts detected in the last `step()`.
+    /// Return the number of entries of [`get_contacts`](Self::get_contacts).
     pub fn get_contact_count(&self) -> u32 {
         self.contacts.len() as u32
     }
@@ -549,63 +866,221 @@ impl WasmPhysicsEngine {
     // -----------------------------------------------------------------------
 
     /// Add a sphere collider to a body and return the collider handle.
-    pub fn add_sphere_collider(&mut self, body: u32, radius: f64) -> u32 {
+    ///
+    /// # Errors
+    ///
+    /// See [`add_collider`](Self::add_collider).
+    pub fn add_sphere_collider(&mut self, body: u32, radius: f64) -> Result<u32> {
         let cfg = ColliderConfig::sphere(radius);
         self.add_collider(body, &cfg)
     }
 
-    /// Add a box collider to a body and return the collider handle.
-    pub fn add_box_collider(&mut self, body: u32, hx: f64, hy: f64, hz: f64) -> u32 {
+    /// Add an oriented box collider (half-extents along the body's local axes)
+    /// to a body and return the collider handle.
+    ///
+    /// # Errors
+    ///
+    /// See [`add_collider`](Self::add_collider).
+    pub fn add_box_collider(&mut self, body: u32, hx: f64, hy: f64, hz: f64) -> Result<u32> {
         let cfg = ColliderConfig::cuboid(hx, hy, hz);
         self.add_collider(body, &cfg)
     }
 
     /// Add a capsule collider to a body and return the collider handle.
-    pub fn add_capsule_collider(&mut self, body: u32, radius: f64, height: f64) -> u32 {
+    ///
+    /// The capsule is symmetric about the body's local Y axis; `height` is the
+    /// length of the cylindrical part (the hemispherical caps come on top).
+    ///
+    /// # Errors
+    ///
+    /// See [`add_collider`](Self::add_collider).
+    pub fn add_capsule_collider(&mut self, body: u32, radius: f64, height: f64) -> Result<u32> {
         let cfg = ColliderConfig::capsule(radius, height);
         self.add_collider(body, &cfg)
     }
 
-    /// Add a static plane collider (infinite ground plane).
-    pub fn add_plane_collider(&mut self, body: u32, nx: f64, ny: f64, nz: f64, offset: f64) -> u32 {
+    /// Add a cylinder collider to a body and return the collider handle.
+    ///
+    /// The cylinder is symmetric about the body's local Y axis.
+    ///
+    /// # Errors
+    ///
+    /// See [`add_collider`](Self::add_collider).
+    pub fn add_cylinder_collider(&mut self, body: u32, radius: f64, height: f64) -> Result<u32> {
+        let cfg = ColliderConfig::cylinder(radius, height);
+        self.add_collider(body, &cfg)
+    }
+
+    /// Add a plane collider (infinite half-space boundary `n . x = offset`).
+    ///
+    /// The normal is normalised (and `offset` rescaled accordingly) and, like
+    /// every collider, the plane is expressed in the frame of its body.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidParameter`] for a zero or non-finite `plane_normal`,
+    /// plus the errors of [`add_collider`](Self::add_collider).
+    pub fn add_plane_collider(
+        &mut self,
+        body: u32,
+        nx: f64,
+        ny: f64,
+        nz: f64,
+        offset: f64,
+    ) -> Result<u32> {
         let cfg = ColliderConfig::plane(nx, ny, nz, offset);
         self.add_collider(body, &cfg)
     }
 
     /// Add a collider using a full `ColliderConfig` and return the collider handle.
-    pub fn add_collider(&mut self, body_index: u32, config: &ColliderConfig) -> u32 {
-        if let Some(idx) = self.collider_free_list.pop() {
-            let old_gen = self.colliders[idx].generation;
-            self.colliders[idx] = ColliderEntry {
-                body_index,
-                config: config.clone(),
-                active: true,
-                generation: old_gen + 1,
-            };
-            idx as u32
+    ///
+    /// The configuration is validated and a normalised copy is stored (unit
+    /// plane normal, unit local rotation).  The rotational inertia of the
+    /// owning body is recomputed from all its colliders.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::BodyNotFound`] - `body_handle` does not refer to a live body;
+    /// * [`Error::InvalidDimension`] - a radius, half-extent or height is not
+    ///   finite and strictly positive;
+    /// * [`Error::InvalidParameter`] - a zero/non-finite plane normal, a
+    ///   non-finite local offset, a zero local rotation or an invalid density;
+    /// * [`Error::UnsupportedShape`] - a convex hull (its vertices are not part
+    ///   of [`ColliderConfig`]);
+    /// * [`Error::CapacityExceeded`] - all [`MAX_SLOTS`] collider slots are in
+    ///   use.
+    pub fn add_collider(&mut self, body_handle: u32, config: &ColliderConfig) -> Result<u32> {
+        if self.body_slot(body_handle).is_none() {
+            return Err(Error::BodyNotFound(body_handle));
+        }
+        let config = validate_collider_config(config)?;
+        let shape = Shape::from_config(&config).ok_or_else(|| {
+            Error::UnsupportedShape(format!(
+                "{:?} colliders are not supported",
+                config.shape_type
+            ))
+        })?;
+        let local_rotation = quat_to_mat3(config.local_rotation);
+        let make_entry = |generation: u32| ColliderEntry {
+            body_handle,
+            config: config.clone(),
+            shape,
+            local_rotation,
+            active: true,
+            generation,
+        };
+        let handle = if let Some(idx) = self.collider_free_list.pop() {
+            let slot = self
+                .colliders
+                .get_mut(idx)
+                .ok_or_else(|| Error::internal("collider free list references a missing slot"))?;
+            let generation = next_generation(slot.generation);
+            *slot = make_entry(generation);
+            encode_handle(idx, generation)
         } else {
+            if self.colliders.len() >= self.slot_limit {
+                return Err(Error::CapacityExceeded {
+                    max: self.slot_limit,
+                });
+            }
             let idx = self.colliders.len();
-            self.colliders.push(ColliderEntry {
-                body_index,
-                config: config.clone(),
-                active: true,
-                generation: 0,
-            });
-            idx as u32
+            self.colliders.push(make_entry(0));
+            encode_handle(idx, 0)
+        };
+        self.refresh_body_inertia(body_handle);
+        Ok(handle)
+    }
+
+    /// Add a body together with one collider and return both handles
+    /// `(body, collider)`.
+    ///
+    /// The operation is atomic: both configurations are validated before
+    /// anything is created, and if the collider cannot be attached after all
+    /// (for example because the collider table is full) the freshly created
+    /// body is removed again, so a failure never leaves a collider-less body
+    /// behind.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`add_rigid_body`](Self::add_rigid_body) and
+    /// [`add_collider`](Self::add_collider) (with the exception of
+    /// [`Error::BodyNotFound`], which cannot occur).
+    pub fn add_body_with_collider(
+        &mut self,
+        body: &RigidBodyConfig,
+        collider: &ColliderConfig,
+    ) -> Result<(u32, u32)> {
+        validate_body_config(body)?;
+        validate_collider_config(collider)?;
+        let body_handle = self.add_rigid_body(body)?;
+        match self.add_collider(body_handle, collider) {
+            Ok(collider_handle) => Ok((body_handle, collider_handle)),
+            Err(error) => {
+                self.remove_body(body_handle).map_err(|rollback| {
+                    Error::internal(format!(
+                        "could not roll back body {body_handle} after `{error}`: {rollback}"
+                    ))
+                })?;
+                Err(error)
+            }
         }
     }
 
     /// Remove the collider with the given handle.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidHandle`] if the handle does not refer to a live
+    /// collider (never allocated, already removed, stale, or removed together
+    /// with its body).
     pub fn remove_collider(&mut self, handle: u32) -> Result<()> {
-        let idx = handle as usize;
-        match self.colliders.get_mut(idx) {
-            Some(col) if col.active => {
+        let (idx, generation) = decode_handle(handle);
+        let owner = match self.colliders.get_mut(idx) {
+            Some(col) if col.active && col.generation == generation => {
                 col.active = false;
-                self.collider_free_list.push(idx);
-                Ok(())
+                col.body_handle
             }
-            Some(_) => Err(Error::InvalidHandle(handle)),
-            None => Err(Error::InvalidHandle(handle)),
+            _ => return Err(Error::InvalidHandle(handle)),
+        };
+        self.collider_free_list.push(idx);
+        self.refresh_body_inertia(owner);
+        Ok(())
+    }
+
+    /// Recompute the rotational inertia of a body from its active colliders.
+    fn refresh_body_inertia(&mut self, body_handle: u32) {
+        let Some(slot) = self.body_slot(body_handle) else {
+            return;
+        };
+        let parts: Vec<ShapePart> = self
+            .colliders
+            .iter()
+            .filter(|c| c.active && c.body_handle == body_handle)
+            .map(|c| ShapePart {
+                shape: c.shape,
+                position: c.config.local_position,
+                rotation: c.local_rotation,
+            })
+            .collect();
+        let Some(body) = self.bodies.get_mut(slot) else {
+            return;
+        };
+        let tensor = if body.is_dynamic() {
+            compound_inertia(body.mass, &parts)
+        } else {
+            None
+        };
+        match tensor.and_then(|t| mat_inverse(&t).map(|inverse| (t, inverse))) {
+            Some((inertia, inverse)) => {
+                body.inertia_local = inertia;
+                body.inv_inertia_local = inverse;
+                body.has_inertia = true;
+            }
+            None => {
+                body.inertia_local = MAT3_ZERO;
+                body.inv_inertia_local = MAT3_ZERO;
+                body.has_inertia = false;
+            }
         }
     }
 
@@ -625,28 +1100,43 @@ impl WasmPhysicsEngine {
     }
 
     /// Set the fixed time step used by `step()`.
-    pub fn set_fixed_dt(&mut self, dt: f64) {
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidTimeStep`] unless `dt` is finite and strictly positive
+    /// (a negative step would integrate backwards).
+    pub fn set_fixed_dt(&mut self, dt: f64) -> Result<()> {
+        if !(dt.is_finite() && dt > 0.0) {
+            return Err(Error::InvalidTimeStep(dt));
+        }
         self.config.fixed_dt = dt;
+        Ok(())
     }
 
     /// Set the linear damping on a body (0 = no damping).
-    pub fn set_body_linear_damping(
-        &mut self,
-        handle: u32,
-        damping: f64,
-    ) -> crate::error::Result<()> {
-        self.get_body_mut(handle)
-            .map(|b| b.linear_damping = damping)
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidHandle`] for a dead or stale handle,
+    /// [`Error::InvalidParameter`] unless `damping` is finite and `>= 0` (a
+    /// negative damping would make the body speed up on its own).
+    pub fn set_body_linear_damping(&mut self, handle: u32, damping: f64) -> Result<()> {
+        let body = self.get_body_mut(handle)?;
+        non_negative_param("linear_damping", damping)?;
+        body.linear_damping = damping;
+        Ok(())
     }
 
     /// Set the angular damping on a body (0 = no damping).
-    pub fn set_body_angular_damping(
-        &mut self,
-        handle: u32,
-        damping: f64,
-    ) -> crate::error::Result<()> {
-        self.get_body_mut(handle)
-            .map(|b| b.angular_damping = damping)
+    ///
+    /// # Errors
+    ///
+    /// As [`set_body_linear_damping`](Self::set_body_linear_damping).
+    pub fn set_body_angular_damping(&mut self, handle: u32, damping: f64) -> Result<()> {
+        let body = self.get_body_mut(handle)?;
+        non_negative_param("angular_damping", damping)?;
+        body.angular_damping = damping;
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -654,6 +1144,16 @@ impl WasmPhysicsEngine {
     // -----------------------------------------------------------------------
 
     /// Cast a ray from `origin` in `direction` and return the closest hit.
+    ///
+    /// Every collider shape is intersected exactly: spheres, oriented boxes,
+    /// capsules, cylinders and (one-sided) planes.  A ray that starts inside a
+    /// solid collider reports the surface it leaves through; hits farther than
+    /// `max_distance` are ignored.  `direction` need not be normalised; a
+    /// zero or non-finite direction, a non-finite origin or a non-positive
+    /// `max_distance` yield no hit.
+    ///
+    /// The result's `normal` is the outward surface normal and `distance` is
+    /// measured along the normalised direction.
     pub fn raycast(
         &self,
         ox: f64,
@@ -664,43 +1164,39 @@ impl WasmPhysicsEngine {
         dz: f64,
         max_distance: f64,
     ) -> RaycastResult {
-        let origin = Vec3Wasm::new(ox, oy, oz);
-        let dir = Vec3Wasm::new(dx, dy, dz).normalized();
-
+        let origin = [ox, oy, oz];
+        let direction = [dx, dy, dz];
         let mut best = RaycastResult::no_hit();
+        if !origin.iter().all(|v| v.is_finite())
+            || !direction.iter().all(|v| v.is_finite())
+            || max_distance.is_nan()
+            || max_distance <= 0.0
+        {
+            return best;
+        }
+        let Some(dir) = normalized(direction) else {
+            return best;
+        };
 
         for col in &self.colliders {
             if !col.active {
                 continue;
             }
-            let body_idx = col.body_index as usize;
-            let body = match self.bodies.get(body_idx) {
-                Some(b) if b.active => b,
-                _ => continue,
+            let Some(body) = self.get_body(col.body_handle) else {
+                continue;
             };
-
-            if col.config.shape_type == ColliderShapeType::Sphere {
-                let center = Vec3Wasm::from_array(body.position);
-                let oc = origin.sub(&center);
-                let a = dir.dot(&dir);
-                let b = 2.0 * oc.dot(&dir);
-                let c = oc.dot(&oc) - col.config.radius * col.config.radius;
-                let discriminant = b * b - 4.0 * a * c;
-
-                if discriminant >= 0.0 {
-                    let t = (-b - discriminant.sqrt()) / (2.0 * a);
-                    if t > 1e-6 && t < max_distance && t < best.distance {
-                        let hit_point = origin.add(&dir.scale(t));
-                        let normal = hit_point.sub(&center).normalized();
-                        best = RaycastResult {
-                            hit: true,
-                            body_handle: col.body_index,
-                            point: hit_point.to_array(),
-                            normal: normal.to_array(),
-                            distance: t,
-                        };
-                    }
-                }
+            let placed = Self::collider_world(col, body);
+            if let Some(hit) = ray_shape(origin, dir, &placed)
+                && hit.distance <= max_distance
+                && hit.distance < best.distance
+            {
+                best = RaycastResult {
+                    hit: true,
+                    body_handle: col.body_handle,
+                    point: point_at(origin, dir, hit.distance),
+                    normal: hit.normal,
+                    distance: hit.distance,
+                };
             }
         }
 
@@ -711,29 +1207,94 @@ impl WasmPhysicsEngine {
     // Simulation step
     // -----------------------------------------------------------------------
 
-    /// Step the simulation forward by `dt` seconds.
-    pub fn step(&mut self, dt: f64) {
-        if dt <= 0.0 {
-            return;
+    /// Advance the simulation by `dt` seconds of real time.
+    ///
+    /// `dt` is added to a fixed-step accumulator and the engine runs as many
+    /// substeps of exactly [`SimulationConfig::fixed_dt`] as the accumulator
+    /// allows, at most [`SimulationConfig::max_substeps`] per call; the
+    /// simulation clock ([`time`](Self::time)) advances by the time that was
+    /// actually integrated.  Time that does not fill a whole substep stays in
+    /// the accumulator (see [`interpolation_alpha`](Self::interpolation_alpha)),
+    /// so a call with `dt < fixed_dt` may integrate nothing at all and the
+    /// contacts reported by [`get_contacts`](Self::get_contacts) are then those
+    /// of the previous step.  If the substep cap is reached the remaining time
+    /// is discarded and reported in
+    /// [`DebugInfo::dropped_time`](crate::types::DebugInfo::dropped_time)
+    /// rather than being carried into later frames.
+    ///
+    /// Forces and torques applied before this call act during every substep of
+    /// it and are cleared afterwards.  A `dt` of exactly zero is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidTimeStep`] if `dt` is negative, `NaN` or infinite (the
+    /// engine state is left untouched).
+    pub fn step(&mut self, dt: f64) -> Result<()> {
+        if !dt.is_finite() || dt < 0.0 {
+            return Err(Error::InvalidTimeStep(dt));
+        }
+        if dt == 0.0 {
+            return Ok(());
         }
 
-        let substep_dt = self.config.fixed_dt;
+        let fixed_dt = self.config.fixed_dt;
         let max_substeps = self.config.max_substeps;
-        let mut remaining = dt;
+        let threshold = fixed_dt * (1.0 - STEP_EPSILON);
+
+        self.accumulator += dt;
+        if self.accumulator >= threshold {
+            // At least one substep will run, so this call defines the new
+            // contact list.
+            self.contacts.clear();
+        }
+
         let mut substeps = 0u32;
-
-        self.contacts.clear();
-
-        while remaining > 1e-12 && substeps < max_substeps {
-            let sub_dt = remaining.min(substep_dt);
-            self.integrate(sub_dt);
-            self.detect_and_resolve_contacts(sub_dt);
-            remaining -= sub_dt;
+        let mut sweeps = 0u32;
+        let mut candidate_pairs = 0u32;
+        let mut narrowphase_tests = 0u32;
+        while self.accumulator >= threshold && substeps < max_substeps {
+            self.integrate(fixed_dt);
+            let pass = self.detect_and_resolve_contacts(fixed_dt);
+            candidate_pairs += pass.candidate_pairs;
+            narrowphase_tests += pass.narrowphase_tests;
+            if pass.contacts > 0 {
+                sweeps += 1;
+            }
+            self.accumulator = (self.accumulator - fixed_dt).max(0.0);
+            self.time += fixed_dt;
             substeps += 1;
         }
 
-        self.time += dt;
-        self.debug_info.solver_iterations_performed = substeps;
+        let mut dropped = 0.0;
+        if self.accumulator >= threshold {
+            dropped = self.accumulator;
+            self.accumulator = 0.0;
+        }
+
+        for body in &mut self.bodies {
+            body.force = [0.0; 3];
+            body.torque = [0.0; 3];
+        }
+
+        self.debug_info.substeps_performed = substeps;
+        self.debug_info.dropped_time = dropped;
+        if substeps > 0 {
+            self.debug_info.broadphase_pairs = candidate_pairs;
+            self.debug_info.narrowphase_tests = narrowphase_tests;
+            self.debug_info.active_contacts = self.contacts.len() as u32;
+            self.debug_info.solver_iterations_performed = sweeps;
+        }
+        Ok(())
+    }
+
+    /// Fraction of a fixed substep that is still pending in the accumulator,
+    /// in `[0, 1)`.
+    ///
+    /// Renderers can blend the previous and the current state with this value
+    /// (`state = prev + alpha * (current - prev)`) to display smooth motion
+    /// when the render rate is not a multiple of the physics rate.
+    pub fn interpolation_alpha(&self) -> f64 {
+        (self.accumulator / self.config.fixed_dt).clamp(0.0, 1.0)
     }
 
     // -----------------------------------------------------------------------
@@ -741,13 +1302,24 @@ impl WasmPhysicsEngine {
     // -----------------------------------------------------------------------
 
     /// Remove all bodies, colliders and contacts, resetting to an empty state.
+    ///
+    /// The simulation clock and the fixed-step accumulator return to zero.
+    /// The slot tables keep their generation counters (every slot simply goes
+    /// back to the free lists), so a handle obtained before the reset is
+    /// rejected afterwards instead of silently addressing a new body.
     pub fn reset(&mut self) {
-        self.bodies.clear();
-        self.body_free_list.clear();
-        self.colliders.clear();
-        self.collider_free_list.clear();
+        for body in &mut self.bodies {
+            body.active = false;
+        }
+        for collider in &mut self.colliders {
+            collider.active = false;
+        }
+        // Free lists are popped from the back: reuse the lowest slots first.
+        self.body_free_list = (0..self.bodies.len()).rev().collect();
+        self.collider_free_list = (0..self.colliders.len()).rev().collect();
         self.contacts.clear();
         self.time = 0.0;
+        self.accumulator = 0.0;
         self.debug_info = DebugInfo::default();
     }
 
@@ -761,8 +1333,12 @@ impl WasmPhysicsEngine {
     // Private helpers
     // -----------------------------------------------------------------------
 
+    /// Live body a handle refers to (`None` for dead or stale handles).
     fn get_body(&self, handle: u32) -> Option<&BodyEntry> {
-        self.bodies.get(handle as usize).filter(|b| b.active)
+        let (idx, generation) = decode_handle(handle);
+        self.bodies
+            .get(idx)
+            .filter(|b| b.active && b.generation == generation)
     }
 
     /// Get inverse mass for a body handle (0 for static/inactive bodies).
@@ -778,14 +1354,27 @@ impl WasmPhysicsEngine {
     }
 
     fn get_body_mut(&mut self, handle: u32) -> Result<&mut BodyEntry> {
-        let idx = handle as usize;
+        let (idx, generation) = decode_handle(handle);
         self.bodies
             .get_mut(idx)
-            .filter(|b| b.active)
+            .filter(|b| b.active && b.generation == generation)
             .ok_or(Error::InvalidHandle(handle))
     }
 
-    /// Integrate velocities and positions (symplectic Euler).
+    /// Place a collider into the world using the pose of its body.
+    fn collider_world(collider: &ColliderEntry, body: &BodyEntry) -> WorldShape {
+        let rotation = quat_to_mat3(body.rotation);
+        WorldShape::place(
+            collider.shape,
+            body.position,
+            &rotation,
+            collider.config.local_position,
+            &collider.local_rotation,
+        )
+    }
+
+    /// Integrate velocities, orientations and positions over one fixed
+    /// substep (symplectic Euler).
     fn integrate(&mut self, dt: f64) {
         let gravity = self.gravity;
         let lin_sleep = self.config.linear_sleep_threshold;
@@ -798,70 +1387,46 @@ impl WasmPhysicsEngine {
                 continue;
             }
             if body.sleeping {
-                let f2 = body.force[0] * body.force[0]
-                    + body.force[1] * body.force[1]
-                    + body.force[2] * body.force[2];
-                if f2 > 1e-20 {
+                if length_sq(body.force) > 1e-20 || length_sq(body.torque) > 1e-20 {
                     body.sleeping = false;
                     body.sleep_timer = 0.0;
                 } else {
-                    body.force = [0.0; 3];
-                    body.torque = [0.0; 3];
                     continue;
                 }
             }
 
-            // 1. Apply gravity scaled by gravity_scale
+            // 1. Gravity (scaled by gravity_scale) and the applied force give
+            //    the linear acceleration.
             let gs = body.gravity_scale;
-            let ax = gravity[0] * gs + body.force[0] * body.inv_mass;
-            let ay = gravity[1] * gs + body.force[1] * body.inv_mass;
-            let az = gravity[2] * gs + body.force[2] * body.inv_mass;
+            let acceleration = madd(
+                [gravity[0] * gs, gravity[1] * gs, gravity[2] * gs],
+                body.force,
+                body.inv_mass,
+            );
 
             // 2. Update velocity (symplectic Euler: update v first)
-            body.velocity[0] += ax * dt;
-            body.velocity[1] += ay * dt;
-            body.velocity[2] += az * dt;
+            body.velocity = madd(body.velocity, acceleration, dt);
 
-            // 3. Apply damping
+            // 3. Applied torque and gyroscopic acceleration change the angular
+            //    velocity (before damping).
+            body.accelerate_rotation(dt);
+
+            // 4. Apply damping
             let ld = (1.0 - body.linear_damping * dt).max(0.0);
             let ad = (1.0 - body.angular_damping * dt).max(0.0);
-            body.velocity[0] *= ld;
-            body.velocity[1] *= ld;
-            body.velocity[2] *= ld;
-            body.angular_velocity[0] *= ad;
-            body.angular_velocity[1] *= ad;
-            body.angular_velocity[2] *= ad;
+            body.velocity = scale(body.velocity, ld);
+            body.angular_velocity = scale(body.angular_velocity, ad);
 
-            // 4. Update position
-            body.position[0] += body.velocity[0] * dt;
-            body.position[1] += body.velocity[1] * dt;
-            body.position[2] += body.velocity[2] * dt;
+            // 5. Update position
+            body.position = madd(body.position, body.velocity, dt);
 
-            // 5. Integrate angular velocity -> update orientation (small angle approx)
-            let wx = body.angular_velocity[0];
-            let wy = body.angular_velocity[1];
-            let wz = body.angular_velocity[2];
-            let half_dt = 0.5 * dt;
-            let q = body.rotation;
-            let dqx = half_dt * (q[3] * wx - q[2] * wy + q[1] * wz);
-            let dqy = half_dt * (q[3] * wy + q[2] * wx - q[0] * wz);
-            let dqz = half_dt * (q[3] * wz - q[1] * wx + q[0] * wy);
-            let dqw = half_dt * (-q[0] * wx - q[1] * wy - q[2] * wz);
-            let nx = q[0] + dqx;
-            let ny = q[1] + dqy;
-            let nz = q[2] + dqz;
-            let nw = q[3] + dqw;
-            let qnorm = (nx * nx + ny * ny + nz * nz + nw * nw).sqrt().max(1e-15);
-            body.rotation = [nx / qnorm, ny / qnorm, nz / qnorm, nw / qnorm];
+            // 6. Update orientation from the world-frame angular velocity
+            body.integrate_orientation(dt);
 
-            // 6. Update sleep timer
+            // 7. Update sleep timer
             if sleeping_enabled {
-                let v2 = body.velocity[0] * body.velocity[0]
-                    + body.velocity[1] * body.velocity[1]
-                    + body.velocity[2] * body.velocity[2];
-                let w2 = body.angular_velocity[0] * body.angular_velocity[0]
-                    + body.angular_velocity[1] * body.angular_velocity[1]
-                    + body.angular_velocity[2] * body.angular_velocity[2];
+                let v2 = length_sq(body.velocity);
+                let w2 = length_sq(body.angular_velocity);
                 if v2 < lin_sleep * lin_sleep && w2 < ang_sleep * ang_sleep {
                     body.sleep_timer += dt;
                     if body.sleep_timer > time_sleep {
@@ -871,148 +1436,110 @@ impl WasmPhysicsEngine {
                     body.sleep_timer = 0.0;
                 }
             }
-
-            // 7. Clear accumulated forces
-            body.force = [0.0; 3];
-            body.torque = [0.0; 3];
         }
     }
 
-    /// Detect sphere-sphere and sphere-plane contacts and resolve with impulses.
-    fn detect_and_resolve_contacts(&mut self, dt: f64) {
-        let manifolds = self.build_manifolds();
-        self.debug_info.narrowphase_tests = manifolds.len() as u32;
-
+    /// Run the narrow phase on all collider pairs and resolve every contact
+    /// found with impulses (normal, friction) and positional correction.
+    ///
+    /// Contacts are appended to `self.contacts`.  Contact impulses act on the
+    /// linear velocity only; they do not exert torque.
+    fn detect_and_resolve_contacts(&mut self, dt: f64) -> PassStats {
+        let (manifolds, mut stats) = self.build_manifolds();
         for manifold in &manifolds {
             let contact = self.resolve_manifold(manifold, dt);
             self.contacts.push(contact);
         }
-
-        self.debug_info.active_contacts = self.contacts.len() as u32;
+        stats.contacts = manifolds.len() as u32;
+        stats
     }
 
-    /// Build contact manifolds by testing all collider pairs.
-    fn build_manifolds(&self) -> Vec<ManifoldPair> {
+    /// Build contact manifolds by testing all pairs of colliders that belong
+    /// to different bodies.
+    ///
+    /// Each pair is ordered by shape rank so that, for instance, the sphere of
+    /// a sphere-plane pair is always body A; colliders of equal rank keep
+    /// their creation order.  The returned normals point from body B toward
+    /// body A.
+    fn build_manifolds(&self) -> (Vec<ManifoldPair>, PassStats) {
+        let placed: Vec<(u32, WorldShape)> = self
+            .colliders
+            .iter()
+            .filter(|c| c.active)
+            .filter_map(|c| {
+                let body = self.get_body(c.body_handle)?;
+                Some((c.body_handle, Self::collider_world(c, body)))
+            })
+            .collect();
+
+        let mut stats = PassStats::default();
         let mut manifolds = Vec::new();
-
-        let n = self.colliders.len();
-        for i in 0..n {
-            if !self.colliders[i].active {
-                continue;
-            }
-            let ci = &self.colliders[i];
-            let bi_idx = ci.body_index as usize;
-            let body_i = match self.bodies.get(bi_idx) {
-                Some(b) if b.active => b,
-                _ => continue,
-            };
-            let pos_i = body_i.position;
-
-            for j in (i + 1)..n {
-                if !self.colliders[j].active {
+        for (i, (handle_i, shape_i)) in placed.iter().enumerate() {
+            for (handle_j, shape_j) in placed.iter().skip(i + 1) {
+                if handle_i == handle_j {
                     continue;
                 }
-                let cj = &self.colliders[j];
-                if ci.body_index == cj.body_index {
+                stats.candidate_pairs += 1;
+                if !bounds_overlap(shape_i, shape_j) {
                     continue;
                 }
-                let bj_idx = cj.body_index as usize;
-                let body_j = match self.bodies.get(bj_idx) {
-                    Some(b) if b.active => b,
-                    _ => continue,
-                };
-                let pos_j = body_j.position;
-
-                match (&ci.config.shape_type, &cj.config.shape_type) {
-                    (ColliderShapeType::Sphere, ColliderShapeType::Sphere) => {
-                        let dx = pos_j[0] - pos_i[0];
-                        let dy = pos_j[1] - pos_i[1];
-                        let dz = pos_j[2] - pos_i[2];
-                        let dist2 = dx * dx + dy * dy + dz * dz;
-                        let sum_r = ci.config.radius + cj.config.radius;
-                        if dist2 < sum_r * sum_r {
-                            let dist = dist2.sqrt().max(1e-12);
-                            let depth = sum_r - dist;
-                            let nx = dx / dist;
-                            let ny = dy / dist;
-                            let nz = dz / dist;
-                            let pa = [
-                                pos_i[0] + nx * ci.config.radius,
-                                pos_i[1] + ny * ci.config.radius,
-                                pos_i[2] + nz * ci.config.radius,
-                            ];
-                            let pb = [
-                                pos_j[0] - nx * cj.config.radius,
-                                pos_j[1] - ny * cj.config.radius,
-                                pos_j[2] - nz * cj.config.radius,
-                            ];
-                            manifolds.push(ManifoldPair {
-                                body_a: ci.body_index,
-                                body_b: cj.body_index,
-                                normal: [nx, ny, nz],
-                                depth,
-                                point_a: pa,
-                                point_b: pb,
-                            });
-                        }
-                    }
-                    (ColliderShapeType::Sphere, ColliderShapeType::Plane)
-                    | (ColliderShapeType::Plane, ColliderShapeType::Sphere) => {
-                        let (sphere_body_pos, sphere_r, plane_cfg, sphere_body_idx, plane_body_idx) =
-                            if ci.config.shape_type == ColliderShapeType::Sphere {
-                                (
-                                    pos_i,
-                                    ci.config.radius,
-                                    &cj.config,
-                                    ci.body_index,
-                                    cj.body_index,
-                                )
-                            } else {
-                                (
-                                    pos_j,
-                                    cj.config.radius,
-                                    &ci.config,
-                                    cj.body_index,
-                                    ci.body_index,
-                                )
-                            };
-                        let pn = plane_cfg.plane_normal;
-                        let offset = plane_cfg.plane_offset;
-                        let signed_dist = pn[0] * sphere_body_pos[0]
-                            + pn[1] * sphere_body_pos[1]
-                            + pn[2] * sphere_body_pos[2]
-                            - offset;
-                        let depth = sphere_r - signed_dist;
-                        if depth > 0.0 {
-                            let pa = [
-                                sphere_body_pos[0] - pn[0] * sphere_r,
-                                sphere_body_pos[1] - pn[1] * sphere_r,
-                                sphere_body_pos[2] - pn[2] * sphere_r,
-                            ];
-                            let pb = [
-                                sphere_body_pos[0] - pn[0] * signed_dist,
-                                sphere_body_pos[1] - pn[1] * signed_dist,
-                                sphere_body_pos[2] - pn[2] * signed_dist,
-                            ];
-                            manifolds.push(ManifoldPair {
-                                body_a: sphere_body_idx,
-                                body_b: plane_body_idx,
-                                normal: pn,
-                                depth,
-                                point_a: pa,
-                                point_b: pb,
-                            });
-                        }
-                    }
-                    _ => {}
+                stats.narrowphase_tests += 1;
+                let ((body_a, shape_a), (body_b, shape_b)) =
+                    if shape_i.shape.rank() <= shape_j.shape.rank() {
+                        ((*handle_i, shape_i), (*handle_j, shape_j))
+                    } else {
+                        ((*handle_j, shape_j), (*handle_i, shape_i))
+                    };
+                if let Some(contact) = collide(shape_a, shape_b) {
+                    manifolds.push(ManifoldPair {
+                        body_a,
+                        body_b,
+                        normal: contact.normal,
+                        depth: contact.depth,
+                        point_a: contact.point_a,
+                        point_b: contact.point_b,
+                    });
                 }
             }
         }
+        (manifolds, stats)
+    }
 
-        manifolds
+    /// `(inverse mass used for contacts, velocity, restitution, friction)` of
+    /// the body in a slot; only dynamic bodies respond to contacts.
+    fn contact_properties(&self, slot: usize) -> (f64, [f64; 3], f64, f64) {
+        self.bodies
+            .get(slot)
+            .map_or((0.0, [0.0; 3], 0.0, 0.5), |b| {
+                let inv_mass = if b.is_dynamic() { b.inv_mass } else { 0.0 };
+                (inv_mass, b.velocity, b.restitution, b.friction)
+            })
+    }
+
+    /// Change the linear velocity and position of a dynamic body (contact
+    /// response); other bodies are left untouched.
+    fn nudge_body(&mut self, slot: usize, velocity_delta: Vec3, position_delta: Vec3) {
+        if let Some(body) = self.bodies.get_mut(slot)
+            && body.is_dynamic()
+        {
+            body.velocity = add(body.velocity, velocity_delta);
+            body.position = add(body.position, position_delta);
+        }
     }
 
     /// Resolve a single contact manifold using impulse-based collision response.
+    ///
+    /// * the normal impulse removes the approach velocity along the contact
+    ///   normal (with restitution `sqrt(e_a * e_b)`);
+    /// * a Coulomb friction impulse (`mu = sqrt(mu_a * mu_b)`) acts along the
+    ///   tangential relative velocity;
+    /// * a Baumgarte-style positional correction pushes the bodies apart by
+    ///   20 % of the penetration beyond `contact_slop` per substep - also for
+    ///   pairs that are already separating, so an overlap can never persist.
+    ///
+    /// The normal points from body B toward body A, so approaching bodies have
+    /// a negative relative normal velocity and a positive impulse pushes A
+    /// along `+normal` and B along `-normal`.
     fn resolve_manifold(&mut self, m: &ManifoldPair, _dt: f64) -> ContactResult {
         let mut cr = ContactResult {
             body_a: m.body_a,
@@ -1027,449 +1554,53 @@ impl WasmPhysicsEngine {
             friction_impulse: 0.0,
         };
 
-        let ia = m.body_a as usize;
-        let ib = m.body_b as usize;
-
-        let inv_mass_a = self
-            .bodies
-            .get(ia)
-            .map(|b| if b.is_dynamic() { b.inv_mass } else { 0.0 })
-            .unwrap_or(0.0);
-        let inv_mass_b = self
-            .bodies
-            .get(ib)
-            .map(|b| if b.is_dynamic() { b.inv_mass } else { 0.0 })
-            .unwrap_or(0.0);
+        let (Some(ia), Some(ib)) = (self.body_slot(m.body_a), self.body_slot(m.body_b)) else {
+            return cr;
+        };
+        let (inv_mass_a, vel_a, rest_a, fric_a) = self.contact_properties(ia);
+        let (inv_mass_b, vel_b, rest_b, fric_b) = self.contact_properties(ib);
         let total_inv = inv_mass_a + inv_mass_b;
         if total_inv == 0.0 {
             return cr;
         }
 
-        let vel_a = self.bodies.get(ia).map(|b| b.velocity).unwrap_or([0.0; 3]);
-        let vel_b = self.bodies.get(ib).map(|b| b.velocity).unwrap_or([0.0; 3]);
-        let rest_a = self.bodies.get(ia).map(|b| b.restitution).unwrap_or(0.0);
-        let rest_b = self.bodies.get(ib).map(|b| b.restitution).unwrap_or(0.0);
-        let fric_a = self.bodies.get(ia).map(|b| b.friction).unwrap_or(0.5);
-        let fric_b = self.bodies.get(ib).map(|b| b.friction).unwrap_or(0.5);
-
-        let nx = m.normal[0];
-        let ny = m.normal[1];
-        let nz = m.normal[2];
-
-        let rel_vx = vel_a[0] - vel_b[0];
-        let rel_vy = vel_a[1] - vel_b[1];
-        let rel_vz = vel_a[2] - vel_b[2];
-        let rel_vn = rel_vx * nx + rel_vy * ny + rel_vz * nz;
-
+        let n = m.normal;
+        let rel_vn = dot(sub(vel_a, vel_b), n);
         cr.relative_velocity = rel_vn;
 
-        if rel_vn > 0.0 {
-            return cr;
-        }
+        if rel_vn <= 0.0 {
+            // Normal impulse (approaching or resting contact).
+            let e = (rest_a * rest_b).sqrt();
+            let j = -(1.0 + e) * rel_vn / total_inv;
+            cr.impulse = j;
+            self.nudge_body(ia, scale(n, j * inv_mass_a), [0.0; 3]);
+            self.nudge_body(ib, scale(n, -j * inv_mass_b), [0.0; 3]);
 
-        let e = (rest_a * rest_b).sqrt();
-        let j = -(1.0 + e) * rel_vn / total_inv;
-        cr.impulse = j;
-
-        if let Some(body) = self.bodies.get_mut(ia)
-            && body.is_dynamic()
-        {
-            body.velocity[0] += j * inv_mass_a * nx;
-            body.velocity[1] += j * inv_mass_a * ny;
-            body.velocity[2] += j * inv_mass_a * nz;
-        }
-        if let Some(body) = self.bodies.get_mut(ib)
-            && body.is_dynamic()
-        {
-            body.velocity[0] -= j * inv_mass_b * nx;
-            body.velocity[1] -= j * inv_mass_b * ny;
-            body.velocity[2] -= j * inv_mass_b * nz;
-        }
-
-        // Friction impulse (Coulomb model)
-        let mu = (fric_a * fric_b).sqrt();
-        let vel_a2 = self.bodies.get(ia).map(|b| b.velocity).unwrap_or([0.0; 3]);
-        let vel_b2 = self.bodies.get(ib).map(|b| b.velocity).unwrap_or([0.0; 3]);
-        let rel_tx = vel_a2[0] - vel_b2[0];
-        let rel_ty = vel_a2[1] - vel_b2[1];
-        let rel_tz = vel_a2[2] - vel_b2[2];
-        let rel_tn = rel_tx * nx + rel_ty * ny + rel_tz * nz;
-        let tx = rel_tx - rel_tn * nx;
-        let ty = rel_ty - rel_tn * ny;
-        let tz = rel_tz - rel_tn * nz;
-        let t_len = (tx * tx + ty * ty + tz * tz).sqrt();
-        if t_len > 1e-10 {
-            let tx = tx / t_len;
-            let ty = ty / t_len;
-            let tz = tz / t_len;
-            let jt_raw = -(rel_tx * tx + rel_ty * ty + rel_tz * tz) / total_inv;
-            let jt = jt_raw.clamp(-mu * j.abs(), mu * j.abs());
-            cr.friction_impulse = jt;
-            if let Some(body) = self.bodies.get_mut(ia)
-                && body.is_dynamic()
-            {
-                body.velocity[0] += jt * inv_mass_a * tx;
-                body.velocity[1] += jt * inv_mass_a * ty;
-                body.velocity[2] += jt * inv_mass_a * tz;
-            }
-            if let Some(body) = self.bodies.get_mut(ib)
-                && body.is_dynamic()
-            {
-                body.velocity[0] -= jt * inv_mass_b * tx;
-                body.velocity[1] -= jt * inv_mass_b * ty;
-                body.velocity[2] -= jt * inv_mass_b * tz;
+            // Friction impulse (Coulomb model) on the post-impulse velocities.
+            let mu = (fric_a * fric_b).sqrt();
+            let (_, vel_a2, _, _) = self.contact_properties(ia);
+            let (_, vel_b2, _, _) = self.contact_properties(ib);
+            let rel2 = sub(vel_a2, vel_b2);
+            let tangential = sub(rel2, scale(n, dot(rel2, n)));
+            let t_len = length(tangential);
+            if t_len > 1e-10 {
+                let t_dir = scale(tangential, 1.0 / t_len);
+                let jt_raw = -dot(rel2, t_dir) / total_inv;
+                let jt = jt_raw.clamp(-mu * j.abs(), mu * j.abs());
+                cr.friction_impulse = jt;
+                self.nudge_body(ia, scale(t_dir, jt * inv_mass_a), [0.0; 3]);
+                self.nudge_body(ib, scale(t_dir, -jt * inv_mass_b), [0.0; 3]);
             }
         }
 
-        // Positional correction (Baumgarte)
+        // Positional correction (Baumgarte).
         let slop = self.config.contact_slop;
         let corr_mag = (m.depth - slop).max(0.0) * 0.2 / total_inv;
         if corr_mag > 1e-10 {
-            if let Some(body) = self.bodies.get_mut(ia)
-                && body.is_dynamic()
-            {
-                body.position[0] += corr_mag * inv_mass_a * nx;
-                body.position[1] += corr_mag * inv_mass_a * ny;
-                body.position[2] += corr_mag * inv_mass_a * nz;
-            }
-            if let Some(body) = self.bodies.get_mut(ib)
-                && body.is_dynamic()
-            {
-                body.position[0] -= corr_mag * inv_mass_b * nx;
-                body.position[1] -= corr_mag * inv_mass_b * ny;
-                body.position[2] -= corr_mag * inv_mass_b * nz;
-            }
+            self.nudge_body(ia, [0.0; 3], scale(n, corr_mag * inv_mass_a));
+            self.nudge_body(ib, [0.0; 3], scale(n, -corr_mag * inv_mass_b));
         }
 
         cr
-    }
-}
-
-// ============================================================================
-// wasm-bindgen JavaScript API
-// ============================================================================
-//
-// This impl block exports `WasmPhysicsEngine` as a JavaScript class.
-// All methods use primitive types or `Vec<f64>` (returned as `Float64Array`)
-// so no JS/Rust type-conversion boilerplate is needed on the JS side.
-//
-// Naming convention: Rust method names end in `_js`; `js_name` attributes
-// expose them under the clean, idiomatic JavaScript names.
-//
-// ## JavaScript usage
-//
-// ```js
-// const engine = new WasmPhysicsEngine(0.0, -9.81, 0.0);
-// const ball  = engine.add_dynamic_body(1.0, 0.0, 10.0, 0.0);
-// engine.add_sphere_collider(ball, 0.5);
-//
-// const ground = engine.add_static_body(0.0, 0.0, 0.0);
-// engine.add_plane_collider(ground, 0.0, 1.0, 0.0, 0.0);
-//
-// for (let i = 0; i < 60; i++) engine.step(1 / 60);
-//
-// const pos = engine.get_position(ball);  // Float64Array [x, y, z]
-// console.log(`y = ${pos[1].toFixed(3)}`);
-//
-// // Bulk positions (good for instanced mesh rendering)
-// const all = engine.get_all_positions();  // Float64Array [x0,y0,z0, x1,y1,z1, ...]
-// ```
-
-#[wasm_bindgen]
-impl WasmPhysicsEngine {
-    // -----------------------------------------------------------------------
-    // Construction
-    // -----------------------------------------------------------------------
-
-    /// Create an engine with the given gravity components.
-    ///
-    /// Equivalent to `new WasmPhysicsEngine(0.0, -9.81, 0.0)` in JavaScript.
-    #[wasm_bindgen(constructor)]
-    pub fn wasm_new(gx: f64, gy: f64, gz: f64) -> WasmPhysicsEngine {
-        WasmPhysicsEngine::new(gx, gy, gz)
-    }
-
-    // -----------------------------------------------------------------------
-    // Body management
-    // -----------------------------------------------------------------------
-
-    /// Add a dynamic (physics-simulated) body at `(x, y, z)`.
-    ///
-    /// Returns the body handle (a `u32` integer used in subsequent calls).
-    #[wasm_bindgen(js_name = "add_dynamic_body")]
-    pub fn add_dynamic_body_js(&mut self, mass: f64, x: f64, y: f64, z: f64) -> u32 {
-        self.add_dynamic_body(mass, x, y, z)
-    }
-
-    /// Add a static (immovable) body at `(x, y, z)`.
-    #[wasm_bindgen(js_name = "add_static_body")]
-    pub fn add_static_body_js(&mut self, x: f64, y: f64, z: f64) -> u32 {
-        self.add_static_body(x, y, z)
-    }
-
-    /// Remove a body and its colliders. Returns `true` on success.
-    #[wasm_bindgen(js_name = "remove_body")]
-    pub fn remove_body_js(&mut self, handle: u32) -> bool {
-        self.remove_body(handle).is_ok()
-    }
-
-    /// Number of active (non-removed) bodies.
-    #[wasm_bindgen(js_name = "get_body_count")]
-    pub fn get_body_count_js(&self) -> u32 {
-        self.get_body_count()
-    }
-
-    // -----------------------------------------------------------------------
-    // Colliders
-    // -----------------------------------------------------------------------
-
-    /// Attach a sphere collider of `radius` to `body`. Returns collider handle.
-    #[wasm_bindgen(js_name = "add_sphere_collider")]
-    pub fn add_sphere_collider_js(&mut self, body: u32, radius: f64) -> u32 {
-        self.add_sphere_collider(body, radius)
-    }
-
-    /// Attach an axis-aligned box collider to `body`. Returns collider handle.
-    #[wasm_bindgen(js_name = "add_box_collider")]
-    pub fn add_box_collider_js(&mut self, body: u32, hx: f64, hy: f64, hz: f64) -> u32 {
-        self.add_box_collider(body, hx, hy, hz)
-    }
-
-    /// Attach a capsule collider to `body`. Returns collider handle.
-    #[wasm_bindgen(js_name = "add_capsule_collider")]
-    pub fn add_capsule_collider_js(&mut self, body: u32, radius: f64, height: f64) -> u32 {
-        self.add_capsule_collider(body, radius, height)
-    }
-
-    /// Attach a static infinite plane collider. Returns collider handle.
-    #[wasm_bindgen(js_name = "add_plane_collider")]
-    pub fn add_plane_collider_js(
-        &mut self,
-        body: u32,
-        nx: f64,
-        ny: f64,
-        nz: f64,
-        offset: f64,
-    ) -> u32 {
-        self.add_plane_collider(body, nx, ny, nz, offset)
-    }
-
-    // -----------------------------------------------------------------------
-    // Simulation
-    // -----------------------------------------------------------------------
-
-    /// Advance the simulation by `dt` seconds.
-    #[wasm_bindgen(js_name = "step")]
-    pub fn step_js(&mut self, dt: f64) {
-        self.step(dt);
-    }
-
-    /// Remove all bodies, colliders and contacts; reset simulation time.
-    #[wasm_bindgen(js_name = "reset")]
-    pub fn reset_js(&mut self) {
-        self.reset();
-    }
-
-    // -----------------------------------------------------------------------
-    // Body state queries — returns Float64Array via Vec<f64>
-    // -----------------------------------------------------------------------
-
-    /// Position of body `handle` as `[x, y, z]`.
-    ///
-    /// Returns `[0, 0, 0]` for invalid handles (check `get_body_count` first).
-    #[wasm_bindgen(js_name = "get_position")]
-    pub fn get_position_js(&self, handle: u32) -> Vec<f64> {
-        self.get_position(handle).to_vec()
-    }
-
-    /// Orientation quaternion of body `handle` as `[qx, qy, qz, qw]`.
-    #[wasm_bindgen(js_name = "get_rotation")]
-    pub fn get_rotation_js(&self, handle: u32) -> Vec<f64> {
-        self.get_rotation(handle).to_vec()
-    }
-
-    /// Linear velocity of body `handle` as `[vx, vy, vz]`.
-    #[wasm_bindgen(js_name = "get_velocity")]
-    pub fn get_velocity_js(&self, handle: u32) -> Vec<f64> {
-        self.get_velocity(handle).to_vec()
-    }
-
-    /// Angular velocity of body `handle` as `[wx, wy, wz]` (rad/s).
-    #[wasm_bindgen(js_name = "get_angular_velocity")]
-    pub fn get_angular_velocity_js(&self, handle: u32) -> Vec<f64> {
-        self.get_angular_velocity(handle).to_vec()
-    }
-
-    // -----------------------------------------------------------------------
-    // Body state mutations
-    // -----------------------------------------------------------------------
-
-    /// Set linear velocity of body `handle`. Returns `true` on success.
-    #[wasm_bindgen(js_name = "set_velocity")]
-    pub fn set_velocity_js(&mut self, handle: u32, vx: f64, vy: f64, vz: f64) -> bool {
-        self.set_velocity(handle, vx, vy, vz).is_ok()
-    }
-
-    /// Set angular velocity of body `handle` in rad/s. Returns `true` on success.
-    #[wasm_bindgen(js_name = "set_angular_velocity")]
-    pub fn set_angular_velocity_js(&mut self, handle: u32, wx: f64, wy: f64, wz: f64) -> bool {
-        self.set_angular_velocity(handle, wx, wy, wz).is_ok()
-    }
-
-    /// Teleport body `handle` to `(x, y, z)`. Returns `true` on success.
-    #[wasm_bindgen(js_name = "set_position")]
-    pub fn set_position_js(&mut self, handle: u32, x: f64, y: f64, z: f64) -> bool {
-        self.set_position(handle, x, y, z).is_ok()
-    }
-
-    // -----------------------------------------------------------------------
-    // Force / impulse
-    // -----------------------------------------------------------------------
-
-    /// Apply a world-space force to body `handle` for the current step.
-    /// Returns `true` on success.
-    #[wasm_bindgen(js_name = "apply_force")]
-    pub fn apply_force_js(&mut self, handle: u32, fx: f64, fy: f64, fz: f64) -> bool {
-        self.apply_force(handle, fx, fy, fz).is_ok()
-    }
-
-    /// Apply a world-space torque to body `handle` for the current step.
-    /// Returns `true` on success.
-    #[wasm_bindgen(js_name = "apply_torque")]
-    pub fn apply_torque_js(&mut self, handle: u32, tx: f64, ty: f64, tz: f64) -> bool {
-        self.apply_torque(handle, tx, ty, tz).is_ok()
-    }
-
-    /// Apply an instantaneous linear impulse. Returns `true` on success.
-    #[wasm_bindgen(js_name = "apply_impulse")]
-    pub fn apply_impulse_js(&mut self, handle: u32, ix: f64, iy: f64, iz: f64) -> bool {
-        self.apply_impulse(handle, ix, iy, iz).is_ok()
-    }
-
-    // -----------------------------------------------------------------------
-    // Gravity
-    // -----------------------------------------------------------------------
-
-    /// Set the global gravity vector.
-    #[wasm_bindgen(js_name = "set_gravity")]
-    pub fn set_gravity_js(&mut self, gx: f64, gy: f64, gz: f64) {
-        self.set_gravity(gx, gy, gz);
-    }
-
-    /// Current gravity as `[gx, gy, gz]`.
-    #[wasm_bindgen(js_name = "get_gravity")]
-    pub fn get_gravity_js(&self) -> Vec<f64> {
-        self.gravity().to_vec()
-    }
-
-    // -----------------------------------------------------------------------
-    // Statistics
-    // -----------------------------------------------------------------------
-
-    /// Total accumulated simulation time in seconds.
-    #[wasm_bindgen(js_name = "time")]
-    pub fn time_js(&self) -> f64 {
-        self.time()
-    }
-
-    /// Number of contacts detected in the last `step()`.
-    #[wasm_bindgen(js_name = "get_contact_count")]
-    pub fn get_contact_count_js(&self) -> u32 {
-        self.get_contact_count()
-    }
-
-    // -----------------------------------------------------------------------
-    // Bulk queries — efficient for rendering
-    // -----------------------------------------------------------------------
-
-    /// All active body handles as a `Uint32Array`.
-    #[wasm_bindgen(js_name = "get_all_body_handles")]
-    pub fn get_all_body_handles_js(&self) -> Vec<u32> {
-        self.get_all_body_handles()
-    }
-
-    /// All active body positions as a flat `Float64Array` `[x0,y0,z0, x1,y1,z1, ...]`.
-    ///
-    /// Suitable for instanced mesh updates in Three.js / Babylon.js:
-    ///
-    /// ```js
-    /// const pos = engine.get_all_positions();
-    /// for (let i = 0; i < pos.length / 3; i++) {
-    ///   mesh.setPositionAt(i, new THREE.Vector3(pos[i*3], pos[i*3+1], pos[i*3+2]));
-    /// }
-    /// ```
-    #[wasm_bindgen(js_name = "get_all_positions")]
-    pub fn get_all_positions_js(&self) -> Vec<f64> {
-        self.get_all_positions()
-    }
-
-    /// All active body transforms as flat `Float64Array` `[x,y,z,qx,qy,qz,qw, ...]`
-    /// (7 values per body).
-    #[wasm_bindgen(js_name = "get_all_transforms")]
-    pub fn get_all_transforms_js(&self) -> Vec<f64> {
-        self.get_all_transforms()
-    }
-
-    /// Contacts from the last step encoded as a flat `Float64Array`.
-    ///
-    /// Layout per contact (10 values):
-    /// `[body_a, body_b, nx, ny, nz, depth, impulse, px_a, py_a, pz_a]`
-    ///
-    /// ```js
-    /// const c = engine.get_contacts_flat();
-    /// for (let i = 0; i < c.length; i += 10) {
-    ///   const bodyA = c[i + 0];
-    ///   const depth  = c[i + 5];
-    /// }
-    /// ```
-    #[wasm_bindgen(js_name = "get_contacts_flat")]
-    pub fn get_contacts_flat_js(&self) -> Vec<f64> {
-        let contacts = self.get_contacts();
-        let mut out = Vec::with_capacity(contacts.len() * 10);
-        for c in contacts {
-            out.push(c.body_a as f64);
-            out.push(c.body_b as f64);
-            out.push(c.normal[0]);
-            out.push(c.normal[1]);
-            out.push(c.normal[2]);
-            out.push(c.depth);
-            out.push(c.impulse);
-            out.push(c.point_on_a[0]);
-            out.push(c.point_on_a[1]);
-            out.push(c.point_on_a[2]);
-        }
-        out
-    }
-
-    // -----------------------------------------------------------------------
-    // Raycasting
-    // -----------------------------------------------------------------------
-
-    /// Cast a ray; returns `[]` (no hit) or `[handle, distance]` (nearest hit).
-    ///
-    /// ```js
-    /// const hit = engine.raycast(ox, oy, oz, dx, dy, dz, maxDist);
-    /// if (hit.length > 0) {
-    ///   const handle   = hit[0];
-    ///   const distance = hit[1];
-    /// }
-    /// ```
-    #[wasm_bindgen(js_name = "raycast")]
-    pub fn raycast_js(
-        &self,
-        ox: f64,
-        oy: f64,
-        oz: f64,
-        dx: f64,
-        dy: f64,
-        dz: f64,
-        max_distance: f64,
-    ) -> Vec<f64> {
-        let result = self.raycast(ox, oy, oz, dx, dy, dz, max_distance);
-        if result.hit {
-            vec![result.body_handle as f64, result.distance]
-        } else {
-            vec![]
-        }
     }
 }

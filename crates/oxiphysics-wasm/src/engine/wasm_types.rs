@@ -553,7 +553,11 @@ export class WasmPhysicsEngine {
   /** Create engine with given gravity. */
   static new(gx: number, gy: number, gz: number): WasmPhysicsEngine;
 
-  /** Add a rigid body and return its handle. */
+  /**
+   * Add a rigid body and return its handle (an opaque integer: slot index
+   * plus generation counter).  Throws if the mass is negative or not finite
+   * or the position is not finite.
+   */
   addRigidBody(x: number, y: number, z: number, mass: number): number;
 
   /** Set linear velocity of body with given handle. */
@@ -562,7 +566,10 @@ export class WasmPhysicsEngine {
   /** Get position as [x, y, z]. */
   getPosition(id: number): Float64Array;
 
-  /** Advance simulation by dt seconds. */
+  /**
+   * Advance the simulation by dt seconds of real time.  The time is consumed
+   * in fixed substeps; throws if dt is negative or not finite.
+   */
   step(dt: number): void;
 
   /** Get all body positions as flat Float64Array [x0,y0,z0, x1,y1,z1, ...]. */
@@ -574,10 +581,10 @@ export class WasmPhysicsEngine {
   /** Return number of active bodies. */
   bodyCount(): number;
 
-  /** Add a sphere collider to a body. */
+  /** Add a sphere collider to a body.  Throws if the body does not exist or the radius is not positive. */
   addColliderSphere(bodyId: number, radius: number): number;
 
-  /** Add a box collider to a body. */
+  /** Add a box collider to a body.  Throws if the body does not exist or a half-extent is not positive. */
   addColliderBox(bodyId: number, hx: number, hy: number, hz: number): number;
 
   /** Get contact information from last step. */

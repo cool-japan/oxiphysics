@@ -771,8 +771,21 @@ impl NormalFormGame {
     /// Solve for the mixed-strategy Nash equilibrium of a 2×2 game.
     ///
     /// Returns `(p, q)` where `p` is the probability player A plays row 0 and
-    /// `q` is the probability player B plays column 0. Returns `None` when no
-    /// fully-mixed equilibrium exists.
+    /// `q` is the probability player B plays column 0.
+    ///
+    /// Each player mixes so as to make the *opponent* indifferent between the
+    /// opponent's two pure strategies:
+    ///
+    /// * `q` equalises A's two row payoffs,
+    ///   `q·a00 + (1−q)·a01 = q·a10 + (1−q)·a11`, hence
+    ///   `q = (a11 − a01) / (a00 − a01 − a10 + a11)`;
+    /// * `p` equalises B's two column payoffs,
+    ///   `p·b00 + (1−p)·b10 = p·b01 + (1−p)·b11`, hence
+    ///   `p = (b11 − b10) / (b00 − b01 − b10 + b11)`.
+    ///
+    /// Returns `None` when the game is not 2×2, when either indifference
+    /// equation has no unique solution (a vanishing denominator), or when `p`
+    /// or `q` falls outside `[0, 1]` so that no mixed equilibrium exists.
     pub fn mixed_nash_2x2(&self) -> Option<(f64, f64)> {
         if self.rows() != 2 || self.cols() != 2 {
             return None;
@@ -785,7 +798,7 @@ impl NormalFormGame {
         if denom_q < 1e-12 {
             return None;
         }
-        let q = (a11 - a10) / (a00 - a01 - a10 + a11);
+        let q = (a11 - a01) / (a00 - a01 - a10 + a11);
         let b00 = self.payoff_b[0][0];
         let b01 = self.payoff_b[0][1];
         let b10 = self.payoff_b[1][0];
@@ -794,7 +807,7 @@ impl NormalFormGame {
         if denom_p < 1e-12 {
             return None;
         }
-        let p = (b11 - b01) / (b00 - b01 - b10 + b11);
+        let p = (b11 - b10) / (b00 - b01 - b10 + b11);
         if !(0.0..=1.0).contains(&p) || !(0.0..=1.0).contains(&q) {
             return None;
         }

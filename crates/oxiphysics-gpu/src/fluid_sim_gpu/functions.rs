@@ -385,29 +385,61 @@ pub fn p2g_transfer(particles: &[FlipParticle], grid: &mut MacGrid) {
         };
     }
 }
-/// Grid-to-Particle (G2P) transfer: update particle velocities from MAC grid.
+/// Grid-to-Particle (G2P) transfer: update particle velocities from the MAC
+/// grid and advect the particles.
 ///
-/// `flip_ratio` in \[0,1\]: 1.0 = pure FLIP, 0.0 = pure PIC.
+/// All three velocity components are sampled from `grid_new` (and `grid_old`
+/// for the FLIP delta) with the staggered interpolators
+/// [`MacGrid::interp_u`] / [`MacGrid::interp_v`] / [`MacGrid::interp_w`].
+/// `flip_ratio` in \[0,1\]: 1.0 = pure FLIP (`v_p + (u_new - u_old)`),
+/// 0.0 = pure PIC (`u_new`).  `grid_old` is the grid right after the
+/// particle-to-grid transfer, before body forces and the pressure projection.
+///
+/// The particles are then advected, `x += v * dt`, and kept inside the grid
+/// domain: a particle that would leave through a wall is stopped on the wall
+/// and loses its outward velocity component.
 pub fn g2p_transfer(
     particles: &mut [FlipParticle],
     grid_new: &MacGrid,
     grid_old: &MacGrid,
     flip_ratio: f64,
+    dt: f64,
 ) {
+    let extent = [
+        grid_new.nx as f64 * grid_new.dx,
+        grid_new.ny as f64 * grid_new.dx,
+        grid_new.nz as f64 * grid_new.dx,
+    ];
     for p in particles.iter_mut() {
         let [px, py, pz] = p.position;
-        let dx = grid_new.dx;
-        let u_new = grid_new.interp_u(px, py, pz);
-        let u_old = grid_old.interp_u(px, py, pz);
-        let pic_vel = [u_new, 0.0, 0.0];
-        let flip_delta = [u_new - u_old, 0.0, 0.0];
-        let flip_vel = add3(p.velocity, flip_delta);
-        p.velocity = [
-            flip_ratio * flip_vel[0] + (1.0 - flip_ratio) * pic_vel[0],
-            p.velocity[1],
-            p.velocity[2],
+        let v_new = [
+            grid_new.interp_u(px, py, pz),
+            grid_new.interp_v(px, py, pz),
+            grid_new.interp_w(px, py, pz),
         ];
-        p.position = add3(p.position, scale3(p.velocity, dx));
+        let v_old = [
+            grid_old.interp_u(px, py, pz),
+            grid_old.interp_v(px, py, pz),
+            grid_old.interp_w(px, py, pz),
+        ];
+        for d in 0..3 {
+            let pic = v_new[d];
+            let flip = p.velocity[d] + (v_new[d] - v_old[d]);
+            p.velocity[d] = flip_ratio * flip + (1.0 - flip_ratio) * pic;
+        }
+        p.velocity_grid = v_new;
+        for d in 0..3 {
+            let x = p.position[d] + p.velocity[d] * dt;
+            if x < 0.0 {
+                p.position[d] = 0.0;
+                p.velocity[d] = p.velocity[d].max(0.0);
+            } else if x > extent[d] {
+                p.position[d] = extent[d];
+                p.velocity[d] = p.velocity[d].min(0.0);
+            } else {
+                p.position[d] = x;
+            }
+        }
     }
 }
 /// GPU-accelerated SPH density summation.
@@ -436,59 +468,12 @@ pub fn gpu_sph_density_parallel(particles: &mut [SphParticle], config: &SphConfi
 }
 /// GPU Jacobi pressure solver on a MAC grid.
 ///
-/// Identical algorithm to `MacGrid::jacobi_pressure_solve` but expressed as a
-/// function that could be launched as a compute shader (one thread per cell).
-/// The indirection through a separate function makes the GPU dispatch boundary
-/// explicit.
+/// The same algorithm as [`MacGrid::jacobi_pressure_solve`] (air cells are
+/// Dirichlet `p = 0`, solid cells and the domain walls are Neumann), exposed as
+/// a function that could be launched as a compute shader (one thread per
+/// cell).  It delegates to the grid method so the two cannot diverge.
 pub fn gpu_jacobi_pressure_solve(grid: &mut MacGrid, rho: f64, dt: f64, iterations: usize) {
-    grid.compute_divergence();
-    let scale = rho * grid.dx * grid.dx / dt;
-    let nx = grid.nx;
-    let ny = grid.ny;
-    let nz = grid.nz;
-    let mut p_new = grid.p.clone();
-    for _ in 0..iterations {
-        for k in 0..nz {
-            for j in 0..ny {
-                for i in 0..nx {
-                    let idx = k * nx * ny + j * nx + i;
-                    if grid.flags[idx] != 1 {
-                        continue;
-                    }
-                    let mut nb_sum = 0.0;
-                    let mut nb_cnt = 0u32;
-                    macro_rules! nb {
-                        ($ii:expr, $jj:expr, $kk:expr) => {{
-                            nb_sum += grid.p[$kk * nx * ny + $jj * nx + $ii];
-                            nb_cnt += 1;
-                        }};
-                    }
-                    if i + 1 < nx {
-                        nb!(i + 1, j, k);
-                    }
-                    if i > 0 {
-                        nb!(i - 1, j, k);
-                    }
-                    if j + 1 < ny {
-                        nb!(i, j + 1, k);
-                    }
-                    if j > 0 {
-                        nb!(i, j - 1, k);
-                    }
-                    if k + 1 < nz {
-                        nb!(i, j, k + 1);
-                    }
-                    if k > 0 {
-                        nb!(i, j, k - 1);
-                    }
-                    if nb_cnt > 0 {
-                        p_new[idx] = (nb_sum - scale * grid.div[idx]) / nb_cnt as f64;
-                    }
-                }
-            }
-        }
-        grid.p.copy_from_slice(&p_new);
-    }
+    grid.jacobi_pressure_solve(rho, dt, iterations);
 }
 /// GPU-style BGK collision step for the D2Q9 LBM grid.
 ///

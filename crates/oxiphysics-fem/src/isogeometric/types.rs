@@ -498,61 +498,6 @@ impl NurbsSurface {
         norm3(n)
     }
 }
-/// Degree elevation for B-spline curves.
-///
-/// Elevates the polynomial degree of a NURBS curve by `times` without
-/// changing the geometry, using the Piegl-Tiller algorithm.
-#[derive(Debug, Clone)]
-pub struct DegreeElevation;
-impl DegreeElevation {
-    /// Elevate degree of a NURBS curve by 1.
-    ///
-    /// Returns a new `NurbsCurve` with degree p+1 representing the same geometry.
-    /// Uses knot insertion to handle internal knots before elevation.
-    pub fn elevate_once(curve: &NurbsCurve) -> NurbsCurve {
-        let p = curve.basis.degree;
-        let new_p = p + 1;
-        let mut unique_knots: Vec<(f64, usize)> = Vec::new();
-        for &k in &curve.basis.knot {
-            if let Some(last) = unique_knots.last_mut()
-                && (k - last.0).abs() < 1e-14
-            {
-                last.1 += 1;
-                continue;
-            }
-            unique_knots.push((k, 1));
-        }
-        let mut new_knot = Vec::new();
-        for (val, mult) in &unique_knots {
-            let new_mult = (*mult + 1).min(new_p + 1);
-            for _ in 0..new_mult {
-                new_knot.push(*val);
-            }
-        }
-        let n_new_ctrl = new_knot.len() - new_p - 1;
-        let mut new_ctrl = Vec::with_capacity(n_new_ctrl);
-        let mut new_weights = Vec::with_capacity(n_new_ctrl);
-        let n_old = curve.control_points.len();
-        for i in 0..n_new_ctrl {
-            let t_param = i as f64 / (n_new_ctrl - 1).max(1) as f64;
-            let (t0, t1) = curve.basis.domain();
-            let t = t0 + (t1 - t0) * t_param;
-            let pt = curve.point_at(t.min(t1 - 1e-10).max(t0));
-            new_ctrl.push(pt);
-            let old_idx = (t_param * (n_old - 1) as f64).round() as usize;
-            new_weights.push(curve.weights[old_idx.min(n_old - 1)]);
-        }
-        NurbsCurve::new(new_ctrl, new_weights, new_p, new_knot)
-    }
-    /// Elevate degree by `times` applications.
-    pub fn elevate(curve: &NurbsCurve, times: usize) -> NurbsCurve {
-        let mut result = curve.clone();
-        for _ in 0..times {
-            result = Self::elevate_once(&result);
-        }
-        result
-    }
-}
 /// Top-level isogeometric assembly driver.
 ///
 /// Provides a unified interface for assembling global stiffness and mass
@@ -1466,25 +1411,33 @@ impl NurbsBasis {
     }
     /// Insert a new knot `t_new` into the knot vector using Boehm's algorithm.
     ///
-    /// Returns a new `NurbsBasis` with the updated knot vector and expanded
-    /// weight vector (repeated weight inserted at the appropriate position).
+    /// Returns a new `NurbsBasis` with the updated knot vector and the expanded
+    /// weight vector.  The weights are the control values of the denominator
+    /// spline `W(t) = Σ w_i N_i(t)`, so they are refined with the same Boehm
+    /// blend as any B-spline coefficients; the weight function (and hence every
+    /// rational basis function sum such as `Σ R_i P_i`) is unchanged.
     pub fn insert_knot(&self, t_new: f64) -> NurbsBasis {
         let p = self.bspline.degree;
         let old_knot = &self.bspline.knot;
         let n = self.bspline.num_basis - 1;
         let span = find_knot_span(n, p, t_new, old_knot);
+
         let mut new_knot = old_knot[..=span].to_vec();
         new_knot.push(t_new);
         new_knot.extend_from_slice(&old_knot[span + 1..]);
-        let insert_pos = (span + 1).saturating_sub(p / 2);
-        let insert_pos = insert_pos.min(self.weights.len());
-        let avg_w = if insert_pos < self.weights.len() {
-            self.weights[insert_pos]
-        } else {
-            *self.weights.last().unwrap_or(&1.0)
-        };
-        let mut new_weights = self.weights.clone();
-        new_weights.insert(insert_pos, avg_w);
+
+        let mut new_weights = Vec::with_capacity(self.weights.len() + 1);
+        for i in 0..=(n + 1) {
+            let w = if i + p <= span {
+                self.weights[i]
+            } else if i <= span {
+                let alpha = (t_new - old_knot[i]) / (old_knot[i + p] - old_knot[i]);
+                alpha * self.weights[i] + (1.0 - alpha) * self.weights[i - 1]
+            } else {
+                self.weights[i - 1]
+            };
+            new_weights.push(w);
+        }
         NurbsBasis::new(p, new_knot, new_weights)
     }
     /// Perform de Boor's algorithm to evaluate the B-spline at `t`.
@@ -1595,7 +1548,10 @@ impl NurbsCurve {
     }
     /// Insert a knot value t_new into the knot vector (knot insertion).
     ///
-    /// Updates control points and weights using the Boehm algorithm.
+    /// Updates control points and weights using the Boehm algorithm.  The blend
+    /// is applied to the *homogeneous* control points `(w·P, w)`; blending the
+    /// Cartesian points and the weights separately would change the shape of
+    /// every curve with non-constant weights (a conic arc stops being a conic).
     pub fn insert_knot(&self, t_new: f64) -> NurbsCurve {
         let n = self.control_points.len() - 1;
         let p = self.basis.degree;
@@ -1605,26 +1561,30 @@ impl NurbsCurve {
         new_knot.extend_from_slice(&knot[..=k]);
         new_knot.push(t_new);
         new_knot.extend_from_slice(&knot[k + 1..]);
-        let m = n + p + 1;
-        let mut new_ctrl = vec![[0.0f64; 3]; n + 2];
-        let mut new_weights = vec![0.0f64; n + 2];
-        new_ctrl[..=(k - p)].copy_from_slice(&self.control_points[..=(k - p)]);
-        new_weights[..=(k - p)].copy_from_slice(&self.weights[..=(k - p)]);
-        for i in (k - p + 1)..=k {
-            let alpha = (t_new - knot[i]) / (knot[i + p] - knot[i]);
-            let prev_i = i - 1;
-            new_ctrl[i] = [
-                alpha * self.control_points[i][0] + (1.0 - alpha) * self.control_points[prev_i][0],
-                alpha * self.control_points[i][1] + (1.0 - alpha) * self.control_points[prev_i][1],
-                alpha * self.control_points[i][2] + (1.0 - alpha) * self.control_points[prev_i][2],
-            ];
-            new_weights[i] = alpha * self.weights[i] + (1.0 - alpha) * self.weights[prev_i];
-        }
-        for i in (k + 1)..=(m - p) {
-            if i <= n + 1 {
-                new_ctrl[i] = self.control_points[i - 1];
-                new_weights[i] = self.weights[i - 1];
-            }
+        let homogeneous = |i: usize| -> [f64; 4] {
+            let w = self.weights[i];
+            let c = self.control_points[i];
+            [w * c[0], w * c[1], w * c[2], w]
+        };
+        let mut new_ctrl = Vec::with_capacity(n + 2);
+        let mut new_weights = Vec::with_capacity(n + 2);
+        for i in 0..=(n + 1) {
+            let q = if i + p <= k {
+                homogeneous(i)
+            } else if i <= k {
+                let alpha = (t_new - knot[i]) / (knot[i + p] - knot[i]);
+                let (a, b) = (homogeneous(i), homogeneous(i - 1));
+                [
+                    alpha * a[0] + (1.0 - alpha) * b[0],
+                    alpha * a[1] + (1.0 - alpha) * b[1],
+                    alpha * a[2] + (1.0 - alpha) * b[2],
+                    alpha * a[3] + (1.0 - alpha) * b[3],
+                ]
+            } else {
+                homogeneous(i - 1)
+            };
+            new_weights.push(q[3]);
+            new_ctrl.push([q[0] / q[3], q[1] / q[3], q[2] / q[3]]);
         }
         NurbsCurve::new(new_ctrl, new_weights, p, new_knot)
     }
@@ -1797,23 +1757,32 @@ impl KnotRefinement {
     }
     /// Perform p-refinement (degree elevation) on a B-spline basis.
     ///
-    /// Elevates the degree by 1 and adds necessary knots to maintain continuity.
-    /// Returns a new knot vector for the elevated degree.
+    /// Elevating the degree from `p` to `p + 1` while keeping the continuity of
+    /// the basis at every knot means raising the multiplicity `m` of **every**
+    /// distinct knot by one: a knot of multiplicity `m` gives continuity
+    /// `C^(p - m)`, and `(p + 1) - (m + 1)` is the same.  End knots therefore go
+    /// from `p + 1` to `p + 2 = (p + 1) + 1` copies, i.e. the clamped end
+    /// conditions of the elevated basis, and interior knots never become
+    /// discontinuous.  (Giving every knot the full multiplicity `p + 2` would make
+    /// the basis discontinuous, `C^-1`, at every knot.)
+    ///
+    /// `degree` is the polynomial degree of the *current* basis; multiplicities
+    /// are capped at `degree + 2`, the largest meaningful multiplicity for the
+    /// elevated basis.  Returns the knot vector for the elevated degree.  Use
+    /// [`DegreeElevation`] to elevate the control points that go with it.
     pub fn p_refine_knot(knot: &[f64], degree: usize) -> Vec<f64> {
         let new_degree = degree + 1;
-        let mut unique_knots: Vec<f64> = Vec::new();
-        for &k in knot {
-            if unique_knots.is_empty()
-                || (k - unique_knots.last().expect("unique_knots is non-empty")).abs() > 1e-14
-            {
-                unique_knots.push(k);
+        let mut new_knot = Vec::with_capacity(knot.len() + knot.len() / 2 + 2);
+        let mut i = 0;
+        while i < knot.len() {
+            let value = knot[i];
+            let mut multiplicity = 1;
+            while i + multiplicity < knot.len() && (knot[i + multiplicity] - value).abs() <= 1e-14 {
+                multiplicity += 1;
             }
-        }
-        let mut new_knot = Vec::new();
-        for &k in &unique_knots {
-            for _ in 0..=new_degree {
-                new_knot.push(k);
-            }
+            let elevated = (multiplicity + 1).min(new_degree + 1);
+            new_knot.extend(std::iter::repeat_n(value, elevated));
+            i += multiplicity;
         }
         new_knot
     }

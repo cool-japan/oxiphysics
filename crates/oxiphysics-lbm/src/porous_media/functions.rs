@@ -21,6 +21,21 @@ pub(super) const W: [f64; 9] = [
 ];
 /// Speed of sound squared for D2Q9: cs^2 = 1/3
 pub(super) const CS2: f64 = 1.0 / 3.0;
+/// Guo forcing term of direction `i` for a body-force density `force` acting on
+/// a fluid that moves with velocity `u`, with BGK relaxation frequency `omega`:
+///
+/// `F_i = w_i (1 - omega/2) [ (c_i - u)/cs^2 + (c_i.u) c_i/cs^4 ] . F`
+///
+/// The `-u/cs^2` part is what makes the zeroth moment vanish for *every*
+/// velocity (`sum_i F_i = 0`), so a force never creates or destroys mass; the
+/// first moment is `(1 - omega/2) F` and the second moment
+/// `(1 - omega/2)(u F + F u)`.
+pub(super) fn guo_forcing_term(i: usize, omega: f64, u: [f64; 2], force: [f64; 2]) -> f64 {
+    let cu = CX[i] * u[0] + CY[i] * u[1];
+    W[i] * (1.0 - 0.5 * omega)
+        * (((CX[i] - u[0]) / CS2 + cu * CX[i] / (CS2 * CS2)) * force[0]
+            + ((CY[i] - u[1]) / CS2 + cu * CY[i] / (CS2 * CS2)) * force[1])
+}
 /// Gravity body force in a partially-saturated porous medium.
 ///
 /// F_z = -water_sat * rho * g  (downward gravity component only)
@@ -682,7 +697,12 @@ pub fn superficial_reynolds_number(rho: f64, u: f64, d_p: f64, mu: f64, eps: f64
 /// `K_eff = nu * u_mean / |grad_p|`
 ///
 /// The grid is driven by a body force `f_x` in the x-direction for `n_steps`
-/// and the volume-averaged x-velocity is used.
+/// (BGK collision with the cells' implicit resistance and the Guo forcing
+/// scheme, including the half-force velocity correction) and the
+/// volume-averaged x-velocity is used.  Without resistance (all
+/// `PorousLbmCell::resistance == 0`) a periodic grid has nothing to balance the
+/// force and the estimate keeps growing with `n_steps`.  The cells keep the
+/// applied force in `PorousLbmCell::force`.
 ///
 /// Returns the estimated permeability in lattice units.
 pub fn estimate_lattice_permeability(
@@ -692,28 +712,24 @@ pub fn estimate_lattice_permeability(
     n_steps: usize,
 ) -> f64 {
     let nu = CS2 * (tau - 0.5);
+    let omega = 1.0 / tau;
+    // The body force acts from the very first step, so the half-force velocity
+    // correction has to be in place before the first macroscopic update.
+    for cell in grid.cells.iter_mut() {
+        cell.force = [f_x, 0.0];
+    }
     for _ in 0..n_steps {
         grid.compute_macroscopic();
-        let nx = grid.nx;
-        let ny = grid.ny;
-        for y in 0..ny {
-            for x in 0..nx {
-                let k = grid.idx(x, y);
-                let rho = grid.cells[k].density;
-                let omega = 1.0 / tau;
-                let u = grid.cells[k].velocity;
-                let sigma = grid.cells[k].resistance;
-                let denom = 1.0 + sigma * tau;
-                let u_eff = [u[0] / denom, u[1] / denom];
-                for i in 0..9 {
-                    let feq = PorousLbmGrid::equilibrium(rho, u_eff, i);
-                    grid.cells[k].f[i] += omega * (feq - grid.cells[k].f[i]);
-                    let cu = CX[i] * u_eff[0] + CY[i] * u_eff[1];
-                    let fi_term =
-                        W[i] * (1.0 - 0.5 * omega) * (CX[i] / CS2 + cu * CX[i] / (CS2 * CS2)) * f_x;
-                    grid.cells[k].f[i] += fi_term;
-                }
-            }
+        for cell in grid.cells.iter_mut() {
+            // Equilibrium velocity: the (porosity-weighted) momentum per unit
+            // density, reduced by the implicit resistance.
+            let eps = cell.porosity.max(1e-12);
+            let denom = 1.0 + cell.resistance * tau;
+            let u_eq = [
+                eps * cell.velocity[0] / denom,
+                eps * cell.velocity[1] / denom,
+            ];
+            cell.collide_with_guo_forcing(omega, u_eq, [f_x, 0.0]);
         }
         grid.stream();
         grid.compute_macroscopic();

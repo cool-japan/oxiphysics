@@ -446,10 +446,16 @@ impl HydrogelModel {
 
     /// Elastic free energy chemical potential term \[dimensionless\].
     ///
-    /// `Δμ_el / (RT) = (Vs/Vref) * N^(-1) * (φ/2 - φ^(1/3))`
+    /// `Δμ_el / (RT) = N^(-1) * (ν_0^(2/3) * φ^(1/3) - φ/2)`
+    ///
+    /// This is the affine-network Flory-Rehner elastic contribution for a
+    /// network cross-linked at polymer fraction `ν_0`.  It is positive
+    /// whenever `φ < 2^(3/2)·ν_0` (so for every `φ ≤ 1` when `ν_0 = 1`):
+    /// the stretched network pushes solvent out, while the mixing term
+    /// supplies the opposite (negative for `χ < 0.5`) driving force towards
+    /// swelling.  Equilibrium is where the two balance.
     pub fn elastic_chemical_potential(&self, phi: f64) -> f64 {
-        // Simplified Flory-Rehner elastic term.
-        (1.0 / self.n_chains) * (phi / 2.0 - phi.powf(1.0 / 3.0))
+        (1.0 / self.n_chains) * (self.nu_0.powf(2.0 / 3.0) * phi.powf(1.0 / 3.0) - phi / 2.0)
     }
 
     /// Total chemical potential (mixing + elastic) for equilibrium condition.
@@ -461,30 +467,36 @@ impl HydrogelModel {
     ///
     /// Solves `μ_total(φ) = 0` by bisection over φ ∈ \[1e-4, 1-1e-4\].
     /// Returns volumetric swelling ratio Q = 1/φ_eq.
-    pub fn equilibrium_swelling_ratio(&self) -> f64 {
-        // Bisection: find φ such that μ_total(φ) = 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::NumericalDivergence`] when `μ_total` has no
+    /// sign change on the bracket (or is not finite there), i.e. when no
+    /// equilibrium exists in the supported range `1 < Q < 1e4`.
+    pub fn equilibrium_swelling_ratio(&self) -> Result<f64, crate::Error> {
         let mut lo = 1e-4_f64;
         let mut hi = 1.0 - 1e-4;
-        let mu_lo = self.total_chemical_potential(lo);
-        let mu_hi = self.total_chemical_potential(hi);
-        // If no sign change, return the boundary with smaller |μ|.
-        if mu_lo * mu_hi > 0.0 {
-            if mu_lo.abs() < mu_hi.abs() {
-                return 1.0 / lo;
-            } else {
-                return 1.0 / hi;
-            }
+        // f(lo) is carried through the iteration instead of being re-evaluated.
+        let mut f_lo = self.total_chemical_potential(lo);
+        let f_hi = self.total_chemical_potential(hi);
+        if !f_lo.is_finite() || !f_hi.is_finite() || f_lo * f_hi > 0.0 {
+            return Err(crate::Error::diverged(
+                "hydrogel equilibrium swelling bisection",
+                0,
+                f_lo.abs().min(f_hi.abs()),
+            ));
         }
-        for _ in 0..60 {
+        for _ in 0..100 {
             let mid = 0.5 * (lo + hi);
-            if self.total_chemical_potential(lo) * self.total_chemical_potential(mid) <= 0.0 {
+            let f_mid = self.total_chemical_potential(mid);
+            if f_lo * f_mid <= 0.0 {
                 hi = mid;
             } else {
                 lo = mid;
+                f_lo = f_mid;
             }
         }
-        let phi_eq = 0.5 * (lo + hi);
-        1.0 / phi_eq
+        Ok(1.0 / (0.5 * (lo + hi)))
     }
 }
 
@@ -1001,38 +1013,112 @@ mod tests {
         );
     }
 
-    /// Equilibrium swelling ratio Q > 1 (gel swells).
+    /// A good-solvent gel (χ = 0.3, N = 100) swells to a moderate Q, and the
+    /// returned Q satisfies the equilibrium condition μ_total(1/Q) = 0.
     #[test]
     fn test_hydrogel_swelling_ratio_gt1() {
         let gel = HydrogelModel::new(0.3, 100.0, 1.0e4);
-        let q = gel.equilibrium_swelling_ratio();
+        let q = gel
+            .equilibrium_swelling_ratio()
+            .expect("a bracketing root exists for chi = 0.3, N = 100");
         assert!(
-            q > 1.0,
-            "Equilibrium swelling ratio should be > 1, got {q:.6}"
+            q > 2.0 && q < 50.0,
+            "Equilibrium swelling ratio should be in (2, 50), got {q:.6}"
+        );
+        let residual = gel.total_chemical_potential(1.0 / q);
+        assert!(
+            residual.abs() < 1e-10,
+            "chemical potential must vanish at equilibrium, got {residual:e}"
         );
     }
 
-    /// More cross-links (shorter chains) → larger magnitude elastic restoring potential.
-    ///
-    /// At the same polymer fraction φ < φ_eq, the elastic chemical potential is negative
-    /// (it drives the solvent OUT of the gel). A tighter network has a more negative
-    /// elastic potential (larger restoring force), so |mu_tight| > |mu_loose|.
+    /// Regression: with the elastic term of the wrong sign `μ_total` never
+    /// changed sign and the solver returned the bracket edge Q = 1e4.
+    #[test]
+    fn test_hydrogel_swelling_ratio_is_not_the_bracket_edge() {
+        let gel = HydrogelModel::new(0.3, 100.0, 1.0e4);
+        let q = gel.equilibrium_swelling_ratio().unwrap();
+        assert!((q - 1.0e4).abs() > 1.0, "Q pinned at the bracket edge: {q}");
+        assert!(gel.total_chemical_potential(1.0e-4) > 0.0);
+        assert!(gel.total_chemical_potential(1.0 - 1.0e-4) < 0.0);
+    }
+
+    /// The Flory-Rehner elastic chemical potential is positive for a swollen
+    /// network (it pushes solvent out) and equals
+    /// `N^-1 (ν_0^(2/3) φ^(1/3) - φ/2)`.
+    #[test]
+    fn test_hydrogel_elastic_potential_positive_and_exact() {
+        let mut gel = HydrogelModel::new(0.3, 50.0, 1.0e4);
+        for &phi in &[1.0e-3, 0.01, 0.1, 0.5, 0.99] {
+            let mu_el = gel.elastic_chemical_potential(phi);
+            let expected = (phi.powf(1.0 / 3.0) - phi / 2.0) / 50.0;
+            assert!(mu_el > 0.0, "phi = {phi}: elastic potential {mu_el}");
+            assert!(
+                (mu_el - expected).abs() < 1e-15,
+                "phi = {phi}: {mu_el} vs {expected}"
+            );
+        }
+        // Cross-linking at a lower polymer fraction softens the network term.
+        gel.nu_0 = 0.5;
+        let phi = 0.1_f64;
+        let expected = (0.5_f64.powf(2.0 / 3.0) * phi.powf(1.0 / 3.0) - phi / 2.0) / 50.0;
+        assert!((gel.elastic_chemical_potential(phi) - expected).abs() < 1e-15);
+    }
+
+    /// More cross-links (shorter chains) → larger elastic restoring potential
+    /// at the same polymer fraction, and therefore a smaller equilibrium
+    /// swelling ratio.
     #[test]
     fn test_hydrogel_crosslink_reduces_swelling() {
-        // Compare elastic chemical potential at the same phi.
-        // Tighter gel (more cross-links): smaller n_chains.
         let gel_loose = HydrogelModel::new(0.3, 500.0, 1.0e3);
         let gel_tight = HydrogelModel::new(0.3, 10.0, 1.0e3);
         let phi = 0.1;
         let mu_loose = gel_loose.elastic_chemical_potential(phi);
         let mu_tight = gel_tight.elastic_chemical_potential(phi);
-        // Tight gel has more elastic resistance: |mu_tight| > |mu_loose|.
         assert!(
-            mu_tight.abs() > mu_loose.abs(),
-            "Tighter cross-linking should have larger |elastic potential|: |mu_tight|={:.6}, |mu_loose|={:.6}",
-            mu_tight.abs(),
-            mu_loose.abs()
+            mu_tight > mu_loose && mu_loose > 0.0,
+            "tighter network must resist swelling more: mu_tight={mu_tight:.6}, mu_loose={mu_loose:.6}"
         );
+
+        let q_tight = gel_tight.equilibrium_swelling_ratio().unwrap();
+        let q_mid = HydrogelModel::new(0.3, 100.0, 1.0e3)
+            .equilibrium_swelling_ratio()
+            .unwrap();
+        let q_loose = gel_loose.equilibrium_swelling_ratio().unwrap();
+        assert!(
+            q_tight < q_mid && q_mid < q_loose,
+            "Q must grow with chain length: {q_tight} < {q_mid} < {q_loose}"
+        );
+    }
+
+    /// A poorer solvent (larger χ) deswells the gel.
+    #[test]
+    fn test_hydrogel_swelling_decreases_with_chi() {
+        let q = |chi: f64| {
+            HydrogelModel::new(chi, 100.0, 1.0e4)
+                .equilibrium_swelling_ratio()
+                .unwrap()
+        };
+        let (q_good, q_theta, q_poor) = (q(0.3), q(0.5), q(0.6));
+        assert!(
+            q_good > q_theta && q_theta > q_poor && q_poor > 1.0,
+            "Q must fall with chi: {q_good}, {q_theta}, {q_poor}"
+        );
+    }
+
+    /// A practically uncross-linked polymer in a good solvent has no finite
+    /// equilibrium inside the supported range: the solver must say so rather
+    /// than silently returning a bracket edge.
+    #[test]
+    fn test_hydrogel_swelling_without_bracket_is_an_error() {
+        let dissolving = HydrogelModel::new(0.0, 1.0e9, 1.0e4);
+        let err = dissolving.equilibrium_swelling_ratio().unwrap_err();
+        assert!(
+            matches!(err, crate::Error::NumericalDivergence { .. }),
+            "expected NumericalDivergence, got {err:?}"
+        );
+        let invalid = HydrogelModel::new(0.3, f64::NAN, 1.0e4);
+        assert!(invalid.equilibrium_swelling_ratio().is_err());
     }
 
     // -- CartilageModel --

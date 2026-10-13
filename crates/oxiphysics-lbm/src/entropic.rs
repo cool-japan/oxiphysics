@@ -16,10 +16,28 @@
 //! - Newton-Raphson alpha optimization (faster convergence)
 //! - Entropy function variants (Boltzmann H, relative entropy)
 //!
+//! ## Relaxation and viscosity
+//!
+//! Every collision of this module relaxes the populations towards the local
+//! equilibrium `f_eq` as `f' = f + α β (f_eq − f)` with the physical
+//! relaxation parameter `β = 1/(2τ) = 1/(6ν + 1)` (`τ = 3ν + 1/2` for the
+//! kinematic viscosity `ν` in lattice units).  The entropic parameter `α` is
+//! the non-trivial root of `H(f + α (f_eq − f)) = H(f)`; for a state close to
+//! equilibrium `α = 2 − O(|f − f_eq|)`, so the scheme reduces to BGK with
+//! `ω = 2β = 1/τ` and reproduces exactly the requested viscosity `ν`.  Far
+//! from equilibrium `α` adapts so that the H-theorem `H(f') ≤ H(f)` holds.
+//!
+//! The collision target is the *entropic* equilibrium, i.e. the minimiser of
+//! `H` for the cell's density and momentum (see [`d2q9_equilibrium`]); with a
+//! merely polynomial equilibrium the entropy estimate would be dominated by
+//! the polynomial's O(u³) misfit instead of by the non-equilibrium part.
+//!
 //! ## References
 //!
 //! - Ansumali & Karlin (2002), Phys. Rev. E 65, 056312.
 //! - Karlin, Bösch & Chikatamarla (2014), Phys. Rev. E 90, 031302.
+
+use crate::error::{Error, Result};
 
 // ---------------------------------------------------------------------------
 // D2Q9 constants
@@ -67,16 +85,41 @@ const C: [(i32, i32); 9] = [
 /// D2Q9 opposite-direction mapping.
 const OPP: [usize; 9] = [0, 3, 4, 1, 2, 7, 8, 5, 6];
 
+/// Relative non-equilibrium deviation `max_i |f_i − f_eq,i| / f_eq,i` below
+/// which the entropic root search is skipped and `α = 2` (BGK
+/// over-relaxation) is returned.
+///
+/// Near equilibrium the exact root is `α = 2 − O(δ)` for a deviation `δ`, so
+/// `α = 2` is accurate to `O(δ)`; at the same time the entropy change
+/// `φ(α) = O(δ²)` drops below what double-precision evaluation of `H` can
+/// resolve for `δ ≲ 1e-6`.
+const NEAR_EQUILIBRIUM_REL_TOL: f64 = 1e-5;
+
+/// Maximum number of geometric (×1.5) growth steps when bracketing the
+/// entropic root from above.
+const MAX_BRACKET_GROWTH: usize = 64;
+
+/// Tolerance on the entropy change `H(f') − H(f)` accepted by the Newton
+/// solvers when they land on the root from the wrong side.
+const ENTROPY_TOL: f64 = 1e-12;
+
+/// Relative back-off from the positivity boundary of the mirror line (see
+/// [`back_off_positivity`]).
+const POSITIVITY_MARGIN: f64 = 1e-6;
+
 // ---------------------------------------------------------------------------
 // Free functions
 // ---------------------------------------------------------------------------
 
-/// Compute the D2Q9 Maxwell–Boltzmann equilibrium distribution (free function).
+/// Compute the second-order polynomial (Taylor-expanded Maxwell–Boltzmann)
+/// D2Q9 equilibrium:
 ///
-/// Uses the second-order Taylor expansion:
-/// f_eq_i = w_i * ρ * (1 + (c·u)/cs² + (c·u)²/(2cs⁴) − u²/(2cs²))
-/// where cs² = 1/3.
-pub fn d2q9_equilibrium(rho: f64, u: [f64; 2]) -> [f64; 9] {
+/// f_eq_i = w_i * ρ * (1 + (c·u)/cs² + (c·u)²/(2cs⁴) − u²/(2cs²)),  cs² = 1/3.
+///
+/// This is the standard LBM equilibrium.  It is *not* the minimiser of the
+/// H-function (its misfit is O(u³)), which is why the entropic collisions of
+/// this module use [`d2q9_equilibrium`] instead.
+pub fn d2q9_polynomial_equilibrium(rho: f64, u: [f64; 2]) -> [f64; 9] {
     let ux = u[0];
     let uy = u[1];
     let u2 = ux * ux + uy * uy;
@@ -88,6 +131,68 @@ pub fn d2q9_equilibrium(rho: f64, u: [f64; 2]) -> [f64; 9] {
         feq[i] = W[i] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * u2);
     }
     feq
+}
+
+/// Compute the D2Q9 *entropic* equilibrium: the minimiser of
+/// `H = Σ f_i ln(f_i / w_i)` at fixed density `ρ` and momentum `ρ u`.
+///
+/// For D2Q9 the minimiser has the closed product form of Ansumali, Karlin &
+/// Öttinger (2003),
+///
+/// ```text
+/// f_eq_i = ρ w_i Π_{a ∈ {x,y}} (2 − √(1+3u_a²)) · ((2u_a + √(1+3u_a²)) / (1 − u_a))^{c_ia}
+/// ```
+///
+/// It conserves mass and momentum exactly and agrees with
+/// [`d2q9_polynomial_equilibrium`] up to `O(u³)`.  Because `H(f_eq)` is the
+/// minimum of `H` over all populations with the same `ρ` and `ρ u`, the
+/// entropic root `α` of `H(f + α (f_eq − f)) = H(f)` equals `2 − O(|f − f_eq|)`
+/// for every non-equilibrium magnitude.
+///
+/// The product form is only defined for `|u_a| < 1`; outside that range (far
+/// beyond the validity of any LBM) the polynomial equilibrium is returned.
+pub fn d2q9_equilibrium(rho: f64, u: [f64; 2]) -> [f64; 9] {
+    if !(u[0].abs() < 1.0 && u[1].abs() < 1.0) {
+        return d2q9_polynomial_equilibrium(rho, u);
+    }
+    // One-dimensional factors for c = -1, 0, +1.
+    let factors = |ua: f64| -> [f64; 3] {
+        let s = (1.0 + 3.0 * ua * ua).sqrt();
+        let xi = 2.0 - s;
+        let phi = (2.0 * ua + s) / (1.0 - ua);
+        [xi / phi, xi, xi * phi]
+    };
+    let fx = factors(u[0]);
+    let fy = factors(u[1]);
+    let mut feq = [0.0; 9];
+    for i in 0..9 {
+        let ix = (C[i].0 + 1) as usize;
+        let iy = (C[i].1 + 1) as usize;
+        feq[i] = W[i] * rho * fx[ix] * fy[iy];
+    }
+    feq
+}
+
+/// Relaxation parameter `β = 1/(2τ) = 1/(6ν + 1)` of an entropic collision for
+/// the kinematic viscosity `ν` (lattice units, `τ = 3ν + 1/2`).
+///
+/// With `α = 2` the collision `f' = f + α β (f_eq − f)` is exactly BGK with
+/// `ω = 1/τ`.  A non-positive or non-finite `ν` is outside the physical range
+/// (see the `try_new` constructors, which reject it) and is treated as the
+/// inviscid limit `β = 1`.
+pub fn relaxation_beta(nu: f64) -> f64 {
+    if nu.is_finite() && nu > 0.0 {
+        1.0 / (6.0 * nu + 1.0)
+    } else {
+        1.0
+    }
+}
+
+/// Validate a kinematic viscosity for the entropic collisions: it must be
+/// finite and positive, i.e. `τ = 3ν + 1/2 > 1/2`.
+fn validate_viscosity(nu: f64) -> Result<()> {
+    Error::check_range(nu, 0.0, f64::MAX, "nu")?;
+    Error::check_tau(3.0 * nu + 0.5)
 }
 
 /// Compute the discrete H-function: H = Σ_i f_i * ln(f_i / w_i).
@@ -142,57 +247,194 @@ pub fn mirror_state(f: &[f64; 9], f_eq: &[f64; 9]) -> [f64; 9] {
     mirror
 }
 
-/// Find the entropic relaxation parameter α ∈ \[0, 2\] via bisection.
+/// Deviation `d = f_eq − f` along which the entropic mirror line runs.
+fn mirror_direction(f: &[f64; 9], f_eq: &[f64; 9]) -> [f64; 9] {
+    let mut d = [0.0; 9];
+    for i in 0..9 {
+        d[i] = f_eq[i] - f[i];
+    }
+    d
+}
+
+/// `true` if every population is within [`NEAR_EQUILIBRIUM_REL_TOL`] (relative)
+/// of the equilibrium.
+fn is_near_equilibrium(f: &[f64; 9], f_eq: &[f64; 9]) -> bool {
+    f.iter()
+        .zip(f_eq.iter())
+        .all(|(&fi, &ei)| ei > 0.0 && (fi - ei).abs() <= NEAR_EQUILIBRIUM_REL_TOL * ei)
+}
+
+/// Entropy change `φ(α) = H(f + α d) − H(f)` along the mirror line.
 ///
-/// α is chosen so that H(f + α*(f_eq − f)) = H(f), enforcing the
-/// discrete H-theorem.  The physical upper bound α = 2 corresponds to
-/// standard BGK overrelaxation.
+/// Evaluated term by term as `Σ_i [α d_i ln((f_i + α d_i)/w_i) + f_i ln(1 + α d_i/f_i)]`,
+/// which is algebraically identical to the difference of the two H values but
+/// avoids the catastrophic cancellation of subtracting two O(1) numbers whose
+/// difference is O(|d|²).  Returns `+∞` as soon as a population `f_i + α d_i`
+/// (or `f_i`) is not strictly positive, where `H` is undefined.
+fn entropy_change(f: &[f64; 9], d: &[f64; 9], alpha: f64) -> f64 {
+    let mut total = 0.0;
+    for i in 0..9 {
+        let x = f[i] + alpha * d[i];
+        let admissible = f[i] > 0.0 && x > 0.0;
+        if !admissible {
+            return f64::INFINITY;
+        }
+        total += alpha * d[i] * (x / W[i]).ln() + f[i] * (alpha * d[i] / f[i]).ln_1p();
+    }
+    total
+}
+
+/// Derivative `dφ/dα = Σ_i d_i (1 + ln((f_i + α d_i)/w_i))` of
+/// [`entropy_change`]; `+∞` where `H` is undefined.
+fn entropy_change_derivative(f: &[f64; 9], d: &[f64; 9], alpha: f64) -> f64 {
+    let mut total = 0.0;
+    for i in 0..9 {
+        let x = f[i] + alpha * d[i];
+        if x > 0.0 {
+            total += d[i] * (1.0 + (x / W[i]).ln());
+        } else {
+            return f64::INFINITY;
+        }
+    }
+    total
+}
+
+/// Bracket the non-trivial root of `φ(α) = 0`.
 ///
-/// If H(f_eq) ≤ H(f) already (which is the thermodynamically consistent
-/// case), we return α = 2 (the BGK limit).
+/// `φ` is convex with `φ(0) = 0`, so a root `α* > 0` exists iff `φ(1) < 0`
+/// (the equilibrium has lower entropy than the pre-collision state) and then
+/// `α* > 1`.  Starting from `[1, 2]` the upper end is grown geometrically
+/// until `φ(hi) ≥ 0`; `φ = +∞` once a population would turn non-positive, so
+/// the growth always terminates.  Returns `None` when there is no such root.
+fn bracket_entropic_root(f: &[f64; 9], d: &[f64; 9]) -> Option<(f64, f64)> {
+    if entropy_change(f, d, 1.0) < 0.0 {
+        let mut lo = 1.0_f64;
+        let mut hi = 2.0_f64;
+        for _ in 0..MAX_BRACKET_GROWTH {
+            if entropy_change(f, d, hi) < 0.0 {
+                lo = hi;
+                hi *= 1.5;
+            } else {
+                return Some((lo, hi));
+            }
+        }
+    }
+    None
+}
+
+/// Back off from the positivity boundary of the mirror line.
+///
+/// For extremely strong non-equilibrium the line `f + α d` leaves the positive
+/// orthant before the entropy returns to `H(f)`; there is then no iso-entropy
+/// root and the largest admissible `α` sits on the boundary, where a
+/// population would be exactly zero (and `H` undefined at the next step).
+/// If `alpha` is within a relative `1e-8` of that boundary it is reduced by
+/// [`POSITIVITY_MARGIN`], which keeps every over-relaxed population at least
+/// that fraction of its pre-collision value.  The H-theorem is unaffected
+/// because `φ < 0` on the whole admissible range.
+fn back_off_positivity(f: &[f64; 9], d: &[f64; 9], alpha: f64) -> f64 {
+    if entropy_change(f, d, alpha * (1.0 + 1e-8)).is_finite() {
+        alpha
+    } else {
+        alpha * (1.0 - POSITIVITY_MARGIN)
+    }
+}
+
+/// Safeguarded Newton iteration for `φ(α) = 0` inside the bracket `[lo, hi]`
+/// (`φ(lo) < 0 ≤ φ(hi)`), started at `alpha0`.
+///
+/// A Newton step that leaves the current bracket (or hits a vanishing /
+/// infinite derivative) is replaced by bisection.  The result is the root
+/// estimate if it satisfies the H-theorem to [`ENTROPY_TOL`], otherwise the
+/// safe lower end of the bracket.
+fn safeguarded_newton(
+    f: &[f64; 9],
+    d: &[f64; 9],
+    bracket: (f64, f64),
+    alpha0: f64,
+    tol: f64,
+    max_iter: usize,
+) -> f64 {
+    let (mut lo, mut hi) = bracket;
+    let mut alpha = if alpha0 > lo && alpha0 < hi {
+        alpha0
+    } else {
+        0.5 * (lo + hi)
+    };
+    for _ in 0..max_iter {
+        let phi = entropy_change(f, d, alpha);
+        if phi < 0.0 {
+            lo = alpha;
+        } else {
+            hi = alpha;
+        }
+        let slope = entropy_change_derivative(f, d, alpha);
+        let newton = if phi.is_finite() && slope.is_finite() && slope != 0.0 {
+            alpha - phi / slope
+        } else {
+            f64::NAN
+        };
+        let next = if newton > lo && newton < hi {
+            newton
+        } else {
+            0.5 * (lo + hi)
+        };
+        let converged = (next - alpha).abs() <= tol * alpha.max(1.0) || hi - lo <= tol;
+        alpha = next;
+        if converged {
+            break;
+        }
+    }
+    let root = if entropy_change(f, d, alpha) <= ENTROPY_TOL {
+        alpha
+    } else {
+        lo
+    };
+    back_off_positivity(f, d, root)
+}
+
+/// Find the entropic relaxation parameter α via bracketed bisection.
+///
+/// With `d = f_eq − f` the mirror line is `f + α d`, and α is the non-trivial
+/// root of
+///
+/// ```text
+/// φ(α) = H(f + α d) − H(f) = 0,
+/// ```
+///
+/// i.e. the over-relaxed state has exactly the entropy of the pre-collision
+/// state and the discrete H-theorem holds for every state between `f` and
+/// `f + α d`.  `φ` is convex with `φ(0) = 0` and `φ(1) = H(f_eq) − H(f)`, so
+/// for `H(f_eq) < H(f)` the root lies above 1; it equals `2 − O(|d|)` near
+/// equilibrium and is below or above 2 for strongly non-equilibrium states.
+/// The returned value is the lower end of the final bracket, so
+/// `φ(α) ≤ 0` always holds.  In the extreme case where the mirror line leaves
+/// the positive orthant before the entropy returns to `H(f)` (populations
+/// would turn negative first), no iso-entropy root exists and the result is
+/// the largest positivity-preserving value, backed off by a relative `1e-6`.
+///
+/// `α = 2` (standard BGK over-relaxation) is returned when
+/// - the state is within [`NEAR_EQUILIBRIUM_REL_TOL`] (relative) of
+///   equilibrium, where the root is `2 − O(δ)` and cannot be resolved in
+///   floating point, or
+/// - `H(f_eq) ≥ H(f)` or `H` is undefined (non-positive populations), where
+///   no entropy-based correction exists.
 ///
 /// # Arguments
 /// * `f`        – pre-collision distribution
-/// * `f_eq`     – local equilibrium distribution
+/// * `f_eq`     – local equilibrium distribution (use [`d2q9_equilibrium`])
 /// * `max_iter` – maximum bisection iterations (20–50 is typically sufficient)
 pub fn find_entropic_alpha(f: &[f64; 9], f_eq: &[f64; 9], max_iter: usize) -> f64 {
-    let h_f = h_function(f);
-
-    // If f is already at or below equilibrium H, use standard BGK.
-    if h_function(f_eq) <= h_f {
+    if is_near_equilibrium(f, f_eq) {
         return 2.0;
     }
-
-    // We want to find α ∈ (0, 2) such that H(f + α*(f_eq − f)) = H(f).
-    // Define φ(α) = H(f + α*(f_eq − f)) − H(f).
-    // φ(0) = 0, φ(2) = H(mirror) − H(f).
-    //
-    // Because H is convex and H(f_eq) < H(f), there exists a root in (0, 2].
-    // We bisect on [1, 2] since φ is monotone decreasing through 0 somewhere
-    // in that interval.
-
-    let phi = |alpha: f64| -> f64 {
-        let mut f_new = [0.0; 9];
-        for i in 0..9 {
-            f_new[i] = f[i] + alpha * (f_eq[i] - f[i]);
-        }
-        h_function(&f_new) - h_f
+    let d = mirror_direction(f, f_eq);
+    let Some((mut lo, mut hi)) = bracket_entropic_root(f, &d) else {
+        return 2.0;
     };
-
-    // Check sign at α = 2 (mirror state).
-    let phi2 = phi(2.0);
-    if phi2 >= 0.0 {
-        // Mirror state has H ≥ H(f): α = 2 is safe.
-        return 2.0;
-    }
-
-    // Bisect on [1, 2] where φ crosses zero from positive to negative.
-    let mut lo = 1.0_f64;
-    let mut hi = 2.0_f64;
-
     for _ in 0..max_iter {
         let mid = 0.5 * (lo + hi);
-        if phi(mid) > 0.0 {
+        if entropy_change(f, &d, mid) < 0.0 {
             lo = mid;
         } else {
             hi = mid;
@@ -201,65 +443,27 @@ pub fn find_entropic_alpha(f: &[f64; 9], f_eq: &[f64; 9], max_iter: usize) -> f6
             break;
         }
     }
-
-    0.5 * (lo + hi)
+    back_off_positivity(f, &d, lo)
 }
 
-/// Find the entropic α using Newton-Raphson iteration (faster convergence).
+/// Find the entropic α using safeguarded Newton–Raphson iteration (faster
+/// convergence than [`find_entropic_alpha`]).
 ///
-/// Uses the derivative dH/dα to converge quadratically.
-/// Falls back to bisection if Newton step goes out of bounds.
+/// Solves the same equation `H(f + α (f_eq − f)) = H(f)` using the analytic
+/// derivative `dH/dα = Σ_i (f_eq_i − f_i)(1 + ln((f_i + α (f_eq_i − f_i))/w_i))`.
+/// The iteration starts at `α = 2`, is kept inside the bracket of the root
+/// (a Newton step leaving the bracket falls back to bisection) and is not
+/// clamped to `[0.5, 2]`, so roots above 2 are found as well.  The same
+/// `α = 2` fall-backs as in [`find_entropic_alpha`] apply.
 pub fn find_entropic_alpha_newton(f: &[f64; 9], f_eq: &[f64; 9], max_iter: usize) -> f64 {
-    let h_f = h_function(f);
-
-    if h_function(f_eq) <= h_f {
+    if is_near_equilibrium(f, f_eq) {
         return 2.0;
     }
-
-    let phi_and_dphi = |alpha: f64| -> (f64, f64) {
-        let mut f_new = [0.0; 9];
-        let mut df = [0.0; 9]; // df[i] = f_eq[i] - f[i]
-        for i in 0..9 {
-            df[i] = f_eq[i] - f[i];
-            f_new[i] = f[i] + alpha * df[i];
-        }
-        let h_new = h_function(&f_new);
-        let phi = h_new - h_f;
-
-        // dH/dα = Σ_i (f_eq_i - f_i) * (1 + ln(f_new_i / w_i))
-        let mut dphi = 0.0;
-        for i in 0..9 {
-            if f_new[i] > 0.0 {
-                dphi += df[i] * (1.0 + (f_new[i] / W[i]).ln());
-            }
-        }
-        (phi, dphi)
+    let d = mirror_direction(f, f_eq);
+    let Some(bracket) = bracket_entropic_root(f, &d) else {
+        return 2.0;
     };
-
-    // Start from α = 2.0 and iterate
-    let mut alpha = 2.0_f64;
-
-    for _ in 0..max_iter {
-        let (phi, dphi) = phi_and_dphi(alpha);
-
-        if phi.abs() < 1e-14 {
-            break;
-        }
-
-        if dphi.abs() < 1e-30 {
-            // Degenerate derivative, fall back to bisection midpoint
-            alpha = 1.5;
-            continue;
-        }
-
-        let step = -phi / dphi;
-        let new_alpha = alpha + step;
-
-        // Clamp to [0.5, 2.0] to avoid wild steps
-        alpha = new_alpha.clamp(0.5, 2.0);
-    }
-
-    alpha.clamp(0.0, 2.0)
+    safeguarded_newton(f, &d, bracket, 2.0, 1e-14, max_iter)
 }
 
 /// Compute non-equilibrium stress tensor components from f and f_eq.
@@ -287,9 +491,11 @@ pub fn non_equilibrium_stress(f: &[f64; 9], f_eq: &[f64; 9]) -> (f64, f64, f64) 
 
 /// Entropic LBM solver for D2Q9 with adaptive relaxation (H-theorem stable).
 ///
-/// The solver uses an adaptive α ∈ \[0, 2\] at each cell computed by
-/// [`find_entropic_alpha`] so that the post-collision state never violates
-/// the discrete H-theorem.  When α = 2 this reduces to standard BGK.
+/// At every cell the collision is `f' = f + α β (f_eq − f)` with the physical
+/// relaxation parameter `β = 1/(6ν + 1)` of the kinematic viscosity `nu` and
+/// the entropic parameter `α` of [`find_entropic_alpha`], so that the
+/// post-collision state never violates the discrete H-theorem.  Near
+/// equilibrium `α = 2` and the scheme is exactly BGK with `τ = 3ν + 1/2`.
 pub struct EntropicD2Q9 {
     /// Domain width (number of cells in x direction).
     pub nx: usize,
@@ -297,12 +503,16 @@ pub struct EntropicD2Q9 {
     pub ny: usize,
     /// Distribution functions stored as `f[cell_index][direction]`.
     pub f: Vec<[f64; 9]>,
-    /// Kinematic viscosity ν.
+    /// Kinematic viscosity ν (lattice units); must be positive.
     pub nu: f64,
 }
 
 impl EntropicD2Q9 {
     /// Create a new solver with uniform rest equilibrium (ρ=1, u=0).
+    ///
+    /// `nu` is the kinematic viscosity in lattice units and must be positive
+    /// (`τ = 3ν + 1/2 > 1/2`); use [`try_new`](Self::try_new) to have an
+    /// invalid value reported instead of being treated as the inviscid limit.
     pub fn new(nx: usize, ny: usize, nu: f64) -> Self {
         let n = nx * ny;
         let f_rest = Self::equilibrium(1.0, [0.0, 0.0]);
@@ -314,23 +524,24 @@ impl EntropicD2Q9 {
         }
     }
 
-    /// Compute the D2Q9 Maxwell–Boltzmann equilibrium distribution.
-    ///
-    /// Uses the second-order Taylor expansion:
-    /// f_eq_i = w_i * ρ * (1 + (c·u)/cs² + (c·u)²/(2cs⁴) − u²/(2cs²))
-    /// where cs² = 1/3.
+    /// Validated constructor: rejects an empty grid and a viscosity that is
+    /// not finite and positive (`τ = 3ν + 1/2 ≤ 1/2`, checked with
+    /// [`Error::check_tau`]).
+    pub fn try_new(nx: usize, ny: usize, nu: f64) -> Result<Self> {
+        Error::check_grid(nx, ny)?;
+        validate_viscosity(nu)?;
+        Ok(Self::new(nx, ny, nu))
+    }
+
+    /// Relaxation parameter `β = 1/(2τ) = 1/(6ν + 1)` of this solver.
+    pub fn beta(&self) -> f64 {
+        relaxation_beta(self.nu)
+    }
+
+    /// Compute the D2Q9 entropic (H-minimising) equilibrium distribution;
+    /// see [`d2q9_equilibrium`].
     pub fn equilibrium(rho: f64, u: [f64; 2]) -> [f64; 9] {
-        let ux = u[0];
-        let uy = u[1];
-        let u2 = ux * ux + uy * uy;
-        let mut feq = [0.0; 9];
-        for i in 0..9 {
-            let cx = C[i].0 as f64;
-            let cy = C[i].1 as f64;
-            let cu = cx * ux + cy * uy;
-            feq[i] = W[i] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * u2);
-        }
-        feq
+        d2q9_equilibrium(rho, u)
     }
 
     /// Compute macroscopic density and velocity at cell `idx`.
@@ -352,30 +563,30 @@ impl EntropicD2Q9 {
     /// Perform entropic collision at every cell.
     ///
     /// For each cell the adaptive α is found by bisection such that
-    /// H(f_new) ≤ H(f).  The update rule is: f_new = f + α*(f_eq − f).
+    /// H(f_new) ≤ H(f).  The update rule is `f_new = f + α β (f_eq − f)` with
+    /// `β = 1/(6ν + 1)`; α is capped at `2/β` so that the effective
+    /// relaxation frequency `α β` never exceeds the linear stability limit 2.
     pub fn collide(&mut self) {
-        let n = self.nx * self.ny;
-        for k in 0..n {
-            let (rho, u) = self.macros(k);
-            let f_eq = Self::equilibrium(rho, u);
-            let alpha = find_entropic_alpha(&self.f[k], &f_eq, 50);
-            let f = &mut self.f[k];
-            for i in 0..9 {
-                f[i] += alpha * (f_eq[i] - f[i]);
-            }
-        }
+        self.collide_with(|f, f_eq| find_entropic_alpha(f, f_eq, 50));
     }
 
     /// Perform entropic collision using Newton-Raphson alpha optimization.
     pub fn collide_newton(&mut self) {
+        self.collide_with(|f, f_eq| find_entropic_alpha_newton(f, f_eq, 20));
+    }
+
+    /// Shared collision loop: `alpha_of(f, f_eq)` supplies the entropic α.
+    fn collide_with(&mut self, alpha_of: impl Fn(&[f64; 9], &[f64; 9]) -> f64) {
+        let beta = self.beta();
+        let alpha_cap = 2.0 / beta;
         let n = self.nx * self.ny;
         for k in 0..n {
             let (rho, u) = self.macros(k);
             let f_eq = Self::equilibrium(rho, u);
-            let alpha = find_entropic_alpha_newton(&self.f[k], &f_eq, 20);
+            let alpha = alpha_of(&self.f[k], &f_eq).min(alpha_cap);
             let f = &mut self.f[k];
             for i in 0..9 {
-                f[i] += alpha * (f_eq[i] - f[i]);
+                f[i] += alpha * beta * (f_eq[i] - f[i]);
             }
         }
     }
@@ -538,11 +749,19 @@ impl ElbmDiagnostics {
 // KbcD2Q9
 // ---------------------------------------------------------------------------
 
-/// KBC (Karlin–Bösch–Chikatamarla) variant of entropic LBM for D2Q9.
+/// KBC-style variant of entropic LBM for D2Q9.
 ///
-/// KBC decomposes the equilibrium into symmetric (s) and antisymmetric (h)
-/// parts and applies a single global α to the s-part while keeping the
-/// h-part at its BGK rate (overrelaxation by factor 2).
+/// The deviation from equilibrium is split into its symmetric (even under
+/// `i ↔ opp(i)`, carrying the stress) part `Δs` and antisymmetric (odd) part
+/// `Δh`.  The collision is `f' = f + β (α Δs + 2 Δh)` with the physical
+/// relaxation parameter `β = 1/(6ν + 1)`: the odd part is mirrored (factor 2)
+/// and α is the entropic parameter of the even part, determined with the odd
+/// part already mirrored.  For `α = 2` (near equilibrium) this is exactly BGK
+/// with `τ = 3ν + 1/2`, so the requested viscosity is recovered.
+///
+/// Note: this is not the full Karlin–Bösch–Chikatamarla moment split into
+/// shear and higher-order (ghost) parts with a stabiliser `γ` on the latter;
+/// that refinement is tracked separately.
 pub struct KbcD2Q9 {
     /// Domain width.
     pub nx: usize,
@@ -550,7 +769,7 @@ pub struct KbcD2Q9 {
     pub ny: usize,
     /// Distribution functions stored as `f[cell_index][direction]`.
     pub f: Vec<[f64; 9]>,
-    /// Kinematic viscosity ν.
+    /// Kinematic viscosity ν (lattice units); must be positive.
     pub nu: f64,
 }
 
@@ -584,6 +803,9 @@ impl KbcD2Q9 {
     }
 
     /// Create a new KBC solver with uniform rest equilibrium (ρ=1, u=0).
+    ///
+    /// `nu` must be positive (`τ = 3ν + 1/2 > 1/2`); use
+    /// [`try_new`](Self::try_new) to have an invalid value reported.
     pub fn new(nx: usize, ny: usize, nu: f64) -> Self {
         let n = nx * ny;
         let f_rest = EntropicD2Q9::equilibrium(1.0, [0.0, 0.0]);
@@ -593,6 +815,19 @@ impl KbcD2Q9 {
             f: vec![f_rest; n],
             nu,
         }
+    }
+
+    /// Validated constructor: rejects an empty grid and a viscosity that is
+    /// not finite and positive (checked with [`Error::check_tau`]).
+    pub fn try_new(nx: usize, ny: usize, nu: f64) -> Result<Self> {
+        Error::check_grid(nx, ny)?;
+        validate_viscosity(nu)?;
+        Ok(Self::new(nx, ny, nu))
+    }
+
+    /// Relaxation parameter `β = 1/(2τ) = 1/(6ν + 1)` of this solver.
+    pub fn beta(&self) -> f64 {
+        relaxation_beta(self.nu)
     }
 
     /// Compute macroscopic density and velocity at cell `idx`.
@@ -615,27 +850,24 @@ impl KbcD2Q9 {
     /// Δs = s_eq − s_f  (symmetric deviation)
     /// Δh = h_eq − h_f  (antisymmetric deviation)
     ///
-    /// f_new = f + α_kbc * Δs + 2 * Δh
+    /// f_new = f + β (α_kbc Δs + 2 Δh),  β = 1/(6ν + 1)
     ///
-    /// where α_kbc is the entropic parameter found by bisection for the
-    /// s-component and the h-component is always fully relaxed (α = 2).
+    /// where α_kbc is the entropic parameter of the s-component, found with
+    /// the h-component already fully mirrored (`f + 2 Δh`): it is the root of
+    /// `H(f + 2 Δh + α Δs) = H(f + 2 Δh)`.  Near equilibrium `α_kbc = 2` and
+    /// the update is exactly BGK, `f + 2β (f_eq − f)`; α_kbc is capped at
+    /// `2/β` so that the shear relaxation frequency never exceeds 2.
     pub fn collide_kbc(&mut self) {
+        let beta = self.beta();
+        let alpha_cap = 2.0 / beta;
         let n = self.nx * self.ny;
         for k in 0..n {
-            let f = &self.f[k];
-            let rho: f64 = f.iter().sum();
-            let mut mx = 0.0;
-            let mut my = 0.0;
-            for i in 0..9 {
-                mx += f[i] * C[i].0 as f64;
-                my += f[i] * C[i].1 as f64;
-            }
-            let inv_rho = if rho > 0.0 { 1.0 / rho } else { 0.0 };
-            let u = [mx * inv_rho, my * inv_rho];
+            let f = self.f[k];
+            let (rho, u) = self.macros(k);
 
             let f_eq = EntropicD2Q9::equilibrium(rho, u);
             let (s_eq, h_eq) = Self::decompose_feq(&f_eq);
-            let (s_f, h_f) = Self::decompose_feq(f);
+            let (s_f, h_f) = Self::decompose_general(&f);
 
             // Compute Δs and Δh.
             let mut ds = [0.0; 9];
@@ -645,31 +877,19 @@ impl KbcD2Q9 {
                 dh[i] = h_eq[i] - h_f[i];
             }
 
-            // Find entropic α for the s-component deviation only.
-            let f_h_relaxed: [f64; 9] = {
-                let mut tmp = *f;
-                for i in 0..9 {
-                    tmp[i] += 2.0 * dh[i];
-                }
-                tmp
-            };
-
-            let alpha_kbc = {
-                let h_ref = h_function(&f_h_relaxed);
-                let mut f_eq_bisect = f_h_relaxed;
-                for i in 0..9 {
-                    f_eq_bisect[i] += ds[i];
-                }
-                if h_function(&f_eq_bisect) <= h_ref {
-                    2.0_f64
-                } else {
-                    find_entropic_alpha(&f_h_relaxed, &f_eq_bisect, 50)
-                }
-            };
+            // Entropic α for the s-component deviation, with the h-component
+            // already relaxed by the mirror factor 2.
+            let mut f_h_mirrored = f;
+            let mut f_target = f;
+            for i in 0..9 {
+                f_h_mirrored[i] += 2.0 * dh[i];
+                f_target[i] += 2.0 * dh[i] + ds[i];
+            }
+            let alpha_kbc = find_entropic_alpha(&f_h_mirrored, &f_target, 50).min(alpha_cap);
 
             let f_new = &mut self.f[k];
             for i in 0..9 {
-                f_new[i] += alpha_kbc * ds[i] + 2.0 * dh[i];
+                f_new[i] += beta * (alpha_kbc * ds[i] + 2.0 * dh[i]);
             }
         }
     }
@@ -745,7 +965,8 @@ mod tests {
         );
     }
 
-    /// find_entropic_alpha must always return α ∈ \[0, 2\].
+    /// find_entropic_alpha returns a positive over-relaxation parameter whose
+    /// mirror state does not raise the entropy (the root may exceed 2).
     #[test]
     fn test_find_entropic_alpha_range() {
         let f_eq = EntropicD2Q9::equilibrium(1.0, [0.05, 0.02]);
@@ -754,9 +975,14 @@ mod tests {
         f[3] -= 0.02;
 
         let alpha = find_entropic_alpha(&f, &f_eq, 50);
+        assert!(alpha.is_finite() && alpha > 0.0, "alpha invalid: {alpha}");
+        let mut mirrored = f;
+        for i in 0..9 {
+            mirrored[i] += alpha * (f_eq[i] - f[i]);
+        }
         assert!(
-            (0.0..=2.0 + 1e-12).contains(&alpha),
-            "alpha out of range: {alpha}"
+            h_function(&mirrored) <= h_function(&f) + 1e-12,
+            "alpha = {alpha} violates the H-theorem"
         );
     }
 
@@ -846,8 +1072,16 @@ mod tests {
 
         let alpha = find_entropic_alpha_newton(&f, &f_eq, 20);
         assert!(
-            (0.0..=2.0 + 1e-10).contains(&alpha),
-            "Newton alpha out of range: {alpha}"
+            alpha.is_finite() && alpha > 0.0,
+            "Newton alpha invalid: {alpha}"
+        );
+        let mut mirrored = f;
+        for i in 0..9 {
+            mirrored[i] += alpha * (f_eq[i] - f[i]);
+        }
+        assert!(
+            h_function(&mirrored) <= h_function(&f) + 1e-12,
+            "Newton alpha = {alpha} violates the H-theorem"
         );
     }
 
@@ -1169,14 +1403,20 @@ pub fn entropy_production(f_pre: &[f64; 9], f_post: &[f64; 9]) -> f64 {
 // Entropic stabiliser — Newton–Raphson alpha solver (improved)
 // ---------------------------------------------------------------------------
 
-/// Solve for the entropic parameter α satisfying the H-equation
-/// H(f + α(f_eq - f)) = H(f_mirror)
-/// using Newton–Raphson iteration with bracket search.
+/// Solve the entropy equation `H(f + α (feq − f)) = H(f)` for the entropic
+/// parameter α with a bracketed Newton–Raphson iteration.
 ///
-/// Returns α ∈ (0, 2] such that the discrete H-theorem is obeyed.
+/// This is the same equation as in [`find_entropic_alpha`], with an explicit
+/// stopping tolerance on the Newton step and a caller-supplied starting
+/// point: the iteration starts at the α for which `f + α (feq − f)` is the
+/// least-squares fit of `f_mirror` (the usual choice is the mirror state
+/// `2 feq − f`, i.e. α = 2).  The iteration is safeguarded inside the bracket
+/// of the root, is not clamped to `(0, 2]`, and the result obeys the discrete
+/// H-theorem (`H(f + α (feq − f)) ≤ H(f)` to 1e-12).
 ///
-/// This is an enhanced version of the basic solver provided in EntropicD2Q9,
-/// adding safeguards against divergence and bracket enforcement.
+/// `α = 2` is returned when the state is within the near-equilibrium
+/// tolerance of `feq` or when no entropic root exists (see
+/// [`find_entropic_alpha`]).
 pub fn solve_alpha_newton_raphson(
     f: &[f64; 9],
     feq: &[f64; 9],
@@ -1184,49 +1424,21 @@ pub fn solve_alpha_newton_raphson(
     tol: f64,
     max_iter: usize,
 ) -> f64 {
-    // Target H value
-    let h_target = h_function(f_mirror);
-    if !h_target.is_finite() {
-        return 2.0; // fallback
+    if is_near_equilibrium(f, feq) {
+        return 2.0;
     }
-
-    // Objective: g(α) = H(f + α(feq - f)) - h_target
-    let g = |alpha: f64| -> f64 {
-        let mut fa = [0.0f64; 9];
-        for i in 0..9 {
-            fa[i] = f[i] + alpha * (feq[i] - f[i]);
-        }
-        h_function(&fa) - h_target
+    let d = mirror_direction(f, feq);
+    let Some(bracket) = bracket_entropic_root(f, &d) else {
+        return 2.0;
     };
-
-    // Derivative: g'(α) = Σ (feq_i - f_i) * (1 + ln(fa_i/w_i))
-    let g_prime = |alpha: f64| -> f64 {
-        let mut dg = 0.0;
-        for i in 0..9 {
-            let fa_i = f[i] + alpha * (feq[i] - f[i]);
-            if fa_i <= 0.0 {
-                return f64::INFINITY;
-            }
-            dg += (feq[i] - f[i]) * (1.0 + (fa_i / W[i]).ln());
-        }
-        dg
+    let norm2: f64 = d.iter().map(|x| x * x).sum();
+    let alpha0 = if norm2 > 0.0 {
+        let proj: f64 = (0..9).map(|i| (f_mirror[i] - f[i]) * d[i]).sum();
+        proj / norm2
+    } else {
+        2.0
     };
-
-    let mut alpha = 2.0; // start at mirror value
-    for _ in 0..max_iter {
-        let gval = g(alpha);
-        if gval.abs() < tol {
-            break;
-        }
-        let gpval = g_prime(alpha);
-        if gpval.abs() < 1e-15 {
-            break;
-        }
-        let alpha_new = alpha - gval / gpval;
-        // Clamp to (0, 2]
-        alpha = alpha_new.clamp(1e-6, 2.0);
-    }
-    alpha
+    safeguarded_newton(f, &d, bracket, alpha0, tol, max_iter)
 }
 
 // ---------------------------------------------------------------------------
@@ -1236,13 +1448,16 @@ pub fn solve_alpha_newton_raphson(
 /// Entropic over-relaxation (EOR) for D2Q9.
 ///
 /// Uses α = 2 (full over-relaxation toward the mirror state) when the
-/// H-theorem is satisfied, and falls back to BGK otherwise.
+/// H-theorem is satisfied, and otherwise the largest α in \[1, 2\] that still
+/// satisfies it.  The collision is `f' = f + α β (f_eq − f)` with the physical
+/// relaxation parameter `β = 1/(6ν + 1)`, so α = 2 is exactly BGK with
+/// `τ = 3ν + 1/2`.
 ///
 /// This provides second-order accuracy in time while maintaining the
 /// discrete H-theorem unconditionally.
 #[derive(Debug, Clone)]
 pub struct EntropyOverRelaxation {
-    /// Base kinematic viscosity.
+    /// Base kinematic viscosity (lattice units); must be positive.
     pub nu: f64,
     /// Whether to enforce H-theorem (true) or always use α=2.
     pub enforce_h: bool,
@@ -1250,11 +1465,26 @@ pub struct EntropyOverRelaxation {
 
 impl EntropyOverRelaxation {
     /// Construct EOR from kinematic viscosity.
+    ///
+    /// `nu` must be positive (`τ = 3ν + 1/2 > 1/2`); use
+    /// [`try_new`](Self::try_new) to have an invalid value reported.
     pub fn new(nu: f64) -> Self {
         Self {
             nu,
             enforce_h: true,
         }
+    }
+
+    /// Validated constructor: rejects a viscosity that is not finite and
+    /// positive (checked with [`Error::check_tau`]).
+    pub fn try_new(nu: f64) -> Result<Self> {
+        validate_viscosity(nu)?;
+        Ok(Self::new(nu))
+    }
+
+    /// Relaxation parameter `β = 1/(2τ) = 1/(6ν + 1)`.
+    pub fn beta(&self) -> f64 {
+        relaxation_beta(self.nu)
     }
 
     /// Compute the EOR relaxation parameter for a single cell.
@@ -1290,13 +1520,15 @@ impl EntropyOverRelaxation {
         lo
     }
 
-    /// Apply EOR collision to a single cell.
+    /// Apply EOR collision to a single cell:
+    /// `f' = f + α β (f_eq − f)` with `β = 1/(6ν + 1)`.
     pub fn collide(&self, f: &[f64; 9], rho: f64, u: [f64; 2]) -> [f64; 9] {
         let feq = d2q9_equilibrium(rho, u);
         let alpha = self.compute_alpha(f, rho, u);
+        let beta = self.beta();
         let mut f_out = [0.0f64; 9];
         for i in 0..9 {
-            f_out[i] = f[i] + alpha * (feq[i] - f[i]);
+            f_out[i] = f[i] + alpha * beta * (feq[i] - f[i]);
         }
         f_out
     }
@@ -1464,3 +1696,6 @@ mod extra_entropic_tests {
         assert!(h_f >= h_eq - 1e-12, "H(f)={h_f} < H(feq)={h_eq}");
     }
 }
+
+#[cfg(test)]
+mod solver_tests;

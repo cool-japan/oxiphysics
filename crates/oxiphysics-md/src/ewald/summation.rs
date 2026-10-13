@@ -318,7 +318,12 @@ impl EwaldSummation {
 
     /// Reciprocal-space forces (kJ mol^-1 angstrom^-1) on each atom.
     ///
-    /// Computed as derivative of the reciprocal energy with respect to positions.
+    /// The force is the negative gradient of [`Self::reciprocal_space_energy`]:
+    /// ```text
+    /// F_i = -dE_recip/dr_i
+    ///     = -2 * prefactor * sum_k factor(k) * q_i * k * (S_sin cos(k.r_i) - S_cos sin(k.r_i))
+    /// ```
+    /// where `S_cos = sum_j q_j cos(k.r_j)` and `S_sin = sum_j q_j sin(k.r_j)`.
     pub fn reciprocal_space_forces(
         &self,
         positions: &[[f64; 3]],
@@ -356,7 +361,8 @@ impl EwaldSummation {
                         s_sin += charges[i] * kr.sin();
                     }
 
-                    // F_i = -dE/dr_i = -2 * prefactor * factor * q_i * k * (S_sin*cos - S_cos*sin)
+                    // d|S|^2/dr_i = 2 q_i k (S_sin cos(k.r_i) - S_cos sin(k.r_i)), hence
+                    // dE/dr_i = +coeff * k and the force F_i = -dE/dr_i = -coeff * k.
                     for i in 0..n {
                         let kr = kx * positions[i][0] + ky * positions[i][1] + kz * positions[i][2];
                         let sin_kr = kr.sin();
@@ -367,7 +373,7 @@ impl EwaldSummation {
                             * charges[i]
                             * (s_sin * cos_kr - s_cos * sin_kr);
                         for a in 0..3 {
-                            forces[i][a] += coeff * k_vec[a];
+                            forces[i][a] -= coeff * k_vec[a];
                         }
                     }
                 }
@@ -1531,6 +1537,134 @@ mod tests {
         assert!(
             diff2 <= diff1 + 1.0,
             "convergence: diff1={diff1}, diff2={diff2} should decrease"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Reciprocal-space force sign: F = -dE/dr
+    // ------------------------------------------------------------------
+
+    /// Ewald engine with a moderately large alpha so that both the real-space
+    /// and the reciprocal-space parts carry a substantial share of the force.
+    fn force_test_ewald() -> EwaldSummation {
+        let alpha = 0.3;
+        let params = EwaldParams {
+            alpha,
+            r_cutoff: 9.0,
+            k_cutoff: 2.0 * std::f64::consts::PI * alpha,
+            epsilon_r: 1.0,
+        };
+        EwaldSummation::with_k_max(params, [20.0, 20.0, 20.0], 6)
+    }
+
+    /// `-dE/dx` of `energy` for every Cartesian component by central differences.
+    fn numeric_forces(
+        energy: &dyn Fn(&[[f64; 3]]) -> f64,
+        positions: &[[f64; 3]],
+        h: f64,
+    ) -> Vec<[f64; 3]> {
+        let mut out = vec![[0.0_f64; 3]; positions.len()];
+        for atom in 0..positions.len() {
+            for axis in 0..3 {
+                let mut plus = positions.to_vec();
+                let mut minus = positions.to_vec();
+                plus[atom][axis] += h;
+                minus[atom][axis] -= h;
+                out[atom][axis] = -(energy(&plus) - energy(&minus)) / (2.0 * h);
+            }
+        }
+        out
+    }
+
+    fn assert_forces_close(analytic: &[[f64; 3]], numeric: &[[f64; 3]], rel_tol: f64, ctx: &str) {
+        for (atom, (fa, fnum)) in analytic.iter().zip(numeric).enumerate() {
+            for axis in 0..3 {
+                let scale = fa[axis].abs().max(fnum[axis].abs()).max(1.0);
+                assert!(
+                    (fa[axis] - fnum[axis]).abs() <= rel_tol * scale,
+                    "{ctx}: atom {atom} axis {axis}: analytic {} vs finite difference {}",
+                    fa[axis],
+                    fnum[axis]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_reciprocal_space_forces_are_minus_the_energy_gradient() {
+        let ewald = force_test_ewald();
+        let positions = [[2.0, 3.0, 4.0], [6.0, 5.0, 7.0]];
+        let charges = [1.0, -1.0];
+        let analytic = ewald.reciprocal_space_forces(&positions, &charges);
+        let numeric = numeric_forces(
+            &|pos| ewald.reciprocal_space_energy(pos, &charges),
+            &positions,
+            1.0e-5,
+        );
+        // The forces are O(1-10) kJ mol^-1 A^-1, so a non-trivial magnitude check
+        // guards against comparing two zero vectors.
+        assert!(
+            analytic.iter().flatten().any(|f| f.abs() > 0.1),
+            "{analytic:?}"
+        );
+        assert_forces_close(&analytic, &numeric, 1.0e-5, "reciprocal");
+    }
+
+    #[test]
+    fn test_reciprocal_space_forces_match_the_kvector_helper() {
+        let ewald = force_test_ewald();
+        let positions = [[2.0, 3.0, 4.0], [6.0, 5.0, 7.0], [11.0, 14.0, 9.0]];
+        let charges = [1.0, -1.0, 0.5];
+        let analytic = ewald.reciprocal_space_forces(&positions, &charges);
+        let k_vecs = k_vector_list(6, ewald.box_lengths);
+        let reference = reciprocal_forces_kvecs(
+            &positions,
+            &charges,
+            &k_vecs,
+            ewald.params.alpha,
+            ewald.volume(),
+        );
+        assert_forces_close(&analytic, &reference, 1.0e-10, "k-vector helper");
+    }
+
+    #[test]
+    fn test_total_forces_are_minus_the_total_energy_gradient() {
+        let ewald = force_test_ewald();
+        let positions = [[8.0, 9.0, 10.0], [12.0, 11.0, 9.0], [5.0, 14.0, 12.0]];
+        let charges = [1.0, -0.7, -0.3];
+        let analytic = ewald.total_forces(&positions, &charges);
+        let numeric = numeric_forces(&|pos| ewald.total_energy(pos, &charges), &positions, 1.0e-5);
+        // erfc_approx has a 1.5e-7 absolute error whose derivative is not the exact
+        // Gaussian used by the analytic real-space force, hence the 1e-4 tolerance.
+        assert_forces_close(&analytic, &numeric, 1.0e-4, "total");
+    }
+
+    #[test]
+    fn test_ewald_force_on_a_close_opposite_pair_approaches_the_bare_coulomb_force() {
+        // For a +/- pair 3 A apart in a 20 A box the periodic images change the
+        // force by only ~1 %, so the full Ewald force must be close to K / r^2 and
+        // attractive.  The real-space part alone is only ~65 % of it at alpha = 0.3;
+        // the inverted reciprocal sign used to leave ~31 %.
+        let ewald = force_test_ewald();
+        let positions = [[8.5, 10.0, 10.0], [11.5, 10.0, 10.0]];
+        let charges = [1.0, -1.0];
+        let bare = COULOMB_K / 9.0;
+        let (_, forces) = ewald.compute_forces_full(&positions, &charges);
+        assert!(
+            (forces[0][0] - bare).abs() < 0.03 * bare,
+            "F_x on the cation {} should be close to K/r^2 = {bare}",
+            forces[0][0]
+        );
+        assert!(
+            (forces[1][0] + bare).abs() < 0.03 * bare,
+            "F_x on the anion {} should be close to -K/r^2 = {}",
+            forces[1][0],
+            -bare
+        );
+        let real_only = ewald.real_space_forces(&positions, &charges);
+        assert!(
+            forces[0][0] > real_only[0][0] + 0.2 * bare,
+            "reciprocal forces must add to the real-space attraction"
         );
     }
 }

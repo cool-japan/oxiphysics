@@ -132,19 +132,36 @@ impl AlloySystem {
         }
         pairs
     }
+    /// Host electron density `ρ̄_i = Σ_j ρ_j(r_ij)` of every atom for the pairs of
+    /// `build_neighbor_list`.
+    fn host_densities(&self, pairs: &[(usize, usize, [f64; 3], f64)]) -> Vec<f64> {
+        let mut rho_bar = vec![0.0_f64; self.atoms.len()];
+        for &(i, j, _dr, r) in pairs {
+            let si = self.atoms[i].species;
+            let sj = self.atoms[j].species;
+            rho_bar[i] += self.species[sj].electron_density(r);
+            rho_bar[j] += self.species[si].electron_density(r);
+        }
+        rho_bar
+    }
     /// Compute forces using EAM.
+    ///
+    /// The total energy is `E = Σ_{i<j} φ_ij(r_ij) + Σ_i F_i(ρ̄_i)`.  For a pair
+    /// at separation `dr = r_j − r_i` the radial derivative of the energy is
+    /// `dE/dr = φ'(r) + F_i'(ρ̄_i) ρ_j'(r) + F_j'(ρ̄_j) ρ_i'(r)`, and the force
+    /// is `F_i = −∂E/∂r_i = +(dE/dr) r̂` (so a repulsive pair, `dE/dr < 0`, pushes
+    /// atom `i` away from atom `j`) with `F_j = −F_i`.
+    ///
+    /// Also refreshes the cached `rho_bar` and `df_drho` of every atom.
     pub fn compute_forces(&mut self) {
         let n = self.atoms.len();
         for atom in &mut self.atoms {
             atom.force = [0.0; 3];
-            atom.rho_bar = 0.0;
         }
         let pairs = self.build_neighbor_list();
-        for &(i, j, _dr, r) in &pairs {
-            let si = self.atoms[i].species;
-            let sj = self.atoms[j].species;
-            self.atoms[i].rho_bar += self.species[sj].electron_density(r);
-            self.atoms[j].rho_bar += self.species[si].electron_density(r);
+        let rho_bar = self.host_densities(&pairs);
+        for (atom, rho) in self.atoms.iter_mut().zip(rho_bar) {
+            atom.rho_bar = rho;
         }
         for atom in &mut self.atoms {
             let s = atom.species;
@@ -162,7 +179,7 @@ impl AlloySystem {
             let drho_ij = self.species[sj].electron_density_deriv(r);
             let drho_ji = self.species[si].electron_density_deriv(r);
             let eam_f = self.atoms[i].df_drho * drho_ij + self.atoms[j].df_drho * drho_ji;
-            let f_mag = -(pair_f + eam_f);
+            let f_mag = pair_f + eam_f;
             let rhat = vscale(dr, 1.0 / r);
             let fvec = vscale(rhat, f_mag);
             force_inc[i] = vadd(force_inc[i], fvec);
@@ -173,8 +190,12 @@ impl AlloySystem {
         }
     }
     /// Compute total potential energy (eV).
+    ///
+    /// The host densities are evaluated from the current positions, so the
+    /// result never depends on a previous `compute_forces` call.
     pub fn potential_energy(&self) -> f64 {
         let pairs = self.build_neighbor_list();
+        let rho_bar = self.host_densities(&pairs);
         let mut e_pair = 0.0;
         for &(i, j, _dr, r) in &pairs {
             let si = self.atoms[i].species;
@@ -187,8 +208,8 @@ impl AlloySystem {
             }
         }
         let mut e_embed = 0.0;
-        for atom in &self.atoms {
-            e_embed += self.species[atom.species].embedding_energy(atom.rho_bar);
+        for (atom, &rho) in self.atoms.iter().zip(rho_bar.iter()) {
+            e_embed += self.species[atom.species].embedding_energy(rho);
         }
         e_pair + e_embed
     }
@@ -205,21 +226,43 @@ impl AlloySystem {
         let ndof = (3 * self.atoms.len()) as f64;
         2.0 * ke / (ndof * 8.617333e-5)
     }
+    /// Per-species factor that turns a force in eV/Å into an acceleration in Å/ps².
+    ///
+    /// `a = F / m` with `F` in eV/Å and `m` in amu is converted with
+    /// [`EV_PER_ANGSTROM_AMU_TO_ANGSTROM_PER_PS2`].  A species whose mass is not
+    /// finite and strictly positive gets the factor `0` (an immobile atom).
+    fn acceleration_factors(&self) -> Vec<f64> {
+        self.species
+            .iter()
+            .map(|s| {
+                if s.mass.is_finite() && s.mass > 0.0 {
+                    EV_PER_ANGSTROM_AMU_TO_ANGSTROM_PER_PS2 / s.mass
+                } else {
+                    0.0
+                }
+            })
+            .collect()
+    }
     /// Velocity Verlet integration step.
+    ///
+    /// Forces are in eV/Å, masses in amu (per species), positions in Å, the
+    /// timestep in ps and velocities in Å/ps; the acceleration is therefore
+    /// `F / m · 9648.533 Å/ps²` (see [`EV_PER_ANGSTROM_AMU_TO_ANGSTROM_PER_PS2`]).
     pub fn step(&mut self) {
         let dt = self.dt;
         let half_dt = 0.5 * dt;
+        let accel_factor = self.acceleration_factors();
         for atom in &mut self.atoms {
-            let mass = 1.0;
-            let acc = vscale(atom.force, 1.0 / mass);
+            let factor = accel_factor.get(atom.species).copied().unwrap_or(0.0);
+            let acc = vscale(atom.force, factor);
             atom.velocity = vadd(atom.velocity, vscale(acc, half_dt));
             atom.position = vadd(atom.position, vscale(atom.velocity, dt));
             atom.position = self.sim_box.wrap(atom.position);
         }
         self.compute_forces();
         for atom in &mut self.atoms {
-            let mass = 1.0;
-            let acc = vscale(atom.force, 1.0 / mass);
+            let factor = accel_factor.get(atom.species).copied().unwrap_or(0.0);
+            let acc = vscale(atom.force, factor);
             atom.velocity = vadd(atom.velocity, vscale(acc, half_dt));
         }
     }
@@ -320,10 +363,11 @@ impl MetalAtom {
         }
     }
     /// Kinetic energy (eV).  mass in amu, velocity in Å/ps.
-    /// KE = 0.5 * m * v^2 * (1 amu * (1e-12 m/s)^2 -> eV conversion).
+    /// KE = 0.5 * m * v² / 9648.533 (amu·Å²/ps² → eV, the reciprocal of
+    /// [`EV_PER_ANGSTROM_AMU_TO_ANGSTROM_PER_PS2`]).
     pub fn kinetic_energy(&self, mass: f64) -> f64 {
         let v2 = vdot(self.velocity, self.velocity);
-        0.5 * mass * v2 * 1.03643e-4
+        0.5 * mass * v2 / EV_PER_ANGSTROM_AMU_TO_ANGSTROM_PER_PS2
     }
 }
 /// Mixing rule for cross-species EAM interactions.

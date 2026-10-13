@@ -62,37 +62,50 @@ pub(super) fn transpose3(m: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
         [m[0][2], m[1][2], m[2][2]],
     ]
 }
-/// Compute principal stretches from deformation gradient F.
-/// These are the square roots of eigenvalues of C = F^T F.
+/// Compute the principal stretches λ₁ ≥ λ₂ ≥ λ₃ ≥ 0 of a deformation gradient F.
+///
+/// The principal stretches are the singular values of F, i.e. the square roots
+/// of the eigenvalues of the right Cauchy-Green tensor C = FᵀF.  They are
+/// obtained with a one-sided (Hestenes) Jacobi iteration that orthogonalises
+/// the columns of F by plane rotations and takes the column norms.  Working on
+/// F instead of C avoids squaring the condition number and, unlike the
+/// closed-form cubic solution, keeps full accuracy for repeated stretches
+/// (uniaxial, equibiaxial and hydrostatic states).
 pub(super) fn principal_stretches(f: &[[f64; 3]; 3]) -> (f64, f64, f64) {
-    let mut c = [[0.0; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            c[i][j] = (0..3).map(|k| f[k][i] * f[k][j]).sum();
+    const MAX_SWEEPS: usize = 40;
+    const COLUMN_PAIRS: [(usize, usize); 3] = [(0, 1), (0, 2), (1, 2)];
+    let mut a = *f;
+    for _ in 0..MAX_SWEEPS {
+        let mut rotated = false;
+        for &(p, q) in COLUMN_PAIRS.iter() {
+            let alpha: f64 = a.iter().map(|row| row[p] * row[p]).sum();
+            let beta: f64 = a.iter().map(|row| row[q] * row[q]).sum();
+            let gamma: f64 = a.iter().map(|row| row[p] * row[q]).sum();
+            if gamma == 0.0 || gamma.abs() <= f64::EPSILON * (alpha * beta).sqrt() {
+                continue;
+            }
+            rotated = true;
+            // Rotation angle that annihilates the inner product of columns p and q.
+            let zeta = (beta - alpha) / (2.0 * gamma);
+            let t = zeta.signum() / (zeta.abs() + (1.0 + zeta * zeta).sqrt());
+            let c = 1.0 / (1.0 + t * t).sqrt();
+            let s = c * t;
+            for row in a.iter_mut() {
+                let (x_p, x_q) = (row[p], row[q]);
+                row[p] = c * x_p - s * x_q;
+                row[q] = s * x_p + c * x_q;
+            }
+        }
+        if !rotated {
+            break;
         }
     }
-    let i1 = c[0][0] + c[1][1] + c[2][2];
-    let i2 = c[0][0] * c[1][1] + c[1][1] * c[2][2] + c[0][0] * c[2][2]
-        - c[0][1] * c[0][1]
-        - c[1][2] * c[1][2]
-        - c[0][2] * c[0][2];
-    let i3 = det3(&c);
-    let p = i1 / 3.0;
-    let q = (2.0 * i1.powi(3) - 9.0 * i1 * i2 + 27.0 * i3) / 54.0;
-    let r = (i1 * i1 - 3.0 * i2) / 9.0;
-    let r3 = r * r * r;
-    let disc = q * q - r3;
-    let (e1, e2, e3) = if disc < 0.0 {
-        let theta = (q / r3.sqrt().max(1e-30)).acos() / 3.0;
-        let m = -2.0 * r.sqrt();
-        let e1 = m * theta.cos() + p;
-        let e2 = m * (theta + 2.0 * std::f64::consts::FRAC_PI_3).cos() + p;
-        let e3 = m * (theta + 4.0 * std::f64::consts::FRAC_PI_3).cos() + p;
-        (e1, e2, e3)
-    } else {
-        (i1 / 3.0, i1 / 3.0, i1 / 3.0)
-    };
-    (e1.max(0.0).sqrt(), e2.max(0.0).sqrt(), e3.max(0.0).sqrt())
+    let mut stretches = [0.0_f64; 3];
+    for (j, stretch) in stretches.iter_mut().enumerate() {
+        *stretch = a.iter().map(|row| row[j] * row[j]).sum::<f64>().sqrt();
+    }
+    stretches.sort_by(|x, y| y.total_cmp(x));
+    (stretches[0], stretches[1], stretches[2])
 }
 /// Predict uniaxial Cauchy stress for a Neo-Hookean material (special case of Ogden α=2).
 ///
@@ -394,15 +407,21 @@ pub fn mooney_rivlin_strain_energy_hessian(
 }
 /// Compute principal Cauchy stresses from principal stretches for an Ogden material.
 ///
-/// For incompressible Ogden material, the principal Cauchy stresses are:
-///   σ_i = sum_p mu_p * λ̄_i^α_p  - p_hydro
+/// For the strain energy
+///   W = Σ_p (μ_p/α_p) (λ̄₁^α_p + λ̄₂^α_p + λ̄₃^α_p − 3) + K/2 (J − 1)²,
+/// with the isochoric stretches λ̄_i = J^(−1/3) λ_i and J = λ₁λ₂λ₃, the
+/// principal Cauchy stresses σ_i = λ_i (∂W/∂λ_i) / J are
 ///
-/// where λ̄_i = J^(-1/3) * λ_i are the isochoric stretches and
-/// p_hydro is the hydrostatic pressure determined by the free surface condition.
+///   σ_i = (1/J) Σ_p μ_p (λ̄_i^α_p − ⅓ Σ_j λ̄_j^α_p) + K (J − 1).
 ///
-/// For a uniaxial test (σ₂ = σ₃ = 0):
-///   p = sum_p mu_p * λ̄_2^α_p
-/// so σ₁ = sum_p mu_p * (λ̄_1^α_p - λ̄_2^α_p)
+/// The mean subtracted in each term is the deviatoric projection of the
+/// isochoric response, so the stress vanishes in the reference configuration
+/// λ = (1, 1, 1) and the isochoric part is traceless in the sense
+/// Σ_i (σ_i − K(J − 1)) = 0.
+///
+/// For an incompressible state (J = 1) the stress differences are
+/// σ_i − σ_j = Σ_p μ_p (λ_i^α_p − λ_j^α_p); in particular a uniaxial test
+/// (λ, λ^(−1/2), λ^(−1/2)) gives σ₁ − σ₂ = Σ_p μ_p (λ^α_p − λ^(−α_p/2)).
 ///
 /// # Arguments
 /// * `lambda1, lambda2, lambda3` — principal stretches
@@ -420,8 +439,14 @@ pub fn ogden_principal_stresses(
     let l = [j13 * lambda1, j13 * lambda2, j13 * lambda3];
     let mut sigma_iso = [0.0_f64; 3];
     for (mu_p, alpha_p) in ogden.mu.iter().zip(ogden.alpha.iter()) {
-        for k in 0..3 {
-            sigma_iso[k] += mu_p / j * l[k].powf(*alpha_p);
+        let powers = [
+            l[0].powf(*alpha_p),
+            l[1].powf(*alpha_p),
+            l[2].powf(*alpha_p),
+        ];
+        let mean_power = (powers[0] + powers[1] + powers[2]) / 3.0;
+        for (sigma_k, power_k) in sigma_iso.iter_mut().zip(powers.iter()) {
+            *sigma_k += mu_p / j * (power_k - mean_power);
         }
     }
     let p_vol = ogden.bulk_modulus * (j - 1.0);
@@ -534,6 +559,138 @@ mod tests {
         assert!((l1 - 1.0).abs() < 1e-6);
         assert!((l2 - 1.0).abs() < 1e-6);
         assert!((l3 - 1.0).abs() < 1e-6);
+    }
+    fn matmul3(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+        let mut c = [[0.0; 3]; 3];
+        for (i, row) in c.iter_mut().enumerate() {
+            for (j, entry) in row.iter_mut().enumerate() {
+                *entry = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+            }
+        }
+        c
+    }
+    /// Rotation about a (not necessarily unit) axis by `angle` radians (Rodrigues).
+    fn rotation(axis: [f64; 3], angle: f64) -> [[f64; 3]; 3] {
+        let norm = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+        let (x, y, z) = (axis[0] / norm, axis[1] / norm, axis[2] / norm);
+        let (s, c) = angle.sin_cos();
+        let t = 1.0 - c;
+        [
+            [t * x * x + c, t * x * y - s * z, t * x * z + s * y],
+            [t * x * y + s * z, t * y * y + c, t * y * z - s * x],
+            [t * x * z - s * y, t * y * z + s * x, t * z * z + c],
+        ]
+    }
+    fn assert_stretches(got: (f64, f64, f64), want: [f64; 3], tol: f64) {
+        let got = [got.0, got.1, got.2];
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert!(
+                (g - w).abs() < tol,
+                "principal stretches {got:?} differ from {want:?}"
+            );
+        }
+    }
+    #[test]
+    fn test_principal_stretches_diagonal_gradient() {
+        let f = [[1.2, 0.0, 0.0], [0.0, 0.9, 0.0], [0.0, 0.0, 1.1]];
+        // Returned in descending order.
+        assert_stretches(principal_stretches(&f), [1.2, 1.1, 0.9], 1e-14);
+    }
+    #[test]
+    fn test_principal_stretches_uniaxial_gradient() {
+        let f = uniaxial_deformation_gradient(1.5);
+        let lateral = 1.0 / 1.5_f64.sqrt();
+        let (l1, l2, l3) = principal_stretches(&f);
+        assert_stretches((l1, l2, l3), [1.5, lateral, lateral], 1e-14);
+        assert!((l1 * l2 * l3 - 1.0).abs() < 1e-14, "J must be 1");
+    }
+    #[test]
+    fn test_principal_stretches_equal_stretches_are_not_averaged() {
+        // The former closed-form fallback returned I1/3 = 1.0176 for all three
+        // principal stretches of F = 1.2 I.
+        let f = [[1.2, 0.0, 0.0], [0.0, 1.2, 0.0], [0.0, 0.0, 1.2]];
+        assert_stretches(principal_stretches(&f), [1.2, 1.2, 1.2], 1e-14);
+    }
+    #[test]
+    fn test_principal_stretches_simple_shear() {
+        let gamma = 0.3_f64;
+        let f = [[1.0, gamma, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let (l1, l2, l3) = principal_stretches(&f);
+        assert!(
+            (l1 * l2 * l3 - 1.0).abs() < 1e-14,
+            "simple shear is isochoric"
+        );
+        // tr(FᵀF) = 3 + γ².
+        let sum_sq = l1 * l1 + l2 * l2 + l3 * l3;
+        assert!(
+            (sum_sq - (3.0 + gamma * gamma)).abs() < 1e-14,
+            "Σλ² = {sum_sq}"
+        );
+        // Eigenvalues of the in-plane block [[1, γ], [γ, 1 + γ²]] of C, plus the free direction.
+        let mean = 1.0 + 0.5 * gamma * gamma;
+        let radius = (0.25 * gamma.powi(4) + gamma * gamma).sqrt();
+        assert_stretches(
+            (l1, l2, l3),
+            [(mean + radius).sqrt(), 1.0, (mean - radius).sqrt()],
+            1e-14,
+        );
+    }
+    #[test]
+    fn test_principal_stretches_invariant_under_rotations() {
+        let d = [[1.2, 0.0, 0.0], [0.0, 0.9, 0.0], [0.0, 0.0, 1.1]];
+        let r1 = rotation([1.0, 2.0, 3.0], 0.7);
+        let r2 = rotation([-2.0, 0.5, 1.0], 1.9);
+        let expected = [1.2, 1.1, 0.9];
+        // F = D R: the columns of F are not orthogonal, so FᵀF is a full matrix.
+        assert_stretches(principal_stretches(&matmul3(&d, &r1)), expected, 1e-13);
+        // F = R1 D R2 (general polar decomposition).
+        let general = matmul3(&r1, &matmul3(&d, &r2));
+        assert_stretches(principal_stretches(&general), expected, 1e-13);
+        // Wide range of stretches.
+        let wide = [[10.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.1]];
+        let wide_f = matmul3(&r2, &matmul3(&wide, &r1));
+        assert_stretches(principal_stretches(&wide_f), [10.0, 1.0, 0.1], 1e-12);
+    }
+    #[test]
+    fn test_principal_stretches_match_cauchy_green_invariants() {
+        let f = [[1.1, 0.2, -0.1], [0.05, 0.95, 0.3], [0.0, -0.2, 1.05]];
+        let (l1, l2, l3) = principal_stretches(&f);
+        assert!(l1 >= l2 && l2 >= l3 && l3 > 0.0, "{l1} {l2} {l3}");
+        let (i1, i2, i3) = deformation_invariants(&f);
+        let (s1, s2, s3) = (l1 * l1, l2 * l2, l3 * l3);
+        assert!((s1 + s2 + s3 - i1).abs() < 1e-13);
+        assert!((s1 * s2 + s2 * s3 + s1 * s3 - i2).abs() < 1e-13);
+        assert!((s1 * s2 * s3 - i3).abs() < 1e-13);
+        assert!((l1 * l2 * l3 - det3(&f).abs()).abs() < 1e-13);
+    }
+    #[test]
+    fn test_principal_stretches_rank_deficient_gradient() {
+        let f = [[2.0, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 0.0]];
+        assert_stretches(principal_stretches(&f), [2.0, 0.5, 0.0], 1e-15);
+    }
+    #[test]
+    fn test_isochoric_energies_from_uniaxial_gradient_are_nonzero() {
+        // Regression: the old eigenvalue fallback returned (I1/3, I1/3, I1/3) for repeated
+        // stretches, which carries no isochoric strain energy in any isotropic model.
+        let lambda = 1.5_f64;
+        let lateral = 1.0 / lambda.sqrt();
+        let f = uniaxial_deformation_gradient(lambda);
+        let yeoh = Yeoh::new(0.5e6, 0.0, 0.0, 1.0e9);
+        let i1_bar = lambda * lambda + 2.0 / lambda;
+        let expected = 0.5e6 * (i1_bar - 3.0);
+        let w = yeoh.strain_energy_density(&f);
+        assert!(
+            (w - expected).abs() / expected < 1e-9,
+            "Yeoh W = {w}, expected {expected}"
+        );
+        let gent = Gent::new(1.0e6, 50.0, 1.0e9);
+        let w_gent = gent.strain_energy_from_stretches(lambda, lateral, lateral);
+        assert!(w_gent > 0.0);
+        assert!((gent.strain_energy_density(&f) - w_gent).abs() / w_gent < 1e-9);
+        let ab = ArrudaBoyce::new(1.0e6, 7.0, 1.0e9);
+        let w_ab = ab.strain_energy_from_stretches(lambda, lateral, lateral);
+        assert!(w_ab > 0.0);
+        assert!((ab.strain_energy_density(&f) - w_ab).abs() / w_ab < 1e-9);
     }
     #[test]
     fn test_arruda_boyce_identity_zero_energy() {
@@ -868,6 +1025,162 @@ mod tests {
         let (_, dp) = j2.return_mapping_plane_stress(400.0e6, 0.0, 0.0, 0.0);
         assert!(dp > 0.0, "should yield");
     }
+    fn plane_stress_von_mises(s: [f64; 3]) -> f64 {
+        J2Plasticity::von_mises_stress(&[s[0], s[1], 0.0, s[2], 0.0, 0.0])
+    }
+    /// C P σ for the plane-stress elasticity matrix C and projection P (engineering shear).
+    fn plane_stress_c_p_sigma(young: f64, nu: f64, s: [f64; 3]) -> [f64; 3] {
+        let p = [
+            (2.0 * s[0] - s[1]) / 3.0,
+            (2.0 * s[1] - s[0]) / 3.0,
+            2.0 * s[2],
+        ];
+        let c = young / (1.0 - nu * nu);
+        [
+            c * (p[0] + nu * p[1]),
+            c * (nu * p[0] + p[1]),
+            c * (1.0 - nu) / 2.0 * p[2],
+        ]
+    }
+    fn assert_on_hardened_yield_surface(j2: &J2Plasticity, s: [f64; 3], ep_bar: f64, dp: f64) {
+        let vm = plane_stress_von_mises(s);
+        let sigma_y = j2.current_yield_stress(ep_bar + dp);
+        assert!(
+            (vm - sigma_y).abs() / sigma_y < 1e-9,
+            "von Mises {vm} must equal the hardened yield stress {sigma_y}"
+        );
+    }
+    #[test]
+    fn test_j2_plane_stress_uniaxial_trial_returns_to_hardened_yield_surface() {
+        let j2 = J2Plasticity::new(200.0e9, 0.3, 250.0e6, 1.0e9);
+        let (s, dp) = j2
+            .try_return_mapping_plane_stress(400.0e6, 0.0, 0.0, 0.0)
+            .unwrap();
+        assert!(dp > 0.0);
+        assert_on_hardened_yield_surface(&j2, s, 0.0, dp);
+        // The closest-point return of a uniaxial trial leaves a non-zero transverse stress.
+        assert!(s[1].abs() > 1.0e6, "σ_yy = {}", s[1]);
+        assert!(s[0] < 400.0e6 && s[0] > 250.0e6, "σ_xx = {}", s[0]);
+        assert_eq!(s[2], 0.0);
+        // Reference values from an independent bracketing (Brent) solution of the same
+        // closest-point problem.
+        assert!(
+            (s[0] - 2.608432203e8).abs() <= 2e-9 * 2.608432203e8,
+            "σ_xx = {}",
+            s[0]
+        );
+        assert!(
+            (s[1] - 2.162695755e7).abs() <= 2e-9 * 2.162695755e7,
+            "σ_yy = {}",
+            s[1]
+        );
+        assert!(
+            (dp - 7.302646442e-4).abs() <= 2e-9 * 7.302646442e-4,
+            "Δε̄_p = {dp}"
+        );
+    }
+    #[test]
+    fn test_j2_plane_stress_mixed_trial_with_prior_hardening() {
+        let j2 = J2Plasticity::new(210.0e9, 0.29, 300.0e6, 2.0e9);
+        let ep_bar = 0.002;
+        let (s, dp) = j2
+            .try_return_mapping_plane_stress(350.0e6, -200.0e6, 120.0e6, ep_bar)
+            .unwrap();
+        assert!(dp > 0.0);
+        assert_on_hardened_yield_surface(&j2, s, ep_bar, dp);
+    }
+    #[test]
+    fn test_j2_plane_stress_pure_shear_and_equibiaxial_trials() {
+        let j2 = J2Plasticity::new(200.0e9, 0.3, 250.0e6, 1.0e9);
+        // Pure shear: only the d2 branch of the update acts.
+        let (s, dp) = j2
+            .try_return_mapping_plane_stress(0.0, 0.0, 300.0e6, 0.0)
+            .unwrap();
+        assert_on_hardened_yield_surface(&j2, s, 0.0, dp);
+        assert!(s[0].abs() < 1e-3 && s[1].abs() < 1e-3, "{s:?}");
+        assert!(s[2] > 0.0 && s[2] < 300.0e6);
+        // Equibiaxial: only the d1 branch acts and the stress stays equibiaxial.
+        let (s, dp) = j2
+            .try_return_mapping_plane_stress(350.0e6, 350.0e6, 0.0, 0.0)
+            .unwrap();
+        assert_on_hardened_yield_surface(&j2, s, 0.0, dp);
+        assert!((s[0] - s[1]).abs() < 1e-3 * s[0].abs());
+        assert!(s[2].abs() < 1e-6);
+    }
+    #[test]
+    fn test_j2_plane_stress_satisfies_the_backward_euler_flow_rule() {
+        // σ_trial − σ = Δγ C P σ with Δγ = 3 Δε̄_p / (2 σ_vm): the update is the closest-point
+        // projection, not merely a point on the yield surface.
+        let (young, nu) = (200.0e9, 0.3);
+        let j2 = J2Plasticity::new(young, nu, 250.0e6, 1.0e9);
+        let trial = [400.0e6, -150.0e6, 90.0e6];
+        let (s, dp) = j2
+            .try_return_mapping_plane_stress(trial[0], trial[1], trial[2], 0.001)
+            .unwrap();
+        let delta_gamma = 1.5 * dp / plane_stress_von_mises(s);
+        let flow = plane_stress_c_p_sigma(young, nu, s);
+        for ((trial_i, s_i), flow_i) in trial.iter().zip(s.iter()).zip(flow.iter()) {
+            let expected = trial_i - delta_gamma * flow_i;
+            assert!(
+                (s_i - expected).abs() <= 1e-8 * trial_i.abs().max(1.0e6),
+                "σ = {s_i} but σ_trial − Δγ C P σ = {expected}"
+            );
+        }
+    }
+    #[test]
+    fn test_j2_plane_stress_perfect_plasticity_and_monotonic_in_trial() {
+        let j2 = J2Plasticity::new(200.0e9, 0.3, 250.0e6, 0.0);
+        let mut previous = 0.0;
+        for &sxx in &[300.0e6, 400.0e6, 600.0e6, 1.0e9] {
+            let (s, dp) = j2
+                .try_return_mapping_plane_stress(sxx, 0.5 * sxx, 0.0, 0.0)
+                .unwrap();
+            assert!(
+                (plane_stress_von_mises(s) - 250.0e6).abs() / 250.0e6 < 1e-9,
+                "perfectly plastic von Mises must stay at the initial yield stress"
+            );
+            assert!(dp > previous, "Δε̄_p must grow with the overstress");
+            previous = dp;
+        }
+    }
+    #[test]
+    fn test_j2_plane_stress_elastic_trial_is_unchanged() {
+        let j2 = J2Plasticity::new(200.0e9, 0.3, 250.0e6, 1.0e9);
+        let (s, dp) = j2
+            .try_return_mapping_plane_stress(100.0e6, -50.0e6, 40.0e6, 0.0)
+            .unwrap();
+        assert_eq!(s, [100.0e6, -50.0e6, 40.0e6]);
+        assert_eq!(dp, 0.0);
+    }
+    #[test]
+    fn test_j2_plane_stress_invalid_input_is_reported() {
+        use crate::Error;
+        let bad_modulus = J2Plasticity::new(-1.0, 0.3, 250.0e6, 1.0e9);
+        assert!(matches!(
+            bad_modulus.try_return_mapping_plane_stress(400.0e6, 0.0, 0.0, 0.0),
+            Err(Error::ParameterOutOfRange { .. })
+        ));
+        let bad_nu = J2Plasticity::new(200.0e9, 1.0, 250.0e6, 1.0e9);
+        assert!(matches!(
+            bad_nu.try_return_mapping_plane_stress(400.0e6, 0.0, 0.0, 0.0),
+            Err(Error::ParameterOutOfRange { .. })
+        ));
+        let j2 = J2Plasticity::new(200.0e9, 0.3, 250.0e6, 1.0e9);
+        assert!(matches!(
+            j2.try_return_mapping_plane_stress(f64::NAN, 0.0, 0.0, 0.0),
+            Err(Error::InadmissibleState(_))
+        ));
+        // The infallible wrapper reports invalid input as NaN instead of a bogus state.
+        let (s, dp) = bad_modulus.return_mapping_plane_stress(400.0e6, 0.0, 0.0, 0.0);
+        assert!(s.iter().all(|v| v.is_nan()) && dp.is_nan());
+        // Valid input: wrapper and fallible variant agree.
+        let (s_wrapped, dp_wrapped) = j2.return_mapping_plane_stress(400.0e6, 0.0, 0.0, 0.0);
+        let (s_try, dp_try) = j2
+            .try_return_mapping_plane_stress(400.0e6, 0.0, 0.0, 0.0)
+            .unwrap();
+        assert_eq!(s_wrapped, s_try);
+        assert_eq!(dp_wrapped, dp_try);
+    }
     #[test]
     fn test_ogden_uniaxial_stress_positive_tension() {
         let og = Ogden::one_term(1.0e6, 2.0, 1.0e9);
@@ -1173,21 +1486,95 @@ mod tests {
             }
         }
     }
-    /// At identity (no deformation), principal stresses ≈ 0 for incompressible Ogden.
+    /// At identity (no deformation) every principal stress vanishes: the Ogden stress
+    /// carries the deviatoric projection of the isochoric response.
     #[test]
     fn test_ogden_principal_stresses_identity() {
-        let ogden = Ogden::one_term(1.0e6, 2.0, 1.0e9);
+        let mu = 1.0e6;
+        let ogden = Ogden::one_term(mu, 2.0, 1.0e9);
         let sigma = ogden_principal_stresses(&ogden, 1.0, 1.0, 1.0);
+        for (i, s) in sigma.iter().enumerate() {
+            assert!(
+                s.abs() < 1.0e-6 * mu,
+                "σ_{} = {s} should vanish at the identity",
+                i + 1
+            );
+        }
+        let rubber = Ogden::rubber_default();
+        for s in ogden_principal_stresses(&rubber, 1.0, 1.0, 1.0) {
+            assert!(s.abs() < 1.0e-6 * mu, "rubber σ = {s} at the identity");
+        }
+    }
+    /// Uniaxial stress state (λ, λ^-1/2, λ^-1/2), J = 1:
+    /// σ₁ − σ₂ = Σ μ_p (λ^α_p − λ^(−α_p/2)).
+    #[test]
+    fn test_ogden_principal_stresses_uniaxial_matches_incompressible_formula() {
+        let ogden = Ogden::rubber_default();
+        for &lambda in &[0.7_f64, 1.1, 1.4, 2.0, 3.0] {
+            let lateral = 1.0 / lambda.sqrt();
+            let sigma = ogden_principal_stresses(&ogden, lambda, lateral, lateral);
+            let expected = ogden_uniaxial_stress_incompressible(&ogden, lambda);
+            assert!(expected != 0.0);
+            assert!(
+                ((sigma[0] - sigma[1]) - expected).abs() <= 1e-9 * expected.abs(),
+                "λ = {lambda}: σ₁ − σ₂ = {}, expected {expected}",
+                sigma[0] - sigma[1]
+            );
+            assert!(
+                (sigma[1] - sigma[2]).abs() <= 1e-9 * expected.abs(),
+                "λ = {lambda}: the two lateral stresses must coincide"
+            );
+        }
+    }
+    /// The Neo-Hookean special case (α = 2) reproduces μ (λ² − 1/λ).
+    #[test]
+    fn test_ogden_principal_stresses_neo_hookean_limit() {
+        let mu = 0.8e6;
+        let ogden = Ogden::one_term(mu, 2.0, 1.0e10);
+        for &lambda in &[1.2_f64, 1.8] {
+            let lateral = 1.0 / lambda.sqrt();
+            let sigma = ogden_principal_stresses(&ogden, lambda, lateral, lateral);
+            let expected = neo_hookean_uniaxial_stress(mu, lambda);
+            assert!(((sigma[0] - sigma[1]) - expected).abs() <= 1e-9 * expected.abs());
+        }
+    }
+    /// Σ σ_i = 3 K (J − 1): the isochoric Ogden stress is deviatoric.
+    #[test]
+    fn test_ogden_principal_stresses_isochoric_part_is_traceless() {
+        let k = 2.0e6;
+        let ogden = Ogden::new(vec![6.3e5, 1.2e3, -1.0e4], vec![1.3, 5.0, -2.0], k);
+        let (l1, l2, l3) = (1.3, 0.9, 1.1);
+        let volumetric = 3.0 * k * (l1 * l2 * l3 - 1.0);
+        let sigma = ogden_principal_stresses(&ogden, l1, l2, l3);
+        let trace: f64 = sigma.iter().sum();
         assert!(
-            (sigma[0] - sigma[1]).abs() < 1.0,
-            "σ₁ - σ₂ should be ~0 at identity: {}",
-            sigma[0] - sigma[1]
+            (trace - volumetric).abs() <= 1e-9 * volumetric.abs(),
+            "tr σ = {trace}, 3K(J − 1) = {volumetric}"
         );
-        assert!(
-            (sigma[1] - sigma[2]).abs() < 1.0,
-            "σ₂ - σ₃ should be ~0 at identity: {}",
-            sigma[1] - sigma[2]
-        );
+    }
+    /// σ_i = λ_i (∂W/∂λ_i) / J for the compressible Ogden energy.
+    #[test]
+    fn test_ogden_principal_stresses_match_energy_derivative() {
+        let ogden = Ogden::new(vec![6.3e5, 1.2e3, -1.0e4], vec![1.3, 5.0, -2.0], 2.0e6);
+        let lambda = [1.3_f64, 0.9, 1.1];
+        let j = lambda[0] * lambda[1] * lambda[2];
+        let sigma = ogden_principal_stresses(&ogden, lambda[0], lambda[1], lambda[2]);
+        for (i, &sigma_i) in sigma.iter().enumerate() {
+            let h = 1.0e-6 * lambda[i];
+            let mut plus = lambda;
+            plus[i] += h;
+            let mut minus = lambda;
+            minus[i] -= h;
+            let dw = (ogden.strain_energy_from_stretches(plus[0], plus[1], plus[2])
+                - ogden.strain_energy_from_stretches(minus[0], minus[1], minus[2]))
+                / (2.0 * h);
+            let expected = lambda[i] * dw / j;
+            assert!(
+                (sigma_i - expected).abs() <= 1e-6 * expected.abs() + 1.0e-3,
+                "σ_{} = {sigma_i}, λ ∂W/∂λ / J = {expected}",
+                i + 1
+            );
+        }
     }
     /// Under uniaxial tension (λ₁ > 1), σ₁ > σ₂ for Ogden.
     #[test]

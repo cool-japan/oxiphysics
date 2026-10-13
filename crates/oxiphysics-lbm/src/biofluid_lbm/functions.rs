@@ -47,6 +47,8 @@ pub(super) const W: [f64; NQ] = [
     1.0 / 36.0,
 ];
 pub(super) const CS2: f64 = 1.0 / 3.0;
+/// Opposite direction index for the D2Q9 ordering above (`CX[OPP[q]] == -CX[q]`).
+pub(super) const OPP: [usize; NQ] = [0, 3, 4, 1, 2, 7, 8, 5, 6];
 /// Compute equilibrium distribution for one cell.
 pub(super) fn feq(rho: f64, ux: f64, uy: f64) -> [f64; NQ] {
     let mut f = [0.0f64; NQ];

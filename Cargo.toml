@@ -33,6 +33,8 @@ wgpu = "30"
 naga = "30"
 bitvec = "1"
 oxiarc-zstd = "0.4.2"
+oxiarc-deflate = "0.4.2"
+oxixml-xml = "0.1.2"
 oxifft = "0.4.2"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }

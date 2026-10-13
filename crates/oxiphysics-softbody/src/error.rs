@@ -11,6 +11,9 @@ pub enum Error {
     /// Generic error
     #[error("{0}")]
     General(String),
+    /// A parameter is outside its valid range
+    #[error("invalid parameter: {0}")]
+    InvalidParameter(String),
 }
 
 /// Result type alias

@@ -349,7 +349,17 @@ impl AngleParam {
 
 /// Compute the Lennard-Jones energy \[kJ/mol\] and force magnitude at distance `r`.
 ///
-/// Uses a shifted-force cutoff at `r_cut`. Returns `(energy, force_over_r)`.
+/// Uses a shifted-force cutoff at `r_cut`:
+///
+/// ```text
+/// U_sf(r) = U(r) - U(r_c) - U'(r_c) (r - r_c)
+/// F_sf(r) = -dU_sf/dr = -U'(r) + U'(r_c)
+/// ```
+///
+/// so that both the energy and the force vanish continuously at `r_cut`.
+/// Returns `(energy, force_over_r)` where `force_over_r = F_sf(r) / r`
+/// (the repulsive-positive radial force divided by the distance, ready to be
+/// multiplied with the separation vector).
 pub fn lj_sf(eps: f64, sigma: f64, r: f64, r_cut: f64) -> (f64, f64) {
     if r >= r_cut {
         return (0.0, 0.0);
@@ -369,7 +379,7 @@ pub fn lj_sf(eps: f64, sigma: f64, r: f64, r_cut: f64) -> (f64, f64) {
     let de_dr_cut = 4.0 * eps * (-12.0 * src12 / r_cut + 6.0 * src6 / r_cut);
 
     let energy = e - e_cut - de_dr_cut * (r - r_cut);
-    let force_r = 4.0 * eps * (12.0 * sr12 - 6.0 * sr6) / (r * r) - de_dr_cut / r;
+    let force_r = 4.0 * eps * (12.0 * sr12 - 6.0 * sr6) / (r * r) + de_dr_cut / r;
     (energy, force_r)
 }
 
@@ -1674,6 +1684,51 @@ mod tests {
         let (e, _) = lj_sf(3.5, sigma, r_min, 1.5);
         // Just past minimum, energy should be negative
         assert!(e < 0.0, "LJ should be attractive near minimum, e={:.6}", e);
+    }
+
+    #[test]
+    fn test_lj_sf_energy_and_force_vanish_at_cutoff() {
+        let r_cut = 1.2;
+        let (e, f_over_r) = lj_sf(3.5, 0.47, r_cut - 1.0e-9, r_cut);
+        assert!(
+            f_over_r.abs() < 1.0e-6,
+            "shifted-force force must vanish at r_cut, got {f_over_r:e}"
+        );
+        assert!(
+            e.abs() < 1.0e-6,
+            "shifted-force energy must vanish at r_cut, got {e:e}"
+        );
+    }
+
+    #[test]
+    fn test_lj_sf_force_is_minus_energy_gradient() {
+        let eps = 3.5;
+        let sigma = 0.47;
+        let r_cut = 1.2;
+        let h = 1.0e-6;
+        for &r in &[0.9 * sigma, 1.1 * sigma, 0.95 * r_cut] {
+            let (_, f_over_r) = lj_sf(eps, sigma, r, r_cut);
+            let (e_hi, _) = lj_sf(eps, sigma, r + h, r_cut);
+            let (e_lo, _) = lj_sf(eps, sigma, r - h, r_cut);
+            let force_fd = -(e_hi - e_lo) / (2.0 * h);
+            let force = f_over_r * r;
+            let tol = 1.0e-5 * force_fd.abs().max(1.0);
+            assert!(
+                (force - force_fd).abs() <= tol,
+                "r = {r}: analytic force {force} vs -dE/dr {force_fd}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_lj_sf_force_sign_is_repulsive_inside_sigma() {
+        let (_, f_over_r) = lj_sf(3.5, 0.47, 0.9 * 0.47, 1.2);
+        assert!(f_over_r > 0.0, "core must repel, got {f_over_r}");
+        let (_, f_far) = lj_sf(3.5, 0.47, 0.95 * 1.2, 1.2);
+        assert!(
+            f_far < 0.0,
+            "tail of the shifted-force LJ potential must attract, got {f_far}"
+        );
     }
 
     // ── Bilayer system ────────────────────────────────────────────────────────

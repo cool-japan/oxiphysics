@@ -1,6 +1,8 @@
 //! Auto-generated module structure
 
 pub mod functions;
+#[cfg(test)]
+mod microfluidics_tests;
 pub mod rbcmembraneparams_traits;
 pub mod types;
 

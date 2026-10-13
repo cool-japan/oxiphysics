@@ -19,6 +19,9 @@
 
 use std::f64::consts::PI;
 
+mod longitudinal;
+use longitudinal::{ChassisInput, TyreLongitudinal, WheelInput, advance, slip_ratio};
+
 // ---------------------------------------------------------------------------
 // Physical constants
 // ---------------------------------------------------------------------------
@@ -930,8 +933,10 @@ impl MotorcycleParameters {
 /// Full single-track motorcycle dynamics simulator.
 ///
 /// Integrates the equations of motion for lean, yaw, steer, and longitudinal
-/// dynamics using a semi-explicit Euler scheme.  Tyre forces use the Pacejka
-/// Magic Formula.  Suspension is modelled as decoupled spring-dampers at each axle.
+/// dynamics using a semi-explicit Euler scheme; the stiff longitudinal
+/// wheel/ground subsystem (forward speed and the two wheel speeds) is integrated
+/// linearly implicitly.  Tyre forces use the Pacejka Magic Formula.  Suspension is
+/// modelled as decoupled spring-dampers at each axle.
 #[derive(Debug, Clone)]
 pub struct MotorcycleDynamicsSimulator {
     /// Physical parameters.
@@ -1040,36 +1045,36 @@ impl MotorcycleDynamicsSimulator {
     }
 
     /// Advance the simulation by one time step `dt` (seconds).
+    ///
+    /// The bike is a single-track model with right-positive conventions (yaw rate,
+    /// steer angle, lean angle and lateral force all point to the right).  The
+    /// longitudinal subsystem (forward speed and the two wheel speeds) is coupled
+    /// through the tyre forces only and is integrated linearly implicitly.
     pub fn step(&mut self, dt: f64) {
         let v = self.state.speed;
         let phi = self.state.lean_angle;
-        let _dphi = self.state.lean_rate;
         let delta = self.state.steer_angle;
 
         // --- Tyre slip ---
         let rr = self.params.rear_wheel_radius;
         let rf = self.params.front_wheel_radius;
 
-        let rear_slip_ratio = if v.abs() > 0.1 {
-            (self.state.rear_wheel_omega * rr - v) / v.abs()
-        } else {
-            0.0
-        };
-        let front_slip_ratio = if v.abs() > 0.1 {
-            (self.state.front_wheel_omega * rf - v) / v.abs()
-        } else {
-            0.0
-        };
+        let rear_slip_ratio = slip_ratio(self.state.rear_wheel_omega, rr, v);
+        let front_slip_ratio = slip_ratio(self.state.front_wheel_omega, rf, v);
 
-        // Lateral slip angles (small angle model)
-        let rear_slip_angle = if v.abs() > 0.1 {
-            -(self.state.yaw_rate * self.params.a / v)
+        // Lateral slip angles (small angle model).  The front axle is `a` ahead of
+        // the centre of mass and the rear axle `b` behind it, so a yaw rate carries
+        // the front axle sideways with `a * yaw_rate` and the rear axle the other way
+        // with `b * yaw_rate`.
+        let a = self.params.a;
+        let b = self.params.wheelbase - a;
+        let front_slip_angle = if v.abs() > 0.1 {
+            delta - (self.state.yaw_rate * a / v)
         } else {
             0.0
         };
-        let b = self.params.wheelbase - self.params.a;
-        let front_slip_angle = if v.abs() > 0.1 {
-            delta - (self.state.yaw_rate * b / v)
+        let rear_slip_angle = if v.abs() > 0.1 {
+            self.state.yaw_rate * b / v
         } else {
             0.0
         };
@@ -1079,26 +1084,54 @@ impl MotorcycleDynamicsSimulator {
         self.rear_tire.update_relaxation(rear_slip_angle, v, dt);
 
         // --- Tyre forces ---
-        let (rear_fy, rear_fx, _rear_mz) = self.rear_tire.forces(
-            self.rear_tire.filtered_slip_angle,
-            rear_slip_ratio,
-            self.state.rear_normal,
-            phi,
-        );
-        let (front_fy, front_fx, _front_mz) = self.front_tire.forces(
-            self.front_tire.filtered_slip_angle,
-            front_slip_ratio,
-            self.state.front_normal,
-            phi,
-        );
+        let rear_alpha = self.rear_tire.filtered_slip_angle;
+        let front_alpha = self.front_tire.filtered_slip_angle;
+        let (rear_fy, _, _rear_mz) =
+            self.rear_tire
+                .forces(rear_alpha, rear_slip_ratio, self.state.rear_normal, phi);
+        let (front_fy, _, _front_mz) =
+            self.front_tire
+                .forces(front_alpha, front_slip_ratio, self.state.front_normal, phi);
 
         // --- Longitudinal dynamics ---
-        let drive_torque = self.chain.transmitted_torque(self.engine_torque, 1.0);
-        let drive_force = drive_torque / rr;
-        let brake_force = (self.rear_brake_torque / rr) + (self.front_brake_torque / rf);
-        let aero_drag = self.fairing.drag_force(v, self.state.pitch_angle);
-        let long_force = drive_force + rear_fx + front_fx - brake_force - aero_drag;
-        let long_accel = long_force / self.params.total_mass;
+        // Drive and brake torques act on the wheels; the bike feels them only
+        // through the tyre forces they produce.
+        let rear_wheel = WheelInput {
+            radius: rr,
+            inertia: self.params.rear_wheel_inertia,
+            omega: self.state.rear_wheel_omega,
+            drive_torque: self.chain.transmitted_torque(self.engine_torque, 1.0),
+            brake_torque: self.rear_brake_torque,
+            tyre: TyreLongitudinal::evaluate(
+                &self.rear_tire,
+                rear_alpha,
+                self.state.rear_normal,
+                phi,
+                (self.state.rear_wheel_omega, rr),
+                v,
+            ),
+        };
+        let front_wheel = WheelInput {
+            radius: rf,
+            inertia: self.params.front_wheel_inertia,
+            omega: self.state.front_wheel_omega,
+            drive_torque: 0.0,
+            brake_torque: self.front_brake_torque,
+            tyre: TyreLongitudinal::evaluate(
+                &self.front_tire,
+                front_alpha,
+                self.state.front_normal,
+                phi,
+                (self.state.front_wheel_omega, rf),
+                v,
+            ),
+        };
+        let chassis = ChassisInput {
+            mass: self.params.total_mass,
+            speed: v,
+            drag: self.fairing.drag_force(v, self.state.pitch_angle),
+        };
+        let (longitudinal, long_accel) = advance(dt, chassis, rear_wheel, front_wheel);
 
         // --- Lean (roll) dynamics ---
         let gravity_lean = self.params.total_mass * G * self.params.com_height * phi.sin();
@@ -1114,14 +1147,10 @@ impl MotorcycleDynamicsSimulator {
         let lean_accel = net_lean_torque / self.params.roll_inertia;
 
         // --- Yaw dynamics ---
-        let net_yaw_torque = (rear_fy * self.params.a) - (front_fy * b);
+        // The front lateral force acts on the lever arm `a`, the rear one on `b`
+        // (and in the opposite sense).
+        let net_yaw_torque = (front_fy * a) - (rear_fy * b);
         let yaw_accel = net_yaw_torque / self.params.yaw_inertia;
-
-        // --- Wheel angular accelerations ---
-        let rear_wheel_alpha = (drive_torque - self.rear_brake_torque - rear_fx.abs() * rr)
-            / self.params.rear_wheel_inertia;
-        let front_wheel_alpha =
-            (-self.front_brake_torque - front_fx.abs() * rf) / self.params.front_wheel_inertia;
 
         // --- Suspension step ---
         let road_vel = 0.0; // flat ground
@@ -1142,19 +1171,15 @@ impl MotorcycleDynamicsSimulator {
             .update(self.state.front_normal, self.state.rear_normal, dt);
 
         // --- Integrate state (semi-explicit Euler) ---
-        self.state.speed += dt * long_accel;
-        self.state.speed = self.state.speed.max(0.0);
+        self.state.speed = longitudinal.speed;
+        self.state.rear_wheel_omega = longitudinal.rear_omega;
+        self.state.front_wheel_omega = longitudinal.front_omega;
 
         self.state.lean_rate += dt * lean_accel;
         self.state.lean_angle += dt * self.state.lean_rate;
         self.state.lean_angle = self.lean_limiter.apply_hard_limit(self.state.lean_angle);
 
         self.state.yaw_rate += dt * yaw_accel;
-
-        self.state.rear_wheel_omega += dt * rear_wheel_alpha;
-        self.state.rear_wheel_omega = self.state.rear_wheel_omega.max(0.0);
-        self.state.front_wheel_omega += dt * front_wheel_alpha;
-        self.state.front_wheel_omega = self.state.front_wheel_omega.max(0.0);
 
         self.state.front_compression = self.front_suspension.compression;
         self.state.rear_compression = self.rear_suspension.compression;

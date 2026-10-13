@@ -18,8 +18,8 @@
 //! 4. Body acceleration: `a[i] = X · a[parent] + S_i · q̈_i + v[i] × v_J + c_J`.
 //!
 //! For the root body the parent velocity is zero and the parent acceleration is
-//! `a_gravity = −g_vec` (fictitious gravity, expressed as upward acceleration on
-//! the root's virtual parent so that it flows outward correctly).
+//! `a_0 = [0; −g_vec]` ([`ArticulatedModel::gravity`]): the fictitious upward
+//! acceleration of the world frame that is equivalent to a gravity field.
 //!
 //! **Pass 2 (inward — leaves to root):** Propagate forces.
 //! For each body `i` (reverse order):
@@ -36,9 +36,9 @@ use crate::{
 ///
 /// # Arguments
 /// - `model`: Articulated-body model (kinematic tree, topological order).
-/// - `q`: Joint positions; length must equal `model.total_dof()`.
-/// - `q_dot`: Joint velocities; same length as `q`.
-/// - `q_ddot`: Joint accelerations; same length as `q`.
+/// - `q`: Joint configuration; length must equal `model.total_nq()`.
+/// - `q_dot`: Joint velocities; length must equal `model.total_dof()`.
+/// - `q_ddot`: Joint accelerations; length must equal `model.total_dof()`.
 ///
 /// # Returns
 /// Joint torques/forces `τ` (length = `model.total_dof()`).
@@ -49,10 +49,10 @@ pub fn rnea(model: &ArticulatedModel, q: &[f64], q_dot: &[f64], q_ddot: &[f64]) 
     let n = model.num_bodies();
     assert_eq!(
         q.len(),
-        model.total_dof(),
+        model.total_nq(),
         "q length mismatch: got {}, expected {}",
         q.len(),
-        model.total_dof()
+        model.total_nq()
     );
     assert_eq!(q_dot.len(), model.total_dof(), "q_dot length mismatch");
     assert_eq!(q_ddot.len(), model.total_dof(), "q_ddot length mismatch");
@@ -68,24 +68,23 @@ pub fn rnea(model: &ArticulatedModel, q: &[f64], q_dot: &[f64], q_ddot: &[f64]) 
 
     // ── Pass 1: Outward kinematics ────────────────────────────────────────────
     //
-    // Gravity is treated as a fictitious acceleration of the root's parent.
-    // a_parent_of_root = gravity (not negative, because a_root gets X*gravity
-    // which carries the sign correctly when gravity=[0,-g,0]).
-    // Featherstone convention: a_root = a_gravity propagated outward.
-    // We set a_parent_root = gravity so the root sees it correctly.
-    let a_gravity = model.gravity; // [0; g_vec], e.g. [0; [0,-9.81,0]]
+    // Gravity is treated as a fictitious acceleration of the root's parent:
+    // `model.gravity` already stores a_0 = [0; −g_vec] (see ArticulatedModel::new),
+    // so it is used here unchanged.
+    let a_gravity = model.gravity;
 
     for i in 0..n {
         let body = &model.bodies[i];
         let joint = &model.joints[i];
         let qi = model.q_slice(q, i);
-        let q_dot_i = model.q_slice(q_dot, i);
-        let q_ddot_i = model.q_slice(q_ddot, i);
+        let q_dot_i = model.v_slice(q_dot, i);
+        let q_ddot_i = model.v_slice(q_ddot, i);
 
         // Joint transform X_J and fixed transform X_T
         let x_j = joint.transform(qi);
         let x_t = &body.parent_transform;
-        // Full transform: child ← parent (compose X_T then X_J)
+        // Pose of body i in its parent frame: X_T ∘ X_J. apply_velocity maps
+        // parent-frame motion into body i's frame; apply_force maps back.
         let x_full = x_t.compose(&x_j);
         x_total[i] = x_full;
 

@@ -2,6 +2,8 @@
 
 pub mod functions;
 pub mod pbdsimulation_traits;
+#[cfg(test)]
+mod regression_tests;
 pub mod types;
 
 // Re-export all types

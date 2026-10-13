@@ -724,4 +724,167 @@ mod tests {
         let hits = traverser.traverse_rays(&rays);
         assert_eq!(hits[0], -1, "expected no hit, got {}", hits[0]);
     }
+
+    // ------------------------------------------------------------------
+    // GPU resource-reuse tests
+    // ------------------------------------------------------------------
+
+    /// A 20 x 15 lattice of unit boxes, spaced two units apart in x and y; the
+    /// object id of the box in column `ix`, row `iy` is `ix + 20 * iy`.
+    #[cfg(feature = "wgpu-backend")]
+    fn lattice_bvh() -> Bvh {
+        let prims: Vec<BvhPrimitive> = (0..300)
+            .map(|id| {
+                let (ix, iy) = ((id % 20) as f32, (id / 20) as f32);
+                BvhPrimitive::new(
+                    Aabb::new(
+                        [2.0 * ix, 2.0 * iy, 0.0],
+                        [2.0 * ix + 1.0, 2.0 * iy + 1.0, 1.0],
+                    ),
+                    id,
+                )
+            })
+            .collect();
+        Bvh::build(prims)
+    }
+
+    /// `n` rays along +z: two out of three pass through the centre of a lattice
+    /// box, the third through a gap between boxes.
+    #[cfg(feature = "wgpu-backend")]
+    fn lattice_rays(n: usize) -> Vec<GpuRay> {
+        (0..n)
+            .map(|i| {
+                let (ix, iy) = ((i % 20) as f32, ((i / 20) % 15) as f32);
+                let offset = if i % 3 == 2 { 1.5 } else { 0.5 };
+                GpuRay::new(
+                    [2.0 * ix + offset, 2.0 * iy + offset, -1.0],
+                    [0.0, 0.0, 1.0],
+                    100.0,
+                )
+            })
+            .collect()
+    }
+
+    /// The hits `lattice_rays(n)` must produce, derived from the lattice layout.
+    #[cfg(feature = "wgpu-backend")]
+    fn lattice_expected_hits(n: usize) -> Vec<i32> {
+        (0..n)
+            .map(|i| {
+                if i % 3 == 2 {
+                    -1
+                } else {
+                    ((i % 20) + 20 * ((i / 20) % 15)) as i32
+                }
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "wgpu-backend")]
+    #[test]
+    fn test_lattice_rays_cpu_reference_matches_the_layout() {
+        let bvh = lattice_bvh();
+        let cpu = BvhGpuTraverser::new_cpu(&bvh);
+        assert_eq!(
+            cpu.traverse_rays(&lattice_rays(900)),
+            lattice_expected_hits(900)
+        );
+    }
+
+    /// F2095 regression: every `traverse_rays` call used to create (and keep
+    /// forever) four GPU buffers.  The nodes are now uploaded once and the ray and
+    /// result buffers are grow-only, so the buffer count is constant and the byte
+    /// size only grows when a call traces more rays than any earlier one.
+    #[cfg(feature = "wgpu-backend")]
+    #[test]
+    fn test_bvh_gpu_buffers_are_reused_across_calls() {
+        let bvh = lattice_bvh();
+        let gpu = BvhGpuTraverser::new(&bvh);
+        let Some(baseline_count) = gpu.gpu_buffer_count() else {
+            eprintln!("SKIPPED: no GPU adapter available");
+            return;
+        };
+        let creation_id = gpu.creation_id();
+        let call_sizes = [1usize, 100, 1000, 37, 5000, 64, 2000, 7000, 1, 300, 300];
+        let mut largest = 0usize;
+        let mut previous_bytes = gpu.gpu_buffer_bytes().expect("GPU traverser");
+        for (call, &n) in call_sizes.iter().enumerate() {
+            let hits = gpu.traverse_rays(&lattice_rays(n));
+            assert_eq!(hits, lattice_expected_hits(n), "call {call} with {n} rays");
+            assert_eq!(
+                gpu.gpu_buffer_count(),
+                Some(baseline_count),
+                "the live buffer count changed in call {call}"
+            );
+            let bytes = gpu.gpu_buffer_bytes().expect("GPU traverser");
+            if n > largest {
+                largest = n;
+                assert!(bytes >= previous_bytes, "call {call} shrank the buffers");
+            } else {
+                assert_eq!(
+                    bytes, previous_bytes,
+                    "call {call} ({n} rays) reallocated although a larger batch was seen"
+                );
+            }
+            previous_bytes = bytes;
+        }
+        assert_eq!(gpu.dispatch_count(), call_sizes.len() as u64);
+        assert_eq!(gpu.creation_id(), creation_id);
+    }
+
+    /// Batches larger than one dispatch are split transparently.
+    #[cfg(feature = "wgpu-backend")]
+    #[test]
+    fn test_bvh_gpu_splits_oversized_ray_batches() {
+        let bvh = lattice_bvh();
+        let gpu = BvhGpuTraverser::new(&bvh);
+        if !gpu.is_gpu() {
+            eprintln!("SKIPPED: no GPU adapter available");
+            return;
+        }
+        let n = (1usize << 20) + 3;
+        let hits = gpu.traverse_rays(&lattice_rays(n));
+        assert_eq!(hits.len(), n);
+        assert_eq!(hits, lattice_expected_hits(n));
+        assert!(
+            gpu.dispatch_count() >= 2,
+            "the batch must need more than one dispatch"
+        );
+    }
+
+    /// The kernel returns before writing anything when the BVH is empty, so a reused
+    /// result buffer would hand back the previous call's hits; every ray must miss.
+    #[cfg(feature = "wgpu-backend")]
+    #[test]
+    fn test_bvh_gpu_empty_bvh_misses_every_ray() {
+        let gpu = BvhGpuTraverser::new(&Bvh::build(vec![]));
+        let rays = vec![GpuRay::new([0.5, 0.5, -1.0], [0.0, 0.0, 1.0], 100.0); 7];
+        assert_eq!(gpu.traverse_rays(&rays), vec![-1; 7]);
+        assert_eq!(gpu.traverse_rays(&rays[..3]), vec![-1; 3]);
+        assert_eq!(gpu.dispatch_count(), 0);
+        assert!(gpu.traverse_rays(&[]).is_empty());
+    }
+
+    /// A single GPU traverser serves threads that share it.
+    #[cfg(feature = "wgpu-backend")]
+    #[test]
+    fn test_bvh_gpu_traverser_is_shareable_across_threads() {
+        let bvh = lattice_bvh();
+        let gpu = BvhGpuTraverser::new(&bvh);
+        let baseline = gpu.gpu_buffer_count();
+        std::thread::scope(|scope| {
+            for worker in 0..4_usize {
+                let gpu = &gpu;
+                scope.spawn(move || {
+                    for round in 0..5_usize {
+                        let n = 50 + 37 * worker + 11 * round;
+                        assert_eq!(
+                            gpu.traverse_rays(&lattice_rays(n)),
+                            lattice_expected_hits(n)
+                        );
+                    }
+                });
+            }
+        });
+        assert_eq!(gpu.gpu_buffer_count(), baseline);
+    }
 }

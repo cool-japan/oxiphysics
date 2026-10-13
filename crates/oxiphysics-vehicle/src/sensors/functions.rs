@@ -466,7 +466,88 @@ mod tests {
         }
         assert_eq!(buf.len(), 4, "buffer should hold exactly 4 entries");
         let last2 = buf.last_n(2);
-        assert_eq!(last2.len(), 2);
+        assert_eq!(last2, vec![(8.0, 16.0), (9.0, 18.0)]);
+        // The whole retained window, oldest first.
+        let all = buf.last_n(4);
+        assert_eq!(
+            all,
+            vec![(6.0, 12.0), (7.0, 14.0), (8.0, 16.0), (9.0, 18.0)]
+        );
+    }
+    #[test]
+    fn test_telemetry_last_n_returns_newest_before_wrap() {
+        // Capacity 8, three pushes: the two newest samples are t = 2 and t = 3,
+        // not the two oldest physical slots.
+        let mut buf = TelemetryBuffer::new(8);
+        buf.push(1.0, 10.0);
+        buf.push(2.0, 20.0);
+        buf.push(3.0, 30.0);
+        let times: Vec<f64> = buf.last_n(2).iter().map(|s| s.0).collect();
+        assert_eq!(times, vec![2.0, 3.0]);
+        let values: Vec<f64> = buf.last_n(2).iter().map(|s| s.1).collect();
+        assert_eq!(values, vec![20.0, 30.0]);
+    }
+    #[test]
+    fn test_telemetry_last_n_returns_newest_after_wrap() {
+        // Capacity 3, six pushes (t = 0..5): the ring holds t = 3, 4, 5 and the
+        // two newest samples are t = 4 and t = 5.
+        let mut buf = TelemetryBuffer::new(3);
+        for i in 0..6u32 {
+            buf.push(i as f64, i as f64);
+        }
+        let times: Vec<f64> = buf.last_n(2).iter().map(|s| s.0).collect();
+        assert_eq!(times, vec![4.0, 5.0]);
+        let all: Vec<f64> = buf.last_n(3).iter().map(|s| s.0).collect();
+        assert_eq!(all, vec![3.0, 4.0, 5.0]);
+    }
+    #[test]
+    fn test_telemetry_last_n_after_five_pushes_into_capacity_three() {
+        // Pushes t = 0..4 (five samples) wrap the three-slot ring once.  The
+        // physical layout is [3, 4, 2], so the retained window must be unrolled
+        // starting at the oldest sample (t = 2) and not read slot by slot.
+        let mut buf = TelemetryBuffer::new(3);
+        for i in 0..5u32 {
+            buf.push(i as f64, 10.0 * i as f64);
+        }
+        assert_eq!(buf.len(), 3);
+        assert_eq!(buf.last_n(2), vec![(3.0, 30.0), (4.0, 40.0)]);
+        assert_eq!(
+            buf.last_n(3),
+            vec![(2.0, 20.0), (3.0, 30.0), (4.0, 40.0)],
+            "the whole window is returned oldest first"
+        );
+    }
+    #[test]
+    fn test_telemetry_last_n_wrap_boundary_positions() {
+        // Exercise every head position of a capacity-5 ring.
+        let mut buf = TelemetryBuffer::new(5);
+        for i in 0..23u32 {
+            buf.push(i as f64, -(i as f64));
+            let take = (i as usize + 1).min(5).min(3);
+            let got: Vec<f64> = buf.last_n(3).iter().map(|s| s.0).collect();
+            let expected: Vec<f64> = (0..take)
+                .map(|k| (i as usize + 1 - take + k) as f64)
+                .collect();
+            assert_eq!(got, expected, "after pushing t = {i}");
+        }
+    }
+    #[test]
+    fn test_telemetry_last_n_clamps_and_handles_empty() {
+        let mut buf = TelemetryBuffer::new(4);
+        assert!(buf.last_n(3).is_empty(), "empty buffer yields no samples");
+        buf.push(1.0, 1.0);
+        buf.push(2.0, 2.0);
+        assert_eq!(buf.last_n(0), Vec::<(f64, f64)>::new());
+        // Asking for more than is stored returns everything, oldest first.
+        assert_eq!(buf.last_n(10), vec![(1.0, 1.0), (2.0, 2.0)]);
+    }
+    #[test]
+    fn test_telemetry_zero_capacity_is_promoted_to_one() {
+        let mut buf = TelemetryBuffer::new(0);
+        buf.push(1.0, 5.0);
+        buf.push(2.0, 6.0);
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf.last_n(4), vec![(2.0, 6.0)]);
     }
     #[test]
     fn test_telemetry_ring_buffer_push_and_retrieve() {
@@ -477,7 +558,7 @@ mod tests {
         buf.push(3.0, 30.0);
         assert_eq!(buf.len(), 3);
         let last = buf.last_n(3);
-        assert_eq!(last.len(), 3);
+        assert_eq!(last, vec![(1.0, 10.0), (2.0, 20.0), (3.0, 30.0)]);
     }
     #[test]
     fn test_wheel_pulse_count() {
@@ -1045,6 +1126,176 @@ mod tests_sensors_extended {
             (kf.state[1] - true_pos[1]).abs() < 5.0,
             "should converge to GPS y"
         );
+    }
+    type Mat4 = [[f64; 4]; 4];
+    fn mat4_mul(a: &Mat4, b: &Mat4) -> Mat4 {
+        let mut out = [[0.0f64; 4]; 4];
+        for (out_row, a_row) in out.iter_mut().zip(a.iter()) {
+            for (j, entry) in out_row.iter_mut().enumerate() {
+                *entry = a_row
+                    .iter()
+                    .zip(b.iter())
+                    .map(|(a_il, b_row)| a_il * b_row[j])
+                    .sum();
+            }
+        }
+        out
+    }
+    fn mat4_transpose(a: &Mat4) -> Mat4 {
+        let mut out = [[0.0f64; 4]; 4];
+        for (i, row) in out.iter_mut().enumerate() {
+            for (j, entry) in row.iter_mut().enumerate() {
+                *entry = a[j][i];
+            }
+        }
+        out
+    }
+    /// Textbook linear Kalman filter (predict `F·P·Fᵀ + Q`, update with the
+    /// gain `K = P·Hᵀ·S⁻¹` and `P ← (I − K·H)·P`) used as an independent
+    /// reference for the covariance recursion of `KalmanFusion2D`.
+    fn reference_covariance(q_pos: f64, q_vel: f64, r_gps: f64, dt: f64, cycles: usize) -> Mat4 {
+        let mut p: Mat4 = [[0.0; 4]; 4];
+        p[0][0] = 100.0;
+        p[1][1] = 100.0;
+        p[2][2] = 25.0;
+        p[3][3] = 25.0;
+        let f: Mat4 = [
+            [1.0, 0.0, dt, 0.0],
+            [0.0, 1.0, 0.0, dt],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let ft = mat4_transpose(&f);
+        let q_diag = [
+            q_pos * q_pos * dt,
+            q_pos * q_pos * dt,
+            q_vel * q_vel * dt,
+            q_vel * q_vel * dt,
+        ];
+        let r2 = r_gps * r_gps;
+        for _ in 0..cycles {
+            let mut pred = mat4_mul(&mat4_mul(&f, &p), &ft);
+            for (i, q) in q_diag.iter().enumerate() {
+                pred[i][i] += q;
+            }
+            let s00 = pred[0][0] + r2;
+            let s01 = pred[0][1];
+            let s10 = pred[1][0];
+            let s11 = pred[1][1] + r2;
+            let det = s00 * s11 - s01 * s10;
+            let s_inv = [[s11 / det, -s01 / det], [-s10 / det, s00 / det]];
+            let mut gain = [[0.0f64; 2]; 4];
+            for (gain_row, pred_row) in gain.iter_mut().zip(pred.iter()) {
+                for (j, g) in gain_row.iter_mut().enumerate() {
+                    *g = pred_row[0] * s_inv[0][j] + pred_row[1] * s_inv[1][j];
+                }
+            }
+            let mut next = pred;
+            for ((next_row, pred_row), gain_row) in
+                next.iter_mut().zip(pred.iter()).zip(gain.iter())
+            {
+                for (j, entry) in next_row.iter_mut().enumerate() {
+                    *entry = pred_row[j] - gain_row[0] * pred[0][j] - gain_row[1] * pred[1][j];
+                }
+            }
+            p = next;
+        }
+        p
+    }
+    #[test]
+    fn test_kalman2d_covariance_matches_textbook_filter() {
+        let (q_pos, q_vel, r_gps, dt) = (0.05, 0.1, 1.5, 0.1);
+        let mut kf = KalmanFusion2D::new(q_pos, q_vel, r_gps);
+        for k in 0..50 {
+            kf.predict(0.0, 0.0, dt);
+            kf.update_gps([0.2 * k as f64, -0.1 * k as f64]);
+        }
+        let reference = reference_covariance(q_pos, q_vel, r_gps, dt, 50);
+        for (i, ref_row) in reference.iter().enumerate() {
+            for (j, expected) in ref_row.iter().enumerate() {
+                let got = kf.cov[i * 4 + j];
+                assert!(
+                    (got - expected).abs() <= 1e-9 * expected.abs().max(1.0),
+                    "P[{i}][{j}]: got {got}, textbook {expected}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn test_kalman2d_first_gps_update_matches_closed_form() {
+        // Without process noise, one predict step of dt = 0.1 s followed by one
+        // GPS update has a closed form:
+        //   P_pred = [[100.25, 2.5], [2.5, 25]] per axis, S = 100.25 + r², r = 1
+        //   P⁺ = P_pred − P_pred[:,0]·P_pred[0,:] / S
+        let mut kf = KalmanFusion2D::new(0.0, 0.0, 1.0);
+        kf.predict(0.0, 0.0, 0.1);
+        kf.update_gps([0.0, 0.0]);
+        let s = 101.25;
+        let expected_pp = 100.25 - 100.25 * 100.25 / s;
+        let expected_pv = 2.5 - 100.25 * 2.5 / s;
+        let expected_vv = 25.0 - 2.5 * 2.5 / s;
+        for (pos, vel) in [(0usize, 2usize), (1, 3)] {
+            assert!((kf.cov[pos * 4 + pos] - expected_pp).abs() < 1e-9);
+            assert!((kf.cov[pos * 4 + vel] - expected_pv).abs() < 1e-9);
+            assert!((kf.cov[vel * 4 + pos] - expected_pv).abs() < 1e-9);
+            assert!(
+                (kf.cov[vel * 4 + vel] - expected_vv).abs() < 1e-9,
+                "velocity variance must shrink to {expected_vv}, got {}",
+                kf.cov[vel * 4 + vel]
+            );
+        }
+        assert!(
+            kf.cov[10] < 25.0 && kf.cov[15] < 25.0,
+            "velocity variance must be reduced by the GPS update"
+        );
+    }
+    #[test]
+    fn test_kalman2d_covariance_symmetric_and_velocity_std_shrinks() {
+        let mut kf = KalmanFusion2D::new(0.01, 0.01, 1.0);
+        for _ in 0..50 {
+            kf.predict(0.0, 0.0, 0.1);
+            kf.update_gps([0.0, 0.0]);
+        }
+        for i in 0..4 {
+            for j in 0..4 {
+                assert!(
+                    (kf.cov[i * 4 + j] - kf.cov[j * 4 + i]).abs() < 1e-12,
+                    "P must stay symmetric: P[{i}][{j}] vs P[{j}][{i}]"
+                );
+            }
+        }
+        let vel_std = kf.velocity_std();
+        assert!(vel_std[0] < 5.0, "vx std = {}", vel_std[0]);
+        assert!(vel_std[1] < 5.0, "vy std = {}", vel_std[1]);
+        // GPS-only position observations pin the velocity down much tighter
+        // than the prior (std 5 m/s).
+        assert!(
+            vel_std[0] < 1.0,
+            "vx std should be well below 1: {}",
+            vel_std[0]
+        );
+        assert!(
+            kf.position_std()[0] < 1.0,
+            "x std = {}",
+            kf.position_std()[0]
+        );
+    }
+    #[test]
+    fn test_kalman2d_estimates_constant_velocity_from_gps() {
+        let (vx, vy) = (2.0, -1.0);
+        let dt = 0.1;
+        let mut kf = KalmanFusion2D::new(0.01, 0.01, 0.5);
+        for k in 1..=300 {
+            let t = k as f64 * dt;
+            kf.predict(0.0, 0.0, dt);
+            kf.update_gps([vx * t, vy * t]);
+        }
+        let v = kf.velocity();
+        assert!((v[0] - vx).abs() < 0.05, "vx estimate {} vs {vx}", v[0]);
+        assert!((v[1] - vy).abs() < 0.05, "vy estimate {} vs {vy}", v[1]);
+        let p = kf.position();
+        assert!((p[0] - vx * 30.0).abs() < 0.5, "x estimate {}", p[0]);
+        assert!((p[1] - vy * 30.0).abs() < 0.5, "y estimate {}", p[1]);
     }
     #[test]
     fn test_kalman2d_position_std_non_negative() {

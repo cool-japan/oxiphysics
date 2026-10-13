@@ -217,7 +217,11 @@ impl SupportDomain {
 /// Result from an EFG plane-stress analysis.
 #[derive(Debug, Clone)]
 pub struct EfgResult {
-    /// Nodal displacements (2 DOF per node: ux, uy).
+    /// Nodal parameters `û_I` of the MLS approximation (2 per node: ux, uy).
+    ///
+    /// Because MLS shape functions are not interpolatory these are not the
+    /// displacements of the nodes; the displacement field is
+    /// `u_h(x) = Σ φ_I(x) û_I` (see [`evaluate_displacement_2d`]).
     pub displacements: Vec<f64>,
     /// Number of nodes.
     pub num_nodes: usize,
@@ -246,24 +250,73 @@ pub enum KernelType {
     /// Wendland C4 compactly-supported kernel.
     WendlandC4,
 }
-/// An essential boundary condition specification.
-#[derive(Debug, Clone)]
+/// An essential (Dirichlet) boundary condition imposed at a point of the boundary.
+///
+/// MLS / RKPM shape functions are **not interpolatory** (`φ_I(x_J) ≠ δ_IJ`), so
+/// the nodal parameters `û_I` are *not* the displacements at the nodes and a
+/// condition cannot be imposed by constraining a single parameter.  A condition
+/// therefore constrains the approximated field itself,
+///
+/// `u_h(pos)[dof] = Σ_I φ_I(pos) û_{I,dof} = value`,
+///
+/// at the boundary point `pos`.  The `normal` and `weight` describe the boundary
+/// around the point, as needed by the weak (boundary-integral) enforcement:
+/// the points of a condition are the quadrature points of `∫_Γ_D (…) dΓ` with
+/// `weight` the boundary length each point stands for.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EssentialBc {
-    /// Node index.
-    pub node: usize,
+    /// Position of the constrained boundary point.
+    pub pos: Point2,
+    /// Outward unit normal of the domain at the point (used by Nitsche's method).
+    pub normal: Point2,
+    /// Boundary length represented by the point (quadrature weight, `> 0`).
+    pub weight: f64,
     /// DOF index (0 = x, 1 = y).
     pub dof: usize,
-    /// Prescribed value.
+    /// Prescribed value of the displacement component.
     pub value: f64,
 }
+impl EssentialBc {
+    /// Create an essential boundary condition at `pos`.
+    pub fn new(pos: Point2, normal: Point2, weight: f64, dof: usize, value: f64) -> Self {
+        Self {
+            pos,
+            normal,
+            weight,
+            dof,
+            value,
+        }
+    }
+    /// Create a condition at the position of meshfree node `node`.
+    ///
+    /// Returns `None` if the node does not exist.  The constraint acts on the
+    /// approximated field at that position, `u_h(x_node)`, not on the parameter of
+    /// the node.
+    pub fn at_node(
+        domain: &SupportDomain,
+        node: usize,
+        normal: Point2,
+        weight: f64,
+        dof: usize,
+        value: f64,
+    ) -> Option<Self> {
+        let pos = domain.nodes.get(node)?.pos;
+        Some(Self::new(pos, normal, weight, dof, value))
+    }
+}
 /// Method for enforcing essential BCs in meshfree methods.
+///
+/// All methods act on the MLS approximation `u_h(x) = Σ φ_I(x) û_I` at the
+/// boundary points of the [`EssentialBc`]s (never directly on the parameters).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BcEnforcementMethod {
-    /// Penalty method.
+    /// Penalty method: `K += α w φ φᵀ`, `f += α w g φ` at every boundary point.
     Penalty,
-    /// Lagrange multiplier method.
+    /// Lagrange multiplier method: the rows `φ_J(x_b)` of the point-collocated
+    /// constraints `u_h(x_b) = g` are appended to the system.
     LagrangeMultiplier,
-    /// Nitsche's method (penalty-free weak enforcement).
+    /// Nitsche's method: consistency and symmetry terms plus a stabilisation
+    /// term, so the condition holds weakly without a large penalty parameter.
     Nitsche,
 }
 /// RBF type.

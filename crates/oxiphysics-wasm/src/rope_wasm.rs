@@ -107,12 +107,16 @@ impl WasmRopeJs {
 
     /// Set the Verlet damping coefficient (0 = no damping, 1 = fully damped).
     ///
-    /// Typical range: 0.90–0.99. Values outside `[0, 1]` are clamped.
+    /// The coefficient is the fraction of the carried per-step velocity that
+    /// is removed on every step, so the speed of an unforced rope decays as
+    /// `(1 - damping)^steps`. Typical range: 0.0–0.1 (the default is 0.02).
+    /// Values outside `[0, 1]` are clamped.
     pub fn set_damping(&mut self, damping: f64) {
         self.inner.damping = damping.clamp(0.0, 1.0);
     }
 
-    /// Current Verlet damping coefficient.
+    /// Current Verlet damping coefficient (fraction of velocity removed per
+    /// step; 0 = no damping, 1 = fully damped).
     pub fn get_damping(&self) -> f64 {
         self.inner.damping
     }

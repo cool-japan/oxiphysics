@@ -7,7 +7,8 @@
 use wasm_bindgen::prelude::*;
 
 use super::WasmPhysicsEngine;
-use crate::types::RaycastResult;
+use super::validation::validate_dynamic_mass;
+use crate::types::{ColliderConfig, RaycastResult, RigidBodyConfig};
 
 // ===========================================================================
 // Performance metrics, debug draw, and ray-cast extensions
@@ -133,27 +134,41 @@ impl WasmEngine {
         }
     }
 
-    /// Advance the simulation and record step timing.
-    pub fn step(&mut self, dt: f64) {
-        self.engine.step(dt);
+    /// Advance the simulation by `dt` seconds of real time and record step
+    /// timing.
+    ///
+    /// Throws if `dt` is negative, `NaN` or infinite (the engine and the
+    /// recorded timing are left untouched).
+    pub fn step(&mut self, dt: f64) -> Result<(), JsValue> {
+        self.engine.step(dt)?;
         self.last_step_time_s = dt.max(1e-6);
+        Ok(())
     }
 
     /// Step the simulation `n` times with the given `dt`.
-    pub fn step_n(&mut self, n: u32, dt: f64) {
+    ///
+    /// Throws on the first step if `dt` is negative, `NaN` or infinite.
+    pub fn step_n(&mut self, n: u32, dt: f64) -> Result<(), JsValue> {
         for _ in 0..n {
-            self.step(dt);
+            self.step(dt)?;
         }
+        Ok(())
     }
 
     /// Add a dynamic body at `(x, y, z)` with the given mass.
-    pub fn add_dynamic_body(&mut self, mass: f64, x: f64, y: f64, z: f64) -> u32 {
-        self.engine.add_dynamic_body(mass, x, y, z)
+    ///
+    /// Throws if `mass` is not finite and positive or the position is not
+    /// finite.
+    pub fn add_dynamic_body(&mut self, mass: f64, x: f64, y: f64, z: f64) -> Result<u32, JsValue> {
+        Ok(self.engine.add_dynamic_body(mass, x, y, z)?)
     }
 
     /// Add a sphere collider to `body_id`.
-    pub fn add_sphere_collider(&mut self, body_id: u32, radius: f64) -> u32 {
-        self.engine.add_sphere_collider(body_id, radius)
+    ///
+    /// Throws if `body_id` is not a live body or `radius` is not finite and
+    /// positive.
+    pub fn add_sphere_collider(&mut self, body_id: u32, radius: f64) -> Result<u32, JsValue> {
+        Ok(self.engine.add_sphere_collider(body_id, radius)?)
     }
 
     // -----------------------------------------------------------------------
@@ -251,13 +266,31 @@ impl WasmEngine {
     }
 
     /// Add a dynamic body and attach a sphere collider in one call.
-    pub fn add_dynamic_sphere(&mut self, mass: f64, x: f64, y: f64, z: f64, radius: f64) -> u32 {
-        let handle = self.engine.add_dynamic_body(mass, x, y, z);
-        self.engine.add_sphere_collider(handle, radius);
-        handle
+    ///
+    /// Throws (and creates nothing) if `mass` or `radius` is not finite and
+    /// positive or the position is not finite.
+    pub fn add_dynamic_sphere(
+        &mut self,
+        mass: f64,
+        x: f64,
+        y: f64,
+        z: f64,
+        radius: f64,
+    ) -> Result<u32, JsValue> {
+        validate_dynamic_mass(mass)?;
+        let body = RigidBodyConfig::new()
+            .with_mass(mass)
+            .with_position(x, y, z);
+        let (handle, _) = self
+            .engine
+            .add_body_with_collider(&body, &ColliderConfig::sphere(radius))?;
+        Ok(handle)
     }
 
     /// Add a static body and attach a plane collider in one call.
+    ///
+    /// The plane normal `(nx, ny, nz)` need not be unit length.  Throws (and
+    /// creates nothing) if the normal is zero or any value is not finite.
     pub fn add_static_plane(
         &mut self,
         x: f64,
@@ -267,10 +300,12 @@ impl WasmEngine {
         ny: f64,
         nz: f64,
         offset: f64,
-    ) -> u32 {
-        let handle = self.engine.add_static_body(x, y, z);
-        self.engine.add_plane_collider(handle, nx, ny, nz, offset);
-        handle
+    ) -> Result<u32, JsValue> {
+        let body = RigidBodyConfig::static_body().with_position(x, y, z);
+        let (handle, _) = self
+            .engine
+            .add_body_with_collider(&body, &ColliderConfig::plane(nx, ny, nz, offset))?;
+        Ok(handle)
     }
 
     /// Remove a body by handle; returns `true` if it existed.
@@ -515,22 +550,12 @@ impl WasmEngine {
 
     /// Deserialise a flat body record (`Vec<f64>`) and update that body's state.
     ///
-    /// `data` must have at least `BODY_STATE_FLAT_LEN` elements.
-    /// Returns `true` if the update succeeded.
+    /// `data` must have at least `BODY_STATE_FLAT_LEN` elements.  Returns
+    /// `true` if the update succeeded; on `false` (record too short, handle not
+    /// a live body, or a non-finite position/velocity) the body is left
+    /// untouched.
     pub fn deserialise_body_flat_js(&mut self, data: Vec<f64>) -> bool {
-        if data.len() < BODY_STATE_FLAT_LEN {
-            return false;
-        }
-        let handle = data[0] as u32;
-        let ok_pos = self
-            .engine
-            .set_position(handle, data[1], data[2], data[3])
-            .is_ok();
-        let ok_vel = self
-            .engine
-            .set_velocity(handle, data[8], data[9], data[10])
-            .is_ok();
-        ok_pos && ok_vel
+        self.deserialise_body_flat(&data)
     }
 
     /// Serialise the entire simulation state to a JSON `String`.
@@ -681,18 +706,38 @@ impl WasmEngine {
     }
 
     /// Deserialise from a `&[f64]` slice (Rust-only).
+    ///
+    /// The update is all-or-nothing: the record must hold a whole-number
+    /// handle of a live body and finite position and velocity components
+    /// (a record of an invalid handle is all `NaN` and is rejected), otherwise
+    /// `false` is returned and nothing is changed.
     pub fn deserialise_body_flat(&mut self, data: &[f64]) -> bool {
         if data.len() < BODY_STATE_FLAT_LEN {
             return false;
         }
-        let handle = data[0] as u32;
+        let raw_handle = data[0];
+        if !((0.0..=f64::from(u32::MAX)).contains(&raw_handle) && raw_handle.fract() == 0.0) {
+            return false;
+        }
+        let handle = raw_handle as u32;
+        let position = [data[1], data[2], data[3]];
+        let velocity = [data[8], data[9], data[10]];
+        if !position
+            .iter()
+            .chain(velocity.iter())
+            .all(|c| c.is_finite())
+        {
+            return false;
+        }
+        // Every value is valid now, so the two setters can only fail together
+        // (dead handle) and never leave a half-applied record behind.
         let ok_pos = self
             .engine
-            .set_position(handle, data[1], data[2], data[3])
+            .set_position(handle, position[0], position[1], position[2])
             .is_ok();
         let ok_vel = self
             .engine
-            .set_velocity(handle, data[8], data[9], data[10])
+            .set_velocity(handle, velocity[0], velocity[1], velocity[2])
             .is_ok();
         ok_pos && ok_vel
     }

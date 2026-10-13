@@ -12,6 +12,7 @@ use crate::shape::{RayHit, Shape};
 use oxiphysics_core::Aabb;
 use oxiphysics_core::math::{Mat3, Real, Vec3};
 
+use super::solid::HullSolid;
 use super::types::ConvexHull;
 
 impl Shape for ConvexHull {
@@ -42,34 +43,27 @@ impl Shape for ConvexHull {
             .copied()
             .unwrap_or_else(Vec3::zeros)
     }
+    /// Volume of the polyhedron spanned by the vertices (zero if they span no
+    /// volume).
     fn volume(&self) -> Real {
-        self.tetra_decomposition().0
+        self.with_solid(|solid| solid.map_or(0.0, HullSolid::volume))
     }
+    /// Centre of mass of the uniform solid; the vertex mean if the vertices
+    /// span no volume.
     fn center_of_mass(&self) -> Vec3 {
-        self.tetra_decomposition().1
+        self.with_solid(|solid| solid.map_or_else(|| self.centroid(), HullSolid::center_of_mass))
     }
+    /// Inertia tensor of the uniform solid about its centre of mass,
+    /// including the products of inertia; zero if the vertices span no
+    /// volume.
     fn inertia_tensor(&self, mass: Real) -> Mat3 {
-        let bb = self.bounding_box();
-        let size = bb.max - bb.min;
-        let k = mass / 12.0;
-        Mat3::new(
-            k * (size.y * size.y + size.z * size.z),
-            0.0,
-            0.0,
-            0.0,
-            k * (size.x * size.x + size.z * size.z),
-            0.0,
-            0.0,
-            0.0,
-            k * (size.x * size.x + size.y * size.y),
-        )
+        self.with_solid(|solid| solid.map_or_else(Mat3::zeros, |solid| solid.inertia_tensor(mass)))
     }
-    fn ray_cast(
-        &self,
-        _ray_origin: &Vec3,
-        _ray_direction: &Vec3,
-        _max_toi: Real,
-    ) -> Option<RayHit> {
-        None
+    /// Intersect the ray with the hull facets.
+    ///
+    /// `toi` is in units of `ray_direction`; the normal is the outward facet
+    /// normal.  A ray starting inside reports the exit point.
+    fn ray_cast(&self, ray_origin: &Vec3, ray_direction: &Vec3, max_toi: Real) -> Option<RayHit> {
+        self.with_solid(|solid| solid?.ray_cast(ray_origin, ray_direction, max_toi))
     }
 }

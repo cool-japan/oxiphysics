@@ -8,7 +8,9 @@
 //! debris spawning, fracture energy accounting, pre-scored fracture
 //! patterns, and radial/planar fracture modes.
 
-use rand::RngExt;
+use crate::rng_util::uniform;
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -285,22 +287,23 @@ pub struct VoronoiCell {
 
 /// Generate Voronoi sites uniformly within an axis-aligned bounding box.
 ///
-/// * `aabb_min` / `aabb_max` — bounding box corners.
+/// * `aabb_min` / `aabb_max` — bounding box corners.  An axis along which the
+///   box is flat (`min == max`) places every site on that coordinate.
 /// * `count` — number of seed points.
-/// * `seed` — RNG seed.
+/// * `seed` — RNG seed.  The same seed always yields the same sites; different
+///   seeds yield different sites.
 pub fn generate_voronoi_sites(
     aabb_min: [f64; 3],
     aabb_max: [f64; 3],
     count: usize,
-    _seed: u64,
+    seed: u64,
 ) -> Vec<VoronoiSite> {
-    use rand::RngExt;
-    let mut rng = rand::rng();
+    let mut rng = StdRng::seed_from_u64(seed);
     (0..count)
         .map(|_| {
-            let x = rng.random_range(aabb_min[0]..aabb_max[0]);
-            let y = rng.random_range(aabb_min[1]..aabb_max[1]);
-            let z = rng.random_range(aabb_min[2]..aabb_max[2]);
+            let x = uniform(&mut rng, aabb_min[0], aabb_max[0]);
+            let y = uniform(&mut rng, aabb_min[1], aabb_max[1]);
+            let z = uniform(&mut rng, aabb_min[2], aabb_max[2]);
             VoronoiSite::new([x, y, z])
         })
         .collect()
@@ -654,6 +657,9 @@ pub struct DebrisConfig {
     pub angular_scatter: f64,
     /// Lifetime of debris particles (seconds). 0 = infinite.
     pub lifetime: f64,
+    /// Seed of the random-number generator that draws the velocity scatter.
+    /// The same seed reproduces the same debris velocities exactly.
+    pub seed: u64,
 }
 
 impl Default for DebrisConfig {
@@ -664,6 +670,7 @@ impl Default for DebrisConfig {
             velocity_scatter: 1.0,
             angular_scatter: 2.0,
             lifetime: 10.0,
+            seed: 0,
         }
     }
 }
@@ -681,14 +688,16 @@ pub struct DebrisParticle {
 
 /// Spawn debris fragments from Voronoi cells.
 ///
-/// Filters by minimum volume, caps count, and adds velocity scatter.
+/// Filters by minimum volume, caps count, and adds velocity scatter drawn from
+/// a generator seeded with [`DebrisConfig::seed`], so the result is
+/// reproducible.  A scatter of `0.0` leaves the fragment velocities unchanged.
 pub fn spawn_debris(
     cells: &[VoronoiCell],
     material: &FractureMaterial,
     parent_velocity: [f64; 3],
     config: &DebrisConfig,
 ) -> Vec<DebrisParticle> {
-    let mut rng = rand::rng();
+    let mut rng = StdRng::seed_from_u64(config.seed);
 
     let mut particles: Vec<DebrisParticle> = Vec::new();
 
@@ -703,17 +712,19 @@ pub fn spawn_debris(
         let mut frag = fragment_from_cell(cell, material, i, parent_velocity);
 
         // Add scatter
+        let vs = config.velocity_scatter;
         let scatter_v = [
-            rng.random_range(-config.velocity_scatter..config.velocity_scatter),
-            rng.random_range(-config.velocity_scatter..config.velocity_scatter),
-            rng.random_range(-config.velocity_scatter..config.velocity_scatter),
+            uniform(&mut rng, -vs, vs),
+            uniform(&mut rng, -vs, vs),
+            uniform(&mut rng, -vs, vs),
         ];
         frag.velocity = v3_add(frag.velocity, scatter_v);
 
+        let ws = config.angular_scatter;
         let scatter_w = [
-            rng.random_range(-config.angular_scatter..config.angular_scatter),
-            rng.random_range(-config.angular_scatter..config.angular_scatter),
-            rng.random_range(-config.angular_scatter..config.angular_scatter),
+            uniform(&mut rng, -ws, ws),
+            uniform(&mut rng, -ws, ws),
+            uniform(&mut rng, -ws, ws),
         ];
         frag.angular_velocity = scatter_w;
 
@@ -1059,8 +1070,11 @@ pub enum PlaneClassification {
 }
 
 /// Generate a set of planar fractures at random orientations within a body.
-pub fn generate_planar_cuts(center: [f64; 3], num_planes: usize, _seed: u64) -> Vec<FracturePlane> {
-    let mut rng = rand::rng();
+///
+/// `seed` seeds the orientation generator: the same seed always produces the
+/// same planes, different seeds produce different planes.
+pub fn generate_planar_cuts(center: [f64; 3], num_planes: usize, seed: u64) -> Vec<FracturePlane> {
+    let mut rng = StdRng::seed_from_u64(seed);
     (0..num_planes)
         .map(|_| {
             let theta = rng.random_range(0.0..PI);
@@ -1155,6 +1169,10 @@ pub struct DestructionEvent {
 /// * `material` — fracture material properties.
 /// * `num_fragments` — desired fragment count.
 /// * `resolution` — Voronoi grid resolution.
+///
+/// The Voronoi sites are drawn from a generator seeded with `body_id`, so
+/// destroying the same body twice reproduces the same fragments while
+/// different bodies fracture differently.
 pub fn execute_voronoi_destruction(
     body_id: usize,
     aabb_min: [f64; 3],
@@ -1166,7 +1184,7 @@ pub fn execute_voronoi_destruction(
     num_fragments: usize,
     resolution: usize,
 ) -> DestructionEvent {
-    let sites = generate_voronoi_sites(aabb_min, aabb_max, num_fragments, 0);
+    let sites = generate_voronoi_sites(aabb_min, aabb_max, num_fragments, body_id as u64);
     let cells = build_voronoi_cells(aabb_min, aabb_max, &sites, resolution);
 
     let fragments: Vec<Fragment> = cells
@@ -1211,6 +1229,9 @@ pub struct RadialDestructionParams {
 }
 
 /// Execute a radial destruction sequence.
+///
+/// As for [`execute_voronoi_destruction`], the fragment sites are seeded with
+/// `body_id`, so the result is reproducible per body.
 pub fn execute_radial_destruction(
     body_id: usize,
     params: RadialDestructionParams,
@@ -1240,7 +1261,7 @@ pub fn execute_radial_destruction(
 
     // Use Voronoi with sites biased toward the impact point for radial mode.
     let num_fragments = num_rays * num_rings;
-    let sites = generate_voronoi_sites(aabb_min, aabb_max, num_fragments.max(4), 0);
+    let sites = generate_voronoi_sites(aabb_min, aabb_max, num_fragments.max(4), body_id as u64);
     let cells = build_voronoi_cells(aabb_min, aabb_max, &sites, resolution);
 
     let fragments: Vec<Fragment> = cells

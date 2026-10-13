@@ -9,11 +9,14 @@ use crate::types::{CollisionPair, Contact, ContactManifold};
 use oxiphysics_core::Transform;
 use oxiphysics_geometry::{BoxShape, Capsule, ConvexHull, Shape, Sphere};
 
+use super::box_manifold::box_box_manifold;
 use super::convex_manifold::{ConvexSeparation, convex_pair_manifold};
 use super::types::{
     CompoundDispatchResult, CompoundShape, ConcaveMesh, ContactPatch, MeshTriangle,
     NarrowPhaseDispatcher, NarrowPhaseResult, ShapeType, SimpleHeightField, SpeculativeConfig,
 };
+
+mod concave_helpers;
 
 /// Batch entry for speculative contact generation.
 pub type SpecBatchEntry<'a> = (
@@ -246,7 +249,20 @@ pub fn dispatch_compound(
         NarrowPhaseResult::contact(manifold)
     }
 }
+/// Re-express a contact whose normal points from A toward B in the crate-wide
+/// [`Contact`] convention (normal FROM B TOWARD A).
+///
+/// [`specialized::sphere_sphere`] and [`specialized::capsule_capsule`] return
+/// the A -> B centre-line direction; every contact leaving the dispatcher must
+/// carry a B -> A normal so that callers can apply `+normal` impulses to body A.
+/// The witness points (`point_a` on A, `point_b` on B) are already correct.
+pub(super) fn normal_from_b_to_a(mut contact: Contact) -> Contact {
+    contact.normal = -contact.normal;
+    contact
+}
 /// Attempt to use a specialized collision test.
+///
+/// Returns a single contact whose normal points from `shape_b` toward `shape_a`.
 pub(super) fn try_specialized(
     shape_a: &dyn Shape,
     transform_a: &Transform,
@@ -259,7 +275,7 @@ pub(super) fn try_specialized(
         ("Sphere", "Sphere") => {
             let s1 = as_sphere(shape_a)?;
             let s2 = as_sphere(shape_b)?;
-            specialized::sphere_sphere(s1, transform_a, s2, transform_b)
+            specialized::sphere_sphere(s1, transform_a, s2, transform_b).map(normal_from_b_to_a)
         }
         ("Sphere", "BoxShape") => {
             let s = as_sphere(shape_a)?;
@@ -282,7 +298,7 @@ pub(super) fn try_specialized(
         ("Capsule", "Capsule") => {
             let c1 = as_capsule(shape_a)?;
             let c2 = as_capsule(shape_b)?;
-            specialized::capsule_capsule(c1, transform_a, c2, transform_b)
+            specialized::capsule_capsule(c1, transform_a, c2, transform_b).map(normal_from_b_to_a)
         }
         _ => None,
     }
@@ -1185,7 +1201,12 @@ pub fn clip_box_faces_2d(
 /// Generate a contact manifold with multiple contact points for a box-box pair
 /// using SAT-derived reference/incident face clipping.
 ///
-/// Returns up to 4 contact points in world space.
+/// Delegates to [`box_box_manifold`], the one-shot manifold generator that
+/// the default [`NarrowPhaseDispatcher`] uses for box-box pairs: the
+/// minimum-overlap separating axis is clipped face-on-face (or resolved to the
+/// closest edge pair) so the returned contacts are the real contact patch
+/// (up to 4 points on both box surfaces, normal pointing from `box_b` towards
+/// `box_a`). Returns `None` when the boxes are separated.
 pub fn box_box_manifold_clip(
     box_a: &BoxShape,
     transform_a: &oxiphysics_core::Transform,
@@ -1193,58 +1214,7 @@ pub fn box_box_manifold_clip(
     transform_b: &oxiphysics_core::Transform,
     pair: CollisionPair,
 ) -> Option<ContactManifold> {
-    use crate::narrowphase::specialized::box_box_sat;
-    let single_contact = box_box_sat(box_a, transform_a, box_b, transform_b)?;
-    let mut manifold = ContactManifold::new(pair);
-    manifold.add_contact(single_contact.clone());
-    let n = single_contact.normal;
-    let perp1 = if n.x.abs() < 0.9 {
-        oxiphysics_core::math::Vec3::new(1.0, 0.0, 0.0) - n * n.x
-    } else {
-        oxiphysics_core::math::Vec3::new(0.0, 1.0, 0.0) - n * n.y
-    };
-    let perp1_len = perp1.norm();
-    if perp1_len < 1e-10 {
-        return Some(manifold);
-    }
-    let perp1 = perp1 / perp1_len;
-    let perp2 = n.cross(&perp1);
-    let half = [
-        box_a.half_extents.x,
-        box_a.half_extents.y,
-        box_a.half_extents.z,
-    ];
-    let scale = *half
-        .iter()
-        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .unwrap_or(&0.1);
-    let offsets = [
-        perp1 * scale + perp2 * scale,
-        perp1 * scale - perp2 * scale,
-        -perp1 * scale + perp2 * scale,
-        -perp1 * scale - perp2 * scale,
-    ];
-    for off in &offsets {
-        let shifted_ta = oxiphysics_core::Transform {
-            position: transform_a.position + *off,
-            rotation: transform_a.rotation,
-        };
-        if let Some(c) = box_box_sat(box_a, &shifted_ta, box_b, transform_b)
-            && c.depth > 0.0
-        {
-            let mut adjusted = c;
-            adjusted.point_a -= *off;
-            adjusted.point_b -= *off;
-            manifold.add_contact(adjusted);
-        }
-    }
-    manifold.contacts.sort_by(|a, b| {
-        b.depth
-            .partial_cmp(&a.depth)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    manifold.contacts.truncate(4);
-    Some(manifold)
+    box_box_manifold(box_a, transform_a, box_b, transform_b, pair).manifold
 }
 /// Generate speculative contacts between two convex shapes given their velocities.
 ///
@@ -1303,72 +1273,76 @@ pub fn generate_speculative_contacts(
 }
 /// Dispatch a convex shape against a concave mesh (convex decomposition).
 ///
-/// Tests each convex piece of the mesh against the convex shape using GJK,
-/// collecting all contacts.  An AABB pre-filter limits the number of tests.
+/// Every convex piece of the mesh whose local AABB overlaps the AABB of the
+/// convex shape (carried into the mesh frame, so it follows any rotation) is
+/// wrapped in a [`ConvexHull`] and tested against `convex` with
+/// [`NarrowPhaseDispatcher::dispatch`]: the piece is shape A under
+/// `mesh_transform`, the convex shape is shape B under `convex_transform`, so
+/// the dispatcher's registered pair algorithms, GJK/EPA fallback and polyhedral
+/// face-clip manifolds all apply.
+///
+/// The contacts of all pieces are merged into **one** manifold that keeps
+/// `base_pair`, reduced to the manifold capacity
+/// ([`MAX_CONTACTS`](crate::types::MAX_CONTACTS)) by keeping the deepest contact
+/// and the ones that span the largest contact area. The result is empty when
+/// nothing touches and holds a single manifold otherwise (the `Vec` return type
+/// is kept for compatibility). As for every dispatcher result, contact normals
+/// point from the convex shape (B) toward the mesh (A).
 pub fn dispatch_concave_vs_convex(
     mesh: &ConcaveMesh,
     mesh_transform: &oxiphysics_core::Transform,
-    _convex: &dyn Shape,
+    convex: &dyn Shape,
     convex_type: ShapeType,
     convex_transform: &oxiphysics_core::Transform,
     base_pair: CollisionPair,
     dispatcher: &NarrowPhaseDispatcher,
 ) -> Vec<ContactManifold> {
-    let _ = convex_type;
-    let _ = dispatcher;
-    let mut manifolds = Vec::new();
-    let inv_mesh = mesh_transform.inverse();
-    let local_convex_pos = inv_mesh.transform_point(&convex_transform.position);
-    let convex_aabb_expand = 2.0;
-    for (piece_idx, piece) in mesh.pieces.iter().enumerate() {
-        let mut rejected = false;
-        for i in 0..3 {
-            let lp = [local_convex_pos.x, local_convex_pos.y, local_convex_pos.z][i];
-            if lp + convex_aabb_expand < piece.aabb_min[i]
-                || lp - convex_aabb_expand > piece.aabb_max[i]
-            {
-                rejected = true;
-                break;
-            }
-        }
-        if rejected {
-            continue;
-        }
-        let verts_world: Vec<oxiphysics_core::math::Vec3> = piece
-            .vertices
-            .iter()
-            .map(|v| {
-                mesh_transform.transform_point(&oxiphysics_core::math::Vec3::new(v[0], v[1], v[2]))
-            })
-            .collect();
-        if verts_world.is_empty() {
-            continue;
-        }
-        use crate::narrowphase::specialized::convex_convex_gjk_intersect;
-        if convex_convex_gjk_intersect(&verts_world, mesh_transform, &verts_world, convex_transform)
+    use oxiphysics_core::math::Vec3;
+    if mesh.pieces.is_empty() {
+        return Vec::new();
+    }
+    let (convex_min, convex_max) =
+        concave_helpers::convex_bounds_in_mesh_frame(convex, convex_transform, mesh_transform);
+    let mut contacts: Vec<Contact> = Vec::new();
+    for piece in &mesh.pieces {
+        if piece.vertices.is_empty()
+            || !concave_helpers::bounds_overlap(
+                convex_min,
+                convex_max,
+                piece.aabb_min,
+                piece.aabb_max,
+            )
         {
-            let centroid: oxiphysics_core::math::Vec3 =
-                verts_world.iter().sum::<oxiphysics_core::math::Vec3>() / verts_world.len() as f64;
-            let diff = convex_transform.position - centroid;
-            let dist = diff.norm();
-            let normal = if dist > 1e-10 {
-                diff / dist
-            } else {
-                oxiphysics_core::math::Vec3::new(0.0, 1.0, 0.0)
-            };
-            let contact = Contact {
-                point_a: centroid,
-                point_b: convex_transform.position,
-                normal,
-                depth: 0.1,
-            };
-            let sub_pair = CollisionPair::new(base_pair.a, base_pair.b + piece_idx * 100);
-            let mut m = ContactManifold::new(sub_pair);
-            m.add_contact(contact);
-            manifolds.push(m);
+            continue;
+        }
+        let hull = ConvexHull::new(
+            piece
+                .vertices
+                .iter()
+                .map(|v| Vec3::new(v[0], v[1], v[2]))
+                .collect(),
+        );
+        let result = dispatcher.dispatch(
+            &hull,
+            ShapeType::ConvexHull,
+            mesh_transform,
+            convex,
+            convex_type,
+            convex_transform,
+            base_pair,
+        );
+        if let Some(manifold) = result.manifold {
+            contacts.extend(manifold.contacts);
         }
     }
-    manifolds
+    if contacts.is_empty() {
+        return Vec::new();
+    }
+    let mut merged = ContactManifold::new(base_pair);
+    for contact in concave_helpers::reduce_contacts(contacts, crate::types::MAX_CONTACTS) {
+        merged.add_contact(contact);
+    }
+    vec![merged]
 }
 /// Generic heightfield vs convex dispatch.
 ///

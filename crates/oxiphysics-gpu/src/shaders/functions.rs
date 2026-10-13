@@ -21,8 +21,11 @@ struct SphParams {
 @group(0) @binding(3) var<uniform>             params:    SphParams;
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let i = id.x;
+fn main(
+    @builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let i = id.x + id.y * nwg.x * 64u;
     if (i >= params.n_particles) { return; }
 
     var density: f32 = 0.0;
@@ -50,8 +53,11 @@ struct IntegParams { dt: f32, gravity_y: f32, n: u32, _pad: u32, }
 @group(0) @binding(2) var<uniform> params: IntegParams;
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let i = id.x;
+fn main(
+    @builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let i = id.x + id.y * nwg.x * 64u;
     if (i >= params.n) { return; }
 
     var p = particles[i];
@@ -74,8 +80,11 @@ struct LbmParams { nx: u32, ny: u32, tau: f32, _pad: u32, }
 @group(0) @binding(4) var<uniform> params: LbmParams;
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let idx = id.x;
+fn main(
+    @builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let idx = id.x + id.y * nwg.x * 64u;
     if (idx >= params.nx * params.ny) { return; }
 
     // Compute macroscopic values
@@ -122,8 +131,11 @@ struct CellParams {
 @group(0) @binding(2) var<uniform>             params:       CellParams;
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let atom_id = id.x;
+fn main(
+    @builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let atom_id = id.x + id.y * nwg.x * 64u;
     if (atom_id >= params.n_atoms) { return; }
 
     let pos = positions[atom_id].xyz;
@@ -158,9 +170,12 @@ struct SdfSphereParams {
 @group(0) @binding(1) var<uniform>             params:     SdfSphereParams;
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn main(
+    @builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
     let total = params.nx * params.ny * params.nz;
-    let idx   = id.x;
+    let idx   = id.x + id.y * nwg.x * 64u;
     if (idx >= total) { return; }
 
     let i = idx / (params.ny * params.nz);
@@ -187,12 +202,15 @@ struct StreamParams { nx: u32, ny: u32, nz: u32, _pad: u32, }
 @group(0) @binding(2) var<uniform>             params: StreamParams;
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn main(
+    @builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
     let nx = params.nx;
     let ny = params.ny;
     let nz = params.nz;
     let total = nx * ny * nz;
-    let idx = id.x;
+    let idx = id.x + id.y * nwg.x * 64u;
     if (idx >= total) { return; }
 
     let iz = idx / (ny * nx);
@@ -229,8 +247,11 @@ struct IntegRigidParams { dt: f32, n: u32, _pad0: u32, _pad1: u32, }
 @group(0) @binding(1) var<uniform>             params: IntegRigidParams;
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let i = id.x;
+fn main(
+    @builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let i = id.x + id.y * nwg.x * 64u;
     if (i >= params.n) { return; }
 
     var b = bodies[i];
@@ -259,8 +280,11 @@ struct SortParams { n: u32, step: u32, stage: u32, _pad: u32, }
 @group(0) @binding(2) var<uniform>             params: SortParams;
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let idx = id.x;
+fn main(
+    @builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let idx = id.x + id.y * nwg.x * 64u;
     let n   = params.n;
     if (idx >= n / 2u) { return; }
 
@@ -301,8 +325,11 @@ struct SphForceParams {
 @group(0) @binding(6) var<uniform>             params:     SphForceParams;
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let i = id.x;
+fn main(
+    @builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let i = id.x + id.y * nwg.x * 64u;
     if (i >= params.n_particles) { return; }
 
     let pi = positions[i].xyz;
@@ -352,8 +379,11 @@ struct BoundaryParams {
 @group(0) @binding(2) var<uniform>             params:     BoundaryParams;
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let i = id.x;
+fn main(
+    @builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let i = id.x + id.y * nwg.x * 64u;
     if (i >= params.n) { return; }
 
     var pos = positions[i].xyz;

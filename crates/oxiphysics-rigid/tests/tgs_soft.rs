@@ -3,17 +3,40 @@
 //! Integration tests for the TGS-Soft (Catto / Box2D v3) contact response path
 //! of [`PhysicsWorld`].
 //!
-//! The contact normal points from B toward A and every body in this simplified
-//! world is a sphere of radius `mass.cbrt() * 0.5` (min `0.1`). A sphere-sphere
-//! contact lies on the line of centres, so the angular Jacobian terms vanish and
-//! these scenes exercise the linear soft normal response.
+//! The contact normal points from B toward A and every body in these scenes
+//! carries a sphere collider of radius `mass.cbrt() * 0.5` (min `0.1`). A
+//! sphere-sphere contact lies on the line of centres, so the angular Jacobian
+//! terms vanish and these scenes exercise the linear soft normal response.
 //!
 //! Soft-off behaviour is byte-identical to the legacy paths; the soft path is
 //! opt-in via `solver_config.use_soft_contacts`.
 
 use oxiphysics_core::BodyHandle;
+use oxiphysics_geometry::Sphere;
 use oxiphysics_rigid::world::PhysicsWorld;
-use oxiphysics_rigid::{BodyType, RigidBody};
+use oxiphysics_rigid::{BodyType, Collider, RigidBody};
+use std::sync::Arc;
+
+/// Scene geometry: every sphere has the same density, so its radius is
+/// `mass.cbrt() * 0.5` (a unit-mass sphere has radius 0.5).
+fn radius_for_mass(mass: f64) -> f64 {
+    (mass.cbrt() * 0.5).max(0.1)
+}
+
+/// Attach a sphere collider of `radius` to `handle`.
+fn attach_sphere(world: &mut PhysicsWorld, handle: BodyHandle, radius: f64) {
+    world.add_collider(Collider::new(Arc::new(Sphere::new(radius))), Some(handle));
+}
+
+/// Set the coefficient of restitution of every collider in the world.
+fn set_all_restitution(world: &mut PhysicsWorld, e: f64) {
+    let handles: Vec<_> = world.colliders.iter().map(|(h, _)| h).collect();
+    for h in handles {
+        if let Some(c) = world.colliders.get_mut(h) {
+            c.restitution = e;
+        }
+    }
+}
 
 /// Spawn an undamped dynamic sphere of `mass` (radius `mass.cbrt() * 0.5`) at
 /// `(x, y, z)` and return its handle.
@@ -26,16 +49,16 @@ fn spawn_sphere(world: &mut PhysicsWorld, mass: f64, x: f64, y: f64, z: f64) -> 
     b.transform.position.x = x;
     b.transform.position.y = y;
     b.transform.position.z = z;
+    attach_sphere(world, handle, radius_for_mass(mass));
     handle
 }
 
-/// Spawn a static sphere of radius `mass.cbrt() * 0.5` centred at the origin.
-/// `.mass` is set after `new_static()` because the broad/narrowphase radius
-/// formula reads `body.mass.cbrt()`.
+/// Spawn a static ground sphere of radius `mass.cbrt() * 0.5` centred at the
+/// origin (`8000.0` gives the radius-10 dome used throughout).
 fn spawn_static_ground(world: &mut PhysicsWorld, mass: f64) -> BodyHandle {
-    let mut ground = RigidBody::new_static();
-    ground.mass = mass;
-    world.add_rigid_body(ground)
+    let handle = world.add_rigid_body(RigidBody::new_static());
+    attach_sphere(world, handle, radius_for_mass(mass));
+    handle
 }
 
 /// Disable the sleeping system so settling dynamics stay observable (thresholds
@@ -150,7 +173,6 @@ fn soft_stack_settles_without_jitter() {
     world.solver_config.use_soft_contacts = true;
     world.solver_config.contact_hertz = 30.0;
     world.solver_config.contact_damping_ratio = 1.0;
-    world.solver_config.restitution = 0.0;
     world.solver_config.velocity_iterations = 12;
 
     spawn_static_ground(&mut world, 8000.0); // radius 10
@@ -158,6 +180,7 @@ fn soft_stack_settles_without_jitter() {
     for &y in &[10.5_f64, 11.5, 12.5, 13.5, 14.5] {
         handles.push(spawn_sphere(&mut world, 1.0, 0.0, y, 0.0));
     }
+    set_all_restitution(&mut world, 0.0);
 
     let mut max_penetration = 0.0_f64;
     let mut ke_history = Vec::with_capacity(300);
@@ -229,11 +252,11 @@ fn settle_time_for_dt(dt: f64) -> f64 {
     world.solver_config.use_soft_contacts = true;
     world.solver_config.contact_hertz = 10.0;
     world.solver_config.contact_damping_ratio = 0.7;
-    world.solver_config.restitution = 0.0;
     world.solver_config.velocity_iterations = 12;
 
     spawn_static_ground(&mut world, 8000.0); // radius 10, rest contact at y = 10.5
     let ball = spawn_sphere(&mut world, 1.0, 0.0, 10.8, 0.0); // 0.3 m above rest
+    set_all_restitution(&mut world, 0.0);
 
     let duration = 3.0_f64;
     let steps = (duration / dt).round() as usize;
@@ -286,7 +309,6 @@ fn soft_contact_heavy_on_light_mass_ratio() {
     world.solver_config.use_soft_contacts = true;
     world.solver_config.contact_hertz = 30.0;
     world.solver_config.contact_damping_ratio = 1.0;
-    world.solver_config.restitution = 0.0;
     world.solver_config.velocity_iterations = 16;
 
     spawn_static_ground(&mut world, 8000.0); // radius 10
@@ -294,6 +316,7 @@ fn soft_contact_heavy_on_light_mass_ratio() {
     let light = spawn_sphere(&mut world, 0.1, 0.0, 10.45, 0.0);
     // Heavy sphere: 10 kg => radius 10.cbrt()*0.5 ≈ 1.077; rest on light ≈ 11.54.
     let heavy = spawn_sphere(&mut world, 10.0, 0.0, 11.85, 0.0);
+    set_all_restitution(&mut world, 0.0);
 
     let mut max_penetration = 0.0_f64;
     for _ in 0..80 {
@@ -345,12 +368,12 @@ fn soft_contact_heavy_on_light_mass_ratio() {
 fn rigid_bouncing_ball_restitution_preserved() {
     let mut world = PhysicsWorld::new([0.0, -9.81, 0.0], 1.0 / 60.0);
     world.solver_config.substeps = 1;
-    world.solver_config.restitution = 0.7;
     world.solver_config.use_soft_contacts = false; // legacy path
 
     spawn_static_ground(&mut world, 8000.0); // radius 10, rest at y = 10.5
     // Drop from H = 1.0 m above rest.
     let ball = spawn_sphere(&mut world, 1.0, 0.0, 11.5, 0.0);
+    set_all_restitution(&mut world, 0.7);
 
     let mut engaged = false;
     let mut prev_vy = 0.0_f64;
@@ -407,13 +430,13 @@ fn soft_small_steps_stack_stable() {
     world.solver_config.use_soft_contacts = true;
     world.solver_config.contact_hertz = 30.0;
     world.solver_config.contact_damping_ratio = 1.0;
-    world.solver_config.restitution = 0.0;
 
     spawn_static_ground(&mut world, 8000.0); // radius 10
     let mut handles = Vec::new();
     for &y in &[10.5_f64, 11.5, 12.5, 13.5, 14.5] {
         handles.push(spawn_sphere(&mut world, 1.0, 0.0, y, 0.0));
     }
+    set_all_restitution(&mut world, 0.0);
 
     for _ in 0..120 {
         world.step_small_steps();

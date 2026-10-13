@@ -3,6 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
+use std::collections::BTreeMap;
 /// Hanging-node constraint: a slave node is linearly interpolated from
 /// a master node with a given weight.
 pub struct ConformingConstraint {
@@ -200,8 +201,17 @@ pub struct Element2D {
     pub nodes: Vec<usize>,
     /// Refinement level (0 = coarsest).
     pub level: usize,
-    /// `true` if this element has no children (active element).
+    /// `true` if this element is active, i.e. currently part of the mesh
+    /// (its family is not refined further).
     pub is_leaf: bool,
+    /// Element this one was created from by refinement; `None` for the
+    /// level-0 elements of the initial mesh.
+    pub parent: Option<usize>,
+    /// The four children created when this element was refined, or `None` if
+    /// it never was.  The links persist after the family is coarsened away
+    /// again, so that refining the element a second time re-activates the same
+    /// children instead of creating duplicates.
+    pub children: Option<[usize; 4]>,
 }
 /// Mesh smoothing by repositioning interior nodes.
 pub struct NodeSmoothing;
@@ -395,6 +405,11 @@ pub struct AdaptiveMesh2D {
     pub elements: Vec<Element2D>,
     /// Maximum allowed refinement level.
     pub max_level: usize,
+    /// Midpoint node created for every refined edge, keyed by the ordered pair
+    /// `(min(a, b), max(a, b))` of the edge's end-node indices.  Neighbouring
+    /// elements that are both refined look their shared edge up here, so they
+    /// use one node instead of two coincident, unconnected ones.
+    pub edge_midpoints: BTreeMap<(usize, usize), usize>,
 }
 impl AdaptiveMesh2D {
     /// Create an `n_init × n_init` quad mesh on the unit square \[0,1\]².
@@ -423,6 +438,8 @@ impl AdaptiveMesh2D {
                     nodes: vec![bl, br, tr, tl],
                     level: 0,
                     is_leaf: true,
+                    parent: None,
+                    children: None,
                 });
                 id += 1;
             }
@@ -431,6 +448,7 @@ impl AdaptiveMesh2D {
             nodes,
             elements,
             max_level: 8,
+            edge_midpoints: BTreeMap::new(),
         }
     }
     /// Total number of nodes.
@@ -450,9 +468,63 @@ impl AdaptiveMesh2D {
             .map(|(i, _)| i)
             .collect()
     }
+    /// Area of element `elem_id` (shoelace formula over its node polygon).
+    ///
+    /// Returns `0.0` for an unknown element or one with fewer than three nodes.
+    pub fn element_area(&self, elem_id: usize) -> f64 {
+        let Some(elem) = self.elements.get(elem_id) else {
+            return 0.0;
+        };
+        let n = elem.nodes.len();
+        if n < 3 {
+            return 0.0;
+        }
+        let mut twice_area = 0.0;
+        for k in 0..n {
+            let a = self.nodes[elem.nodes[k]];
+            let b = self.nodes[elem.nodes[(k + 1) % n]];
+            twice_area += a[0] * b[1] - b[0] * a[1];
+        }
+        0.5 * twice_area.abs()
+    }
+    /// Total area covered by the active (leaf) elements.
+    ///
+    /// For a mesh of the unit square this stays `1` under any sequence of
+    /// refinements and coarsenings; a smaller value means the leaves no longer
+    /// tile the domain.
+    pub fn total_leaf_area(&self) -> f64 {
+        self.leaf_elements()
+            .into_iter()
+            .map(|id| self.element_area(id))
+            .sum()
+    }
+    /// Index of the midpoint node of edge `(a, b)`.
+    ///
+    /// The node is created on first use and recorded in
+    /// [`edge_midpoints`](Self::edge_midpoints); every later request for the same
+    /// edge (in either orientation) returns that node.
+    fn edge_midpoint(&mut self, a: usize, b: usize) -> usize {
+        let key = if a < b { (a, b) } else { (b, a) };
+        if let Some(&existing) = self.edge_midpoints.get(&key) {
+            return existing;
+        }
+        let pa = self.nodes[a];
+        let pb = self.nodes[b];
+        let index = self.nodes.len();
+        self.nodes
+            .push([(pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0]);
+        self.edge_midpoints.insert(key, index);
+        index
+    }
     /// Refine element `elem_id` by splitting it into four quad children.
     ///
-    /// Marks the parent as non-leaf and inserts four children.
+    /// Marks the parent as non-leaf and inserts four children, linked through
+    /// [`Element2D::parent`] / [`Element2D::children`].  The midpoint of every
+    /// edge is shared with the neighbouring element across that edge, so
+    /// refining two adjacent elements never leaves coincident, unconnected nodes.
+    /// If the element was refined before and later coarsened, its existing
+    /// children are re-activated instead of creating new nodes and elements.
+    ///
     /// Does nothing if the element is not a leaf or is already at `max_level`.
     pub fn refine_element(&mut self, elem_id: usize) {
         if elem_id >= self.elements.len() {
@@ -462,6 +534,13 @@ impl AdaptiveMesh2D {
             return;
         }
         if self.elements[elem_id].level >= self.max_level {
+            return;
+        }
+        if let Some(children) = self.elements[elem_id].children {
+            self.elements[elem_id].is_leaf = false;
+            for child in children {
+                self.elements[child].is_leaf = true;
+            }
             return;
         }
         let parent_nodes = self.elements[elem_id].nodes.clone();
@@ -476,10 +555,7 @@ impl AdaptiveMesh2D {
         let mut en = [0usize; 4];
         for k in 0..4 {
             let kn = (k + 1) % 4;
-            let mx = (p[k][0] + p[kn][0]) / 2.0;
-            let my = (p[k][1] + p[kn][1]) / 2.0;
-            en[k] = self.nodes.len();
-            self.nodes.push([mx, my]);
+            en[k] = self.edge_midpoint(parent_nodes[k], parent_nodes[kn]);
         }
         let lev = self.elements[elem_id].level;
         let next_id = self.elements.len();
@@ -490,12 +566,15 @@ impl AdaptiveMesh2D {
             vec![en[3], cn, en[2], parent_nodes[3]],
         ];
         self.elements[elem_id].is_leaf = false;
+        self.elements[elem_id].children = Some([next_id, next_id + 1, next_id + 2, next_id + 3]);
         for (k, child_nodes) in children.iter().enumerate() {
             self.elements.push(Element2D {
                 id: next_id + k,
                 nodes: child_nodes.clone(),
                 level: lev + 1,
                 is_leaf: true,
+                parent: Some(elem_id),
+                children: None,
             });
         }
     }

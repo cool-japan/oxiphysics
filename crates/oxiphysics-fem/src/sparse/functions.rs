@@ -195,13 +195,12 @@ pub fn amg_prolongation(a: &CsrMatrix, coarse: &[usize]) -> CsrMatrix {
             let mut c_contributions: Vec<(usize, f64)> = Vec::new();
             for idx in start..end {
                 let col = a.col_indices[idx];
-                if col != fine_row && a.values[idx].abs() >= threshold && coarse_map[col].is_some()
+                if col != fine_row
+                    && a.values[idx].abs() >= threshold
+                    && let Some(coarse_idx) = coarse_map[col]
                 {
                     let w = a.values[idx].abs();
-                    c_contributions.push((
-                        coarse_map[col].expect("coarse_map[col] checked to be Some"),
-                        w,
-                    ));
+                    c_contributions.push((coarse_idx, w));
                     den += w;
                 }
             }
@@ -255,6 +254,13 @@ pub fn csr_mat_mul(a: &CsrMatrix, b: &CsrMatrix) -> CsrMatrix {
     CsrMatrix::from_triplets(m, n, &triplets)
 }
 /// Perform one AMG two-level V-cycle to solve `A x = b`.
+///
+/// This is a one-shot helper: the coarsening, interpolation and Galerkin
+/// operators are rebuilt on every call and the coarse system is only relaxed
+/// by forward Gauss-Seidel sweeps, so the map `b ↦ x` is **not** a symmetric
+/// operator.  To precondition a conjugate-gradient iteration use
+/// [`crate::solvers::SymmetricAmg`], which builds the hierarchy once and applies
+/// a symmetric positive definite V-cycle.
 ///
 /// # Arguments
 /// * `a`    – fine-grid operator

@@ -382,7 +382,19 @@ pub struct EdgeCcdResult {
 
 /// Continuous collision detection for a pair of linearly-moving edges.
 ///
-/// Returns the earliest time of impact t ∈ \[0, 1\], or `None`.
+/// Edge A joins vertex `p` and vertex `q`; each vertex is given by its position
+/// at the start (`*0*`) and at the end (`*1*`) of the step and moves linearly in
+/// between. The argument pairs are, in order, `(p0a, p1a)` and `(q0a, q1a)` for
+/// edge A and `(p0b, p1b)` and `(q0b, q1b)` for edge B, `radius` being the
+/// contact distance.
+///
+/// Returns the earliest time of impact `t ∈ [0, 1]`, or `None`. The time is exact
+/// rather than sampled: it is the earliest root of the coplanarity cubic of the
+/// four end points at which the closest points of the edges are within `radius`
+/// (Provot 1997, Bridson et al. 2002), or the first time the edges enter the
+/// `radius` shell without ever becoming coplanar (see
+/// [`crate::deformable_collision::ccd_edge_edge_analytic`]). A fast crossing
+/// that lies entirely between two time samples is therefore not missed.
 pub fn edge_edge_ccd(
     p0a: [f64; 3],
     p1a: [f64; 3],
@@ -394,59 +406,9 @@ pub fn edge_edge_ccd(
     q1b: [f64; 3],
     radius: f64,
 ) -> Option<f64> {
-    // Bisection-based CCD: sample 64 sub-intervals for the time axis
-    let steps = 64;
-    let dt = 1.0 / steps as f64;
-    for step in 0..steps {
-        let t = step as f64 * dt;
-        let lerp =
-            |a: [f64; 3], b: [f64; 3]| -> [f64; 3] { add3(scale3(a, 1.0 - t), scale3(b, t)) };
-        let pa = lerp(p0a, p1a);
-        let qa = lerp(q0a, q1a);
-        let pb = lerp(p0b, p1b);
-        let qb = lerp(q0b, q1b);
-        let da = sub3(qa, pa);
-        let db = sub3(qb, pb);
-        let r = sub3(pa, pb);
-        let a = dot3(da, da);
-        let e = dot3(db, db);
-        let f = dot3(db, r);
-        let eps = 1e-10;
-        let (s, t2) = if a <= eps && e <= eps {
-            (0.0, 0.0)
-        } else if a <= eps {
-            (0.0, (f / e).clamp(0.0, 1.0))
-        } else {
-            let c = dot3(da, r);
-            if e <= eps {
-                ((-c / a).clamp(0.0, 1.0), 0.0)
-            } else {
-                let b = dot3(da, db);
-                let denom = a * e - b * b;
-                let ss = if denom.abs() > eps {
-                    ((b * f - c * e) / denom).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-                let tt = (b * ss + f) / e;
-                if tt < 0.0 {
-                    ((-c / a).clamp(0.0, 1.0), 0.0)
-                } else if tt > 1.0 {
-                    (((b - c) / a).clamp(0.0, 1.0), 1.0)
-                } else {
-                    (ss, tt)
-                }
-            }
-        };
-        let closest_a = add3(pa, scale3(da, s));
-        let closest_b = add3(pb, scale3(db, t2));
-        let diff = sub3(closest_a, closest_b);
-        let dist_sq = dot3(diff, diff);
-        if dist_sq <= radius * radius {
-            return Some(t);
-        }
-    }
-    None
+    crate::deformable_collision::ccd_edge_edge_analytic(
+        p0a, p1a, q0a, q1a, p0b, p1b, q0b, q1b, radius,
+    )
 }
 
 /// Batch CCD for all edge pairs in a cloth mesh against another mesh.
@@ -1269,6 +1231,62 @@ mod tests {
             [1.0, 10.0, 0.0],
             [1.0, 10.0, 0.0],
             0.1,
+        );
+        assert!(toi.is_none());
+    }
+
+    #[test]
+    fn test_edge_ccd_detects_fast_crossing_between_time_samples() {
+        // Edge A is static along +X. Edge B (along Y at x = 0.5) drops through it
+        // from z = 5.2 to z = -4.8 in one step, i.e. at 10 units per step. With a
+        // contact radius of 0.01 it stays inside the shell for only 0.002 of the
+        // step, which falls between the 1/64 time samples of the old sampler
+        // (t = 33/64 gives z = 0.04375, t = 34/64 gives z = -0.1125).
+        let toi = edge_edge_ccd(
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.5, -0.5, 5.2],
+            [0.5, -0.5, -4.8],
+            [0.5, 0.5, 5.2],
+            [0.5, 0.5, -4.8],
+            0.01,
+        )
+        .expect("the edges cross at t = 0.52");
+        assert!((toi - 0.52).abs() < 1e-6, "toi={toi}");
+    }
+
+    #[test]
+    fn test_edge_ccd_crossing_near_the_end_points() {
+        // B crosses A 2 cm from A's end point; the edge midpoints are never close.
+        let toi = edge_edge_ccd(
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.98, -0.5, 1.0],
+            [0.98, -0.5, -1.0],
+            [0.98, 0.5, 1.0],
+            [0.98, 0.5, -1.0],
+            0.05,
+        )
+        .expect("the edges cross at t = 0.5");
+        assert!((toi - 0.5).abs() < 1e-6, "toi={toi}");
+    }
+
+    #[test]
+    fn test_edge_ccd_misses_when_the_crossing_is_beyond_the_edge_end() {
+        let toi = edge_edge_ccd(
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.5, -0.5, 1.0],
+            [1.5, -0.5, -1.0],
+            [1.5, 0.5, 1.0],
+            [1.5, 0.5, -1.0],
+            0.05,
         );
         assert!(toi.is_none());
     }

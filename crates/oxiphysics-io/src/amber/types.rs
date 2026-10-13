@@ -118,6 +118,14 @@ impl AmberTopology {
     ///
     /// Recognises `%FLAG` / `%FORMAT` blocks.  Only the sections needed for
     /// basic force-field data are extracted; unknown flags are silently skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description of the defect when a counter in `POINTERS` is
+    /// negative, or when a bond or angle section is inconsistent with the
+    /// topology: a trailing incomplete record, an atom pointer (three times
+    /// the zero-based atom index) that does not designate one of the `NATOM`
+    /// atoms, or a parameter type index outside the parameter tables.
     pub fn from_prmtop_str(s: &str) -> Result<Self, String> {
         let title = {
             let raw = parse_flag_section(s, "TITLE")
@@ -128,9 +136,15 @@ impl AmberTopology {
         let pointers = parse_flag_section(s, "POINTERS")
             .map(|raw| parse_fortran_ints(&raw))
             .unwrap_or_default();
-        let n_atoms = pointers.first().copied().unwrap_or(0) as usize;
-        let n_bonds = pointers.get(2).copied().unwrap_or(0) as usize;
-        let n_angles = pointers.get(4).copied().unwrap_or(0) as usize;
+        let n_atoms = pointer_count(&pointers, 0, "NATOM")?;
+        if n_atoms > s.len() {
+            return Err(format!(
+                "POINTERS declares {n_atoms} atoms, more than a {}-byte topology can describe",
+                s.len()
+            ));
+        }
+        let n_bonds = pointer_count(&pointers, 2, "NBONH")?;
+        let n_angles = pointer_count(&pointers, 4, "NTHETH")?;
         let atom_names: Vec<String> = parse_flag_section(s, "ATOM_NAME")
             .map(|raw| parse_fortran_strings(&raw))
             .unwrap_or_default();
@@ -187,6 +201,15 @@ impl AmberTopology {
         let bond_equil_r: Vec<f64> = parse_flag_section(s, "BOND_EQUIL_VALUE")
             .map(|raw| parse_fortran_reals(&raw))
             .unwrap_or_default();
+        let bond_types = bond_force_k.len().min(bond_equil_r.len());
+        validate_valence_records("BONDS_INC_HYDROGEN", &bond_ints_h, 2, n_atoms, bond_types)?;
+        validate_valence_records(
+            "BONDS_WITHOUT_HYDROGEN",
+            &bond_ints_no_h,
+            2,
+            n_atoms,
+            bond_types,
+        )?;
         let mut bonds: Vec<AmberBond> = build_bonds(&bond_ints_h, &bond_force_k, &bond_equil_r);
         bonds.extend(build_bonds(&bond_ints_no_h, &bond_force_k, &bond_equil_r));
         let angle_ints_h: Vec<i64> = parse_flag_section(s, "ANGLES_INC_HYDROGEN")
@@ -201,6 +224,21 @@ impl AmberTopology {
         let angle_equil_t: Vec<f64> = parse_flag_section(s, "ANGLE_EQUIL_VALUE")
             .map(|raw| parse_fortran_reals(&raw))
             .unwrap_or_default();
+        let angle_types = angle_force_k.len().min(angle_equil_t.len());
+        validate_valence_records(
+            "ANGLES_INC_HYDROGEN",
+            &angle_ints_h,
+            3,
+            n_atoms,
+            angle_types,
+        )?;
+        validate_valence_records(
+            "ANGLES_WITHOUT_HYDROGEN",
+            &angle_ints_no_h,
+            3,
+            n_atoms,
+            angle_types,
+        )?;
         let mut angles: Vec<AmberAngle> =
             build_angles(&angle_ints_h, &angle_force_k, &angle_equil_t);
         angles.extend(build_angles(
@@ -599,7 +637,10 @@ pub struct AmberAtom {
     /// AMBER atom-type string (from `AMBER_ATOM_TYPE`).
     pub atom_type: String,
 }
-/// A dihedral (torsion) parameter from AMBER topology.
+/// A dihedral (torsion) term from the AMBER topology.
+///
+/// The energy is `E = V_n / 2 * (1 + cos(n * phi - gamma))`; the topology
+/// stores the half barrier `PK = V_n / 2`.
 #[derive(Debug, Clone)]
 pub struct AmberDihedral {
     /// Zero-based index of atom i (first).
@@ -610,14 +651,21 @@ pub struct AmberDihedral {
     pub k: usize,
     /// Zero-based index of atom l (last).
     pub l: usize,
-    /// Barrier height (kcal mol⁻¹).
+    /// Barrier height `V_n` (kcal mol⁻¹): twice the `DIHEDRAL_FORCE_CONSTANT`
+    /// entry.
     pub v_n: f64,
-    /// Phase offset (radians).
+    /// Phase offset (radians), from `DIHEDRAL_PHASE`.
     pub gamma: f64,
-    /// Periodicity (integer, usually 1–6).
+    /// Periodicity (integer, usually 1–6), from `DIHEDRAL_PERIODICITY`.
     pub n: i32,
-    /// `true` if this is a 1-4 non-bonded exclusion.
+    /// `true` for an improper torsion; the topology marks it with a negative
+    /// fourth atom pointer.
     pub is_improper: bool,
+    /// `true` when the 1-4 non-bonded interaction between the first and the
+    /// last atom is not computed for this term (another term of the same
+    /// torsion already accounts for it); the topology marks it with a
+    /// negative third atom pointer.
+    pub skip_14: bool,
 }
 /// A bond entry from an AMBER FRCMOD file.
 #[derive(Debug, Clone)]
@@ -808,9 +856,9 @@ impl AmberRestraint {
 /// A single Lennard-Jones parameter entry (per atom-type pair).
 #[derive(Debug, Clone)]
 pub struct LjParameter {
-    /// Index of atom type A.
+    /// Zero-based index of the first atom type of the pair (`type_a <= type_b`).
     pub type_a: usize,
-    /// Index of atom type B.
+    /// Zero-based index of the second atom type of the pair.
     pub type_b: usize,
     /// A coefficient (kcal mol⁻¹ Å¹²).
     pub a_coeff: f64,
@@ -855,7 +903,10 @@ pub struct AmberAngle {
     pub i: usize,
     /// Zero-based index of the central atom.
     pub j: usize,
-    /// Index into the angle parameter array.
+    /// Zero-based index of the third atom.
+    pub atom_k: usize,
+    /// Parameter type index (zero-based) into the `ANGLE_FORCE_CONSTANT` and
+    /// `ANGLE_EQUIL_VALUE` tables.
     pub k_idx: usize,
     /// Force constant (kcal mol⁻¹ rad⁻²).
     pub k: f64,

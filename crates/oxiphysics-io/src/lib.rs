@@ -15,6 +15,8 @@
 
 mod error;
 pub use error::*;
+mod fortran_fields;
+mod small_sym_eigen;
 
 pub mod amber;
 pub mod binary_format;

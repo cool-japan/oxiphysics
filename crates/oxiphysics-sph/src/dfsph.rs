@@ -152,7 +152,35 @@ impl DfsphSolver {
         }
     }
 
-    /// Correct density error iteratively.
+    /// Correct density error iteratively (Bender & Koschier 2015, Alg. 2).
+    ///
+    /// Each iteration predicts the density that the current velocities would
+    /// produce after `dt`,
+    ///
+    /// ```text
+    /// ρ*_i = ρ_i + dt Σ_j m_j (v_i − v_j) · ∇W_ij,
+    /// ```
+    ///
+    /// and removes the compression `ρ*_i − ρ₀` with the pseudo-pressure
+    ///
+    /// ```text
+    /// κ_i = max(ρ*_i − ρ₀, 0) α_i / dt²
+    /// v_i ← v_i − dt Σ_j m_j (κ_i/ρ_i + κ_j/ρ_j) ∇W_ij
+    /// ```
+    ///
+    /// where `α_i` is the factor from [`compute_alpha`](Self::compute_alpha).
+    /// Multiplying by `α_i` is what makes the velocity change cancel exactly
+    /// the diagonal part of the predicted density change.  Only compression
+    /// is corrected (particle deficiency at free surfaces would otherwise
+    /// create negative pressures and clustering), and the convergence test
+    /// measures the same clamped error `max(ρ*_i − ρ₀, 0) / ρ₀`.
+    ///
+    /// This is the plain (unrelaxed) Jacobi iteration of the paper.  When many
+    /// neighbouring particles are compressed at the same time and have no
+    /// uncompressed neighbours to absorb the correction (for instance a small
+    /// free block, where every particle is a surface particle) the correction
+    /// can overshoot; since only compression is corrected, the overshoot is
+    /// not reversed within the same solve.
     ///
     /// Returns the number of iterations performed.
     pub fn correct_density_error(
@@ -184,8 +212,8 @@ impl DfsphSolver {
                     drho += particles.masses[j] * vij.dot(&(grad * rhat));
                 }
                 self.density_star[i] = particles.densities[i] + dt * drho;
-                let error = (self.density_star[i] - rho0) / rho0;
-                max_error = max_error.max(error.abs());
+                let error = (self.density_star[i] - rho0).max(0.0) / rho0;
+                max_error = max_error.max(error);
             }
 
             if max_error < params.density_tolerance {
@@ -195,7 +223,7 @@ impl DfsphSolver {
             // Compute kappa and apply velocity correction
             for i in 0..n {
                 self.kappa[i] = if self.alpha[i].abs() > 1e-14 {
-                    (self.density_star[i] - rho0) / (self.alpha[i] * dt * dt)
+                    (self.density_star[i] - rho0).max(0.0) * self.alpha[i] / (dt * dt)
                 } else {
                     0.0
                 };
@@ -278,7 +306,25 @@ impl DfsphSolver {
         dt_base.min(dt_visc)
     }
 
-    /// Correct divergence error iteratively.
+    /// Correct divergence error iteratively (Bender & Koschier 2015, Alg. 3).
+    ///
+    /// Each iteration evaluates the density derivative
+    ///
+    /// ```text
+    /// Dρ_i/Dt = Σ_j m_j (v_i − v_j) · ∇W_ij
+    /// ```
+    ///
+    /// and removes the compressive part with
+    ///
+    /// ```text
+    /// κ^v_i = max(Dρ_i/Dt, 0) α_i
+    /// v_i ← v_i − Σ_j m_j (κ^v_i/ρ_i + κ^v_j/ρ_j) ∇W_ij
+    /// ```
+    ///
+    /// The velocity update carries no `dt` (it cancels against the `1/dt` of
+    /// the pseudo-pressure), and, as in the density solver, only compression
+    /// is corrected.  The convergence test measures the same compressive
+    /// error `max_i max(Dρ_i/Dt, 0)`.
     ///
     /// Returns the number of iterations performed.
     pub fn correct_divergence_error(
@@ -308,7 +354,7 @@ impl DfsphSolver {
                     drho_dt += particles.masses[j] * vij.dot(&(grad * rhat));
                 }
                 self.density_deriv[i] = drho_dt;
-                max_div = max_div.max(drho_dt.abs());
+                max_div = max_div.max(drho_dt.max(0.0));
             }
 
             if max_div < params.divergence_tolerance {
@@ -318,7 +364,7 @@ impl DfsphSolver {
             // Compute kappa_div and apply correction
             for i in 0..n {
                 self.kappa_div[i] = if self.alpha[i].abs() > 1e-14 {
-                    self.density_deriv[i] / self.alpha[i]
+                    self.density_deriv[i].max(0.0) * self.alpha[i]
                 } else {
                     0.0
                 };
@@ -724,6 +770,9 @@ impl DfsphSolver {
 
     /// Apply divergence-free velocity correction and return the max divergence
     /// error after correction.
+    ///
+    /// The reported error is the same compressive error the solver drives to
+    /// zero, `max_i max(Dρ_i/Dt, 0)`.
     pub fn correct_divergence_and_measure(
         &mut self,
         particles: &mut ParticleSet,
@@ -749,7 +798,7 @@ impl DfsphSolver {
                 let vij = particles.velocities[i] - particles.velocities[j];
                 drho_dt += particles.masses[j] * vij.dot(&(grad * rhat));
             }
-            max_div = max_div.max(drho_dt.abs());
+            max_div = max_div.max(drho_dt.max(0.0));
         }
         (iters, max_div)
     }
@@ -818,7 +867,7 @@ mod tests {
     }
 
     #[test]
-    fn dfsph_density_correction_converges() {
+    fn dfsph_density_correction_leaves_an_under_dense_block_untouched() {
         let spacing: f64 = 0.05;
         let h = 0.1;
         let mass = 1000.0 * spacing.powi(3);
@@ -850,11 +899,12 @@ mod tests {
         solver.compute_alpha(&ps, &neighbors, &kernel, h);
         let iters = solver.correct_density_error(&mut ps, &neighbors, &kernel, &params, 0.001);
 
-        // It should either converge or at least run without panicking
-        assert!(
-            iters <= params.max_density_iterations,
-            "DFSPH density correction ran {iters} iterations"
-        );
+        // Every particle of this small block sits at a free surface and is
+        // under-dense (ρ < ρ₀), so there is no compression to remove: the first
+        // error evaluation already converges and the velocities stay untouched.
+        assert!(ps.densities.iter().all(|&rho| rho < params.rest_density));
+        assert_eq!(iters, 1, "DFSPH density correction ran {iters} iterations");
+        assert!(ps.velocities.iter().all(|v| v.norm() == 0.0));
     }
 
     #[test]
@@ -1222,12 +1272,16 @@ mod tests {
         let neighbors = SpatialHash::find_all_neighbors(&ps.positions, 2.0 * h);
         crate::wcsph::compute_density(&mut ps, &neighbors, &kernel, h);
 
-        // Divergence before correction.
+        // Compression is a negative velocity divergence.  The solver removes
+        // compression only (it never pulls particles apart), so this is the
+        // quantity that must vanish.
+        let max_compression = |div: &[f64]| div.iter().cloned().fold(0.0_f64, |a, d| a.max(-d));
         let div_before = compute_velocity_divergence(&ps, &neighbors, &kernel, h);
-        let max_div_before = div_before
-            .iter()
-            .cloned()
-            .fold(0.0f64, |a, b| a.max(b.abs()));
+        let compression_before = max_compression(&div_before);
+        assert!(
+            compression_before > 1.0,
+            "initial compression {compression_before}"
+        );
 
         let params = DfsphParams {
             rest_density: 1000.0,
@@ -1238,19 +1292,25 @@ mod tests {
         };
         let mut solver = DfsphSolver::new(ps.len());
         solver.compute_alpha(&ps, &neighbors, &kernel, h);
-        solver.correct_divergence_error(&mut ps, &neighbors, &kernel, &params);
-
-        // Divergence after correction should be smaller.
-        let div_after = compute_velocity_divergence(&ps, &neighbors, &kernel, h);
-        let max_div_after = div_after
-            .iter()
-            .cloned()
-            .fold(0.0f64, |a, b| a.max(b.abs()));
-
+        let iters = solver.correct_divergence_error(&mut ps, &neighbors, &kernel, &params);
         assert!(
-            max_div_after <= max_div_before + 1e-10,
-            "Divergence correction should reduce divergence: before={max_div_before}, after={max_div_after}"
+            iters < params.max_divergence_iterations,
+            "divergence solver did not converge: {iters} iterations"
         );
+
+        let div_after = compute_velocity_divergence(&ps, &neighbors, &kernel, h);
+        let compression_after = max_compression(&div_after);
+        assert!(
+            compression_after < 1e-3 * compression_before,
+            "Divergence correction must remove the compression: before={compression_before}, after={compression_after}"
+        );
+        // Pairwise antisymmetric update: momentum is untouched (it is zero for
+        // the point-symmetric initial field).
+        let mut momentum = Vec3::zeros();
+        for (m, v) in ps.masses.iter().zip(ps.velocities.iter()) {
+            momentum += *m * v;
+        }
+        assert!(momentum.norm() < 1e-9, "momentum {momentum:?}");
     }
 
     // --- DFSPH pressure projection tests ---
@@ -1286,13 +1346,11 @@ mod tests {
 
         let iters = solver.correct_density_error(&mut ps, &neighbors, &kernel, &params, 0.001);
 
-        // For stationary fluid the density correction should converge quickly.
-        assert!(
-            iters <= params.max_density_iterations,
-            "Density correction ran {} iterations (max {})",
-            iters,
-            params.max_density_iterations
-        );
+        // A stationary fluid that is not compressed needs no correction: the
+        // solver converges at the first error evaluation and leaves the
+        // particles at rest.
+        assert_eq!(iters, 1, "Density correction ran {iters} iterations");
+        assert!(ps.velocities.iter().all(|v| v.norm() == 0.0));
     }
 
     // --- DFSPH solver statistics tests ---
@@ -1334,5 +1392,349 @@ mod tests {
             (avg - 15.0).abs() < 1e-14,
             "avg density iters should be 15: {avg}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Solver correctness (Bender & Koschier 2015)
+    // -----------------------------------------------------------------------
+
+    /// Density derivative `Dρ_i/Dt = Σ_j m_j (v_i − v_j) · ∇W_ij`, evaluated
+    /// independently of the solver.
+    fn density_derivatives(
+        ps: &ParticleSet,
+        neighbors: &[Vec<usize>],
+        kernel: &dyn SphKernel,
+        h: f64,
+    ) -> Vec<f64> {
+        (0..ps.len())
+            .map(|i| {
+                let mut drho = 0.0;
+                for &j in &neighbors[i] {
+                    let rij = ps.positions[i] - ps.positions[j];
+                    let r = rij.norm();
+                    if r < 1e-14 {
+                        continue;
+                    }
+                    let grad = kernel.grad_w(r, h) * rij / r;
+                    drho += ps.masses[j] * (ps.velocities[i] - ps.velocities[j]).dot(&grad);
+                }
+                drho
+            })
+            .collect()
+    }
+
+    /// Density predicted for the end of the step: `ρ*_i = ρ_i + dt Dρ_i/Dt`.
+    fn predicted_densities(
+        ps: &ParticleSet,
+        neighbors: &[Vec<usize>],
+        kernel: &dyn SphKernel,
+        h: f64,
+        dt: f64,
+    ) -> Vec<f64> {
+        density_derivatives(ps, neighbors, kernel, h)
+            .iter()
+            .zip(ps.densities.iter())
+            .map(|(d, rho)| rho + dt * d)
+            .collect()
+    }
+
+    /// `n`³ block of particles with spacing `spacing`; the mass belongs to the
+    /// rest spacing, so `spacing < rest_spacing` is a compressed block.
+    fn block(n: usize, spacing: f64, rest_spacing: f64, rho0: f64) -> ParticleSet {
+        let mass = rho0 * rest_spacing.powi(3);
+        let mut ps = ParticleSet::new();
+        for i in 0..n {
+            for j in 0..n {
+                for k in 0..n {
+                    let pos = Vec3::new(i as f64 * spacing, j as f64 * spacing, k as f64 * spacing);
+                    ps.add_particle(&SphParticle::new(pos, Vec3::zeros(), mass));
+                }
+            }
+        }
+        ps
+    }
+
+    fn pair(separation: f64, mass: f64) -> ParticleSet {
+        let mut ps = ParticleSet::new();
+        ps.add_particle(&SphParticle::new(Vec3::zeros(), Vec3::zeros(), mass));
+        ps.add_particle(&SphParticle::new(
+            Vec3::new(separation, 0.0, 0.0),
+            Vec3::zeros(),
+            mass,
+        ));
+        ps
+    }
+
+    #[test]
+    fn dfsph_density_correction_converges_for_compressed_block() {
+        let rho0 = 1000.0;
+        let rest_spacing = 0.05;
+        // Standard DFSPH support radius 2h = 2 Δx.
+        let h = rest_spacing;
+        let dt = 0.001;
+        let kernel = CubicSplineKernel;
+        // Spacing 0.0495 against the rest spacing 0.05: ~3 % too dense inside.
+        let mut ps = block(5, 0.0495, rest_spacing, rho0);
+        let neighbors = SpatialHash::find_all_neighbors(&ps.positions, 2.0 * h);
+        crate::wcsph::compute_density(&mut ps, &neighbors, &kernel, h);
+        let centre = 2 * 25 + 2 * 5 + 2;
+        assert!(
+            ps.densities[centre] > 1.02 * rho0,
+            "block must start compressed: {}",
+            ps.densities[centre]
+        );
+
+        let params = DfsphParams {
+            rest_density: rho0,
+            smoothing_length: h,
+            max_density_iterations: 100,
+            density_tolerance: 1e-3,
+            ..Default::default()
+        };
+        let mut solver = DfsphSolver::new(ps.len());
+        solver.compute_alpha(&ps, &neighbors, &kernel, h);
+        let iters = solver.correct_density_error(&mut ps, &neighbors, &kernel, &params, dt);
+        assert!(
+            iters < params.max_density_iterations,
+            "density solver did not converge: {iters} iterations"
+        );
+
+        // The converged velocities predict no compression anywhere ...
+        let predicted = predicted_densities(&ps, &neighbors, &kernel, h, dt);
+        for (i, rho_star) in predicted.iter().enumerate() {
+            let error = (rho_star - rho0).max(0.0) / rho0;
+            assert!(
+                error < params.density_tolerance,
+                "particle {i}: compression error {error}"
+            );
+            assert!(
+                *rho_star > 0.0,
+                "particle {i}: predicted density {rho_star}"
+            );
+        }
+        // ... and the correction is of the right size: the compressed centre
+        // is relieved to the rest density without a large overshoot (the
+        // former division by alpha was off by nine orders of magnitude).
+        let centre_error = (predicted[centre] - rho0) / rho0;
+        assert!(
+            centre_error < params.density_tolerance && centre_error > -0.15,
+            "centre error {centre_error}"
+        );
+    }
+
+    #[test]
+    fn dfsph_density_correction_pushes_a_compressed_block_apart_and_conserves_momentum() {
+        let rho0 = 1000.0;
+        let rest_spacing = 0.05;
+        let h = rest_spacing;
+        let kernel = CubicSplineKernel;
+        let mut ps = block(5, 0.0495, rest_spacing, rho0);
+        let neighbors = SpatialHash::find_all_neighbors(&ps.positions, 2.0 * h);
+        crate::wcsph::compute_density(&mut ps, &neighbors, &kernel, h);
+        let params = DfsphParams {
+            rest_density: rho0,
+            smoothing_length: h,
+            max_density_iterations: 100,
+            density_tolerance: 1e-3,
+            ..Default::default()
+        };
+        let mut solver = DfsphSolver::new(ps.len());
+        solver.compute_alpha(&ps, &neighbors, &kernel, h);
+        solver.correct_density_error(&mut ps, &neighbors, &kernel, &params, 0.001);
+
+        // No particle moves towards the block centre, and the block as a whole
+        // is pushed apart at metre-per-second speeds (a 3 % density excess has
+        // to be removed within dt = 1 ms).
+        let centre = ps.positions.iter().fold(Vec3::zeros(), |a, p| a + p) / ps.len() as f64;
+        let mut max_outward = 0.0_f64;
+        for (i, (pos, vel)) in ps.positions.iter().zip(ps.velocities.iter()).enumerate() {
+            let radial = pos - centre;
+            if radial.norm() > 1e-12 {
+                let outward = vel.dot(&radial) / radial.norm();
+                assert!(outward > -1e-9, "particle {i} moves inwards: {outward}");
+                max_outward = max_outward.max(outward);
+            }
+        }
+        assert!(max_outward > 1.0, "maximum outward speed {max_outward}");
+        // The velocity update is a pairwise antisymmetric exchange.
+        let mut momentum = Vec3::zeros();
+        let mut scale = 0.0;
+        for (m, v) in ps.masses.iter().zip(ps.velocities.iter()) {
+            momentum += *m * v;
+            scale += *m * v.norm();
+        }
+        assert!(
+            momentum.norm() < 1e-10 * scale,
+            "momentum {momentum:?} (scale {scale})"
+        );
+    }
+
+    #[test]
+    fn dfsph_single_iteration_removes_the_compression_of_an_isolated_particle() {
+        // Particle 0 is over-dense (ρ* = ρ₀ + 80), its neighbour is not.  The
+        // pseudo-pressure κ_0 = (ρ*_0 − ρ₀) α_0 / dt² then produces exactly
+        // the velocity change that cancels the compression: the predicted
+        // density of particle 0 drops to ρ₀.  (Dividing by α instead of
+        // multiplying, as the solver used to do, is off by orders of
+        // magnitude.)
+        let rho0 = 1000.0;
+        let h = 0.1;
+        let dt = 0.002;
+        let kernel = CubicSplineKernel;
+        let mut ps = pair(0.06, 0.1);
+        let neighbors = SpatialHash::find_all_neighbors(&ps.positions, 2.0 * h);
+        ps.densities[0] = rho0 + 80.0;
+        ps.densities[1] = rho0 - 50.0;
+
+        let mut solver = DfsphSolver::new(2);
+        solver.compute_alpha(&ps, &neighbors, &kernel, h);
+        let params = DfsphParams {
+            rest_density: rho0,
+            smoothing_length: h,
+            max_density_iterations: 1,
+            density_tolerance: 1e-12,
+            ..Default::default()
+        };
+        solver.correct_density_error(&mut ps, &neighbors, &kernel, &params, dt);
+
+        let expected_kappa = 80.0 * solver.alpha[0] / (dt * dt);
+        assert!(
+            (solver.kappa[0] - expected_kappa).abs() <= 1e-12 * expected_kappa,
+            "kappa_0 = {}, expected {expected_kappa}",
+            solver.kappa[0]
+        );
+        // The under-dense neighbour exerts no pseudo-pressure.
+        assert_eq!(solver.kappa[1], 0.0);
+
+        let predicted = predicted_densities(&ps, &neighbors, &kernel, h, dt);
+        assert!(
+            (predicted[0] - rho0).abs() < 1e-8 * rho0,
+            "predicted density of particle 0: {}",
+            predicted[0]
+        );
+        // The correction pushes the pair apart along the connecting line.
+        assert!(ps.velocities[0].x < 0.0 && ps.velocities[1].x > 0.0);
+        assert!((ps.velocities[0].x + ps.velocities[1].x).abs() < 1e-12);
+        assert!(ps.velocities[0].y.abs() < 1e-14 && ps.velocities[0].z.abs() < 1e-14);
+    }
+
+    #[test]
+    fn dfsph_density_solver_ignores_under_dense_particles() {
+        // Free-surface particles with ρ* < ρ₀ must not receive a (negative)
+        // pseudo-pressure: the solver returns after one error evaluation and
+        // leaves every velocity untouched.
+        let rho0 = 1000.0;
+        let h = 0.1;
+        let kernel = CubicSplineKernel;
+        let mut ps = pair(0.06, 0.1);
+        let neighbors = SpatialHash::find_all_neighbors(&ps.positions, 2.0 * h);
+        ps.densities[0] = rho0 - 120.0;
+        ps.densities[1] = rho0 - 300.0;
+        let mut solver = DfsphSolver::new(2);
+        solver.compute_alpha(&ps, &neighbors, &kernel, h);
+        let params = DfsphParams {
+            rest_density: rho0,
+            smoothing_length: h,
+            max_density_iterations: 20,
+            density_tolerance: 1e-3,
+            ..Default::default()
+        };
+        let iters = solver.correct_density_error(&mut ps, &neighbors, &kernel, &params, 0.002);
+        assert_eq!(iters, 1);
+        assert_eq!(solver.kappa, vec![0.0, 0.0]);
+        assert!(ps.velocities.iter().all(|v| v.norm() == 0.0));
+    }
+
+    #[test]
+    fn dfsph_divergence_kappa_is_alpha_times_the_compressive_density_derivative() {
+        // Two approaching particles share Dρ/Dt > 0; κ^v = max(Dρ/Dt, 0) α and
+        // the velocity update carries no dt.
+        let rho0 = 1000.0;
+        let h = 0.1;
+        let kernel = CubicSplineKernel;
+        let mut ps = pair(0.06, 0.1);
+        ps.velocities[0] = Vec3::new(0.5, 0.0, 0.0);
+        ps.velocities[1] = Vec3::new(-0.5, 0.0, 0.0);
+        let neighbors = SpatialHash::find_all_neighbors(&ps.positions, 2.0 * h);
+        ps.densities = vec![rho0; 2];
+        let mut solver = DfsphSolver::new(2);
+        solver.compute_alpha(&ps, &neighbors, &kernel, h);
+        let before = density_derivatives(&ps, &neighbors, &kernel, h);
+        assert!(
+            before[0] > 0.0,
+            "approaching particles compress: {before:?}"
+        );
+        assert!((before[0] - before[1]).abs() < 1e-9 * before[0].abs());
+
+        let params = DfsphParams {
+            rest_density: rho0,
+            smoothing_length: h,
+            max_divergence_iterations: 1,
+            divergence_tolerance: 1e-12,
+            ..Default::default()
+        };
+        let v_before = ps.velocities.clone();
+        solver.correct_divergence_error(&mut ps, &neighbors, &kernel, &params);
+        for (i, d_rho) in before.iter().enumerate() {
+            let expected = d_rho * solver.alpha[i];
+            assert!(
+                (solver.kappa_div[i] - expected).abs() <= 1e-12 * expected,
+                "kappa_div[{i}] = {}, expected {expected}",
+                solver.kappa_div[i]
+            );
+        }
+        // Velocity change of particle 0: −Σ m (κ_0/ρ_0 + κ_1/ρ_1) ∇W_01.
+        let rij = ps.positions[0] - ps.positions[1];
+        let r = rij.norm();
+        let grad = kernel.grad_w(r, h) * rij / r;
+        let expected_dv =
+            -(ps.masses[1] * (solver.kappa_div[0] + solver.kappa_div[1]) / rho0) * grad;
+        let dv = ps.velocities[0] - v_before[0];
+        assert!((dv - expected_dv).norm() < 1e-12 * expected_dv.norm());
+        // The pair now moves apart: the compressive derivative has reversed.
+        let after = density_derivatives(&ps, &neighbors, &kernel, h);
+        assert!(after[0] < 0.0);
+    }
+
+    #[test]
+    fn dfsph_divergence_correction_removes_compressive_density_derivative() {
+        let rho0 = 1000.0;
+        let rest_spacing = 0.05;
+        let h = 1.3 * rest_spacing;
+        let kernel = CubicSplineKernel;
+        let mut ps = block(5, rest_spacing, rest_spacing, rho0);
+        let centre = Vec3::new(0.1, 0.1, 0.1);
+        for i in 0..ps.len() {
+            ps.velocities[i] = (centre - ps.positions[i]) * 2.0;
+        }
+        let neighbors = SpatialHash::find_all_neighbors(&ps.positions, 2.0 * h);
+        crate::wcsph::compute_density(&mut ps, &neighbors, &kernel, h);
+        let before = density_derivatives(&ps, &neighbors, &kernel, h);
+        let max_before = before.iter().cloned().fold(0.0_f64, f64::max);
+        assert!(max_before > 100.0, "initial compression {max_before}");
+
+        let params = DfsphParams {
+            rest_density: rho0,
+            smoothing_length: h,
+            max_divergence_iterations: 500,
+            divergence_tolerance: 1.0,
+            ..Default::default()
+        };
+        let mut solver = DfsphSolver::new(ps.len());
+        solver.compute_alpha(&ps, &neighbors, &kernel, h);
+        let (iters, residual) =
+            solver.correct_divergence_and_measure(&mut ps, &neighbors, &kernel, &params);
+        assert!(
+            iters < params.max_divergence_iterations,
+            "divergence solver did not converge: {iters} iterations"
+        );
+        let after = density_derivatives(&ps, &neighbors, &kernel, h);
+        let max_after = after.iter().cloned().fold(0.0_f64, f64::max);
+        assert!(
+            max_after < params.divergence_tolerance,
+            "residual {max_after}"
+        );
+        assert!((residual - max_after.max(0.0)).abs() < 1e-9);
+        assert!(max_after < 1e-2 * max_before);
     }
 }

@@ -4,7 +4,16 @@
 //! Crack propagation and remeshing for soft body simulation.
 //!
 //! Implements fracture mechanics concepts including crack tip tracking,
-//! stress intensity factor computation, and mesh splitting.
+//! stress intensity factor computation, and topological crack opening: a
+//! propagating crack cuts the mesh connectivity along its path
+//! ([`open_crack_segment`]) so that the material on both sides separates and
+//! [`identify_fragments`] can find the pieces.
+
+mod opening;
+#[cfg(test)]
+mod opening_tests;
+
+pub use opening::{CrackOpening, open_crack, open_crack_segment};
 
 /// A crack tip in the simulation mesh.
 #[derive(Debug, Clone)]
@@ -248,8 +257,11 @@ pub fn split_edge(mesh: &mut SoftBodyMesh, edge_idx: usize) -> usize {
 
 /// Propagate the crack one step if `K_I > K_Ic`.
 ///
-/// Advances the crack tip, finds and splits the nearest mesh edge, and
-/// returns `true` if propagation occurred.
+/// Advances the primary crack tip and opens the mesh along the path the tip just
+/// travelled ([`open_crack_segment`] from the old to the new tip position): the
+/// edges crossing the path are cut and the nodes along it are duplicated, so the
+/// two faces of the crack no longer share any node.  Returns `true` if
+/// propagation occurred.
 pub fn propagate_crack(
     mesh: &mut SoftBodyMesh,
     crack: &mut CrackPath,
@@ -261,12 +273,11 @@ pub fn propagate_crack(
         return false;
     }
     let speed = criteria.propagation_speed(k_i);
+    let old_tip = crack.current_tip().map(|t| t.position);
     crack.advance_tip(dt, speed);
 
-    if let Some(tip_pos) = crack.current_tip().map(|t| t.position)
-        && let Some(edge_idx) = nearest_edge_to_point(mesh, tip_pos)
-    {
-        split_edge(mesh, edge_idx);
+    if let (Some(from), Some(to)) = (old_tip, crack.current_tip().map(|t| t.position)) {
+        open_crack_segment(mesh, from, to);
     }
     true
 }
@@ -566,13 +577,12 @@ impl DynamicFracture {
         // Propagate
         let speed = self.criteria.propagation_speed(k_i);
         let advance = speed * dt;
+        let old_tip = crack.current_tip().map(|t| t.position);
         crack.advance_tip(dt, speed);
 
-        // Split nearest edge
-        if let Some(tip_pos) = crack.current_tip().map(|t| t.position)
-            && let Some(edge_idx) = nearest_edge_to_point(mesh, tip_pos)
-        {
-            split_edge(mesh, edge_idx);
+        // Open the mesh along the path the tip just travelled.
+        if let (Some(from), Some(to)) = (old_tip, crack.current_tip().map(|t| t.position)) {
+            open_crack_segment(mesh, from, to);
         }
 
         // Energy dissipated = G_c * new_area (simplified as G_c * advance * 1.0)
@@ -1216,19 +1226,26 @@ mod tests {
         assert!(!propagated);
     }
 
-    // 21. propagate_crack returns true and modifies mesh when K_I > K_Ic.
+    // 21. propagate_crack returns true and severs the edges on its path when
+    // K_I > K_Ic: the chain 0-1 is cut by a crack running in +y through x = 0.5.
     #[test]
     fn test_propagate_crack_propagates_above_threshold() {
         let mut m = SoftBodyMesh::new();
         m.add_node([0.0, 0.0, 0.0], 1.0);
         m.add_node([1.0, 0.0, 0.0], 1.0);
         m.add_edge(0, 1);
-        let mut crack = CrackPath::new([0.5, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        // Starts below the chain and travels 9.75 m in +y, crossing it at y = 0.
+        let mut crack = CrackPath::new([0.5, -1.0, 0.0], [0.0, 1.0, 0.0]);
         let criteria = CrackCriteria::glass();
-        let before_nodes = m.node_count();
+        assert_eq!(identify_fragments(&m).len(), 1);
         let propagated = propagate_crack(&mut m, &mut crack, &criteria, 2.0, 0.01);
         assert!(propagated);
-        assert!(m.node_count() > before_nodes);
+        assert!(m.edges.is_empty(), "the crossed edge must be severed");
+        assert_eq!(
+            identify_fragments(&m).len(),
+            2,
+            "the chain must fall into two fragments"
+        );
     }
 
     // 22. compute_stress_intensity returns 0 with no nodes near tip.

@@ -4,6 +4,7 @@
 
 use std::f64::consts::PI;
 
+use super::color_sph;
 use super::functions::*;
 
 /// Evaporation and condensation source terms for SPH multiphase flow.
@@ -376,20 +377,31 @@ pub struct MultiphaseSphSimulation {
     pub rho_g: f64,
     /// Step count
     pub step_count: usize,
+    /// Numerical speed of sound `c₀` \[m/s\] of the Tait equation of state.
+    ///
+    /// Choose `c₀ ≳ 10 v_max` for weak compressibility and keep the acoustic
+    /// Courant number `c₀ dt / h` below about `0.25`.  [`new`](Self::new)
+    /// selects `c₀ = 0.1 h / dt` for the default time step.
+    pub sound_speed: f64,
 }
 impl MultiphaseSphSimulation {
     /// Create a new multiphase SPH simulation.
+    ///
+    /// The time step defaults to `1e-4` s and the numerical speed of sound to
+    /// `c₀ = 0.1 h / dt` (acoustic Courant number `0.1`).
     pub fn new(h: f64, sigma: f64, rho_l: f64, rho_g: f64) -> Self {
+        let dt = 1e-4;
         Self {
             particles: Vec::new(),
             surface_tension: CsfSurfaceTension::new(sigma, h),
             gravity: [0.0, -9.81],
             time: 0.0,
-            dt: 1e-4,
+            dt,
             h,
             rho_l,
             rho_g,
             step_count: 0,
+            sound_speed: 0.1 * h / dt,
         }
     }
     /// Add a liquid particle.
@@ -409,27 +421,92 @@ impl MultiphaseSphSimulation {
         self.particles.iter().filter(|p| p.color <= 0.5).count()
     }
     /// Compute and update color gradients for all particles.
+    ///
+    /// The sums run over the full cubic-spline support radius `2h`.
     pub fn update_color_gradients(&mut self) {
         compute_color_gradients(&mut self.particles, self.h);
     }
-    /// Simple time step: advect particles with their velocities.
+    /// Neighbour lists (indices `j ≠ i` with `|xᵢ − xⱼ| ≤ 2h`) of the current
+    /// particle positions.
+    pub fn neighbor_lists(&self) -> Vec<Vec<usize>> {
+        color_sph::support_neighbors(&self.particles, self.h)
+    }
+    /// Update the particle densities by the particle-number summation
+    /// `ρᵢ = mᵢ Σⱼ W(|xᵢ − xⱼ|, h)`.
+    pub fn update_densities(&mut self) {
+        let neighbors = self.neighbor_lists();
+        color_sph::number_density_summation(&mut self.particles, self.h, &neighbors);
+    }
+    /// Update the particle pressures from the Tait equation of state
+    /// `P = B ((ρ/ρ₀)^7 − 1)`, `B = ρ₀ c₀² / 7`, with the colour-interpolated
+    /// rest density `ρ₀` of each particle and `c₀ =` [`sound_speed`](Self::sound_speed);
+    /// negative pressures are clamped to zero.  Uses the stored densities.
+    pub fn update_pressures(&mut self) {
+        color_sph::tait_pressures(
+            &mut self.particles,
+            self.rho_l,
+            self.rho_g,
+            self.sound_speed,
+        );
+    }
+    /// Update the interface curvatures `κᵢ = −∇·n̂ᵢ` of all particles.
+    ///
+    /// Uses the colour gradients stored in the particles, so call
+    /// [`update_color_gradients`](Self::update_color_gradients) first.  The unit
+    /// normal `n̂ = ∇C/|∇C|` exists where `|∇C| > 0.01/h`; the divergence is
+    /// taken over the neighbours that have one and normalised over the same
+    /// set (Morris 2000), and particles without a normal get `κ = 0`.  `κ` is
+    /// positive where the liquid is convex (`1/R` for a disc) and zero for a
+    /// straight interface.
+    pub fn update_curvatures(&mut self) {
+        let neighbors = self.neighbor_lists();
+        color_sph::curvatures_from_gradients(&mut self.particles, self.h, &neighbors);
+    }
+    /// Pressure acceleration `aᵢ = −Σⱼ mⱼ (Pᵢ + Pⱼ)/(ρᵢ ρⱼ) ∇ᵢWᵢⱼ` of every
+    /// particle from the stored densities and pressures.
+    pub fn pressure_accelerations(&self) -> Vec<[f64; 2]> {
+        let neighbors = self.neighbor_lists();
+        color_sph::pressure_accelerations(&self.particles, self.h, &neighbors)
+    }
+    /// Continuum-surface-force acceleration `aᵢ = σ κᵢ ∇Cᵢ / ρᵢ` of every
+    /// particle from the stored colour gradients, curvatures and densities.
+    pub fn surface_tension_accelerations(&self) -> Vec<[f64; 2]> {
+        color_sph::csf_accelerations(&self.particles, self.surface_tension.sigma)
+    }
+    /// Advance the simulation by one time step `dt`.
+    ///
+    /// 1. neighbour lists for the support radius `2h` (built once, shared by
+    ///    every sum below);
+    /// 2. particle-number density summation and Tait pressure;
+    /// 3. colour gradients and interface curvature `κ = −∇·n̂`;
+    /// 4. accelerations: gravity, the two-phase pressure acceleration and the
+    ///    continuum surface force `σ κ ∇C / ρ`;
+    /// 5. symplectic-Euler update of velocity and position.
     pub fn step(&mut self) {
-        self.update_color_gradients();
-        let n = self.particles.len();
-        for i in 0..n {
-            let color = self.particles[i].color;
-            let rho = self.particles[i].interpolated_density(self.rho_l, self.rho_g);
-            let fg = [self.gravity[0] * rho, self.gravity[1] * rho];
-            let kappa = self.particles[i].curvature;
-            let normal = self.particles[i].normal;
-            let phi = color - 0.5;
-            let fs = self.surface_tension.csf_force(kappa, normal, phi);
-            let ax = (fg[0] + fs[0]) / rho.max(1e-15);
-            let ay = (fg[1] + fs[1]) / rho.max(1e-15);
-            self.particles[i].vel[0] += ax * self.dt;
-            self.particles[i].vel[1] += ay * self.dt;
-            self.particles[i].pos[0] += self.particles[i].vel[0] * self.dt;
-            self.particles[i].pos[1] += self.particles[i].vel[1] * self.dt;
+        let neighbors = self.neighbor_lists();
+        color_sph::number_density_summation(&mut self.particles, self.h, &neighbors);
+        color_sph::tait_pressures(
+            &mut self.particles,
+            self.rho_l,
+            self.rho_g,
+            self.sound_speed,
+        );
+        compute_color_gradients_with_neighbors(&mut self.particles, self.h, &neighbors);
+        color_sph::curvatures_from_gradients(&mut self.particles, self.h, &neighbors);
+        let pressure_acc = color_sph::pressure_accelerations(&self.particles, self.h, &neighbors);
+        let csf_acc = color_sph::csf_accelerations(&self.particles, self.surface_tension.sigma);
+        let g = self.gravity;
+        let dt = self.dt;
+        for ((p, a_p), a_s) in self
+            .particles
+            .iter_mut()
+            .zip(pressure_acc.iter())
+            .zip(csf_acc.iter())
+        {
+            p.vel[0] += (g[0] + a_p[0] + a_s[0]) * dt;
+            p.vel[1] += (g[1] + a_p[1] + a_s[1]) * dt;
+            p.pos[0] += p.vel[0] * dt;
+            p.pos[1] += p.vel[1] * dt;
         }
         self.time += self.dt;
         self.step_count += 1;
@@ -788,10 +865,10 @@ impl MultiphaseSPH {
             p.color_function = *c;
         }
     }
-    /// Update interface curvatures for all particles.
+    /// Update interface curvatures `κ = −∇·n̂` for all particles from their
+    /// positions and colour functions (see [`compute_curvature`]).
     pub fn update_curvatures(&mut self) {
-        let colors: Vec<f64> = self.particles.iter().map(|p| p.color_function).collect();
-        let kappas = compute_curvature(&colors);
+        let kappas = compute_curvature(&self.particles, &self.phases, self.smoothing_length);
         for (p, k) in self.particles.iter_mut().zip(kappas.iter()) {
             p.curvature = *k;
         }
@@ -801,7 +878,9 @@ impl MultiphaseSPH {
     /// Steps performed:
     /// 1. Update colour functions.
     /// 2. Compute curvatures.
-    /// 3. Apply gravity and surface-tension forces.
+    /// 3. Apply gravity and the continuum-surface-force (CSF) acceleration
+    ///    `a_i = σ κ_i ∇C_i / ρ_i`, with `∇C_i` the SPH colour gradient used
+    ///    for the curvature.
     /// 4. Integrate positions with symplectic Euler.
     pub fn step(&mut self) {
         self.update_color_functions();
@@ -810,40 +889,33 @@ impl MultiphaseSPH {
         let h = self.smoothing_length;
         let g = self.gravity;
         let dt = self.dt;
+        let csf = self.surface_tension_force == SurfaceTensionForce::Csf;
+        let colour_gradients = if csf {
+            compute_colour_gradient_vectors(&self.particles, &self.phases, h)
+        } else {
+            Vec::new()
+        };
         let mut accel = vec![[0.0_f64; 3]; n];
         for (i, acc_i) in accel.iter_mut().enumerate() {
             acc_i[0] += g[0];
             acc_i[1] += g[1];
             acc_i[2] += g[2];
-            if self.surface_tension_force == SurfaceTensionForce::Csf {
-                let phase = self.particles[i].phase_id;
-                if phase < self.phases.len() {
-                    let sigma = self.phases[phase].surface_tension_coeff;
-                    let rho = self.phases[phase].density;
-                    let kappa = self.particles[i].curvature;
-                    let mut grad_c = [0.0_f64; 3];
-                    for (j, pj) in self.particles.iter().enumerate() {
-                        if i == j {
-                            continue;
-                        }
-                        let dx = self.particles[i].position[0] - pj.position[0];
-                        let dy = self.particles[i].position[1] - pj.position[1];
-                        let dz = self.particles[i].position[2] - pj.position[2];
-                        let r = (dx * dx + dy * dy + dz * dz).sqrt();
-                        if r < h && r > 1e-14 {
-                            let dc = pj.color_function - self.particles[i].color_function;
-                            let wg = sph_kernel_gradient_magnitude(r, h) / r;
-                            grad_c[0] += pj.mass * dc * wg * dx;
-                            grad_c[1] += pj.mass * dc * wg * dy;
-                            grad_c[2] += pj.mass * dc * wg * dz;
-                        }
-                    }
-                    let factor = sigma * kappa / rho;
-                    acc_i[0] += factor * grad_c[0];
-                    acc_i[1] += factor * grad_c[1];
-                    acc_i[2] += factor * grad_c[2];
-                }
+            if !csf {
+                continue;
             }
+            let Some(phase) = self
+                .phases
+                .get(self.particles[i].phase_id)
+                .filter(|phase| phase.density > 0.0)
+            else {
+                continue;
+            };
+            // CSF acceleration a_i = σ κ_i ∇C_i / ρ_i  [m/s²]
+            let factor = phase.surface_tension_coeff * self.particles[i].curvature / phase.density;
+            let grad_c = colour_gradients.get(i).copied().unwrap_or([0.0; 3]);
+            acc_i[0] += factor * grad_c[0];
+            acc_i[1] += factor * grad_c[1];
+            acc_i[2] += factor * grad_c[2];
         }
         for (i, acc_i) in accel.iter().enumerate() {
             self.particles[i].velocity[0] += acc_i[0] * dt;

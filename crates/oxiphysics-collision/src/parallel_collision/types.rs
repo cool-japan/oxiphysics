@@ -262,44 +262,161 @@ impl AabbTreeInner {
             idx
         }
     }
+    /// Cost of descending into `child` when inserting a leaf with AABB `leaf`
+    /// (Catto's branch-and-bound surface-area heuristic).
+    fn descent_cost(&self, child: NodeIdx, leaf: &ParAabb, inheritance_cost: f64) -> f64 {
+        let child_node = &self.nodes[child as usize];
+        let merged_area = leaf.merge(&child_node.aabb).surface_area();
+        if child_node.is_leaf() {
+            merged_area + inheritance_cost
+        } else {
+            (merged_area - child_node.aabb.surface_area()) + inheritance_cost
+        }
+    }
+    /// Greedy SAH descent: find the node that should become the sibling of a new
+    /// leaf with AABB `leaf`. The nodes passed on the way down (the ancestors of
+    /// the returned sibling, root first) are appended to `path`.
+    fn find_best_sibling(&self, leaf: &ParAabb, path: &mut Vec<NodeIdx>) -> NodeIdx {
+        let mut index = self.root;
+        while !self.nodes[index as usize].is_leaf() {
+            let node = &self.nodes[index as usize];
+            let (left, right) = (node.left, node.right);
+            let area = node.aabb.surface_area();
+            let combined_area = node.aabb.merge(leaf).surface_area();
+            // Cost of creating a new parent for this node and the new leaf.
+            let cost = 2.0 * combined_area;
+            // Minimum cost of pushing the leaf further down the tree.
+            let inheritance_cost = 2.0 * (combined_area - area);
+            let cost_left = self.descent_cost(left, leaf, inheritance_cost);
+            let cost_right = self.descent_cost(right, leaf, inheritance_cost);
+            if cost < cost_left && cost < cost_right {
+                break;
+            }
+            path.push(index);
+            index = if cost_left < cost_right { left } else { right };
+        }
+        index
+    }
+    /// Replace the child link `old_child` of `parent` by `new_child`.
+    fn replace_child(&mut self, parent: NodeIdx, old_child: NodeIdx, new_child: NodeIdx) {
+        let node = &mut self.nodes[parent as usize];
+        if node.left == old_child {
+            node.left = new_child;
+        } else {
+            node.right = new_child;
+        }
+    }
+    /// Recompute the height and AABB of internal node `index` from its children.
+    fn refit_node(&mut self, index: NodeIdx) {
+        let (left, right) = {
+            let node = &self.nodes[index as usize];
+            (node.left, node.right)
+        };
+        let height = 1 + self.nodes[left as usize]
+            .height
+            .max(self.nodes[right as usize].height);
+        let aabb = self.nodes[left as usize]
+            .aabb
+            .merge(&self.nodes[right as usize].aabb);
+        let node = &mut self.nodes[index as usize];
+        node.height = height;
+        node.aabb = aabb;
+    }
+    /// AVL-style rotation: if the children of `a` differ in height by more than
+    /// one, lift the taller child above `a`. Returns the root of the rebalanced
+    /// subtree; the caller must re-link it into `a`'s former parent.
+    fn balance(&mut self, a: NodeIdx) -> NodeIdx {
+        let node_a = &self.nodes[a as usize];
+        if node_a.is_leaf() || node_a.height < 2 {
+            return a;
+        }
+        let (b, c) = (node_a.left, node_a.right);
+        let balance = self.nodes[c as usize].height - self.nodes[b as usize].height;
+        if balance > 1 {
+            // Rotate C up: C takes A's place with A as its first child.
+            let (f, g) = (self.nodes[c as usize].left, self.nodes[c as usize].right);
+            let (keep, give) = if self.nodes[f as usize].height > self.nodes[g as usize].height {
+                (f, g)
+            } else {
+                (g, f)
+            };
+            self.nodes[c as usize].left = a;
+            self.nodes[c as usize].right = keep;
+            self.nodes[a as usize].right = give;
+            self.refit_node(a);
+            self.refit_node(c);
+            return c;
+        }
+        if balance < -1 {
+            // Rotate B up: B takes A's place with A as its first child.
+            let (d, e) = (self.nodes[b as usize].left, self.nodes[b as usize].right);
+            let (keep, give) = if self.nodes[d as usize].height > self.nodes[e as usize].height {
+                (d, e)
+            } else {
+                (e, d)
+            };
+            self.nodes[b as usize].left = a;
+            self.nodes[b as usize].right = keep;
+            self.nodes[a as usize].left = give;
+            self.refit_node(a);
+            self.refit_node(b);
+            return b;
+        }
+        a
+    }
     /// Insert a leaf with the given AABB and body handle.
+    ///
+    /// The leaf is paired with the sibling chosen by a greedy surface-area
+    /// descent: a new parent node replaces the sibling in the tree (or becomes
+    /// the root), and every ancestor is then rebalanced and refitted bottom-up
+    /// so that all leaves stay reachable and every internal AABB encloses its
+    /// subtree.
     fn insert(&mut self, aabb: ParAabb, handle: u32) -> NodeIdx {
         let leaf = self.alloc_node();
-        self.nodes[leaf as usize].aabb = aabb;
-        self.nodes[leaf as usize].handle = handle;
-        self.nodes[leaf as usize].left = u32::MAX;
-        self.nodes[leaf as usize].right = u32::MAX;
-        self.nodes[leaf as usize].height = 0;
+        {
+            let node = &mut self.nodes[leaf as usize];
+            node.aabb = aabb;
+            node.handle = handle;
+            node.left = u32::MAX;
+            node.right = u32::MAX;
+            node.height = 0;
+        }
         if self.root == u32::MAX {
             self.root = leaf;
             return leaf;
         }
-        let mut best = self.root;
-        loop {
-            let node = &self.nodes[best as usize];
-            if node.is_leaf() {
-                break;
-            }
-            let merged_area = node.aabb.merge(&aabb).surface_area();
-            let left = node.left;
-            let right = node.right;
-            let la = self.nodes[left as usize].aabb.merge(&aabb).surface_area();
-            let ra = self.nodes[right as usize].aabb.merge(&aabb).surface_area();
-            if merged_area < la.min(ra) {
-                break;
-            }
-            best = if la < ra { left } else { right };
+        let mut path: Vec<NodeIdx> = Vec::new();
+        let sibling = self.find_best_sibling(&aabb, &mut path);
+        // Create a new parent holding the sibling and the new leaf.
+        let new_parent = self.alloc_node();
+        let sibling_aabb = self.nodes[sibling as usize].aabb;
+        let sibling_height = self.nodes[sibling as usize].height;
+        {
+            let node = &mut self.nodes[new_parent as usize];
+            node.aabb = sibling_aabb.merge(&aabb);
+            node.left = sibling;
+            node.right = leaf;
+            node.handle = u32::MAX;
+            node.height = sibling_height + 1;
         }
-        let old_parent = self.alloc_node();
-        let sib_aabb = self.nodes[best as usize].aabb;
-        self.nodes[old_parent as usize].aabb = sib_aabb.merge(&aabb);
-        self.nodes[old_parent as usize].left = best;
-        self.nodes[old_parent as usize].right = leaf;
-        let sib_h = self.nodes[best as usize].height;
-        self.nodes[old_parent as usize].height = sib_h + 1;
-        self.nodes[old_parent as usize].handle = u32::MAX;
-        if self.root == best {
-            self.root = old_parent;
+        // The sibling's former parent (or the root slot) now points at the new parent.
+        match path.last() {
+            Some(&old_parent) => self.replace_child(old_parent, sibling, new_parent),
+            None => self.root = new_parent,
+        }
+        // Walk back up from the new parent: rebalance, re-link and refit.
+        path.push(new_parent);
+        for depth in (0..path.len()).rev() {
+            let index = path[depth];
+            let top = self.balance(index);
+            if top != index {
+                if depth == 0 {
+                    self.root = top;
+                } else {
+                    self.replace_child(path[depth - 1], index, top);
+                }
+            }
+            self.refit_node(top);
         }
         leaf
     }

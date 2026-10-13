@@ -250,22 +250,75 @@ pub fn kabsch_sander_hbond(
     let r_cn = dist3(c_pos, n_pos).max(0.01);
     0.084 * (1.0 / r_on + 1.0 / r_ch - 1.0 / r_oh - 1.0 / r_cn) * 332.0
 }
+/// Length of the backbone N-H bond (Å) used when the amide hydrogen is rebuilt.
+///
+/// This is the value used by DSSP (Kabsch & Sander, 1983).
+pub const AMIDE_NH_BOND_LENGTH: f64 = 1.0;
+
+/// Reconstruct the backbone amide hydrogen positions of a structure.
+///
+/// Crystal structures and C-alpha/backbone-only models carry no amide
+/// hydrogens, so DSSP places the hydrogen of residue `j` on the line through
+/// `N_j`, anti-parallel to the carbonyl bond of the preceding residue:
+///
+/// ```text
+/// H_j = N_j + 1.0 Å · (C_{j-1} − O_{j-1}) / |C_{j-1} − O_{j-1}|     (j ≥ 1)
+/// ```
+///
+/// The result has one entry per residue.  The first residue has no preceding
+/// carbonyl and yields `None`; so does any residue whose preceding `C`/`O`
+/// coordinates are missing or coincide.  (Proline has no amide hydrogen at
+/// all; the structure carries no residue names, so callers that know the
+/// sequence should discard bonds donated by proline.)
+pub fn amide_h_positions(ss: &SecondaryStructure) -> Vec<Option<[f64; 3]>> {
+    (0..ss.n_pos.len())
+        .map(|j| -> Option<[f64; 3]> {
+            let previous = j.checked_sub(1)?;
+            let c_prev = *ss.c_pos.get(previous)?;
+            let o_prev = *ss.o_pos.get(previous)?;
+            let direction = sub3(c_prev, o_prev);
+            let length = mag3(direction);
+            if length < 1e-12 {
+                return None;
+            }
+            let n_j = ss.n_pos[j];
+            Some([
+                n_j[0] + AMIDE_NH_BOND_LENGTH * direction[0] / length,
+                n_j[1] + AMIDE_NH_BOND_LENGTH * direction[1] / length,
+                n_j[2] + AMIDE_NH_BOND_LENGTH * direction[2] / length,
+            ])
+        })
+        .collect()
+}
 /// Detect all Kabsch-Sander hydrogen bonds in a secondary structure object.
 ///
-/// Returns list of (donor_idx, acceptor_idx, energy) for bonds with E < cutoff.
+/// The electrostatic energy of every `C=O(i) ··· H-N(j)` pair is evaluated
+/// with [`kabsch_sander_hbond`] using the amide hydrogen rebuilt by
+/// [`amide_h_positions`].  Residue pairs with `|i − j| < 2` (a residue cannot
+/// bond to itself or to its chain neighbours) and donors without a hydrogen
+/// (the first residue) are skipped.
+///
+/// Returns a list of `(acceptor_idx, donor_idx, energy)` for bonds with
+/// `E < energy_cutoff` (kcal/mol), where `acceptor_idx` is the residue whose
+/// carbonyl accepts the bond and `donor_idx` the residue whose N-H donates it.
+/// In an ideal α-helix residue `i` is bonded to residue `i + 4` with
+/// `E ≈ -2.2` kcal/mol.
 pub fn find_kabsch_sander_hbonds(
     ss: &SecondaryStructure,
     energy_cutoff: f64,
 ) -> Vec<(usize, usize, f64)> {
-    let n = ss.n_pos.len();
+    let n = ss.n_pos.len().min(ss.c_pos.len()).min(ss.o_pos.len());
+    let hydrogens = amide_h_positions(ss);
     let mut bonds = Vec::new();
     for i in 0..n {
         for j in 0..n {
-            if i == j {
+            if i.abs_diff(j) < 2 {
                 continue;
             }
-            let h_approx = ss.n_pos[j];
-            let e = kabsch_sander_hbond(ss.o_pos[i], ss.c_pos[i], ss.n_pos[j], h_approx);
+            let Some(h_pos) = hydrogens.get(j).copied().flatten() else {
+                continue;
+            };
+            let e = kabsch_sander_hbond(ss.o_pos[i], ss.c_pos[i], ss.n_pos[j], h_pos);
             if e < energy_cutoff {
                 bonds.push((i, j, e));
             }

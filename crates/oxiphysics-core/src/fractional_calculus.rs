@@ -18,6 +18,7 @@
 //! - **Fractional oscillator** (Bagley-Torvik, fractional spring-dashpot)
 //! - **Lévy stable distributions**: characteristic function and sampling
 
+use crate::error::PhysicsError;
 use std::f64::consts::PI;
 
 // ─── Internal LCG RNG ────────────────────────────────────────────────────────
@@ -325,11 +326,18 @@ pub fn gl_coefficients(alpha: f64, n: usize) -> Vec<f64> {
 
 /// Riesz fractional derivative ∂^α/∂|x|^α on a uniform 1-D grid.
 ///
-/// The Riesz derivative is symmetric and non-local:
-/// (∂^α f / ∂|x|^α)_j ≈ -c_α/h^α Σ_k g_k (f_{j-k} + f_{j+k})
+/// The Riesz derivative is symmetric and non-local.  It is the sum of the
+/// left- and right-sided Grünwald-Letnikov derivatives,
 ///
-/// where c_α = -1/(2 cos(πα/2)) and g_k are GL coefficients.
-/// Requires 0 < α < 2, α ≠ 1.
+/// (∂^α f / ∂|x|^α)_j ≈ c_α h^{-α} \[ Σ_{k=0}^{j} g_k f_{j-k} + Σ_{k=0}^{n-1-j} g_k f_{j+k} \]
+///
+/// where c_α = -1/(2 cos(πα/2)) and g_k = (-1)^k C(α, k) are the GL
+/// coefficients.  The left-sided sum runs over every grid point to the left of
+/// `x_j` (including itself) and the right-sided sum over every grid point to its
+/// right, so symmetric data produce symmetric output.  The scheme is first-order
+/// accurate in `h`.  Requires 0 < α < 2, α ≠ 1 (the factor c_α is singular at
+/// α = 1; for α = 2s ≤ 2 including α = 1 use [`fractional_laplacian_1d`], which
+/// is second-order accurate).
 ///
 /// Boundary values outside the domain are treated as zero (zero-padding).
 ///
@@ -343,54 +351,140 @@ pub fn riesz_derivative(f: &[f64], h: f64, alpha: f64) -> Vec<f64> {
         "alpha must be in (0,2) and not equal to 1"
     );
     let n = f.len();
-    let c = -1.0 / (2.0 * (PI * alpha / 2.0).cos());
-    let coeffs = gl_coefficients(alpha, n + 1);
-    let mut result = vec![0.0_f64; n];
-    for j in 0..n {
-        let mut left = 0.0_f64;
-        let mut right = 0.0_f64;
-        for k in 0..=j + 1 {
-            let fk_left = if k <= j { f[j - k] } else { 0.0 };
-            let fk_right = if j + k < n { f[j + k] } else { 0.0 };
-            left += coeffs[k] * fk_left;
-            right += coeffs[k] * fk_right;
-        }
-        result[j] = c * (left + right) / h.powf(alpha);
+    if n == 0 {
+        return Vec::new();
     }
-    result
+    let c = -1.0 / (2.0 * (PI * alpha / 2.0).cos());
+    // g_0 … g_{n-1}: the longest sum (k = n-1) is the far end of the grid.
+    let coeffs = gl_coefficients(alpha, n - 1);
+    let scale = c / h.powf(alpha);
+    (0..n)
+        .map(|j| {
+            // Left-sided: Σ_{k=0}^{j} g_k f_{j-k}.
+            let left: f64 = coeffs[..=j]
+                .iter()
+                .zip(f[..=j].iter().rev())
+                .map(|(g, fv)| g * fv)
+                .sum();
+            // Right-sided: Σ_{k=0}^{n-1-j} g_k f_{j+k}.
+            let right: f64 = coeffs[..n - j]
+                .iter()
+                .zip(f[j..].iter())
+                .map(|(g, fv)| g * fv)
+                .sum();
+            scale * (left + right)
+        })
+        .collect()
 }
 
 // ============================================================================
 // 8. Fractional Laplacian
 // ============================================================================
 
-/// Fractional Laplacian (-Δ)^{s} on a 1-D uniform grid via spectral method.
+/// Coefficients `g_0 … g_{n-1}` of the centred (Ortigueira) fractional
+/// difference of order `alpha = 2s`.
 ///
-/// Uses discrete cosine / DFT approach: multiply eigenvalues by |k|^{2s}.
-/// Here we use a simple finite-difference approximation based on Riesz derivative
-/// in each spatial direction for 1-D.
+/// `g_k = (-1)^k Γ(α+1) / (Γ(α/2-k+1) Γ(α/2+k+1))`, computed through
+/// `g_0 = Γ(α+1) / Γ(α/2+1)²` and `g_{k+1} = g_k (k - α/2) / (k + α/2 + 1)`.
+/// The Fourier symbol of `Σ_k g_{|k|} e^{-ikθ}` is `(2 sin(θ/2))^α`, which is
+/// `|θ|^α (1 + O(θ²))` and therefore a second-order accurate approximation of
+/// `|ξ|^α`, the symbol of `(-Δ)^{α/2}`.
+fn centred_difference_coefficients(alpha: f64, n: usize) -> Vec<f64> {
+    let half = alpha / 2.0;
+    let mut coeffs = Vec::with_capacity(n);
+    if n == 0 {
+        return coeffs;
+    }
+    let mut g = gamma(alpha + 1.0) / (gamma(half + 1.0) * gamma(half + 1.0));
+    coeffs.push(g);
+    for k in 1..n {
+        g *= ((k - 1) as f64 - half) / (k as f64 + half);
+        coeffs.push(g);
+    }
+    coeffs
+}
+
+/// Apply the symmetric Toeplitz operator `out_j = scale · Σ_i g_{|i-j|} line_i`
+/// (values outside `line` are zero).  `g` must hold at least `line.len()`
+/// coefficients.
+fn apply_centred_difference(g: &[f64], line: &[f64], scale: f64) -> Vec<f64> {
+    let n = line.len();
+    (0..n)
+        .map(|j| {
+            // Σ_{k=1}^{j} g_k f_{j-k}
+            let below: f64 = g[1..=j]
+                .iter()
+                .zip(line[..j].iter().rev())
+                .map(|(gk, fv)| gk * fv)
+                .sum();
+            // Σ_{k=1}^{n-1-j} g_k f_{j+k}
+            let above: f64 = g[1..n - j]
+                .iter()
+                .zip(line[j + 1..].iter())
+                .map(|(gk, fv)| gk * fv)
+                .sum();
+            scale * (g[0] * line[j] + below + above)
+        })
+        .collect()
+}
+
+/// Validate the grid spacing `h` and fractional power `s ∈ (0, 1]`.
+fn validate_laplacian_arguments(h: f64, s: f64) -> Result<(), PhysicsError> {
+    if !(h.is_finite() && h > 0.0) {
+        return Err(PhysicsError::InvalidInput {
+            field: "h".to_string(),
+            reason: format!("grid spacing must be positive and finite, got {h}"),
+        });
+    }
+    if !(s > 0.0 && s <= 1.0) {
+        return Err(PhysicsError::InvalidInput {
+            field: "s".to_string(),
+            reason: format!("fractional power must lie in (0, 1], got {s}"),
+        });
+    }
+    Ok(())
+}
+
+/// Fractional Laplacian (-Δ)^{s} on a 1-D uniform grid, 0 < s ≤ 1.
 ///
-/// For s = 1 this reduces to the classical second derivative.
+/// Evaluated with the centred fractional difference of Ortigueira,
+///
+/// (-Δ)^s f_j ≈ h^{-2s} Σ_{k=-(n-1)}^{n-1} g_{|k|} f_{j-k},
+///
+/// with `g_0 = Γ(2s+1)/Γ(s+1)²`, `g_{k+1} = g_k (k - s)/(k + s + 1)` and `f`
+/// taken as zero outside the grid.  The discrete symbol `(2 sin(θ/2))^{2s} h^{-2s}`
+/// approximates `|ξ|^{2s}` to second order, the operator is symmetric positive
+/// semi-definite, and it is valid on the whole range including `s = 1/2`
+/// (where the Riesz Grünwald-Letnikov formula is singular) and `s = 1`, where it
+/// reduces to the classical three-point stencil `(-f_{j-1} + 2 f_j - f_{j+1})/h²`.
+///
+/// The direct summation costs O(n²).
 ///
 /// # Arguments
 /// * `f`     – values on uniform grid of length n
-/// * `h`     – grid spacing
-/// * `s`     – fractional power, 0 < s < 1
-pub fn fractional_laplacian_1d(f: &[f64], h: f64, s: f64) -> Vec<f64> {
-    assert!(s > 0.0 && s <= 1.0, "s must be in (0,1]");
-    // Use Riesz with alpha = 2s
+/// * `h`     – grid spacing (positive, finite)
+/// * `s`     – fractional power, 0 < s ≤ 1
+///
+/// # Errors
+/// [`PhysicsError::InvalidInput`] if `h` is not positive and finite or `s` is
+/// outside `(0, 1]`.
+pub fn fractional_laplacian_1d(f: &[f64], h: f64, s: f64) -> Result<Vec<f64>, PhysicsError> {
+    validate_laplacian_arguments(h, s)?;
     let alpha = 2.0 * s;
-    if (alpha - 1.0).abs() < 1e-12 {
-        // Degenerate case: return zeros
-        return vec![0.0; f.len()];
-    }
-    // (-Δ)^s corresponds to -Riesz(2s) up to sign convention
-    riesz_derivative(f, h, alpha).iter().map(|&v| -v).collect()
+    let g = centred_difference_coefficients(alpha, f.len());
+    Ok(apply_centred_difference(&g, f, h.powf(-alpha)))
 }
 
-/// Fractional Laplacian (-Δ)^{s} on a 2-D uniform grid (n_x × n_y).
+/// Axis-wise fractional Laplacian on a 2-D uniform grid (n_x × n_y):
+/// `(-∂ₓ²)^s + (-∂ᵧ²)^s`.
 ///
-/// Row-major layout. Applies 1-D fractional Laplacian along each axis and sums.
+/// Row-major layout.  The 1-D operator of [`fractional_laplacian_1d`] is
+/// applied along every grid row and every grid column and the results are
+/// summed, with zero extension outside the grid.  For `s = 1` this is exactly the
+/// five-point Laplacian `-Δ`.  For `s < 1` it is **not** the isotropic
+/// fractional Laplacian `(-Δ)^s`: its Fourier symbol is `|k_x|^{2s} + |k_y|^{2s}`
+/// rather than `(k_x² + k_y²)^s`, so it is rotation-dependent (an "anisotropic" /
+/// directional fractional operator).
 ///
 /// # Arguments
 /// * `f`    – row-major 2-D data, length n_x * n_y
@@ -398,26 +492,56 @@ pub fn fractional_laplacian_1d(f: &[f64], h: f64, s: f64) -> Vec<f64> {
 /// * `ny`   – number of y grid points
 /// * `h`    – uniform grid spacing (same in x and y)
 /// * `s`    – fractional power 0 < s ≤ 1
-pub fn fractional_laplacian_2d(f: &[f64], nx: usize, ny: usize, h: f64, s: f64) -> Vec<f64> {
-    assert_eq!(f.len(), nx * ny);
-    let mut result = vec![0.0_f64; nx * ny];
-    // x-direction
-    for iy in 0..ny {
-        let row: Vec<f64> = (0..nx).map(|ix| f[iy * nx + ix]).collect();
-        let d = fractional_laplacian_1d(&row, h, s);
-        for ix in 0..nx {
-            result[iy * nx + ix] += d[ix];
+///
+/// # Errors
+/// [`PhysicsError::InvalidInput`] if `f.len() != nx * ny`, if `h` is not
+/// positive and finite, or if `s` is outside `(0, 1]`.
+pub fn fractional_laplacian_2d(
+    f: &[f64],
+    nx: usize,
+    ny: usize,
+    h: f64,
+    s: f64,
+) -> Result<Vec<f64>, PhysicsError> {
+    validate_laplacian_arguments(h, s)?;
+    let expected = nx
+        .checked_mul(ny)
+        .ok_or_else(|| PhysicsError::InvalidInput {
+            field: "nx*ny".to_string(),
+            reason: format!("grid size {nx} x {ny} overflows usize"),
+        })?;
+    if f.len() != expected {
+        return Err(PhysicsError::InvalidInput {
+            field: "f".to_string(),
+            reason: format!(
+                "expected {expected} values for a {nx} x {ny} grid, got {}",
+                f.len()
+            ),
+        });
+    }
+    let alpha = 2.0 * s;
+    let scale = h.powf(-alpha);
+    let gx = centred_difference_coefficients(alpha, nx);
+    let gy = centred_difference_coefficients(alpha, ny);
+    let mut result = vec![0.0_f64; expected];
+    // x-direction: contiguous rows.
+    if nx > 0 {
+        for (row_in, row_out) in f.chunks_exact(nx).zip(result.chunks_exact_mut(nx)) {
+            let d = apply_centred_difference(&gx, row_in, scale);
+            for (out, dv) in row_out.iter_mut().zip(d.iter()) {
+                *out += dv;
+            }
         }
     }
-    // y-direction
+    // y-direction: gather each column.
     for ix in 0..nx {
-        let col: Vec<f64> = (0..ny).map(|iy| f[iy * nx + ix]).collect();
-        let d = fractional_laplacian_1d(&col, h, s);
-        for iy in 0..ny {
-            result[iy * nx + ix] += d[iy];
+        let col: Vec<f64> = f.iter().skip(ix).step_by(nx).copied().collect();
+        let d = apply_centred_difference(&gy, &col, scale);
+        for (iy, dv) in d.iter().enumerate() {
+            result[iy * nx + ix] += dv;
         }
     }
-    result
+    Ok(result)
 }
 
 // ============================================================================
@@ -555,9 +679,28 @@ pub fn subdiffusion_pdf(x: f64, t: f64, params: &AnomalousDiffusionParams) -> f6
 // ============================================================================
 
 /// Solve a scalar fractional initial-value problem using the Adams-Bashforth-
-/// Moulton predictor-corrector method (Diethelm et al. 2002).
+/// Moulton predictor-corrector method of Diethelm, Ford and Freed (2002).
 ///
 /// Equation: ^C D^α y(t) = f(t, y(t)),  y(0) = y0,  0 < α ≤ 1.
+///
+/// With `h = t_end / n_steps`, `t_j = j h` and `f_j = f(t_j, y_j)`, the
+/// equivalent Volterra equation `y(t) = y0 + (1/Γ(α)) ∫ (t-s)^{α-1} f(s, y(s)) ds`
+/// is discretised by product integration.  The predictor is the fractional
+/// Adams-Bashforth step
+///
+/// y^P_{n+1} = y0 + h^α/Γ(α+1) · Σ_{j=0}^{n} b_{n-j} f_j,
+/// b_m = (m+1)^α - m^α,
+///
+/// and the corrector is the fractional Adams-Moulton step
+///
+/// y_{n+1} = y0 + h^α/Γ(α+2) · \[ f(t_{n+1}, y^P_{n+1}) + a_0(n) f_0 + Σ_{j=1}^{n} c_{n-j} f_j \],
+/// a_0(n) = n^{α+1} - (n-α)(n+1)^α,
+/// c_m = (m+2)^{α+1} + m^{α+1} - 2(m+1)^{α+1}.
+///
+/// For α = 1 this is the classical Euler-predictor / trapezoidal-corrector
+/// (Heun) method.  The full history is used, so the cost is O(n_steps²) with two
+/// evaluations of `f` per step (the value `f_j` is cached once).  The method
+/// converges with order `min(2, 1 + α)` for smooth right-hand sides.
 ///
 /// Returns `(t_values, y_values)` with `n_steps + 1` points.
 ///
@@ -580,39 +723,49 @@ where
     assert!(alpha > 0.0 && alpha <= 1.0);
     assert!(n_steps >= 1);
     let h = t_end / n_steps as f64;
-    let mut t = vec![0.0_f64; n_steps + 1];
+    let t: Vec<f64> = (0..=n_steps).map(|k| k as f64 * h).collect();
     let mut y = vec![0.0_f64; n_steps + 1];
     y[0] = y0;
-    for k in 0..n_steps {
-        t[k + 1] = (k + 1) as f64 * h;
-    }
-    // Precompute GL coefficients up to n_steps
-    let gl = gl_coefficients(alpha, n_steps + 1);
-    // Adams weights for corrector: b_{n+1,j} = h^α/Γ(α+2) * [(n-j+1)^{α+1} - (n-j-1+α)(n-j)^α]
-    let g2 = gamma(alpha + 2.0);
-    for n_idx in 0..n_steps {
-        // --- Predictor (Adams-Bashforth) ---
-        // RL-style sum using GL coefficients
-        let mut gl_sum = 0.0_f64;
-        for j in 0..=n_idx {
-            gl_sum += gl[n_idx - j + 1] * y[j];
-        }
-        // Predictor: y^P_{n+1} = y0 - sum + h^α/Γ(α+1) * f(t_n, y_n)
-        let pred = y0 - gl_sum + h.powf(alpha) * f(t[n_idx], y[n_idx]) / gamma(alpha + 1.0);
+    // Cached right-hand-side values f_j = f(t_j, y_j).
+    let mut fvals = vec![0.0_f64; n_steps + 1];
+    fvals[0] = f(t[0], y0);
 
-        // --- Corrector (Adams-Moulton) ---
-        let mut corr_sum = 0.0_f64;
-        for j in 0..=n_idx {
-            let b = (n_idx as f64 - j as f64 + 1.0).powf(alpha + 1.0)
-                - 2.0 * (n_idx as f64 - j as f64).powf(alpha + 1.0).max(0.0)
-                + (n_idx as f64 - j as f64 - 1.0).abs().powf(alpha + 1.0)
-                    * if n_idx > j { 1.0 } else { 0.0 };
-            corr_sum += b * f(t[j], y[j]);
-        }
-        // Corrector contribution from predicted value
-        let b_pred = 1.0_f64; // (1)^{α+1}
-        y[n_idx + 1] =
-            y0 - gl_sum + h.powf(alpha) / g2 * (b_pred * f(t[n_idx + 1], pred) + corr_sum);
+    // Weights that depend only on the lag m = n - j.
+    let predictor_weights: Vec<f64> = (0..n_steps)
+        .map(|m| (m as f64 + 1.0).powf(alpha) - (m as f64).powf(alpha))
+        .collect();
+    let corrector_weights: Vec<f64> = (0..n_steps)
+        .map(|m| {
+            let m = m as f64;
+            (m + 2.0).powf(alpha + 1.0) + m.powf(alpha + 1.0) - 2.0 * (m + 1.0).powf(alpha + 1.0)
+        })
+        .collect();
+    let h_alpha = h.powf(alpha);
+    let predictor_scale = h_alpha / gamma(alpha + 1.0);
+    let corrector_scale = h_alpha / gamma(alpha + 2.0);
+
+    for n in 0..n_steps {
+        // --- Predictor (fractional Adams-Bashforth) ---
+        // Σ_{j=0}^{n} b_{n-j} f_j: pair f_0 … f_n with b_n … b_0.
+        let predictor_sum: f64 = fvals[..=n]
+            .iter()
+            .zip(predictor_weights[..=n].iter().rev())
+            .map(|(fj, b)| fj * b)
+            .sum();
+        let y_predicted = y0 + predictor_scale * predictor_sum;
+
+        // --- Corrector (fractional Adams-Moulton) ---
+        let nf = n as f64;
+        let first_weight = nf.powf(alpha + 1.0) - (nf - alpha) * (nf + 1.0).powf(alpha);
+        // Σ_{j=1}^{n} c_{n-j} f_j: pair f_1 … f_n with c_{n-1} … c_0.
+        let history_sum: f64 = fvals[1..=n]
+            .iter()
+            .zip(corrector_weights[..n].iter().rev())
+            .map(|(fj, c)| fj * c)
+            .sum();
+        let corrector_sum = f(t[n + 1], y_predicted) + first_weight * fvals[0] + history_sum;
+        y[n + 1] = y0 + corrector_scale * corrector_sum;
+        fvals[n + 1] = f(t[n + 1], y[n + 1]);
     }
     (t, y)
 }
@@ -1118,7 +1271,7 @@ mod tests {
                 (-x * x).exp()
             })
             .collect();
-        let lap = fractional_laplacian_1d(&f, h, 0.5);
+        let lap = fractional_laplacian_1d(&f, h, 0.5).expect("valid arguments");
         assert_eq!(lap.len(), n);
         for &v in &lap {
             assert!(v.is_finite());
@@ -1275,21 +1428,75 @@ mod tests {
     }
 
     #[test]
-    fn test_fde_predictor_corrector_linear() {
-        // ^C D^0.5 y = 1, y(0) = 0  => y(t) = t^0.5 / Γ(1.5)
+    fn test_fde_predictor_corrector_constant_rhs_matches_exact_solution() {
+        // ^C D^0.5 y = 1, y(0) = 0  =>  y(t) = t^0.5 / Γ(1.5).  A constant
+        // right-hand side is integrated exactly by the product-integration
+        // weights of both the predictor and the corrector.
         let alpha = 0.5;
-        let t_end = 1.0;
-        let n_steps = 100;
-        let (_t, y) = fde_predictor_corrector(|_t, _y| 1.0, 0.0, t_end, n_steps, alpha);
-        let expected = t_end.powf(alpha) / gamma(alpha + 1.0);
-        assert!(y.last().unwrap().is_finite());
-        // Loose check: solution grows from 0
+        let (t, y) = fde_predictor_corrector(|_t, _y| 1.0, 0.0, 1.0, 100, alpha);
+        assert_eq!(t.len(), 101);
+        assert_eq!(y.len(), 101);
+        assert_eq!(y[0], 0.0);
+        let expected = 1.0 / gamma(1.5);
         assert!(
-            *y.last().unwrap() > 0.0,
-            "y(t_end) should be positive, got {:.6}",
-            y.last().unwrap()
+            (y[100] - expected).abs() < 1e-8,
+            "y(1) = {}, expected {expected}",
+            y[100]
         );
-        let _ = expected; // acknowledge
+        for (tk, yk) in t.iter().zip(y.iter()) {
+            let exact = tk.powf(alpha) / gamma(alpha + 1.0);
+            assert!((yk - exact).abs() < 1e-8, "t = {tk}: {yk} vs {exact}");
+        }
+    }
+
+    #[test]
+    fn test_fde_predictor_corrector_integer_order_is_exponential_decay() {
+        // α = 1: y' = -y, y(0) = 1  =>  y(1) = e^{-1} (Heun's method).
+        let (_t, y) = fde_predictor_corrector(|_t, y| -y, 1.0, 1.0, 100, 1.0);
+        let err = (y[100] - (-1.0_f64).exp()).abs();
+        assert!(err < 1e-4, "|y(1) - e^-1| = {err}");
+        // Second-order convergence: halving h divides the error by about 4.
+        let (_t, y2) = fde_predictor_corrector(|_t, y| -y, 1.0, 1.0, 200, 1.0);
+        let err2 = (y2[200] - (-1.0_f64).exp()).abs();
+        assert!(err / err2 > 3.5 && err / err2 < 4.5, "{err} / {err2}");
+    }
+
+    #[test]
+    fn test_fde_predictor_corrector_constant_history_is_not_double_counted() {
+        // With α = 1 and f ≡ 1 the solution is y0 + t.  The previous scheme
+        // added y0 on top of the Grünwald-Letnikov memory and returned
+        // y_1 = 2 y0 + h.
+        let y0 = 3.0;
+        let (t, y) = fde_predictor_corrector(|_t, _y| 1.0, y0, 2.0, 40, 1.0);
+        for (tk, yk) in t.iter().zip(y.iter()) {
+            assert!((yk - (y0 + tk)).abs() < 1e-12, "t = {tk}: y = {yk}");
+        }
+        // A zero right-hand side keeps the initial value for every order.
+        for alpha in [0.3, 0.5, 0.9, 1.0] {
+            let (_t, y) = fde_predictor_corrector(|_t, _y| 0.0, 2.0, 1.0, 25, alpha);
+            assert!(
+                y.iter().all(|&v| (v - 2.0).abs() < 1e-14),
+                "alpha = {alpha}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_fde_predictor_corrector_fractional_relaxation() {
+        // ^C D^0.5 y = -y, y(0) = 1  =>  y(t) = E_{0.5}(-t^0.5) = e^t erfc(√t),
+        // so y(1) = e · erfc(1) = 0.42758357615580705.
+        let reference = mittag_leffler_1(0.5, -1.0, 200);
+        assert!((reference - 0.427_583_576_155_807_05).abs() < 1e-9);
+        let errors: Vec<f64> = [100_usize, 200]
+            .iter()
+            .map(|&n| {
+                let (_t, y) = fde_predictor_corrector(|_t, y| -y, 1.0, 1.0, n, 0.5);
+                (y[n] - reference).abs()
+            })
+            .collect();
+        assert!(errors[1] < 3e-5, "error at 200 steps: {}", errors[1]);
+        // Order 1 + α = 1.5: halving h divides the error by 2^1.5 ≈ 2.8.
+        assert!(errors[0] / errors[1] > 2.3, "{errors:?}");
     }
 
     #[test]
@@ -1315,11 +1522,344 @@ mod tests {
                 (-x * x - y2 * y2).exp()
             })
             .collect();
-        let lap = fractional_laplacian_2d(&f, nx, ny, h, 0.5);
+        let lap = fractional_laplacian_2d(&f, nx, ny, h, 0.5).expect("valid arguments");
         assert_eq!(lap.len(), nx * ny);
         for &v in &lap {
             assert!(v.is_finite());
         }
+    }
+
+    /// Gaussian bump `exp(-x² / 2)` sampled on the symmetric grid
+    /// `x_i = (i - (n-1)/2) h` (so that `x_{n-1-i} = -x_i` exactly).
+    fn symmetric_gaussian(n: usize, h: f64) -> Vec<f64> {
+        (0..n)
+            .map(|i| {
+                let x = (i as f64 - (n as f64 - 1.0) / 2.0) * h;
+                (-x * x / 2.0).exp()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_riesz_derivative_symmetric_input_gives_symmetric_output() {
+        let n = 64;
+        let f = symmetric_gaussian(n, 0.1);
+        for alpha in [0.3, 0.5, 1.2, 1.5, 1.9] {
+            let d = riesz_derivative(&f, 0.1, alpha);
+            assert_eq!(d.len(), n);
+            for j in 0..n {
+                assert!(
+                    (d[j] - d[n - 1 - j]).abs() < 1e-12,
+                    "alpha = {alpha}, j = {j}: {} vs {}",
+                    d[j],
+                    d[n - 1 - j]
+                );
+            }
+        }
+    }
+
+    /// Textbook unshifted Riesz-Grünwald-Letnikov sum written as plain index
+    /// loops, sharing no code with [`riesz_derivative`] beyond the coefficients:
+    /// `c_α h^{-α} [ Σ_{i≤j} g_{j-i} f_i + Σ_{i≥j} g_{i-j} f_i ]`.  The centre
+    /// sample `f_j` enters both the left- and the right-sided sum.
+    fn riesz_reference(f: &[f64], h: f64, alpha: f64) -> Vec<f64> {
+        let n = f.len();
+        let g = gl_coefficients(alpha, n);
+        let c = -1.0 / (2.0 * (PI * alpha / 2.0).cos());
+        let mut out = vec![0.0; n];
+        for j in 0..n {
+            let mut left = 0.0;
+            for i in 0..=j {
+                left += g[j - i] * f[i];
+            }
+            let mut right = 0.0;
+            for i in j..n {
+                right += g[i - j] * f[i];
+            }
+            out[j] = c * (left + right) / h.powf(alpha);
+        }
+        out
+    }
+
+    #[test]
+    fn test_riesz_derivative_sums_run_over_the_whole_grid() {
+        // Unit masses at both ends: the left-sided sum at x_j sees f_0 through
+        // g_j and the right-sided sum sees f_{n-1} through g_{n-1-j}.  A
+        // right-sided sum truncated at j + 1 terms misses f_{n-1} for j < n/2.
+        let n = 12;
+        let h = 0.5;
+        for alpha in [0.5, 1.5] {
+            let mut f = vec![0.0; n];
+            f[0] = 1.0;
+            f[n - 1] = 1.0;
+            let d = riesz_derivative(&f, h, alpha);
+            let expected = riesz_reference(&f, h, alpha);
+            for (j, (dj, ej)) in d.iter().zip(expected.iter()).enumerate() {
+                assert!(
+                    (dj - ej).abs() < 1e-12 * ej.abs().max(1.0),
+                    "alpha = {alpha}, j = {j}: {dj} vs {ej}"
+                );
+            }
+            // The far-end mass alone must reach x_0 through g_{n-1}.
+            let g = gl_coefficients(alpha, n);
+            let c = -1.0 / (2.0 * (PI * alpha / 2.0).cos());
+            let mut right_only = vec![0.0; n];
+            right_only[n - 1] = 1.0;
+            let d0 = riesz_derivative(&right_only, h, alpha)[0];
+            assert!(
+                (d0 - c * g[n - 1] / h.powf(alpha)).abs() < 1e-15,
+                "alpha = {alpha}: d[0] = {d0}"
+            );
+            assert!(d0 != 0.0);
+        }
+    }
+
+    #[test]
+    fn test_riesz_derivative_matches_reference_sums_for_general_input() {
+        // A non-symmetric signal exercises every term of both sums.
+        let n = 30;
+        let h = 0.2;
+        let f: Vec<f64> = (0..n)
+            .map(|i| (0.7 * i as f64).sin() + 0.1 * i as f64)
+            .collect();
+        for alpha in [0.3, 0.8, 1.2, 1.7] {
+            let d = riesz_derivative(&f, h, alpha);
+            let expected = riesz_reference(&f, h, alpha);
+            assert_eq!(d.len(), n);
+            for (j, (dj, ej)) in d.iter().zip(expected.iter()).enumerate() {
+                assert!(
+                    (dj - ej).abs() < 1e-11 * ej.abs().max(1.0),
+                    "alpha = {alpha}, j = {j}: {dj} vs {ej}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_riesz_derivative_converges_to_analytic_value() {
+        // For f(x) = exp(-x²/2): ∂^α f/∂|x|^α at x = 0 equals
+        // -2^{α/2} Γ((α+1)/2) / √π.  The GL scheme is first-order accurate.
+        let alpha = 1.5;
+        let exact = -(2.0_f64.powf(alpha / 2.0)) * gamma((alpha + 1.0) / 2.0) / PI.sqrt();
+        let errors: Vec<f64> = [0.2, 0.1, 0.05]
+            .iter()
+            .map(|&h| {
+                let n = (24.0_f64 / h).round() as usize + 1;
+                let f: Vec<f64> = (0..n)
+                    .map(|i| {
+                        let x = -12.0 + i as f64 * h;
+                        (-x * x / 2.0).exp()
+                    })
+                    .collect();
+                let d = riesz_derivative(&f, h, alpha);
+                (d[n / 2] - exact).abs() / exact.abs()
+            })
+            .collect();
+        assert!(errors[2] < 0.07, "relative errors {errors:?}");
+        for w in errors.windows(2) {
+            let ratio = w[0] / w[1];
+            assert!(ratio > 1.8 && ratio < 2.4, "first-order ratio {ratio}");
+        }
+    }
+
+    #[test]
+    fn test_riesz_derivative_empty_input() {
+        assert!(riesz_derivative(&[], 0.1, 0.5).is_empty());
+    }
+
+    #[test]
+    fn test_fractional_laplacian_1d_unit_order_is_second_difference() {
+        let n = 17;
+        let h = 0.3;
+        let f: Vec<f64> = (0..n)
+            .map(|i| (0.7 * i as f64).sin() + 0.1 * i as f64)
+            .collect();
+        let lap = fractional_laplacian_1d(&f, h, 1.0).expect("s = 1 is valid");
+        assert_eq!(lap.len(), n);
+        for j in 0..n {
+            let left = if j > 0 { f[j - 1] } else { 0.0 };
+            let right = if j + 1 < n { f[j + 1] } else { 0.0 };
+            let expected = -(left - 2.0 * f[j] + right) / (h * h);
+            assert!(
+                (lap[j] - expected).abs() < 1e-12 * expected.abs().max(1.0),
+                "j = {j}: {} vs {expected}",
+                lap[j]
+            );
+        }
+    }
+
+    #[test]
+    fn test_fractional_laplacian_1d_half_order_matches_lorentzian() {
+        // f = 1/(1+x²) has Fourier transform π e^{-|ξ|}, so
+        // (-Δ)^{1/2} f = F⁻¹[|ξ| π e^{-|ξ|}] = (1 - x²)/(1 + x²)².
+        let h = 0.05;
+        let n = 2001;
+        let x: Vec<f64> = (0..n).map(|i| -50.0 + i as f64 * h).collect();
+        let f: Vec<f64> = x.iter().map(|&xi| 1.0 / (1.0 + xi * xi)).collect();
+        let lap = fractional_laplacian_1d(&f, h, 0.5).expect("s = 1/2 is valid");
+        let mut checked = 0;
+        for (xi, li) in x.iter().zip(lap.iter()) {
+            if xi.abs() <= 5.0 {
+                let exact = (1.0 - xi * xi) / (1.0 + xi * xi).powi(2);
+                assert!((li - exact).abs() < 1.5e-3, "x = {xi}: {li} vs {exact}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 100);
+        // The operator is not identically zero at s = 1/2.
+        assert!(lap.iter().any(|v| v.abs() > 0.1));
+    }
+
+    #[test]
+    fn test_fractional_laplacian_1d_gaussian_centre_value() {
+        // (-Δ)^s exp(-x²/2) at x = 0 equals 2^s Γ(s + 1/2) / √π.
+        let h = 0.05;
+        let n = 801;
+        let f: Vec<f64> = (0..n)
+            .map(|i| {
+                let x = (i as f64 - 400.0) * h;
+                (-x * x / 2.0).exp()
+            })
+            .collect();
+        for s in [0.25, 0.5, 0.75, 1.0] {
+            let lap = fractional_laplacian_1d(&f, h, s).expect("valid s");
+            let exact = 2.0_f64.powf(s) * gamma(s + 0.5) / PI.sqrt();
+            assert!(
+                (lap[400] - exact).abs() < 2e-3,
+                "s = {s}: {} vs {exact}",
+                lap[400]
+            );
+        }
+    }
+
+    #[test]
+    fn test_fractional_laplacian_1d_is_symmetric_positive_semidefinite() {
+        let n = 40;
+        let h = 0.25;
+        let mut state = 0x1234_5678_u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let f: Vec<f64> = (0..n).map(|_| next()).collect();
+        let g: Vec<f64> = (0..n).map(|_| next()).collect();
+        for s in [0.3, 0.5, 0.8, 1.0] {
+            let lf = fractional_laplacian_1d(&f, h, s).expect("valid s");
+            let lg = fractional_laplacian_1d(&g, h, s).expect("valid s");
+            let quad: f64 = f.iter().zip(lf.iter()).map(|(a, b)| a * b).sum();
+            assert!(quad > 0.0, "s = {s}: <f, Lf> = {quad}");
+            let fg: f64 = f.iter().zip(lg.iter()).map(|(a, b)| a * b).sum();
+            let gf: f64 = g.iter().zip(lf.iter()).map(|(a, b)| a * b).sum();
+            assert!((fg - gf).abs() < 1e-12 * fg.abs().max(1.0), "symmetry");
+        }
+    }
+
+    #[test]
+    fn test_fractional_laplacian_1d_single_point_and_empty() {
+        let lap = fractional_laplacian_1d(&[2.0], 0.5, 0.5).expect("valid");
+        let expected = 2.0 * gamma(2.0) / (gamma(1.5) * gamma(1.5)) / 0.5;
+        assert!(
+            (lap[0] - expected).abs() < 1e-12,
+            "{} vs {expected}",
+            lap[0]
+        );
+        assert!(
+            fractional_laplacian_1d(&[], 0.5, 0.5)
+                .expect("valid")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_fractional_laplacian_rejects_invalid_arguments() {
+        let f = vec![1.0, 2.0, 3.0, 4.0];
+        for s in [0.0, -0.5, 1.5, f64::NAN, f64::INFINITY] {
+            match fractional_laplacian_1d(&f, 0.1, s) {
+                Err(PhysicsError::InvalidInput { field, .. }) => assert_eq!(field, "s"),
+                other => panic!("s = {s}: expected InvalidInput, got {other:?}"),
+            }
+        }
+        for h in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            match fractional_laplacian_1d(&f, h, 0.5) {
+                Err(PhysicsError::InvalidInput { field, .. }) => assert_eq!(field, "h"),
+                other => panic!("h = {h}: expected InvalidInput, got {other:?}"),
+            }
+        }
+        // 2-D: invalid s, invalid h, and a data length that does not match the grid.
+        assert!(fractional_laplacian_2d(&f, 2, 2, 0.1, 1.2).is_err());
+        assert!(fractional_laplacian_2d(&f, 2, 2, 0.0, 0.5).is_err());
+        match fractional_laplacian_2d(&f, 3, 2, 0.1, 0.5) {
+            Err(PhysicsError::InvalidInput { field, .. }) => assert_eq!(field, "f"),
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+        assert!(fractional_laplacian_2d(&f, usize::MAX, 2, 0.1, 0.5).is_err());
+    }
+
+    #[test]
+    fn test_fractional_laplacian_2d_unit_order_is_five_point_laplacian() {
+        let nx = 7;
+        let ny = 5;
+        let h = 0.4;
+        let f: Vec<f64> = (0..nx * ny)
+            .map(|i| ((i * 37 % 11) as f64 - 5.0) * 0.3 + (i as f64 * 0.21).cos())
+            .collect();
+        let lap = fractional_laplacian_2d(&f, nx, ny, h, 1.0).expect("s = 1 is valid");
+        let at = |ix: isize, iy: isize| -> f64 {
+            if ix < 0 || iy < 0 || ix >= nx as isize || iy >= ny as isize {
+                0.0
+            } else {
+                f[iy as usize * nx + ix as usize]
+            }
+        };
+        for iy in 0..ny as isize {
+            for ix in 0..nx as isize {
+                let expected = -(at(ix - 1, iy) + at(ix + 1, iy) + at(ix, iy - 1) + at(ix, iy + 1)
+                    - 4.0 * at(ix, iy))
+                    / (h * h);
+                let got = lap[iy as usize * nx + ix as usize];
+                assert!(
+                    (got - expected).abs() < 1e-11 * expected.abs().max(1.0),
+                    "({ix}, {iy}): {got} vs {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_fractional_laplacian_2d_is_sum_of_axis_operators() {
+        // For a separable field u(x) v(y) the axis-wise operator is
+        // (L u)(x) v(y) + u(x) (L v)(y) with L the 1-D fractional Laplacian.
+        let nx = 9;
+        let ny = 6;
+        let h = 0.3;
+        let s = 0.5;
+        let u: Vec<f64> = (0..nx).map(|i| (0.5 * i as f64).sin() + 1.0).collect();
+        let v: Vec<f64> = (0..ny).map(|j| (0.8 * j as f64).cos() + 0.5).collect();
+        let f: Vec<f64> = (0..nx * ny).map(|k| u[k % nx] * v[k / nx]).collect();
+        let lap = fractional_laplacian_2d(&f, nx, ny, h, s).expect("valid");
+        let lu = fractional_laplacian_1d(&u, h, s).expect("valid");
+        let lv = fractional_laplacian_1d(&v, h, s).expect("valid");
+        for (k, got) in lap.iter().enumerate() {
+            let (ix, iy) = (k % nx, k / nx);
+            let expected = lu[ix] * v[iy] + u[ix] * lv[iy];
+            assert!(
+                (got - expected).abs() < 1e-12 * expected.abs().max(1.0),
+                "k = {k}: {got} vs {expected}"
+            );
+        }
+        // Degenerate grids.
+        assert!(
+            fractional_laplacian_2d(&[], 0, 5, h, s)
+                .expect("valid")
+                .is_empty()
+        );
+        assert!(
+            fractional_laplacian_2d(&[], 4, 0, h, s)
+                .expect("valid")
+                .is_empty()
+        );
     }
 
     #[test]

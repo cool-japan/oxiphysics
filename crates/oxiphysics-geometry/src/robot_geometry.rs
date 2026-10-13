@@ -8,6 +8,7 @@
 //! row-major order as `[f64; 16]`. Joint arrays use plain `[f64; 3]` vectors
 //! for positions and axes. No external linear-algebra crate is used.
 
+use crate::Error;
 use rand::RngExt;
 use std::f64::consts::PI;
 
@@ -389,35 +390,60 @@ impl RobotArm {
         j
     }
 
-    /// Computes the full 6×n Jacobian (position + orientation) numerically.
+    /// Computes the full 6×dof geometric Jacobian (position + orientation)
+    /// numerically with central differences.
     ///
-    /// Orientation rows use angle-axis approximation via the rotation part of
-    /// the end-effector transform. Returns flat row-major `6 × dof`.
-    pub fn jacobian_6dof_numerical(&self, q: &[f64]) -> Vec<f64> {
-        let n = q.len();
-        let eps = 1e-7;
-        let t0 = self.end_effector(q);
-        let mut j = vec![0.0f64; 6 * n];
-        let mut qp = q.to_vec();
-        for i in 0..n {
-            qp[i] += eps;
-            let t1 = self.end_effector(&qp);
-            qp[i] = q[i];
-            // Position columns
-            for row in 0..3 {
-                j[row * n + i] = (t1[row * 4 + 3] - t0[row * 4 + 3]) / eps;
-            }
-            // Orientation columns (skew-symmetric R_delta)
-            let r_delta = mat4_mul(&mat4_transpose(&t0), &t1);
-            // vee map: extract angular velocity from skew part
-            let wx = (r_delta[6] - r_delta[9]) / (2.0 * eps);
-            let wy = (r_delta[8] - r_delta[2]) / (2.0 * eps);
-            let wz = (r_delta[1] - r_delta[4]) / (2.0 * eps);
-            j[3 * n + i] = wx;
-            j[4 * n + i] = wy;
-            j[5 * n + i] = wz;
+    /// Rows 0–2 map the joint rates to the linear velocity of the end-effector
+    /// origin, rows 3–5 to its angular velocity. Both blocks are expressed in the
+    /// world frame, like the columns of [`RobotArm::jacobian_analytical`]; a
+    /// revolute joint therefore contributes the world-frame direction of its axis
+    /// as angular column and a prismatic joint contributes zero.
+    ///
+    /// Stepping joint `i` by `±eps` turns the end-effector rotation into `R₊` and
+    /// `R₋`. The world-frame rotation `R₊ R₋ᵀ ≈ I + 2·eps·[ω]×` between them has
+    /// the angular velocity `ω` as the vector of its skew-symmetric part.
+    ///
+    /// Returns a flat row-major array of shape `6 × dof`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::LengthMismatch`] if `q.len()` differs from
+    /// [`RobotArm::dof`].
+    pub fn jacobian_6dof_numerical(&self, q: &[f64]) -> Result<Vec<f64>, Error> {
+        let n = self.dof();
+        if q.len() != n {
+            return Err(Error::LengthMismatch {
+                expected: n,
+                actual: q.len(),
+            });
         }
-        j
+        let eps = 1e-6;
+        let mut j = vec![0.0f64; 6 * n];
+        let mut probe = q.to_vec();
+        for i in 0..n {
+            probe[i] = q[i] + eps;
+            let t_plus = self.end_effector(&probe);
+            probe[i] = q[i] - eps;
+            let t_minus = self.end_effector(&probe);
+            probe[i] = q[i];
+            // Linear velocity of the end-effector origin.
+            for row in 0..3 {
+                j[row * n + i] = (t_plus[row * 4 + 3] - t_minus[row * 4 + 3]) / (2.0 * eps);
+            }
+            // World-frame rotation between the two probes: dR = R₊ R₋ᵀ.
+            let mut d_rot = [[0.0f64; 3]; 3];
+            for (r, d_row) in d_rot.iter_mut().enumerate() {
+                for (c, d_rc) in d_row.iter_mut().enumerate() {
+                    *d_rc = (0..3).map(|k| t_plus[r * 4 + k] * t_minus[c * 4 + k]).sum();
+                }
+            }
+            // vee map of the skew part: dR − dRᵀ = 4·eps·[ω]×.
+            let scale = 1.0 / (4.0 * eps);
+            j[3 * n + i] = (d_rot[2][1] - d_rot[1][2]) * scale;
+            j[4 * n + i] = (d_rot[0][2] - d_rot[2][0]) * scale;
+            j[5 * n + i] = (d_rot[1][0] - d_rot[0][1]) * scale;
+        }
+        Ok(j)
     }
 
     /// Computes the 3×n analytical Jacobian using the geometric (cross-product) method.
@@ -1328,6 +1354,9 @@ impl ReachabilityMap {
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod jacobian_tests;
 
 #[cfg(test)]
 mod tests {

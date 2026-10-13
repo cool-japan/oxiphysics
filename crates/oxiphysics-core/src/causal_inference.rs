@@ -15,6 +15,10 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use nalgebra::{Matrix2, Vector2};
+
+use crate::error::PhysicsError;
+
 // ---------------------------------------------------------------------------
 // CausalGraph
 // ---------------------------------------------------------------------------
@@ -233,6 +237,24 @@ impl CausalGraph {
     pub fn is_acyclic(&self) -> bool {
         self.topological_sort().is_some()
     }
+
+    /// Return a copy of the graph with every edge **leaving** `v` removed.
+    ///
+    /// Every path that starts at `v` in the result necessarily begins with an
+    /// arrow *into* `v`, so these are exactly the back-door paths of `v`.  This
+    /// is the graph in which the back-door and front-door criteria test
+    /// d-separation.  The receiver is left untouched.
+    ///
+    /// # Panics
+    /// Panics if `v >= n_nodes`.
+    pub fn without_outgoing(&self, v: usize) -> CausalGraph {
+        let mut modified = self.clone();
+        let former_children = std::mem::take(&mut modified.children[v]);
+        for child in former_children {
+            modified.parents[child].retain(|&p| p != v);
+        }
+        modified
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -425,17 +447,11 @@ impl BackdoorCriterion {
 
         // Criterion 2: Z blocks all backdoor paths
         // A backdoor path is a path from X to Y that starts with an arrow INTO X.
-        // We check this by creating a modified graph where outgoing edges from X
-        // are removed, and then check d-separation.
-        let mut modified = self.graph.clone();
-        // Remove all outgoing edges from treatment in the modified graph
-        let children_of_treatment = modified.graph_children_of(treatment);
-        for &c in &children_of_treatment {
-            modified.parents[c].retain(|&p| p != treatment);
-        }
-        modified.children[treatment].clear();
-
-        modified.d_separated(&[treatment], &[outcome], adjustment_set)
+        // We check this by removing the outgoing edges of X and then testing
+        // d-separation in the modified graph.
+        self.graph
+            .without_outgoing(treatment)
+            .d_separated(&[treatment], &[outcome], adjustment_set)
     }
 
     /// Compute the backdoor-adjusted causal effect estimate from observational data.
@@ -519,17 +535,6 @@ impl BackdoorCriterion {
     }
 }
 
-// Extension trait for internal use
-trait GraphChildrenOf {
-    fn graph_children_of(&self, v: usize) -> Vec<usize>;
-}
-
-impl GraphChildrenOf for CausalGraph {
-    fn graph_children_of(&self, v: usize) -> Vec<usize> {
-        self.children[v].clone()
-    }
-}
-
 // ---------------------------------------------------------------------------
 // FrontdoorCriterion
 // ---------------------------------------------------------------------------
@@ -537,7 +542,8 @@ impl GraphChildrenOf for CausalGraph {
 /// Implements the frontdoor adjustment formula for causal effect identification.
 ///
 /// The frontdoor criterion allows identification of causal effects through a
-/// mediator set `M` when direct adjustment is not possible.
+/// mediator set `M` when direct adjustment is not possible (for example when
+/// an unobserved confounder `U` affects both `X` and `Y`).
 #[derive(Debug, Clone)]
 pub struct FrontdoorCriterion {
     /// The causal graph.
@@ -551,42 +557,56 @@ impl FrontdoorCriterion {
     }
 
     /// Check if `mediator_set` satisfies the frontdoor criterion for identifying
-    /// the effect of `treatment` on `outcome`.
+    /// the effect of `treatment` on `outcome` (Pearl, *Causality*, Def. 3.3.3).
     ///
     /// Conditions:
     /// 1. All directed paths from `treatment` to `outcome` are intercepted by `M`.
-    /// 2. No backdoor path from `treatment` to `M` (or blocked by `treatment`).
-    /// 3. All backdoor paths from `M` to `outcome` are blocked by `treatment`.
+    /// 2. There is no unblocked back-door path from `treatment` to `M`.
+    /// 3. All back-door paths from `M` to `outcome` are blocked by `treatment`.
+    ///
+    /// Conditions 2 and 3 are tested per mediator by d-separation in the graph
+    /// from which the outgoing edges of the path's start node were removed (see
+    /// [`CausalGraph::without_outgoing`]), so only back-door paths remain.
+    ///
+    /// Returns `false` for out-of-range node indices and for mediator sets that
+    /// contain the treatment or the outcome.
     pub fn check(&self, treatment: usize, outcome: usize, mediator_set: &[usize]) -> bool {
+        let n = self.graph.n_nodes;
+        if treatment >= n || outcome >= n || treatment == outcome {
+            return false;
+        }
+        if mediator_set
+            .iter()
+            .any(|&m| m >= n || m == treatment || m == outcome)
+        {
+            return false;
+        }
         let med_set: HashSet<usize> = mediator_set.iter().copied().collect();
 
-        // Condition 1: M intercepts all directed paths from X to Y
+        // Condition 1: M intercepts all directed paths from X to Y.
         if !self.intercepts_all_paths(treatment, outcome, &med_set) {
             return false;
         }
 
-        // Condition 2: no unblocked backdoor from X to M (blocked by ∅)
-        // i.e., X d-separates from M given ∅ in graph with X's parents cut
-        // Simplified: check no common causes of X and M that aren't through X
-        for &m in mediator_set {
-            if !self.graph.d_separated(&[treatment], &[m], &[treatment]) {
-                // Check via empty set
-                let x_anc = self.graph.ancestors(treatment);
-                let m_anc = self.graph.ancestors(m);
-                // If there is overlap in ancestors excluding X's subtree, problem exists
-                // Simplified check for demo purposes
-                let _ = (x_anc, m_anc);
-            }
+        // Condition 2: no unblocked back-door path from X to any m ∈ M.
+        // Back-door paths from X are the paths of the graph without X's outgoing
+        // edges; they must be blocked by the empty set.
+        let without_treatment_out = self.graph.without_outgoing(treatment);
+        if !mediator_set
+            .iter()
+            .all(|&m| without_treatment_out.d_separated(&[treatment], &[m], &[]))
+        {
+            return false;
         }
 
-        // Condition 3: all backdoor from M to Y are blocked by X
-        for &m in mediator_set {
-            if !self.graph.d_separated(&[m], &[outcome], &[treatment]) {
-                return false;
-            }
-        }
-
-        true
+        // Condition 3: every back-door path from m ∈ M to Y is blocked by X.
+        // The graph without m's outgoing edges keeps exactly the paths that
+        // begin with an arrow into m, which X must block.
+        mediator_set.iter().all(|&m| {
+            self.graph
+                .without_outgoing(m)
+                .d_separated(&[m], &[outcome], &[treatment])
+        })
     }
 
     /// Check if `med_set` intercepts all directed paths from `src` to `dst`.
@@ -613,49 +633,187 @@ impl FrontdoorCriterion {
         true
     }
 
-    /// Compute the frontdoor-adjusted causal effect using sample data.
+    /// Estimate E\[Y | do(X = x_val)\] from observational data with a single
+    /// mediator `M`, using the frontdoor formula.
     ///
-    /// E\[Y|do(X=x)\] = Σ_m P(M=m|X=x) Σ_x' E\[Y|M=m, X=x'\] P(X=x')
+    /// The frontdoor formula reads
     ///
-    /// Simplified discrete approximation for a single mediator.
-    pub fn adjusted_effect(data_x: &[f64], data_m: &[f64], data_y: &[f64], x_val: f64) -> f64 {
+    /// E\[Y | do(X=x)\] = Σ_m P(M=m | X=x) · Σ_x' E\[Y | M=m, X=x'\] · P(X=x').
+    ///
+    /// This estimator is semi-parametric:
+    ///
+    /// * the outcome regression `E[Y | M, X] = β₀ + β_m·M + β_x·X` is fitted by
+    ///   ordinary least squares (centred 2×2 normal equations, Cholesky);
+    ///   averaging it over the empirical distribution of `X` gives
+    ///   `Σ_x' E[Y | m, x'] P(x') = β₀ + β_m·m + β_x·mean(X)`;
+    /// * the mediator regression `E[M | X = x_val]` is estimated by local-linear
+    ///   kernel regression (Gaussian kernel, normal-reference bandwidth), which
+    ///   is exactly unbiased for a linear conditional mean regardless of the
+    ///   design density.
+    ///
+    /// Combining the two gives `mean(Y) + β_m · (Ê[M | X = x_val] − mean(M))`.
+    /// Unlike the naive regression of `Y` on `X`, this is consistent under
+    /// unobserved `X`–`Y` confounding when `M` satisfies the frontdoor
+    /// criterion (see [`FrontdoorCriterion::check`]) and `E[Y | M, X]` is
+    /// linear.
+    ///
+    /// # Errors
+    /// Returns [`PhysicsError::InvalidInput`] if the slices differ in length,
+    /// contain fewer than four observations or non-finite values, if `x_val` is
+    /// not finite, if `X` or `M` has no variation or the two are perfectly
+    /// collinear (the outcome regression is singular), or if no observation
+    /// carries kernel weight at `x_val` (the positivity assumption `P(x) > 0`
+    /// fails).
+    pub fn adjusted_effect(
+        data_x: &[f64],
+        data_m: &[f64],
+        data_y: &[f64],
+        x_val: f64,
+    ) -> Result<f64, PhysicsError> {
         let n = data_x.len();
-        let bandwidth = {
-            let mut xs = data_x.to_vec();
-            xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let iqr = xs[3 * n / 4] - xs[n / 4];
-            iqr.max(0.1) * 0.4
-        };
-
-        // Approximate E[M|X=x] via kernel smoothing
-        let (mut sum_m, mut w_sum) = (0.0_f64, 0.0_f64);
-        for i in 0..n {
-            let w = gaussian_kernel((data_x[i] - x_val) / bandwidth);
-            sum_m += w * data_m[i];
-            w_sum += w;
+        if data_m.len() != n || data_y.len() != n {
+            return Err(PhysicsError::InvalidInput {
+                field: "data".to_string(),
+                reason: format!(
+                    "data_x, data_m and data_y must have equal lengths, got {}, {} and {}",
+                    n,
+                    data_m.len(),
+                    data_y.len()
+                ),
+            });
         }
-        let e_m_given_x = if w_sum > 1e-12 { sum_m / w_sum } else { 0.0 };
-
-        // Approximate E[Y|M=m] via kernel smoothing on M
-        let bw_m = {
-            let mut ms = data_m.to_vec();
-            ms.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let iqr = ms[3 * n / 4] - ms[n / 4];
-            iqr.max(0.1) * 0.4
-        };
-        let (mut sum_y, mut wy_sum) = (0.0_f64, 0.0_f64);
-        for i in 0..n {
-            let w = gaussian_kernel((data_m[i] - e_m_given_x) / bw_m);
-            sum_y += w * data_y[i];
-            wy_sum += w;
+        if n < 4 {
+            return Err(PhysicsError::InvalidInput {
+                field: "data".to_string(),
+                reason: format!("frontdoor estimation needs at least 4 observations, got {n}"),
+            });
         }
-        if wy_sum > 1e-12 { sum_y / wy_sum } else { 0.0 }
+        if !x_val.is_finite() {
+            return Err(PhysicsError::InvalidInput {
+                field: "x_val".to_string(),
+                reason: "intervention value must be finite".to_string(),
+            });
+        }
+        for (name, column) in [("data_x", data_x), ("data_m", data_m), ("data_y", data_y)] {
+            if column.iter().any(|v| !v.is_finite()) {
+                return Err(PhysicsError::InvalidInput {
+                    field: name.to_string(),
+                    reason: "observations must be finite".to_string(),
+                });
+            }
+        }
+
+        let nf = n as f64;
+        let mean_x = data_x.iter().sum::<f64>() / nf;
+        let mean_m = data_m.iter().sum::<f64>() / nf;
+        let mean_y = data_y.iter().sum::<f64>() / nf;
+
+        // Centred second moments of the regression Y ~ 1 + M + X.
+        let (mut s_mm, mut s_xx, mut s_mx, mut s_my, mut s_xy) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        for ((&x, &m), &y) in data_x.iter().zip(data_m).zip(data_y) {
+            let (dx, dm, dy) = (x - mean_x, m - mean_m, y - mean_y);
+            s_mm += dm * dm;
+            s_xx += dx * dx;
+            s_mx += dm * dx;
+            s_my += dm * dy;
+            s_xy += dx * dy;
+        }
+        if s_xx <= 0.0 || s_mm <= 0.0 {
+            return Err(PhysicsError::InvalidInput {
+                field: if s_xx <= 0.0 { "data_x" } else { "data_m" }.to_string(),
+                reason: "variable has no variation, the frontdoor regression is undefined"
+                    .to_string(),
+            });
+        }
+        // 1 − ρ²(M, X) must be bounded away from zero for a usable fit.
+        if s_mm * s_xx - s_mx * s_mx <= 1e-12 * s_mm * s_xx {
+            return Err(PhysicsError::InvalidInput {
+                field: "data_m".to_string(),
+                reason: "mediator is (numerically) collinear with the treatment, \
+                         the outcome regression is singular"
+                    .to_string(),
+            });
+        }
+        let normal_matrix = Matrix2::new(s_mm, s_mx, s_mx, s_xx);
+        let cholesky = normal_matrix
+            .cholesky()
+            .ok_or_else(|| PhysicsError::InvalidInput {
+                field: "data_m".to_string(),
+                reason: "normal equations of the outcome regression are not positive definite"
+                    .to_string(),
+            })?;
+        let beta = cholesky.solve(&Vector2::new(s_my, s_xy));
+        let beta_m = beta[0];
+
+        let bandwidth = normal_reference_bandwidth(data_x);
+        let e_m_given_x = local_linear_mean(data_x, data_m, x_val, bandwidth).ok_or_else(|| {
+            PhysicsError::InvalidInput {
+                field: "x_val".to_string(),
+                reason: "no observations near the intervention value (positivity violated)"
+                    .to_string(),
+            }
+        })?;
+
+        Ok(mean_y + beta_m * (e_m_given_x - mean_m))
     }
 }
 
 /// Gaussian kernel function for kernel smoothing.
 fn gaussian_kernel(u: f64) -> f64 {
     (-0.5 * u * u).exp()
+}
+
+/// Normal-reference (Silverman) bandwidth `1.06 · min(σ̂, IQR/1.34) · n^{-1/5}`.
+///
+/// Falls back to the sample standard deviation when the inter-quartile range
+/// is zero (heavily tied data).  The input must contain at least four finite
+/// values with non-zero variance.
+fn normal_reference_bandwidth(x: &[f64]) -> f64 {
+    let n = x.len();
+    let nf = n as f64;
+    let mean = x.iter().sum::<f64>() / nf;
+    let variance = x.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / (nf - 1.0);
+    let std_dev = variance.sqrt();
+    let mut sorted = x.to_vec();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let iqr = sorted[(3 * n) / 4] - sorted[n / 4];
+    let scale = if iqr > 0.0 {
+        std_dev.min(iqr / 1.34)
+    } else {
+        std_dev
+    };
+    1.06 * scale * nf.powf(-0.2)
+}
+
+/// Local-linear Gaussian-kernel estimate of `E[response | covariate = x0]`.
+///
+/// Fits a weighted least-squares line through the observations around `x0` and
+/// evaluates it at `x0`.  Unlike the Nadaraya–Watson (local-constant)
+/// estimator it has no design bias: it reproduces linear conditional means
+/// exactly for any bandwidth.  When the local design is degenerate (all weight
+/// on a single covariate value) it falls back to the weighted mean.  Returns
+/// `None` when no observation carries kernel weight at `x0`.
+fn local_linear_mean(covariate: &[f64], response: &[f64], x0: f64, bandwidth: f64) -> Option<f64> {
+    let (mut s0, mut s1, mut s2, mut t0, mut t1) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
+    for (&xi, &ri) in covariate.iter().zip(response) {
+        // Work in bandwidth units for a well-conditioned 2×2 system.
+        let u = (xi - x0) / bandwidth;
+        let w = gaussian_kernel(u);
+        s0 += w;
+        s1 += w * u;
+        s2 += w * u * u;
+        t0 += w * ri;
+        t1 += w * u * ri;
+    }
+    if s0.is_nan() || s0 <= 1e-12 {
+        return None;
+    }
+    let det = s0 * s2 - s1 * s1;
+    if det > 1e-12 * s0 * s2 {
+        Some((s2 * t0 - s1 * t1) / det)
+    } else {
+        Some(t0 / s0)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1422,401 +1580,5 @@ pub fn sample_covariance(data: &[Vec<f64>]) -> Vec<f64> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn simple_chain() -> CausalGraph {
-        // X0 → X1 → X2
-        let mut g = CausalGraph::new(3);
-        g.add_edge(0, 1);
-        g.add_edge(1, 2);
-        g
-    }
-
-    fn fork_graph() -> CausalGraph {
-        // X0 → X1, X0 → X2
-        let mut g = CausalGraph::new(3);
-        g.add_edge(0, 1);
-        g.add_edge(0, 2);
-        g
-    }
-
-    fn collider_graph() -> CausalGraph {
-        // X0 → X2, X1 → X2
-        let mut g = CausalGraph::new(3);
-        g.add_edge(0, 2);
-        g.add_edge(1, 2);
-        g
-    }
-
-    // --- CausalGraph tests ---
-
-    #[test]
-    fn test_topological_sort_chain() {
-        let g = simple_chain();
-        let order = g.topological_sort().unwrap();
-        assert_eq!(order, vec![0, 1, 2]);
-    }
-
-    #[test]
-    fn test_topological_sort_fork() {
-        let g = fork_graph();
-        let order = g.topological_sort().unwrap();
-        assert_eq!(order[0], 0); // X0 must come first
-    }
-
-    #[test]
-    fn test_ancestors() {
-        let g = simple_chain();
-        let anc = g.ancestors(2);
-        assert!(anc.contains(&0));
-        assert!(anc.contains(&1));
-        assert!(!anc.contains(&2));
-    }
-
-    #[test]
-    fn test_descendants() {
-        let g = simple_chain();
-        let desc = g.descendants(0);
-        assert!(desc.contains(&1));
-        assert!(desc.contains(&2));
-    }
-
-    #[test]
-    fn test_d_separation_chain_blocked_by_middle() {
-        // X0 → X1 → X2; conditioning on X1 blocks 0⊥2|{1}
-        let g = simple_chain();
-        assert!(g.d_separated(&[0], &[2], &[1]));
-    }
-
-    #[test]
-    fn test_d_separation_chain_not_blocked_empty() {
-        let g = simple_chain();
-        assert!(!g.d_separated(&[0], &[2], &[]));
-    }
-
-    #[test]
-    fn test_d_separation_fork() {
-        // X0 → X1, X0 → X2; conditioning on X0 blocks 1⊥2|{0}
-        let g = fork_graph();
-        assert!(g.d_separated(&[1], &[2], &[0]));
-        assert!(!g.d_separated(&[1], &[2], &[]));
-    }
-
-    #[test]
-    fn test_d_separation_collider_blocked_by_default() {
-        // X0 → X2 ← X1; collider: 0⊥1|{} (blocked)
-        let g = collider_graph();
-        assert!(g.d_separated(&[0], &[1], &[]));
-    }
-
-    #[test]
-    fn test_d_separation_collider_opened_by_conditioning() {
-        // X0 → X2 ← X1; conditioning on X2 opens path: 0 NOT ⊥ 1|{2}
-        let g = collider_graph();
-        assert!(!g.d_separated(&[0], &[1], &[2]));
-    }
-
-    #[test]
-    fn test_is_acyclic() {
-        let g = simple_chain();
-        assert!(g.is_acyclic());
-    }
-
-    #[test]
-    fn test_creates_cycle_detected() {
-        let mut g = CausalGraph::new(3);
-        g.add_edge(0, 1);
-        g.add_edge(1, 2);
-        assert!(g.creates_cycle(2, 0));
-    }
-
-    #[test]
-    fn test_markov_blanket() {
-        // X0 → X1 → X2; blanket(X1) = {X0, X2}
-        let g = simple_chain();
-        let blanket = g.markov_blanket(1);
-        assert!(blanket.contains(&0));
-        assert!(blanket.contains(&2));
-        assert!(!blanket.contains(&1));
-    }
-
-    // --- StructuralCausalModel tests ---
-
-    #[test]
-    fn test_scm_sample_basic() {
-        // X0 = ε0; X1 = 2*X0 + ε1
-        let mut scm = StructuralCausalModel::new(2);
-        scm.add_edge(0, 1, 2.0);
-        scm.noise_std = vec![1.0, 0.0];
-        let noise = vec![3.0, 0.0];
-        let x = scm.sample_with_noise(&noise);
-        assert!((x[0] - 3.0).abs() < 1e-10);
-        assert!((x[1] - 6.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_scm_intervention_removes_parents() {
-        let mut scm = StructuralCausalModel::new(2);
-        scm.add_edge(0, 1, 2.0);
-        let intervened = scm.intervene(1, 5.0);
-        assert!(intervened.graph.parents[1].is_empty());
-        let x = intervened.sample_with_noise(&[1.0, 0.0]);
-        assert!((x[1] - 5.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_scm_total_effect_chain() {
-        // X0 → X1 → X2, coeff 2.0 and 3.0
-        let mut scm = StructuralCausalModel::new(3);
-        scm.add_edge(0, 1, 2.0);
-        scm.add_edge(1, 2, 3.0);
-        let effect = scm.total_effect_linear(0, 2);
-        assert!((effect - 6.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_scm_no_effect_for_independent_vars() {
-        let mut scm = StructuralCausalModel::new(3);
-        scm.add_edge(0, 1, 1.0);
-        let effect = scm.total_effect_linear(0, 2);
-        assert!(effect.abs() < 1e-10);
-    }
-
-    // --- BackdoorCriterion tests ---
-
-    #[test]
-    fn test_backdoor_check_valid_adjustment() {
-        // W → X → Y, W → Y (confounding)
-        // Adjusting for W satisfies backdoor
-        let mut g = CausalGraph::new(3); // W=0, X=1, Y=2
-        g.add_edge(0, 1); // W→X
-        g.add_edge(1, 2); // X→Y
-        g.add_edge(0, 2); // W→Y (backdoor)
-        let bd = BackdoorCriterion::new(g);
-        // W is not a descendant of X, and blocks the backdoor W→Y
-        assert!(bd.check(1, 2, &[0]));
-    }
-
-    #[test]
-    fn test_backdoor_fails_if_descendant_in_set() {
-        // X → M → Y; adjusting for M (a descendant of X) fails
-        let mut g = CausalGraph::new(3); // X=0, M=1, Y=2
-        g.add_edge(0, 1);
-        g.add_edge(1, 2);
-        let bd = BackdoorCriterion::new(g);
-        assert!(!bd.check(0, 2, &[1])); // M is descendant of X
-    }
-
-    // --- PropensityScoreMatching tests ---
-
-    #[test]
-    fn test_propensity_score_fit_and_predict() {
-        let mut psm = PropensityScoreMatching::new(2);
-        let covariates: Vec<Vec<f64>> = (0..100).map(|i| vec![(i as f64) / 100.0, 0.5]).collect();
-        let treatment: Vec<f64> = covariates
-            .iter()
-            .map(|x| if x[0] > 0.5 { 1.0 } else { 0.0 })
-            .collect();
-        psm.fit(&covariates, &treatment, 0.5, 200);
-        let ps = psm.predict(&covariates);
-        assert_eq!(ps.len(), 100);
-        // Scores should be between 0 and 1
-        for p in &ps {
-            assert!(*p > 0.0 && *p < 1.0);
-        }
-    }
-
-    #[test]
-    fn test_ate_sign_positive() {
-        // Treatment has positive effect on outcome
-        let mut psm = PropensityScoreMatching::new(1);
-        let n = 200;
-        let covariates: Vec<Vec<f64>> = (0..n).map(|i| vec![(i as f64) / n as f64]).collect();
-        let treatment: Vec<f64> = covariates
-            .iter()
-            .map(|x| if x[0] > 0.5 { 1.0 } else { 0.0 })
-            .collect();
-        let outcome: Vec<f64> = covariates
-            .iter()
-            .zip(treatment.iter())
-            .map(|(x, t)| x[0] + 2.0 * t + 0.1)
-            .collect();
-        psm.fit(&covariates, &treatment, 0.3, 300);
-        let ate = psm.estimate_ate(&covariates, &treatment, &outcome);
-        assert!(ate > 0.0, "ATE should be positive, got {ate}");
-    }
-
-    // --- InstrumentalVariables tests ---
-
-    #[test]
-    fn test_iv_estimation_simple() {
-        // Y = 2*D + e, D = Z + v (instrument Z)
-        // IV estimate should recover β ≈ 2
-        let n = 500;
-        let z: Vec<Vec<f64>> = (0..n).map(|i| vec![(i as f64 % 2.0)]).collect();
-        let d: Vec<f64> = z.iter().map(|zi| zi[0] + 0.5).collect();
-        let y: Vec<f64> = d.iter().map(|di| 2.0 * di + 1.0).collect();
-
-        let mut iv = InstrumentalVariables::new(1, 1);
-        iv.fit_2sls(&y, &d, &z);
-        assert!(
-            (iv.second_stage - 2.0).abs() < 0.5,
-            "IV est = {}",
-            iv.second_stage
-        );
-    }
-
-    #[test]
-    fn test_iv_first_stage_f_stat() {
-        let n = 200;
-        let z: Vec<Vec<f64>> = (0..n).map(|i| vec![(i as f64 / n as f64)]).collect();
-        let d: Vec<f64> = z.iter().map(|zi| 2.0 * zi[0]).collect();
-        let y: Vec<f64> = d.iter().map(|di| di + 1.0).collect();
-        let mut iv = InstrumentalVariables::new(1, 1);
-        iv.fit_2sls(&y, &d, &z);
-        let f = iv.first_stage_f_stat(&y, &d, &z);
-        assert!(
-            f > 10.0,
-            "F-stat should be large for strong instrument, got {f}"
-        );
-    }
-
-    // --- CausalDiscovery tests ---
-
-    #[test]
-    fn test_pearson_correlation_perfect() {
-        let data: Vec<Vec<f64>> = (0..50).map(|i| vec![i as f64, 2.0 * i as f64]).collect();
-        let r = pearson_correlation(&data, 0, 1);
-        assert!((r - 1.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_pearson_correlation_zero() {
-        // x varies linearly, y is constant — they are uncorrelated (std_y=0 => r=0)
-        let data: Vec<Vec<f64>> = (0..100).map(|i| vec![i as f64, 1.0]).collect();
-        let r = pearson_correlation(&data, 0, 1);
-        assert!(r.abs() < 1e-10, "r={r}");
-    }
-
-    #[test]
-    fn test_partial_correlation_returns_in_range() {
-        let data: Vec<Vec<f64>> = (0..50)
-            .map(|i| vec![i as f64, 2.0 * i as f64 + 1.0, i as f64 * 0.5])
-            .collect();
-        let r = partial_correlation(&data, 0, 1, &[2]);
-        assert!((-1.0..=1.0).contains(&r));
-    }
-
-    #[test]
-    fn test_fisher_z_test_high_correlation() {
-        let r = 0.0; // uncorrelated
-        let p = fisher_z_test(r, 100, 0);
-        assert!(p > 0.05, "Should not reject independence for r=0");
-    }
-
-    #[test]
-    fn test_causal_discovery_skeleton_independent() {
-        // Two independent variables: skeleton should have no edge
-        let data: Vec<Vec<f64>> = (0..100)
-            .map(|i| vec![(i as f64).sin(), (i as f64 * 2.3 + 1.0).cos()])
-            .collect();
-        let mut cd = CausalDiscovery::new(2, 0.01);
-        cd.learn_skeleton(&data);
-        // May or may not find edges; just check no panic
-        assert!(cd.n_vars == 2);
-    }
-
-    #[test]
-    fn test_subsets_correctness() {
-        let v = vec![0, 1, 2];
-        let subs = subsets(&v, 2);
-        assert_eq!(subs.len(), 3);
-    }
-
-    #[test]
-    fn test_subsets_empty() {
-        let v = vec![0, 1];
-        let subs = subsets(&v, 0);
-        assert_eq!(subs.len(), 1);
-        assert!(subs[0].is_empty());
-    }
-
-    // --- CounterfactualQuery tests ---
-
-    #[test]
-    fn test_counterfactual_simple_chain() {
-        // X1 = ε1, X2 = 2*X1 + ε2
-        // If we observe X1=1, X2=2 (noise2=0), what is X2 if do(X1=3)?
-        let mut scm = StructuralCausalModel::new(2);
-        scm.add_edge(0, 1, 2.0);
-        scm.noise_std = vec![1.0, 1.0];
-        let query = CounterfactualQuery::new(scm);
-        let obs = vec![Some(1.0), Some(2.0)];
-        let cf = query.counterfactual(&obs, 0, 3.0, 1);
-        // noise2 = (2 - 2*1)/1 = 0; X2_cf = 2*3 + 0*1 = 6
-        assert!((cf - 6.0).abs() < 1e-10, "cf={cf}");
-    }
-
-    #[test]
-    fn test_counterfactual_intercept() {
-        // X1 = 5 + ε1 (intercept=5); observe X1=7 → noise=2
-        // Counterfactual do(X0=10): X1 stays (X0 not parent of X1)
-        let mut scm = StructuralCausalModel::new(2);
-        scm.intercepts[1] = 5.0;
-        scm.noise_std = vec![1.0, 1.0];
-        let query = CounterfactualQuery::new(scm);
-        let obs = vec![Some(0.0), Some(7.0)];
-        let cf = query.counterfactual(&obs, 0, 10.0, 1);
-        // X1 doesn't depend on X0, noise1 = (7-5)/1 = 2, cf = 5 + 2 = 7
-        assert!((cf - 7.0).abs() < 1e-10, "cf={cf}");
-    }
-
-    // --- Sample covariance test ---
-
-    #[test]
-    fn test_sample_covariance_diagonal() {
-        let data: Vec<Vec<f64>> = (0..100).map(|i| vec![i as f64, 0.0]).collect();
-        let cov = sample_covariance(&data);
-        // var(X0) > 0, var(X1) = 0
-        assert!(cov[0] > 0.0);
-        assert!(cov[3].abs() < 1e-10); // var(X1) = 0
-    }
-
-    #[test]
-    fn test_sample_covariance_symmetric() {
-        let data: Vec<Vec<f64>> = (0..50).map(|i| vec![i as f64, (i as f64).sin()]).collect();
-        let cov = sample_covariance(&data);
-        assert!((cov[1] - cov[2]).abs() < 1e-12); // cov[0][1] == cov[1][0]
-    }
-
-    // --- Integration test ---
-
-    #[test]
-    fn test_full_scm_pipeline() {
-        // Build a confounded SCM and estimate ACE
-        // U → X, U → Y, X → Y
-        // We use a 3-node SCM: U=0, X=1, Y=2
-        let mut scm = StructuralCausalModel::new(3);
-        scm.add_edge(0, 1, 1.0); // U→X
-        scm.add_edge(0, 2, 1.0); // U→Y
-        scm.add_edge(1, 2, 2.0); // X→Y (true causal effect = 2)
-        scm.noise_std = vec![1.0, 0.5, 0.5];
-
-        // Generate noise samples
-        let noise_samples: Vec<Vec<f64>> = (0..500)
-            .map(|i| {
-                let u = (i as f64 * 0.01).sin();
-                let x = (i as f64 * 0.013).cos();
-                let y = (i as f64 * 0.017).sin();
-                vec![u, x, y]
-            })
-            .collect();
-
-        let ace0 = scm.average_causal_effect(1, 0.0, 2, &noise_samples);
-        let ace1 = scm.average_causal_effect(1, 1.0, 2, &noise_samples);
-        let diff = ace1 - ace0;
-        // Should be close to 2.0 (the direct structural coefficient)
-        assert!((diff - 2.0).abs() < 0.1, "ACE diff = {diff}");
-    }
-}
+#[path = "causal_inference_tests.rs"]
+mod tests;

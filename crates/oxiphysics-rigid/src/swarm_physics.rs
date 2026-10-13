@@ -7,7 +7,7 @@
 //! including separation, alignment, and cohesion steering forces, plus aggregate
 //! metrics such as the order parameter and swarm spread.
 
-use rand::RngExt;
+use crate::rng_util::uniform;
 // ---------------------------------------------------------------------------
 // SwarmAgent
 // ---------------------------------------------------------------------------
@@ -215,15 +215,16 @@ impl SwarmSimulator {
     /// Create a new swarm of `n` agents randomly distributed inside the box.
     ///
     /// Agents start with random positions uniformly in `[-box_size, +box_size]`
-    /// and zero velocity.
+    /// and zero velocity.  A `box_size` of zero places every agent at the
+    /// origin.
     pub fn new(n: usize, box_size: f64, forces: BoidForces) -> Self {
         let mut rng = rand::rng();
         let agents = (0..n)
             .map(|i| {
                 let pos = [
-                    rng.random_range(-box_size..box_size),
+                    uniform(&mut rng, -box_size, box_size),
                     0.0,
-                    rng.random_range(-box_size..box_size),
+                    uniform(&mut rng, -box_size, box_size),
                 ];
                 SwarmAgent::new(i, pos, 3.0, 0.3)
             })

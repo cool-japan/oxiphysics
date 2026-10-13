@@ -182,6 +182,121 @@ mod tests {
         let te = transfer_entropy(&s, &t, 3);
         assert_eq!(te, 0.0);
     }
+    /// Reproducible i.i.d. fair-coin series of 0.0 / 1.0 (xorshift64*).
+    fn coin_flips(n: usize, seed: u64) -> Vec<f64> {
+        let mut state = seed;
+        (0..n)
+            .map(|_| {
+                state ^= state >> 12;
+                state ^= state << 25;
+                state ^= state >> 27;
+                let r = state.wrapping_mul(0x2545_F491_4F6C_DD1D);
+                if r >> 63 == 1 { 1.0 } else { 0.0 }
+            })
+            .collect()
+    }
+    #[test]
+    fn test_conditional_transfer_entropy_detects_xor_synergy() {
+        // Y_t = X_{t-1} xor Z_{t-1} with independent fair X and Z: neither
+        // source alone predicts Y, but together they determine it, so
+        // T(X->Y) = 0 while T(X->Y|Z) = ln 2.
+        let n = 20_000;
+        let x = coin_flips(n, 0x1234_5678_9ABC_DEF1);
+        let z = coin_flips(n, 0x0FED_CBA9_8765_4321);
+        let mut y = vec![0.0_f64; n];
+        for t in 1..n {
+            y[t] = if (x[t - 1] > 0.5) != (z[t - 1] > 0.5) {
+                1.0
+            } else {
+                0.0
+            };
+        }
+        let cte = conditional_transfer_entropy(&x, &y, &z, 1);
+        let te = transfer_entropy(&x, &y, 1);
+        assert!(
+            (cte - std::f64::consts::LN_2).abs() < 0.05,
+            "CTE(X->Y|Z) = {cte}, expected ln 2"
+        );
+        assert!(te < 0.01, "TE(X->Y) = {te}, expected ~0");
+        // The roles of X and Z are symmetric in this construction.
+        let cte_z = conditional_transfer_entropy(&z, &y, &x, 1);
+        assert!((cte_z - std::f64::consts::LN_2).abs() < 0.05, "{cte_z}");
+    }
+    #[test]
+    fn test_conditional_transfer_entropy_removes_common_driver() {
+        // Z drives Y with a one-step delay and X is a same-time copy of Z, so
+        // X appears to predict Y (T(X->Y) = ln 2) only through Z.
+        let n = 20_000;
+        let z = coin_flips(n, 0x00C0_FFEE_D00D_F00D);
+        let x = z.clone();
+        let mut y = vec![0.0_f64; n];
+        y[1..].copy_from_slice(&z[..n - 1]);
+        let te = transfer_entropy(&x, &y, 1);
+        let cte = conditional_transfer_entropy(&x, &y, &z, 1);
+        assert!(
+            (te - std::f64::consts::LN_2).abs() < 0.05,
+            "TE(X->Y) = {te}, expected ln 2"
+        );
+        assert!(cte < 0.01, "CTE(X->Y|Z) = {cte}, expected ~0");
+    }
+    #[test]
+    fn test_conditional_transfer_entropy_keeps_direct_coupling() {
+        // Y_t = X_{t-1}; the independent conditioning series Z must not
+        // remove a genuine causal link.
+        let n = 20_000;
+        let x = coin_flips(n, 0xDEAD_BEEF_CAFE_F00D);
+        let z = coin_flips(n, 0xABAD_1DEA_0BAD_CAFE);
+        let mut y = vec![0.0_f64; n];
+        y[1..].copy_from_slice(&x[..n - 1]);
+        let cte = conditional_transfer_entropy(&x, &y, &z, 1);
+        assert!(
+            (cte - std::f64::consts::LN_2).abs() < 0.05,
+            "CTE(X->Y|Z) = {cte}, expected ln 2"
+        );
+        // Conditioning on an unrelated series cannot create information flow
+        // in the reverse direction.
+        let reverse = conditional_transfer_entropy(&y, &x, &z, 1);
+        assert!(reverse < 0.01, "CTE(Y->X|Z) = {reverse}");
+    }
+    #[test]
+    fn test_conditional_transfer_entropy_respects_lag() {
+        let n = 20_000;
+        let x = coin_flips(n, 0x1357_9BDF_0246_8ACE);
+        let z = coin_flips(n, 0x0F1E_2D3C_4B5A_6978);
+        let mut y = vec![0.0_f64; n];
+        for t in 2..n {
+            y[t] = if (x[t - 2] > 0.5) != (z[t - 2] > 0.5) {
+                1.0
+            } else {
+                0.0
+            };
+        }
+        let at_lag_2 = conditional_transfer_entropy(&x, &y, &z, 2);
+        let at_lag_1 = conditional_transfer_entropy(&x, &y, &z, 1);
+        assert!(
+            (at_lag_2 - std::f64::consts::LN_2).abs() < 0.05,
+            "lag 2: {at_lag_2}"
+        );
+        assert!(at_lag_1 < 0.01, "lag 1: {at_lag_1}");
+    }
+    #[test]
+    fn test_conditional_transfer_entropy_degenerate_inputs() {
+        let x = coin_flips(100, 7);
+        let y = coin_flips(100, 11);
+        let z = coin_flips(100, 13);
+        // Too short for the requested lag.
+        assert_eq!(conditional_transfer_entropy(&x[..2], &y, &z, 1), 0.0);
+        assert_eq!(conditional_transfer_entropy(&x, &y, &z[..5], 5), 0.0);
+        // Constant data has a single bin and therefore no information flow.
+        let flat = vec![1.0_f64; 100];
+        assert_eq!(conditional_transfer_entropy(&flat, &flat, &flat, 1), 0.0);
+        // Mismatched lengths use the shortest series.
+        let truncated = conditional_transfer_entropy(&x[..60], &y[..60], &z[..60], 1);
+        let mismatched = conditional_transfer_entropy(&x[..60], &y, &z, 1);
+        assert_eq!(truncated, mismatched);
+        // A conditional mutual information is never negative.
+        assert!(conditional_transfer_entropy(&x, &y, &z, 1) >= 0.0);
+    }
     #[test]
     fn test_shannon_hartley_zero_snr() {
         let c = shannon_hartley_capacity(1e6, 0.0);
@@ -401,6 +516,90 @@ mod tests {
     fn test_fisher_rao_gaussian_different_means() {
         let d = fisher_rao_gaussian(0.0, 1.0, 3.0, 1.0);
         assert!(d > 0.0);
+    }
+    #[test]
+    fn test_fisher_rao_gaussian_exact_scale_distance() {
+        // N(0,1) -> N(0,e) lies on a vertical geodesic: d = sqrt(2) * ln(e).
+        let d = fisher_rao_gaussian(0.0, 1.0, 0.0, std::f64::consts::E);
+        assert!(
+            (d - std::f64::consts::SQRT_2).abs() < 1e-12,
+            "expected sqrt(2), got {d}"
+        );
+        // The same distance is reached from any common scale and mean.
+        let d = fisher_rao_gaussian(3.0, 2.0, 3.0, 2.0 * std::f64::consts::E);
+        assert!((d - std::f64::consts::SQRT_2).abs() < 1e-12, "got {d}");
+    }
+    #[test]
+    fn test_fisher_rao_gaussian_exact_mean_distance() {
+        // Equal sigma: cosh(d / sqrt(2)) = 1 + dmu^2 / (4 sigma^2).  Choosing
+        // dmu = 2 sqrt(2) sinh(1/2) sigma gives d / sqrt(2) = 1 exactly.
+        let sigma = 1.7;
+        let dmu = 2.0 * std::f64::consts::SQRT_2 * 0.5_f64.sinh() * sigma;
+        let d = fisher_rao_gaussian(0.4, sigma, 0.4 + dmu, sigma);
+        assert!(
+            (d - std::f64::consts::SQRT_2).abs() < 1e-12,
+            "expected sqrt(2), got {d}"
+        );
+    }
+    #[test]
+    fn test_fisher_rao_gaussian_matches_metric_for_nearby_points() {
+        // For nearby distributions d^2 = (dmu^2 + 2 dsigma^2) / sigma^2.  The
+        // separation is far below sqrt(machine epsilon), where acosh(1 + x)
+        // evaluated naively would return exactly zero.
+        let eps = 1e-9;
+        let d = fisher_rao_gaussian(0.0, 1.0, eps, 1.0);
+        assert!((d - eps).abs() < 1e-17, "d = {d}");
+        // `1.0 + eps` is not exactly representable, so the separation that was
+        // actually passed in is the floating-point difference `sigma2 - 1`.
+        let sigma2 = 1.0 + eps;
+        let ds = sigma2 - 1.0;
+        let d = fisher_rao_gaussian(0.0, 1.0, 0.0, sigma2);
+        let expected = std::f64::consts::SQRT_2 * ds / sigma2.sqrt();
+        assert!((d - expected).abs() < 1e-17, "d = {d}, expected {expected}");
+    }
+    #[test]
+    fn test_fisher_rao_gaussian_scale_invariance_and_degenerate_inputs() {
+        let a = fisher_rao_gaussian(0.3, 1.2, -1.1, 0.7);
+        let k = 13.0;
+        let b = fisher_rao_gaussian(k * 0.3, k * 1.2, k * -1.1, k * 0.7);
+        assert!((a - b).abs() < 1e-12, "{a} vs {b}");
+        assert!(fisher_rao_gaussian(0.0, 0.0, 0.0, 1.0).is_infinite());
+        assert!(fisher_rao_gaussian(0.0, 1.0, 0.0, 0.0).is_infinite());
+        // Huge separations stay finite and monotone.
+        let far = fisher_rao_gaussian(0.0, 1.0, 1.0e150, 1.0);
+        assert!(far.is_finite() && far > 100.0, "far = {far}");
+    }
+    #[test]
+    fn test_fisher_rao_gaussian_metric_axioms_on_random_triples() {
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..500 {
+            let pts: Vec<(f64, f64)> = (0..3)
+                .map(|_| (8.0 * next() - 4.0, 0.05 + 4.0 * next()))
+                .collect();
+            let d =
+                |a: usize, b: usize| fisher_rao_gaussian(pts[a].0, pts[a].1, pts[b].0, pts[b].1);
+            assert!(d(0, 0).abs() < 1e-12);
+            assert!((d(0, 1) - d(1, 0)).abs() < 1e-12, "symmetry");
+            assert!(
+                d(0, 2) <= d(0, 1) + d(1, 2) + 1e-12,
+                "triangle inequality: {} > {} + {}",
+                d(0, 2),
+                d(0, 1),
+                d(1, 2)
+            );
+        }
+    }
+    #[test]
+    fn test_gaussian_info_geometry_distance_uses_exact_fisher_rao() {
+        let g1 = GaussianInfoGeometry::new(0.0, 1.0);
+        let g2 = GaussianInfoGeometry::new(0.0, std::f64::consts::E);
+        assert!((g1.distance_to(&g2) - std::f64::consts::SQRT_2).abs() < 1e-12);
     }
     #[test]
     fn test_collision_entropy_uniform() {

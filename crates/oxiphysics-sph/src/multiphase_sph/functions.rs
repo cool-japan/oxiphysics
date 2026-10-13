@@ -4,33 +4,58 @@
 
 use std::f64::consts::PI;
 
-use super::types::{ColorParticle, MultiphaseFluidParticle, MultiphaseParticle};
+use oxiphysics_core::math::Vec3;
+
+use super::types::{ColorParticle, MultiphaseFluidParticle, MultiphaseParticle, PhaseDesc};
+use crate::neighbor::SpatialHash;
 
 /// Compute the smoothed color function gradient for all particles using SPH.
 ///
 /// ∇C_i = Σⱼ (mⱼ/ρⱼ) · (Cⱼ − Cᵢ) · ∇W_ij
+///
+/// The sum runs over every particle inside the full cubic-spline support
+/// radius `2h`; the neighbours are found with a spatial hash in `O(N)`.  Use
+/// [`compute_color_gradients_with_neighbors`] to share neighbour lists with
+/// other sums.
 pub fn compute_color_gradients(particles: &mut [ColorParticle], h: f64) {
+    let neighbors = super::color_sph::support_neighbors(particles, h);
+    compute_color_gradients_with_neighbors(particles, h, &neighbors);
+}
+/// [`compute_color_gradients`] from precomputed neighbour lists.
+///
+/// `neighbors[i]` must list the particles within `2h` of particle `i` (see
+/// [`MultiphaseSphSimulation::neighbor_lists`](super::types::MultiphaseSphSimulation::neighbor_lists));
+/// entries equal to `i`, entries outside `particles` and pairs beyond `2h` are
+/// ignored.
+pub fn compute_color_gradients_with_neighbors(
+    particles: &mut [ColorParticle],
+    h: f64,
+    neighbors: &[Vec<usize>],
+) {
     let n = particles.len();
     let positions: Vec<[f64; 2]> = particles.iter().map(|p| p.pos).collect();
     let colors: Vec<f64> = particles.iter().map(|p| p.color).collect();
     let masses: Vec<f64> = particles.iter().map(|p| p.mass).collect();
     let densities: Vec<f64> = particles.iter().map(|p| p.density).collect();
     let mut grads = vec![[0.0f64; 2]; n];
-    for i in 0..n {
-        for j in 0..n {
-            if i == j {
+    for (i, grad) in grads.iter_mut().enumerate() {
+        let Some(list) = neighbors.get(i) else {
+            continue;
+        };
+        for &j in list {
+            if i == j || j >= n {
                 continue;
             }
             let dx = positions[i][0] - positions[j][0];
             let dy = positions[i][1] - positions[j][1];
             let r = (dx * dx + dy * dy).sqrt();
-            if r >= h {
+            if r > 2.0 * h {
                 continue;
             }
             let (gwx, gwy) = cubic_spline_gradient(dx, dy, r, h);
             let w = masses[j] / densities[j].max(1e-30) * (colors[j] - colors[i]);
-            grads[i][0] += w * gwx;
-            grads[i][1] += w * gwy;
+            grad[0] += w * gwx;
+            grad[1] += w * gwy;
         }
     }
     for (i, p) in particles.iter_mut().enumerate() {
@@ -105,51 +130,171 @@ pub fn compute_color_function(particles: &[MultiphaseParticle], h: f64) -> Vec<f
     }
     colors
 }
-/// Compute interface curvature `κ_i` from colour-function values.
+/// Relative threshold on `|∇C|` (in units of `1/h`) below which a particle is
+/// regarded as lying away from every interface and receives the zero normal.
+const NORMAL_THRESHOLD: f64 = 0.01;
+
+/// SPH volume `V_j = m_j / ρ_phase(j)` of every particle.
 ///
-/// Uses a finite-difference Laplacian approximation on the ordered colour
-/// array:
+/// A particle whose `phase_id` has no entry in `phases`, or whose phase has no
+/// positive reference density, carries no volume and therefore does not
+/// contribute to the sums of its neighbours.
+fn particle_volumes(particles: &[MultiphaseParticle], phases: &[PhaseDesc]) -> Vec<f64> {
+    particles
+        .iter()
+        .map(|p| match phases.get(p.phase_id) {
+            Some(phase) if phase.density > 0.0 => p.mass / phase.density,
+            _ => 0.0,
+        })
+        .collect()
+}
+
+/// Neighbour lists (self excluded) within the cubic-spline support radius `2h`.
+fn support_neighbours(particles: &[MultiphaseParticle], h: f64) -> Vec<Vec<usize>> {
+    let positions: Vec<Vec3> = particles
+        .iter()
+        .map(|p| Vec3::new(p.position[0], p.position[1], p.position[2]))
+        .collect();
+    SpatialHash::find_all_neighbors(&positions, 2.0 * h)
+}
+
+/// Separation vector `x_i − x_j` of two particles and its length.
+fn separation(pi: &MultiphaseParticle, pj: &MultiphaseParticle) -> ([f64; 3], f64) {
+    let rij = [
+        pi.position[0] - pj.position[0],
+        pi.position[1] - pj.position[1],
+        pi.position[2] - pj.position[2],
+    ];
+    let r = (rij[0] * rij[0] + rij[1] * rij[1] + rij[2] * rij[2]).sqrt();
+    (rij, r)
+}
+
+/// SPH colour gradient `∇C_i = Σ_j V_j (C_j − C_i) ∇_i W_ij` for every
+/// particle, from precomputed volumes and neighbour lists.
+fn colour_gradient_vectors(
+    particles: &[MultiphaseParticle],
+    volumes: &[f64],
+    neighbours: &[Vec<usize>],
+    h: f64,
+) -> Vec<[f64; 3]> {
+    particles
+        .iter()
+        .zip(neighbours.iter())
+        .map(|(pi, list)| {
+            let mut grad = [0.0_f64; 3];
+            for &j in list {
+                let pj = &particles[j];
+                let (rij, r) = separation(pi, pj);
+                let grad_w = cubic_kernel_grad_3d(rij, r, h);
+                let weight = volumes[j] * (pj.color_function - pi.color_function);
+                for (g, w) in grad.iter_mut().zip(grad_w.iter()) {
+                    *g += weight * w;
+                }
+            }
+            grad
+        })
+        .collect()
+}
+
+/// Colour gradient `∇C_i` \[1/m\] of every particle, used by the CSF force.
 ///
-/// ```text
-/// κ_i ≈ (C_{i+1} - 2 C_i + C_{i-1}) / Δs²
-/// ```
+/// Evaluated with the same operator as [`compute_curvature`]:
+/// `∇C_i = Σ_j V_j (C_j − C_i) ∇_i W_ij` with `V_j = m_j / ρ_phase(j)`, the 3-D
+/// cubic-spline kernel of smoothing length `h` (support `2h`) and
+/// `C = particle.color_function`.  `∇C` points towards the larger colour value.
 ///
-/// This is a 1-D approximation; for 3-D SPH the divergence of the normalised
-/// colour gradient would be used.
+/// Returns zero vectors for a non-positive or non-finite `h`.
+pub(super) fn compute_colour_gradient_vectors(
+    particles: &[MultiphaseParticle],
+    phases: &[PhaseDesc],
+    h: f64,
+) -> Vec<[f64; 3]> {
+    if !(h > 0.0 && h.is_finite()) {
+        return vec![[0.0; 3]; particles.len()];
+    }
+    let volumes = particle_volumes(particles, phases);
+    let neighbours = support_neighbours(particles, h);
+    colour_gradient_vectors(particles, &volumes, &neighbours, h)
+}
+
+/// Compute the interface curvature `κ_i = −∇·n̂` at every particle.
+///
+/// This is the continuum-surface-force (CSF) construction of Brackbill et al.
+/// (1992) and Morris (2000), evaluated with SPH operators over the 3-D
+/// cubic-spline kernel of smoothing length `h` (support radius `2h`):
+///
+/// 1. colour gradient `∇C_i = Σ_j V_j (C_j − C_i) ∇_i W_ij` with
+///    `V_j = m_j / ρ_phase(j)` and `C = particle.color_function`;
+/// 2. unit normal `n̂_i = ∇C_i / |∇C_i|` where `|∇C_i| > 0.01 / h`, otherwise
+///    `n̂_i = 0`;
+/// 3. curvature `κ_i = −Σ_j V_j (n̂_j − n̂_i) · ∇_i W_ij`.
+///
+/// The result depends only on the particle positions, phases and colours, not
+/// on the order in which the particles are stored.  `κ` is positive where the
+/// phase with the larger colour value is convex, e.g. `κ = 2/R` on the surface
+/// of a drop of radius `R` (`1/R` for a circle in 2-D), and zero on a flat
+/// interface or in a single-phase region.  A particle whose phase is not
+/// listed in `phases` contributes no volume (see [`PhaseDesc`]).
+///
+/// The colour values should be smoothed over about one kernel width (for
+/// example by [`compute_color_function`]); a sharp 0/1 indicator gives a noisy,
+/// biased normal field.
 ///
 /// # Arguments
-/// * `color` – colour-function values ordered by particle index
+/// * `particles` – particles with up-to-date `color_function`
+/// * `phases`    – phase table indexed by `phase_id` (provides `ρ_phase`)
+/// * `h`         – cubic-spline smoothing length \[m\]
 ///
 /// # Returns
-/// Vector of curvature values \[1/m\] (same length as `color`).
-pub fn compute_curvature(color: &[f64]) -> Vec<f64> {
-    let n = color.len();
-    if n == 0 {
-        return Vec::new();
+/// Curvature \[1/m\] of every particle (all zeros for a non-positive or
+/// non-finite `h`).
+pub fn compute_curvature(
+    particles: &[MultiphaseParticle],
+    phases: &[PhaseDesc],
+    h: f64,
+) -> Vec<f64> {
+    let n = particles.len();
+    if n == 0 || !(h > 0.0 && h.is_finite()) {
+        return vec![0.0; n];
     }
-    let mut kappa = vec![0.0_f64; n];
-    for i in 1..(n.saturating_sub(1)) {
-        kappa[i] = color[i + 1] - 2.0 * color[i] + color[i - 1];
-    }
-    if n >= 2 {
-        kappa[0] = color[1] - color[0];
-        kappa[n - 1] = color[n - 1] - color[n - 2];
-    }
-    kappa
-}
-/// SPH kernel gradient magnitude |∇W(r, h)|.
-///
-/// Derivative of the cubic spline used in [`compute_color_function`].
-pub(super) fn sph_kernel_gradient_magnitude(r: f64, h: f64) -> f64 {
-    let q = r / h;
-    let norm = 10.0 / (7.0 * std::f64::consts::PI * h * h);
-    if q < 1.0 {
-        norm * (-3.0 * q + 2.25 * q * q) / h
-    } else if q < 2.0 {
-        norm * (-0.75 * (2.0 - q).powi(2)) / h
-    } else {
-        0.0
-    }
+    let volumes = particle_volumes(particles, phases);
+    let neighbours = support_neighbours(particles, h);
+    let gradients = colour_gradient_vectors(particles, &volumes, &neighbours, h);
+
+    let threshold = NORMAL_THRESHOLD / h;
+    let normals: Vec<[f64; 3]> = gradients
+        .iter()
+        .map(|g| {
+            let magnitude = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
+            if magnitude > threshold {
+                [g[0] / magnitude, g[1] / magnitude, g[2] / magnitude]
+            } else {
+                [0.0; 3]
+            }
+        })
+        .collect();
+
+    particles
+        .iter()
+        .zip(neighbours.iter())
+        .enumerate()
+        .map(|(i, (pi, list))| {
+            let mut divergence = 0.0_f64;
+            for &j in list {
+                let pj = &particles[j];
+                let (rij, r) = separation(pi, pj);
+                let grad_w = cubic_kernel_grad_3d(rij, r, h);
+                let dn = [
+                    normals[j][0] - normals[i][0],
+                    normals[j][1] - normals[i][1],
+                    normals[j][2] - normals[i][2],
+                ];
+                divergence +=
+                    volumes[j] * (dn[0] * grad_w[0] + dn[1] * grad_w[1] + dn[2] * grad_w[2]);
+            }
+            -divergence
+        })
+        .collect()
 }
 #[cfg(test)]
 mod tests {
@@ -644,44 +789,338 @@ mod tests {
             );
         }
     }
+    // ── interface curvature ───────────────────────────────────────────────────
+
+    /// Phase table of the curvature tests: phase 0 is the drop, phase 1 the
+    /// ambient fluid.  The two share the density so that every particle owns
+    /// the volume `s³` when its mass is `ρ s³`.
+    fn drop_phases() -> Vec<PhaseDesc> {
+        vec![
+            PhaseDesc::new(0, 1000.0, 1e-3, 0.072),
+            PhaseDesc::new(1, 1000.0, 1e-3, 0.072),
+        ]
+    }
+
+    /// `n`³ lattice (spacing `s`, centred on the origin): phase 0 inside the
+    /// sphere of radius `radius`, phase 1 outside; mass `ρ s³` with `ρ = 1000`.
+    fn drop_lattice(n: usize, s: f64, radius: f64) -> Vec<MultiphaseParticle> {
+        let mass = 1000.0 * s * s * s;
+        let half = (n as f64 - 1.0) / 2.0;
+        let mut particles = Vec::with_capacity(n * n * n);
+        for ix in 0..n {
+            for iy in 0..n {
+                for iz in 0..n {
+                    let pos = [
+                        (ix as f64 - half) * s,
+                        (iy as f64 - half) * s,
+                        (iz as f64 - half) * s,
+                    ];
+                    let r = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt();
+                    let phase_id = usize::from(r > radius);
+                    particles.push(MultiphaseParticle::new(pos, phase_id, mass));
+                }
+            }
+        }
+        particles
+    }
+
+    /// Replace the sharp 0/1 colour of every particle by its kernel-smoothed
+    /// value `C_i = Σ_j V_j W_ij C_j` (volume `V = s³`).
+    fn smooth_colours(particles: &mut [MultiphaseParticle], volume: f64, h: f64) {
+        let smoothed: Vec<f64> = particles
+            .iter()
+            .map(|pi| {
+                particles
+                    .iter()
+                    .filter(|pj| pi.dist(pj) < 2.0 * h)
+                    .map(|pj| volume * cubic_kernel_3d(pi.dist(pj), h) * pj.color_function)
+                    .sum()
+            })
+            .collect();
+        for (p, c) in particles.iter_mut().zip(smoothed) {
+            p.color_function = c;
+        }
+    }
+
+    fn radius_of(p: &MultiphaseParticle) -> f64 {
+        (p.position[0].powi(2) + p.position[1].powi(2) + p.position[2].powi(2)).sqrt()
+    }
+
+    /// Mean curvature of the particles within one spacing of the sphere surface.
+    fn band_mean_curvature(
+        particles: &[MultiphaseParticle],
+        kappa: &[f64],
+        radius: f64,
+        s: f64,
+    ) -> f64 {
+        let band: Vec<f64> = particles
+            .iter()
+            .zip(kappa)
+            .filter(|(p, _)| (radius_of(p) - radius).abs() <= s)
+            .map(|(_, k)| *k)
+            .collect();
+        assert!(band.len() > 50, "interface band too small: {}", band.len());
+        band.iter().sum::<f64>() / band.len() as f64
+    }
+
     #[test]
     fn curvature_empty_returns_empty() {
-        let k = compute_curvature(&[]);
+        let k = compute_curvature(&[], &drop_phases(), 0.1);
         assert!(k.is_empty());
     }
+
     #[test]
-    fn curvature_single_element_returns_zero() {
-        let k = compute_curvature(&[0.5]);
-        assert_eq!(k.len(), 1);
-        assert_eq!(k[0], 0.0);
+    fn curvature_single_particle_is_zero() {
+        let particles = vec![MultiphaseParticle::new([0.0; 3], 0, 1.0)];
+        let k = compute_curvature(&particles, &drop_phases(), 0.1);
+        assert_eq!(k, vec![0.0]);
     }
+
     #[test]
-    fn curvature_length_matches_input() {
-        let colors = vec![1.0, 0.8, 0.5, 0.2, 0.0];
-        let k = compute_curvature(&colors);
-        assert_eq!(k.len(), 5);
+    fn curvature_zero_in_single_phase_region() {
+        let particles = drop_lattice(7, 0.05, f64::INFINITY);
+        let k = compute_curvature(&particles, &drop_phases(), 0.06);
+        assert_eq!(k.len(), particles.len());
+        assert!(k.iter().all(|&ki| ki == 0.0), "no interface, no curvature");
     }
+
     #[test]
-    fn curvature_flat_interface_zero() {
-        let colors: Vec<f64> = (0..5).map(|i| i as f64 * 0.25).collect();
-        let k = compute_curvature(&colors);
-        for &ki in &k[1..k.len() - 1] {
+    fn curvature_sphere_matches_two_over_radius() {
+        // Drop of radius R = 4 s with a kernel-smoothed interface: the mean
+        // curvature of the interface layer must be 2 / R (within 15 %).
+        let s = 0.05;
+        let h = 1.2 * s;
+        let radius = 4.0 * s;
+        let mut particles = drop_lattice(15, s, radius);
+        smooth_colours(&mut particles, s * s * s, h);
+        let kappa = compute_curvature(&particles, &drop_phases(), h);
+        let mean = band_mean_curvature(&particles, &kappa, radius, s);
+        let expected = 2.0 / radius;
+        assert!(
+            (mean - expected).abs() < 0.15 * expected,
+            "mean interface curvature {mean} vs 2/R = {expected}"
+        );
+    }
+
+    #[test]
+    fn curvature_decreases_with_drop_radius() {
+        // Larger drops are flatter: κ(R = 5 s) < κ(R = 3.5 s), both near 2 / R.
+        let s = 0.05;
+        let h = 1.2 * s;
+        let mean_for = |n: usize, radius: f64| {
+            let mut particles = drop_lattice(n, s, radius);
+            smooth_colours(&mut particles, s * s * s, h);
+            let kappa = compute_curvature(&particles, &drop_phases(), h);
+            band_mean_curvature(&particles, &kappa, radius, s)
+        };
+        let small = mean_for(13, 3.5 * s);
+        let large = mean_for(17, 5.0 * s);
+        assert!(
+            small > large,
+            "κ(3.5 s) = {small} must exceed κ(5 s) = {large}"
+        );
+        assert!((small - 2.0 / (3.5 * s)).abs() < 0.2 * 2.0 / (3.5 * s));
+        assert!((large - 2.0 / (5.0 * s)).abs() < 0.2 * 2.0 / (5.0 * s));
+    }
+
+    #[test]
+    fn curvature_is_independent_of_storage_order() {
+        let s = 0.05;
+        let h = 1.2 * s;
+        let mut particles = drop_lattice(11, s, 3.0 * s);
+        smooth_colours(&mut particles, s * s * s, h);
+        let phases = drop_phases();
+        let kappa = compute_curvature(&particles, &phases, h);
+
+        // A fixed bijective shuffle: k -> 7 k + 3 (mod 1331), gcd(7, 1331) = 1.
+        let count = particles.len();
+        assert_eq!(count, 1331);
+        let perm: Vec<usize> = (0..count).map(|k| (7 * k + 3) % count).collect();
+        let shuffled: Vec<MultiphaseParticle> =
+            perm.iter().map(|&src| particles[src].clone()).collect();
+        let kappa_shuffled = compute_curvature(&shuffled, &phases, h);
+
+        let scale = kappa.iter().fold(0.0_f64, |m, k| m.max(k.abs()));
+        assert!(scale > 1.0, "test sphere must carry curvature");
+        for (k, &src) in perm.iter().enumerate() {
             assert!(
-                ki.abs() < 1e-12,
-                "linear profile should give zero curvature, got {ki}"
+                (kappa_shuffled[k] - kappa[src]).abs() < 1e-9 * scale,
+                "particle {src}: κ changed with storage order ({} vs {})",
+                kappa[src],
+                kappa_shuffled[k]
             );
         }
     }
+
     #[test]
-    fn curvature_parabola_constant() {
-        let colors: Vec<f64> = (0..6).map(|i| (i * i) as f64).collect();
-        let k = compute_curvature(&colors);
-        for &ki in &k[1..k.len() - 1] {
-            assert!(
-                (ki - 2.0).abs() < 1e-10,
-                "parabola should give curvature 2, got {ki}"
-            );
+    fn curvature_scales_inversely_with_length() {
+        // The same geometry ten times larger has one tenth of the curvature.
+        let phases = drop_phases();
+        let curvature_for = |s: f64| {
+            let h = 1.2 * s;
+            let mut particles = drop_lattice(11, s, 3.0 * s);
+            smooth_colours(&mut particles, s * s * s, h);
+            compute_curvature(&particles, &phases, h)
+        };
+        let fine = curvature_for(0.05);
+        let coarse = curvature_for(0.5);
+        let scale = fine.iter().fold(0.0_f64, |m, k| m.max(k.abs()));
+        for (kf, kc) in fine.iter().zip(coarse.iter()) {
+            assert!((kf - 10.0 * kc).abs() < 1e-8 * scale, "{kf} vs 10 × {kc}");
         }
+    }
+
+    #[test]
+    fn curvature_zero_on_flat_interface() {
+        // Linear colour ramp C(z) = clamp(1/2 − z / (2 L)) across a flat interface:
+        // the normal field is uniform, so ∇·n̂ vanishes.
+        let s = 0.05;
+        let h = 1.2 * s;
+        let ramp_half_width = 4.8 * s;
+        let mut particles = drop_lattice(13, s, f64::INFINITY);
+        for p in particles.iter_mut() {
+            let z = p.position[2];
+            p.color_function = (0.5 - z / (2.0 * ramp_half_width)).clamp(0.0, 1.0);
+        }
+        let kappa = compute_curvature(&particles, &drop_phases(), h);
+        let mut checked = 0;
+        for (p, k) in particles.iter().zip(kappa.iter()) {
+            let central = p.position[0].abs() <= s + 1e-12
+                && p.position[1].abs() <= s + 1e-12
+                && p.position[2].abs() <= s + 1e-12;
+            if central {
+                checked += 1;
+                assert!(k.abs() < 1e-8 / h, "flat interface curvature {k}");
+            }
+        }
+        assert_eq!(checked, 27);
+    }
+
+    #[test]
+    fn curvature_does_not_depend_on_phase_densities_when_masses_follow() {
+        // V_j = m_j / ρ_phase(j): a light ambient phase with proportionally
+        // smaller particle masses leaves the geometry-only result unchanged.
+        let s = 0.05;
+        let h = 1.2 * s;
+        let radius = 3.0 * s;
+        let mut particles = drop_lattice(11, s, radius);
+        smooth_colours(&mut particles, s * s * s, h);
+        let reference = compute_curvature(&particles, &drop_phases(), h);
+
+        let light_phases = vec![
+            PhaseDesc::new(0, 1000.0, 1e-3, 0.072),
+            PhaseDesc::new(1, 1.2, 1.8e-5, 0.072),
+        ];
+        for p in particles.iter_mut() {
+            if p.phase_id == 1 {
+                p.mass *= 1.2 / 1000.0;
+            }
+        }
+        let light = compute_curvature(&particles, &light_phases, h);
+        let scale = reference.iter().fold(0.0_f64, |m, k| m.max(k.abs()));
+        for (a, b) in reference.iter().zip(light.iter()) {
+            assert!((a - b).abs() < 1e-9 * scale, "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn curvature_ignores_particles_of_unknown_phase() {
+        let s = 0.05;
+        let h = 1.2 * s;
+        let mut particles = drop_lattice(9, s, 2.5 * s);
+        smooth_colours(&mut particles, s * s * s, h);
+        particles[40].phase_id = 7;
+        let kappa = compute_curvature(&particles, &drop_phases(), h);
+        assert_eq!(kappa.len(), particles.len());
+        assert!(kappa.iter().all(|k| k.is_finite()));
+    }
+
+    #[test]
+    fn curvature_invalid_smoothing_length_gives_zeros() {
+        let mut particles = drop_lattice(5, 0.05, 0.1);
+        smooth_colours(&mut particles, 0.05_f64.powi(3), 0.06);
+        for h in [0.0, -0.06, f64::NAN, f64::INFINITY] {
+            let k = compute_curvature(&particles, &drop_phases(), h);
+            assert_eq!(k.len(), particles.len());
+            assert!(k.iter().all(|&ki| ki == 0.0), "h = {h}");
+        }
+    }
+
+    #[test]
+    fn colour_gradient_points_towards_larger_colour() {
+        // C = 1 for x < 0, 0 for x > 0 (smoothed): ∇C points to −x at the interface.
+        let s = 0.05;
+        let h = 1.2 * s;
+        let mut particles = drop_lattice(11, s, f64::INFINITY);
+        for p in particles.iter_mut() {
+            p.color_function = if p.position[0] < -1e-12 { 1.0 } else { 0.0 };
+        }
+        smooth_colours(&mut particles, s * s * s, h);
+        let grads = compute_colour_gradient_vectors(&particles, &drop_phases(), h);
+        let centre = particles
+            .iter()
+            .position(|p| p.position.iter().all(|c| c.abs() < 1e-12))
+            .expect("lattice has a centre particle");
+        assert!(grads[centre][0] < 0.0, "∇C_x = {}", grads[centre][0]);
+        assert!(grads[centre][1].abs() < 1e-9 * grads[centre][0].abs());
+        assert!(grads[centre][2].abs() < 1e-9 * grads[centre][0].abs());
+    }
+
+    #[test]
+    fn multiphase_sph_update_curvatures_stores_geometric_curvature() {
+        // Through the simulation driver: the colour function comes from
+        // compute_color_function, the curvature from compute_curvature.
+        let s = 0.05;
+        let radius = 4.0 * s;
+        let mut sim = MultiphaseSPH::new(1.2 * s, [0.0; 3], 1e-4);
+        let drop_id = sim.add_phase(1000.0, 1e-3, 0.072);
+        let ambient_id = sim.add_phase(1000.0, 1e-3, 0.072);
+        assert_eq!((drop_id, ambient_id), (0, 1));
+        sim.particles = drop_lattice(15, s, radius);
+        sim.update_color_functions();
+        sim.update_curvatures();
+        let kappa: Vec<f64> = sim.particles.iter().map(|p| p.curvature).collect();
+        let mean = band_mean_curvature(&sim.particles, &kappa, radius, s);
+        let expected = 2.0 / radius;
+        assert!(
+            mean > 0.5 * expected && mean < 1.5 * expected,
+            "mean κ {mean} should be of the order of 2/R = {expected}"
+        );
+    }
+
+    #[test]
+    fn csf_force_pulls_drop_surface_inward_with_laplace_pressure() {
+        // Total inward CSF force on the interface layer of a drop equals the
+        // Laplace pressure jump times the surface area:
+        //   (2 σ / R) · 4 π R² = 8 π σ R.
+        let s = 0.05;
+        let radius = 4.0 * s;
+        let sigma = 0.072;
+        let dt = 1e-6;
+        let mut sim = MultiphaseSPH::new(1.2 * s, [0.0; 3], dt);
+        sim.add_phase(1000.0, 1e-3, sigma);
+        sim.add_phase(1000.0, 1e-3, sigma);
+        sim.particles = drop_lattice(15, s, radius);
+        let before = sim.particles.clone();
+        sim.step();
+
+        let mut inward_force = 0.0;
+        for (p, p0) in sim.particles.iter().zip(before.iter()) {
+            // the central particle has no defined radial direction
+            let r = radius_of(p0);
+            if r < 1e-12 {
+                continue;
+            }
+            let radial_dot_dv: f64 = (0..3).map(|k| p0.position[k] / r * p.velocity[k]).sum();
+            // the lattice boundary region carries no interface
+            inward_force += -p.mass * radial_dot_dv / dt;
+        }
+        let expected = 8.0 * PI * sigma * radius;
+        assert!(inward_force > 0.0, "surface tension must pull inward");
+        assert!(
+            inward_force > 0.6 * expected && inward_force < 1.3 * expected,
+            "inward CSF force {inward_force} N vs Laplace estimate {expected} N"
+        );
     }
 }
 pub(super) fn cubic_kernel_3d(r: f64, h: f64) -> f64 {

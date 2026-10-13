@@ -255,9 +255,9 @@ pub struct BodySnapshot {
     pub body_type: &'static str,
     /// Activity state as string tag.
     pub state: &'static str,
-    /// Linear damping.
+    /// Linear damping rate \[1/s\].
     pub linear_damping: Real,
-    /// Angular damping.
+    /// Angular damping rate \[1/s\].
     pub angular_damping: Real,
     /// Gravity scale.
     pub gravity_scale: Real,

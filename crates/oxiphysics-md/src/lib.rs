@@ -48,6 +48,7 @@ pub mod ewald;
 pub mod fep;
 pub mod forcefield;
 pub mod free_energy;
+mod gaussian_noise;
 pub mod integrator;
 pub mod metadynamics;
 pub mod ml_potential;

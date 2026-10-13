@@ -800,7 +800,9 @@ mod tests {
     #[test]
     fn test_vlm_solve_produces_nonzero_gammas() {
         let vlm = VortexLatticeMethod::new(4, 3, 10.0, 2.5, 5.0_f64.to_radians());
-        let gammas = vlm.solve_gammas(30.0, 1.225);
+        let gammas = vlm
+            .solve_gammas(30.0, 1.225)
+            .expect("VLM solve must succeed for a regular wing");
         assert!(!gammas.is_empty(), "should return some circulations");
         assert!(
             gammas.iter().any(|&g| g.abs() > 1e-10),
@@ -810,7 +812,9 @@ mod tests {
     #[test]
     fn test_vlm_total_lift_positive_aoa() {
         let vlm = VortexLatticeMethod::new(4, 3, 10.0, 2.5, 5.0_f64.to_radians());
-        let lift = vlm.total_lift(30.0, 1.225);
+        let lift = vlm
+            .total_lift(30.0, 1.225)
+            .expect("VLM lift must succeed for a regular wing");
         assert!(
             lift > 0.0,
             "VLM lift should be positive at positive AoA, got {lift}"

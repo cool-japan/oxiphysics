@@ -8,14 +8,16 @@
 //! - `ProfilerSession` — manages one frame at a time; call `begin_frame()`,
 //!   open scopes with `scope()`, then finalise with `end_frame()`.
 //! - `ScopeGuard` — RAII guard returned by `scope()`; on drop it records
-//!   the elapsed nanoseconds and pops the scope off the stack.
+//!   the elapsed nanoseconds and pops the scope off the stack. The guard
+//!   borrows the session, so it can never outlive it and the frame can not be
+//!   restarted or finished while a guard is still alive.
 //! - `ScopeNode` — a node in the reconstructed profiling tree.
 //! - `FrameReport` — the per-frame summary returned by `end_frame()`,
 //!   containing the total wall-clock nanoseconds and the scope tree.
 //!
 //! ## Example
 //!
-//! ```rust,no_run
+//! ```rust
 //! use oxiphysics::profiler::ProfilerSession;
 //!
 //! let mut session = ProfilerSession::new();
@@ -30,12 +32,55 @@
 //! }   // _a drops here — records "physics"
 //!
 //! let report = session.end_frame();
-//! println!("frame ns: {}", report.frame_ns);
-//! println!("csv:\n{}", report.to_csv());
-//! println!("json:\n{}", report.to_json());
-//! println!("folded:\n{}", report.to_folded_stacks());
+//! assert_eq!(report.root.children.len(), 1);
+//! assert_eq!(report.root.children[0].name, "physics");
+//! assert_eq!(report.root.children[0].children[0].name, "collision");
+//! assert!(report.to_csv().starts_with("name,call_count,total_ns,max_ns"));
+//! assert!(report.to_json().contains("\"physics\""));
+//! assert!(report.to_folded_stacks().starts_with("frame;physics;collision "));
+//! ```
+//!
+//! ## Lifetime safety
+//!
+//! A [`ScopeGuard`](crate::profiler::ScopeGuard) holds a shared borrow of its
+//! [`ProfilerSession`](crate::profiler::ProfilerSession), so a guard cannot
+//! outlive (or be moved out of) the session that created it:
+//!
+//! ```compile_fail,E0597
+//! use oxiphysics::profiler::ProfilerSession;
+//!
+//! let guard = {
+//!     let session = ProfilerSession::new();
+//!     session.scope("escapes")
+//! }; // `session` is dropped here while `guard` still borrows it
+//! drop(guard);
+//! ```
+//!
+//! `begin_frame` and `end_frame` need exclusive access to the session, so
+//! they cannot run while a guard is alive either (which would otherwise
+//! invalidate the guard's bookkeeping):
+//!
+//! ```compile_fail,E0502
+//! use oxiphysics::profiler::ProfilerSession;
+//!
+//! let mut session = ProfilerSession::new();
+//! session.begin_frame();
+//! let guard = session.scope("still_open");
+//! let _report = session.end_frame(); // exclusive borrow while `guard` lives
+//! drop(guard);
+//! ```
+//!
+//! ```compile_fail,E0502
+//! use oxiphysics::profiler::ProfilerSession;
+//!
+//! let mut session = ProfilerSession::new();
+//! session.begin_frame();
+//! let guard = session.scope("still_open");
+//! session.begin_frame(); // exclusive borrow while `guard` lives
+//! drop(guard);
 //! ```
 
+use std::cell::RefCell;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -145,18 +190,35 @@ impl FrameReport {
 // ProfilerSession
 // ---------------------------------------------------------------------------
 
-/// The profiler session.  Manages one frame at a time.
+/// Mutable state of the frame that is currently being captured.
 ///
-/// Use [`begin_frame`](Self::begin_frame) to start, [`scope`](Self::scope) to
-/// open RAII guards, and [`end_frame`](Self::end_frame) to finalise and
-/// retrieve the report.
-pub struct ProfilerSession {
+/// It lives behind a [`RefCell`] inside [`ProfilerSession`] so that scopes can
+/// be opened (and closed on drop) through a *shared* reference to the session,
+/// which is what lets [`ScopeGuard`] borrow the session safely.
+#[derive(Default)]
+struct FrameState {
     /// Flat arena of nodes for the current frame.
     nodes: Vec<ArenaNode>,
     /// Stack of arena indices representing the current nesting path.
     stack: Vec<usize>,
     /// Instant at which the current frame began.
     frame_start: Option<Instant>,
+}
+
+/// The profiler session.  Manages one frame at a time.
+///
+/// Use [`begin_frame`](Self::begin_frame) to start, [`scope`](Self::scope) to
+/// open RAII guards, and [`end_frame`](Self::end_frame) to finalise and
+/// retrieve the report.
+///
+/// Scopes are opened through `&self`, so any number of nested guards can be
+/// alive at once, while `begin_frame` / `end_frame` take `&mut self` and the
+/// borrow checker therefore refuses to run them while a guard is still open.
+/// The session is `Send` but not `Sync`: the nesting stack is inherently
+/// per-thread state, so one session must not be shared between threads.
+pub struct ProfilerSession {
+    /// Arena, nesting stack and frame clock of the frame being captured.
+    state: RefCell<FrameState>,
 }
 
 impl Default for ProfilerSession {
@@ -170,17 +232,16 @@ impl ProfilerSession {
     /// opening any scopes.
     pub fn new() -> Self {
         Self {
-            nodes: Vec::new(),
-            stack: Vec::new(),
-            frame_start: None,
+            state: RefCell::new(FrameState::default()),
         }
     }
 
     /// Start a new frame.  Clears all previous frame data.
     pub fn begin_frame(&mut self) {
-        self.nodes.clear();
-        self.stack.clear();
-        self.frame_start = Some(Instant::now());
+        let state = self.state.get_mut();
+        state.nodes.clear();
+        state.stack.clear();
+        state.frame_start = Some(Instant::now());
     }
 
     /// Open a named scope.  Returns a RAII [`ScopeGuard`]; on drop, records
@@ -190,21 +251,26 @@ impl ProfilerSession {
     /// arena, its entry is reused (accumulating `total_ns` and `call_count`
     /// within the frame).
     ///
-    /// # Safety note
-    ///
-    /// The guard internally holds a raw pointer to this session to allow
-    /// nested borrows.  The guard must not outlive the session.
-    pub fn scope(&mut self, name: &'static str) -> ScopeGuard {
-        let parent = self.stack.last().copied();
+    /// The guard borrows the session for as long as it lives, so it cannot
+    /// outlive the session and the frame cannot be restarted or finished while
+    /// it is open.
+    pub fn scope(&self, name: &'static str) -> ScopeGuard<'_> {
+        // The borrow is released again before this function returns, and no
+        // other `RefCell` borrow is ever held across a call into user code, so
+        // it can not conflict with another one.
+        let mut state = self.state.borrow_mut();
+        let parent = state.stack.last().copied();
 
         // Look for an existing arena node with the same name and parent.
-        let node_idx = self
+        let node_idx = match state
             .nodes
             .iter()
             .position(|n| n.name == name && n.parent == parent)
-            .unwrap_or_else(|| {
-                let idx = self.nodes.len();
-                self.nodes.push(ArenaNode {
+        {
+            Some(idx) => idx,
+            None => {
+                let idx = state.nodes.len();
+                state.nodes.push(ArenaNode {
                     name,
                     parent,
                     call_count: 0,
@@ -212,12 +278,14 @@ impl ProfilerSession {
                     max_ns: 0,
                 });
                 idx
-            });
+            }
+        };
 
-        self.stack.push(node_idx);
+        state.stack.push(node_idx);
+        drop(state);
 
         ScopeGuard {
-            session: self as *mut ProfilerSession,
+            state: &self.state,
             node_idx,
             start: Instant::now(),
         }
@@ -228,23 +296,21 @@ impl ProfilerSession {
     /// After this call, the arena is cleared and the session is ready for
     /// the next `begin_frame`.
     pub fn end_frame(&mut self) -> FrameReport {
-        let frame_ns = self
-            .frame_start
-            .take()
-            .map_or(0, |t| t.elapsed().as_nanos() as u64);
+        let state = self.state.get_mut();
+        let frame_ns = state.frame_start.take().map_or(0, |t| elapsed_ns(&t));
 
         // Build the ScopeNode tree from the flat arena.
-        let root = self.build_tree(None, "frame");
+        let root = Self::build_tree(&state.nodes, None, "frame");
 
-        self.nodes.clear();
-        self.stack.clear();
+        state.nodes.clear();
+        state.stack.clear();
 
         FrameReport { frame_ns, root }
     }
 
     /// Number of arena nodes recorded in the current frame.
     pub fn node_count(&self) -> usize {
-        self.nodes.len()
+        self.state.borrow().nodes.len()
     }
 
     // -----------------------------------------------------------------------
@@ -255,45 +321,41 @@ impl ProfilerSession {
     ///
     /// `parent_idx` is `None` for the virtual "frame" root; children are all
     /// arena nodes whose `parent` field matches.
-    fn build_tree(&self, parent_idx: Option<usize>, name: &str) -> ScopeNode {
-        let mut children = Vec::new();
-
-        // Collect direct children (arena indices) of `parent_idx`.
-        let child_indices: Vec<usize> = self
-            .nodes
+    fn build_tree(nodes: &[ArenaNode], parent_idx: Option<usize>, name: &str) -> ScopeNode {
+        // Direct children (arena indices) of `parent_idx`, in creation order.
+        let children: Vec<ScopeNode> = nodes
             .iter()
             .enumerate()
             .filter(|(_, n)| n.parent == parent_idx)
-            .map(|(i, _)| i)
+            .map(|(idx, n)| Self::build_tree(nodes, Some(idx), n.name))
             .collect();
 
-        for idx in child_indices {
-            let n = &self.nodes[idx];
-            let child_node = self.build_tree(Some(idx), n.name);
-            children.push(child_node);
-        }
-
-        if let Some(idx) = parent_idx {
-            let n = &self.nodes[idx];
-            ScopeNode {
+        match parent_idx.and_then(|idx| nodes.get(idx)) {
+            Some(n) => ScopeNode {
                 name: n.name.to_owned(),
                 call_count: n.call_count,
                 total_ns: n.total_ns,
                 max_ns: n.max_ns,
                 children,
-            }
-        } else {
-            // This is the virtual "frame" root — synthesise its totals.
-            let total_ns: u64 = children.iter().map(|c| c.total_ns).sum();
-            ScopeNode {
-                name: name.to_owned(),
-                call_count: 1,
-                total_ns,
-                max_ns: total_ns,
-                children,
+            },
+            None => {
+                // This is the virtual "frame" root — synthesise its totals.
+                let total_ns: u64 = children.iter().map(|c| c.total_ns).sum();
+                ScopeNode {
+                    name: name.to_owned(),
+                    call_count: 1,
+                    total_ns,
+                    max_ns: total_ns,
+                    children,
+                }
             }
         }
     }
+}
+
+/// Nanoseconds elapsed since `since`, saturating at `u64::MAX`.
+fn elapsed_ns(since: &Instant) -> u64 {
+    u64::try_from(since.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
 // ---------------------------------------------------------------------------
@@ -305,30 +367,41 @@ impl ProfilerSession {
 /// On drop, records the elapsed nanoseconds into the session's arena and pops
 /// this scope off the nesting stack.
 ///
-/// The guard must not outlive the [`ProfilerSession`] that created it.
-pub struct ScopeGuard {
-    /// Raw pointer — avoids exclusive borrow that would prevent nested scopes.
-    session: *mut ProfilerSession,
+/// The guard holds a shared borrow of the [`ProfilerSession`] that created it,
+/// so it can neither outlive that session nor coexist with a call to
+/// [`ProfilerSession::begin_frame`] / [`ProfilerSession::end_frame`].
+#[must_use = "the scope is timed until the guard is dropped; bind it to a variable"]
+pub struct ScopeGuard<'a> {
+    /// The session state this guard reports into.
+    state: &'a RefCell<FrameState>,
+    /// Arena index of the scope this guard times.
     node_idx: usize,
+    /// When the scope was opened.
     start: Instant,
 }
 
-impl Drop for ScopeGuard {
+impl Drop for ScopeGuard<'_> {
     fn drop(&mut self) {
-        let elapsed = self.start.elapsed().as_nanos() as u64;
+        let elapsed = elapsed_ns(&self.start);
 
-        // SAFETY: The session pointer is valid for at least 's; no other
-        // &mut references exist at drop time because the guard is being
-        // consumed by drop.
-        let session = unsafe { &mut *self.session };
+        // `Drop` must never panic, so a (practically impossible) borrow
+        // conflict simply skips the bookkeeping instead of aborting.
+        let Ok(mut state) = self.state.try_borrow_mut() else {
+            return;
+        };
 
-        let node = &mut session.nodes[self.node_idx];
-        node.call_count += 1;
-        node.total_ns += elapsed;
-        node.max_ns = node.max_ns.max(elapsed);
+        if let Some(node) = state.nodes.get_mut(self.node_idx) {
+            node.call_count = node.call_count.saturating_add(1);
+            node.total_ns = node.total_ns.saturating_add(elapsed);
+            node.max_ns = node.max_ns.max(elapsed);
+        }
 
-        // Pop this scope off the nesting stack.
-        session.stack.pop();
+        // Remove this scope from the nesting stack.  Guards normally drop in
+        // reverse order of creation, which makes this the top entry, but a
+        // guard dropped out of order must still remove its *own* entry.
+        if let Some(pos) = state.stack.iter().rposition(|&idx| idx == self.node_idx) {
+            state.stack.remove(pos);
+        }
     }
 }
 
@@ -568,5 +641,173 @@ mod tests {
         let report = s.end_frame();
         // frame_ns should be > 0 (some real time elapsed).
         assert!(report.frame_ns > 0, "frame_ns should be > 0");
+    }
+
+    // -------------------------------------------------------------------------
+    // 10. Scopes can be opened through a shared reference
+    // -------------------------------------------------------------------------
+    /// Instrumented helper that only has `&ProfilerSession`, like library code
+    /// handed a profiler by its caller.
+    fn instrumented_leaf(profiler: &ProfilerSession) {
+        let _leaf = profiler.scope("leaf");
+    }
+
+    fn instrumented_branch(profiler: &ProfilerSession) {
+        let _branch = profiler.scope("branch");
+        instrumented_leaf(profiler);
+        instrumented_leaf(profiler);
+    }
+
+    #[test]
+    fn test_scopes_open_through_shared_reference() {
+        let report = one_frame(|s| {
+            let shared: &ProfilerSession = s;
+            instrumented_branch(shared);
+            instrumented_branch(shared);
+        });
+
+        assert_eq!(report.root.children.len(), 1);
+        let branch = &report.root.children[0];
+        assert_eq!(branch.name, "branch");
+        assert_eq!(branch.call_count, 2, "branch was entered twice");
+        assert_eq!(branch.children.len(), 1);
+        let leaf = &branch.children[0];
+        assert_eq!(leaf.name, "leaf");
+        assert_eq!(
+            leaf.call_count, 4,
+            "two branch calls with two leaf calls each"
+        );
+        assert!(leaf.max_ns <= leaf.total_ns);
+    }
+
+    // -------------------------------------------------------------------------
+    // 11. Same name under different parents stays separate
+    // -------------------------------------------------------------------------
+    #[test]
+    fn test_same_name_under_different_parents_is_not_merged() {
+        let report = one_frame(|s| {
+            {
+                let _p = s.scope("parent_a");
+                let _c = s.scope("shared_child");
+            }
+            {
+                let _p = s.scope("parent_b");
+                let _c = s.scope("shared_child");
+            }
+        });
+
+        assert_eq!(report.root.children.len(), 2);
+        for parent in &report.root.children {
+            assert_eq!(parent.children.len(), 1);
+            assert_eq!(parent.children[0].name, "shared_child");
+            assert_eq!(parent.children[0].call_count, 1);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 12. Out-of-order guard drops keep the nesting stack consistent
+    // -------------------------------------------------------------------------
+    #[test]
+    fn test_out_of_order_drop_keeps_stack_consistent() {
+        let mut s = ProfilerSession::new();
+        s.begin_frame();
+        {
+            let outer = s.scope("outer");
+            let inner = s.scope("inner");
+            // Drop the *outer* guard first: only its own stack entry may go.
+            drop(outer);
+            // `inner` is still open, so a new scope nests under it.
+            {
+                let _deep = s.scope("deep");
+            }
+            drop(inner);
+            // Everything is closed again: a new scope is a root-level sibling.
+            let _after = s.scope("after");
+        }
+        let report = s.end_frame();
+
+        let names: Vec<&str> = report
+            .root
+            .children
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["outer", "after"]);
+
+        let outer = &report.root.children[0];
+        assert_eq!(outer.call_count, 1);
+        assert_eq!(outer.children.len(), 1);
+        let inner = &outer.children[0];
+        assert_eq!(inner.name, "inner");
+        assert_eq!(inner.call_count, 1);
+        assert_eq!(inner.children.len(), 1);
+        assert_eq!(inner.children[0].name, "deep");
+        assert_eq!(report.root.children[1].call_count, 1);
+    }
+
+    // -------------------------------------------------------------------------
+    // 13. Guards dropped late still record into their own node
+    // -------------------------------------------------------------------------
+    #[test]
+    fn test_late_drop_records_into_own_node_only() {
+        let mut s = ProfilerSession::new();
+        s.begin_frame();
+        let first = s.scope("first");
+        let second = s.scope("second");
+        std::thread::sleep(std::time::Duration::from_micros(200));
+        drop(first);
+        drop(second);
+        let report = s.end_frame();
+
+        let first_node = &report.root.children[0];
+        assert_eq!(first_node.name, "first");
+        assert_eq!(first_node.call_count, 1);
+        assert!(first_node.total_ns > 0);
+        let second_node = &first_node.children[0];
+        assert_eq!(second_node.name, "second");
+        assert_eq!(second_node.call_count, 1);
+        assert!(second_node.total_ns > 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // 14. The session is reusable across frames and isolated between them
+    // -------------------------------------------------------------------------
+    #[test]
+    fn test_frames_are_independent() {
+        let mut s = ProfilerSession::new();
+
+        s.begin_frame();
+        {
+            let _a = s.scope("only_in_first_frame");
+        }
+        let first = s.end_frame();
+        assert_eq!(first.root.children.len(), 1);
+
+        s.begin_frame();
+        {
+            let _b = s.scope("only_in_second_frame");
+        }
+        assert_eq!(s.node_count(), 1);
+        let second = s.end_frame();
+        assert_eq!(second.root.children.len(), 1);
+        assert_eq!(second.root.children[0].name, "only_in_second_frame");
+    }
+
+    // -------------------------------------------------------------------------
+    // 15. A session can move to another thread between frames
+    // -------------------------------------------------------------------------
+    #[test]
+    fn test_session_is_send_between_frames() {
+        let mut s = ProfilerSession::new();
+        s.begin_frame();
+        let handle = std::thread::spawn(move || {
+            {
+                let _g = s.scope("on_worker_thread");
+            }
+            s.end_frame()
+        });
+        let report = handle.join().expect("worker thread must not panic");
+        assert_eq!(report.root.children.len(), 1);
+        assert_eq!(report.root.children[0].name, "on_worker_thread");
     }
 }

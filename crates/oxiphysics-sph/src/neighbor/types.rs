@@ -552,6 +552,11 @@ impl SpatialHash3D {
     ///
     /// The returned list is unsorted and may include the query position itself
     /// if it coincides with one of the stored positions.
+    ///
+    /// Cell indices saturate at the `i32` limits for coordinates beyond
+    /// `±2³¹ h` (including infinite ones); a neighbouring cell that would fall
+    /// outside the `i32` range does not exist and is skipped, so such query
+    /// positions are handled without arithmetic overflow.
     pub fn find_neighbors(&self, pos: [f64; 3]) -> Vec<usize> {
         let h2 = self.h * self.h;
         let ck = Self::cell_key_of(&pos, self.h);
@@ -559,7 +564,14 @@ impl SpatialHash3D {
         for dx in -1_i32..=1 {
             for dy in -1_i32..=1 {
                 for dz in -1_i32..=1 {
-                    let key = (ck.0 + dx, ck.1 + dy, ck.2 + dz);
+                    let (Some(kx), Some(ky), Some(kz)) = (
+                        ck.0.checked_add(dx),
+                        ck.1.checked_add(dy),
+                        ck.2.checked_add(dz),
+                    ) else {
+                        continue;
+                    };
+                    let key = (kx, ky, kz);
                     if let Some(indices) = self.cells.get(&key) {
                         for &idx in indices {
                             let p = self.positions[idx];

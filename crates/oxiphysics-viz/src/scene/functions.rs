@@ -829,6 +829,156 @@ mod tests {
             }
         }
     }
+    /// Apply a column-major `[[f64; 4]; 4]` matrix to the point `p` and return
+    /// the perspective-divided result together with `w`.
+    fn transform_point(m: &[[f64; 4]; 4], p: [f64; 3]) -> ([f64; 3], f64) {
+        let mut out = [0.0_f64; 4];
+        for (row, o) in out.iter_mut().enumerate() {
+            *o = m[0][row] * p[0] + m[1][row] * p[1] + m[2][row] * p[2] + m[3][row];
+        }
+        ([out[0] / out[3], out[1] / out[3], out[2] / out[3]], out[3])
+    }
+
+    fn scene_with_nodes(positions: &[[f64; 3]]) -> Scene {
+        let mut scene = Scene::new();
+        for (i, &p) in positions.iter().enumerate() {
+            let mut t = Transform::identity();
+            t.position = p;
+            scene.add_node(&format!("n{i}"), t, None);
+        }
+        scene
+    }
+
+    #[test]
+    fn test_shadow_map_frustum_fits_visible_nodes_in_the_clip_cube() {
+        let positions = [
+            [-3.0, 1.0, 2.0],
+            [4.0, -2.0, 5.0],
+            [0.5, 6.0, -1.0],
+            [-2.0, -4.0, -6.0],
+            [7.0, 3.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ];
+        let scene = scene_with_nodes(&positions);
+        let lights = [
+            [1.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.3, -0.5, 0.8],
+            [-1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [2.0, 5.0, -3.0],
+        ];
+        for light_dir in lights {
+            let m = scene.compute_shadow_map_frustum(light_dir);
+            let mut lo = [f64::INFINITY; 3];
+            let mut hi = [f64::NEG_INFINITY; 3];
+            for &p in &positions {
+                let (ndc, w) = transform_point(&m, p);
+                assert!((w - 1.0).abs() < 1e-12, "light {light_dir:?}: w = {w}");
+                for k in 0..3 {
+                    assert!(
+                        ndc[k].abs() <= 1.0 + 1e-9,
+                        "light {light_dir:?}: node {p:?} maps to {ndc:?}, outside [-1,1]^3"
+                    );
+                    lo[k] = lo[k].min(ndc[k]);
+                    hi[k] = hi[k].max(ndc[k]);
+                }
+            }
+            // The fit is tight: nodes touch both faces of the cube on each axis.
+            for k in 0..3 {
+                assert!(
+                    (lo[k] + 1.0).abs() < 1e-9 && (hi[k] - 1.0).abs() < 1e-9,
+                    "light {light_dir:?}, axis {k}: extent [{}, {}] should be [-1, 1]",
+                    lo[k],
+                    hi[k]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_shadow_map_frustum_ignores_hidden_nodes() {
+        let mut scene = scene_with_nodes(&[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, 1.0, 1.0]]);
+        scene.set_visible(2, false);
+        // A hidden node far away must not stretch the fit of the visible ones.
+        scene.nodes[2].transform.position = [500.0, 500.0, 500.0];
+        let m = scene.compute_shadow_map_frustum([0.0, 1.0, 0.0]);
+        let (a, _) = transform_point(&m, [0.0, 0.0, 0.0]);
+        let (b, _) = transform_point(&m, [2.0, 0.0, 0.0]);
+        let span = (0..3).map(|k| (a[k] - b[k]).abs()).fold(0.0_f64, f64::max);
+        assert!(
+            (span - 2.0).abs() < 1e-9,
+            "the two visible nodes must span the whole cube, got {span}"
+        );
+    }
+
+    #[test]
+    fn test_shadow_map_frustum_single_node_maps_to_the_cube_centre() {
+        let scene = scene_with_nodes(&[[1.0, 2.0, 3.0]]);
+        let m = scene.compute_shadow_map_frustum([0.0, -1.0, 0.0]);
+        let (ndc, _) = transform_point(&m, [1.0, 2.0, 3.0]);
+        for (k, v) in ndc.iter().enumerate() {
+            assert!(v.abs() < 1e-6, "axis {k}: {v}");
+        }
+    }
+
+    #[test]
+    fn test_shadow_map_frustum_depth_grows_away_from_the_light() {
+        // The light shines from +y (direction toward the light is +y).
+        let top = [0.0, 4.0, 0.0];
+        let bottom = [0.0, -2.0, 0.0];
+        let side = [2.0, 1.0, 3.0];
+        let scene = scene_with_nodes(&[top, bottom, side]);
+        let m = scene.compute_shadow_map_frustum([0.0, 1.0, 0.0]);
+        let (ndc_top, _) = transform_point(&m, top);
+        let (ndc_bottom, _) = transform_point(&m, bottom);
+        let (ndc_side, _) = transform_point(&m, side);
+        assert!(
+            (ndc_top[2] + 1.0).abs() < 1e-9,
+            "light-facing side is NDC -1"
+        );
+        assert!((ndc_bottom[2] - 1.0).abs() < 1e-9, "far side is NDC +1");
+        assert!(ndc_side[2].abs() < 1e-9, "mid-depth node sits at NDC 0");
+        // Looking down the light direction, the top and bottom nodes share a
+        // shadow-map texel.
+        assert!((ndc_top[0] - ndc_bottom[0]).abs() < 1e-9);
+        assert!((ndc_top[1] - ndc_bottom[1]).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_shadow_map_frustum_drives_shadow_map_lookups() {
+        // End to end: record the occluder's depth in a ShadowMap built from the
+        // frustum, then a point behind it (further from the light) must be in
+        // shadow and the occluder itself must not.
+        let occluder = [1.0, 5.0, -1.0];
+        let behind = [1.0, 1.0, -1.0];
+        let beside = [-4.0, 1.0, 3.0];
+        let scene = scene_with_nodes(&[occluder, behind, beside]);
+        let light_dir = [0.0, 1.0, 0.0];
+        let light_vp = scene.compute_shadow_map_frustum(light_dir);
+        let mut sm = crate::scene::ShadowMap::new(64, 64, light_vp);
+        let (u, v, depth) = sm
+            .project(occluder)
+            .expect("occluder projects into the light frustum");
+        let tx = (u * 63.0).round() as usize;
+        let ty = (v * 63.0).round() as usize;
+        sm.set_depth(tx, ty, depth);
+        assert!(
+            sm.is_in_shadow(behind, 1e-3),
+            "point behind the occluder is shadowed"
+        );
+        assert!(!sm.is_in_shadow(occluder, 1e-3), "the occluder is lit");
+        assert!(
+            !sm.is_in_shadow([1.0, 6.0, -1.0], 1e-3),
+            "a point between the light and the occluder is lit"
+        );
+        assert!(
+            !sm.is_in_shadow(beside, 1e-3),
+            "a point whose texel holds no occluder depth stays lit"
+        );
+    }
+
     #[test]
     fn test_cull_offscreen_nodes_become_invisible() {
         let mut scene = Scene::new();

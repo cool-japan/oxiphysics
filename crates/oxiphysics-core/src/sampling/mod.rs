@@ -2,6 +2,8 @@
 
 pub mod functions;
 pub mod functions_2;
+#[cfg(test)]
+mod sobol_tests;
 pub mod sobol_traits;
 pub mod types;
 

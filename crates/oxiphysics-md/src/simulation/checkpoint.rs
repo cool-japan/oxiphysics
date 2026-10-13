@@ -101,9 +101,20 @@ impl NveMonitor {
 // NptBarostat — simple Berendsen pressure control for MdSim
 // ---------------------------------------------------------------------------
 
+/// Smallest value of the cubed Berendsen scaling factor `μ³` accepted in one step.
+///
+/// A pathological pressure (for example from a blown-up configuration) could drive
+/// `1 − β·dt/τ·(P₀ − P)` through zero, and the real cube root of a negative number
+/// would mirror the box.  The factor is therefore bounded below.
+const MIN_CUBED_SCALE: f64 = 0.01;
+
 /// Simple isotropic Berendsen barostat for NPT simulations.
 ///
-/// Rescales the box and positions by a factor μ = 1 - β·dt/τ·(P_target - P).
+/// Rescales the box and positions by a factor μ = (1 - β·dt/τ·(P_target - P))^(1/3).
+///
+/// The pressure is the virial-theorem pressure `P = (2·KE + W) / (3V)` of
+/// [`MdSim::compute_pressure`], so the pair virial `W` of the interacting system
+/// must be supplied by the caller (see [`MdSim::velocity_verlet_step_virial`]).
 #[derive(Debug, Clone)]
 pub struct NptBarostat {
     /// Target pressure (bar).
@@ -125,14 +136,15 @@ impl NptBarostat {
     }
 
     /// Compute the linear scaling factor μ for the box.
+    ///
+    /// The cubed factor is bounded below by `0.01`, so the box is never mirrored.
     pub fn scale_factor(&self, p_current: f64, dt: f64) -> f64 {
         let mu3 = 1.0 - self.compressibility * dt / self.tau_p * (self.target_pressure - p_current);
-        mu3.cbrt()
+        mu3.max(MIN_CUBED_SCALE).cbrt()
     }
 
-    /// Apply pressure coupling to the simulation: rescale box and positions.
-    pub fn apply(&self, sim: &mut MdSim, virial: f64, dt: f64) {
-        let p_current = sim.compute_pressure(virial);
+    /// Rescale box and positions for the given instantaneous pressure `p_current` (bar).
+    pub fn rescale(&self, sim: &mut MdSim, p_current: f64, dt: f64) {
         let mu = self.scale_factor(p_current, dt);
         // Rescale positions and box lengths.
         for pos in sim.state.positions.iter_mut() {
@@ -143,6 +155,16 @@ impl NptBarostat {
         for a in 0..3 {
             sim.config.box_lengths[a] *= mu;
         }
+    }
+
+    /// Apply pressure coupling to the simulation: rescale box and positions.
+    ///
+    /// `virial` is the scalar pair virial `W = Σ_{i<j} r_ij · F_ij` (kJ mol⁻¹) of the
+    /// current configuration; the pressure follows from it, the current kinetic
+    /// energy and the current box volume.
+    pub fn apply(&self, sim: &mut MdSim, virial: f64, dt: f64) {
+        let p_current = sim.compute_pressure(virial);
+        self.rescale(sim, p_current, dt);
     }
 }
 
@@ -236,24 +258,39 @@ impl MdSim {
 
     /// Run an NPT simulation using the Berendsen barostat and thermostat.
     ///
-    /// `forces_fn` should also return a scalar virial (sum r·F).
-    /// For simplicity this version uses a zero virial (ideal gas).
+    /// `forces_fn(positions, box_lengths) -> (forces, virial)` returns the forces
+    /// and the scalar pair virial `W = Σ_{i<j} r_ij · F_ij` (kJ mol⁻¹, minimum-image
+    /// separations; a repulsive pair contributes `+|F| r`) of the same
+    /// configuration.  The barostat responds to the pressure
+    /// `P = (2·KE + W) / (3V)`, so an interacting system relaxes to the density at
+    /// which its full pressure, not only the kinetic part, equals the target.  A
+    /// non-interacting gas returns `0.0` for the virial.
+    ///
+    /// Each step evaluates the pressure of the current configuration, advances the
+    /// particles with velocity Verlet while dilating the box and coordinates by
+    /// the Berendsen factor before the new forces are computed, and then applies
+    /// the Berendsen thermostat.
     pub fn run_npt(
         &mut self,
-        forces_fn: impl Fn(&[[f64; 3]], &[f64; 3]) -> Vec<[f64; 3]>,
+        forces_fn: impl Fn(&[[f64; 3]], &[f64; 3]) -> (Vec<[f64; 3]>, f64),
         barostat: &NptBarostat,
         tau_t: f64,
         record_every: u64,
     ) -> Vec<(f64, f64, f64)> {
-        self.state.forces = forces_fn(&self.state.positions, &self.config.box_lengths);
+        let (initial_forces, mut virial) =
+            forces_fn(&self.state.positions, &self.config.box_lengths);
+        self.state.forces = initial_forces;
 
         let mut records = Vec::new();
         let n_steps = self.config.n_steps;
 
         for s in 0..n_steps {
-            self.velocity_verlet_step(&forces_fn);
+            let dt = self.config.dt;
+            let pressure = self.compute_pressure(virial);
+            virial = self.velocity_verlet_step_with(&forces_fn, |sim| {
+                barostat.rescale(sim, pressure, dt);
+            });
             self.apply_berendsen_thermostat(self.config.temperature, tau_t);
-            barostat.apply(self, 0.0, self.config.dt); // zero virial for simplicity
 
             let ke = self.compute_kinetic_energy();
             self.state.kinetic_energy = ke;

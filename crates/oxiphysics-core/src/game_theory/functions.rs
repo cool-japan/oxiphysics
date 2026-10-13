@@ -151,6 +151,69 @@ mod tests_normal_form {
         assert!((p - 0.5).abs() < 1e-9);
         assert!((q - 0.5).abs() < 1e-9);
     }
+    /// Row payoffs of A against B's mix `(q, 1-q)` and column payoffs of B
+    /// against A's mix `(p, 1-p)`.
+    fn indifference_payoffs(g: &NormalFormGame, p: f64, q: f64) -> ([f64; 2], [f64; 2]) {
+        let row = |i: usize| q * g.payoff_a[i][0] + (1.0 - q) * g.payoff_a[i][1];
+        let col = |j: usize| p * g.payoff_b[0][j] + (1.0 - p) * g.payoff_b[1][j];
+        ([row(0), row(1)], [col(0), col(1)])
+    }
+    #[test]
+    fn test_mixed_nash_2x2_asymmetric_payoffs() {
+        // A = [[3,0],[1,2]], B = [[2,1],[0,3]]: a01 != a10 and b01 != b10, so
+        // mixing the wrong payoff entries is detectable.
+        let g = NormalFormGame::new(
+            vec![vec![3.0, 0.0], vec![1.0, 2.0]],
+            vec![vec![2.0, 1.0], vec![0.0, 3.0]],
+        );
+        let (p, q) = g.mixed_nash_2x2().expect("interior equilibrium exists");
+        assert!((p - 0.75).abs() < 1e-12, "p = {p}");
+        assert!((q - 0.5).abs() < 1e-12, "q = {q}");
+        let (rows, cols) = indifference_payoffs(&g, p, q);
+        assert!(
+            (rows[0] - rows[1]).abs() < 1e-12,
+            "A not indifferent: {rows:?}"
+        );
+        assert!(
+            (cols[0] - cols[1]).abs() < 1e-12,
+            "B not indifferent: {cols:?}"
+        );
+        assert!(g.is_nash_equilibrium(&[p, 1.0 - p], &[q, 1.0 - q]));
+    }
+    #[test]
+    fn test_mixed_nash_2x2_battle_of_the_sexes() {
+        // A prefers the first outcome, B the second; the mixed equilibrium is
+        // (p, q) = (2/3, 1/3).
+        let g = NormalFormGame::new(
+            vec![vec![2.0, 0.0], vec![0.0, 1.0]],
+            vec![vec![1.0, 0.0], vec![0.0, 2.0]],
+        );
+        let (p, q) = g.mixed_nash_2x2().expect("interior equilibrium exists");
+        assert!((p - 2.0 / 3.0).abs() < 1e-12, "p = {p}");
+        assert!((q - 1.0 / 3.0).abs() < 1e-12, "q = {q}");
+        let (rows, cols) = indifference_payoffs(&g, p, q);
+        assert!((rows[0] - rows[1]).abs() < 1e-12);
+        assert!((cols[0] - cols[1]).abs() < 1e-12);
+        assert!(g.is_nash_equilibrium(&[p, 1.0 - p], &[q, 1.0 - q]));
+    }
+    #[test]
+    fn test_mixed_nash_2x2_no_interior_equilibrium() {
+        // The Prisoner's Dilemma has a dominant strategy, so the indifference
+        // probabilities fall outside [0, 1].
+        assert!(prisoners_dilemma_game().mixed_nash_2x2().is_none());
+        // Non-2x2 games are rejected.
+        let g3 = NormalFormGame::new(
+            vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]],
+            vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]],
+        );
+        assert!(g3.mixed_nash_2x2().is_none());
+        // A vanishing denominator (constant payoffs) has no unique solution.
+        let flat = NormalFormGame::new(
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        );
+        assert!(flat.mixed_nash_2x2().is_none());
+    }
     #[test]
     fn test_social_optimum_pd() {
         let g = prisoners_dilemma_game();

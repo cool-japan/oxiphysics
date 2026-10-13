@@ -218,3 +218,9 @@ pub mod softbody_collision;
 pub mod spatial_queries;
 pub mod terrain_collision;
 pub mod voxel_collision;
+
+// Compile-checks every Rust example of the crate README as a doctest, so the
+// documented API cannot drift from the real one.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;

@@ -4,7 +4,7 @@
 //! Generic trait-based MD simulation driver and energy records.
 
 use crate::atom::AtomSet;
-use crate::barostat::Barostat;
+use crate::barostat::{Barostat, virial_pressure};
 use crate::forcefield::ForceField;
 use crate::integrator::Integrator;
 use crate::neighbor::PeriodicBox;
@@ -62,6 +62,9 @@ where
     pub step_count: u64,
     /// Latest energy record.
     pub energy: EnergyRecord,
+    /// Scalar pair virial `W = Σ r_ij · F_ij` of the latest force evaluation
+    /// (minimum-image separations; invariant under wrapping of coordinates).
+    pub virial: f64,
 }
 
 impl<F, I, T, B> MdSimulation<F, I, T, B>
@@ -95,7 +98,21 @@ where
             boltzmann_k,
             step_count: 0,
             energy: EnergyRecord::default(),
+            virial: 0.0,
         }
+    }
+
+    /// Instantaneous pressure `P = (2·KE + W) / (3·V)` from the current
+    /// kinetic energy, the box volume and the virial of the latest force
+    /// evaluation.
+    ///
+    /// Returns `0.0` for a degenerate (zero-volume) box.
+    pub fn pressure(&self) -> f64 {
+        let volume = self.pbox.volume();
+        if volume < 1e-30 {
+            return 0.0;
+        }
+        virial_pressure(volume, self.atoms.kinetic_energy(), self.virial)
     }
 
     /// Perform a single MD time step.
@@ -103,19 +120,28 @@ where
         let ff = &self.force_field;
         let pbox = &self.pbox;
         let mut potential_energy = 0.0;
+        let mut virial = self.virial;
 
         let mut force_fn = |atoms: &mut AtomSet| {
             atoms.clear_forces();
-            potential_energy = ff.compute_forces(atoms, pbox);
+            let (energy, pair_virial) = ff.compute_forces_virial(atoms, pbox);
+            potential_energy = energy;
+            virial = pair_virial;
         };
 
         self.integrator.step(&mut self.atoms, dt, &mut force_fn);
+        self.virial = virial;
 
         self.thermostat
             .apply(&mut self.atoms, self.target_temp, dt, self.boltzmann_k);
 
-        self.barostat
-            .apply(&mut self.atoms, &mut self.pbox, self.target_pressure, dt);
+        self.barostat.apply(
+            &mut self.atoms,
+            &mut self.pbox,
+            self.target_pressure,
+            self.virial,
+            dt,
+        );
 
         for pos in &mut self.atoms.positions {
             *pos = self.pbox.wrap_position(pos);
@@ -145,7 +171,10 @@ where
         let mut records = Vec::new();
 
         self.atoms.clear_forces();
-        let _pe = self.force_field.compute_forces(&mut self.atoms, &self.pbox);
+        let (_pe, virial) = self
+            .force_field
+            .compute_forces_virial(&mut self.atoms, &self.pbox);
+        self.virial = virial;
 
         for i in 0..n_steps {
             self.step(dt);

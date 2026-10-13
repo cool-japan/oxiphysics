@@ -373,38 +373,68 @@ impl TireWarmup {
 /// Cumulative rubber degradation model.
 ///
 /// Tracks thermal stress cycles and computes residual strength fraction.
-/// Based on an Arrhenius-style degradation: high temperatures accelerate aging.
+/// The degradation rate follows the Arrhenius law referenced to `t_ref`:
+/// `k(T) = k_ref · exp(E_a/R · (1/T_ref − 1/T))`, so high temperatures
+/// accelerate aging exponentially while room temperature ages the compound
+/// only very slowly.
 #[derive(Debug, Clone)]
 pub struct RubberDegradation {
-    /// Reference temperature for degradation onset (K).
+    /// Reference temperature at which the rate equals `k_ref` (K).
     pub t_ref: f64,
-    /// Arrhenius activation parameter (K).
+    /// Arrhenius activation temperature `E_a / R` (K).
     pub activation_k: f64,
+    /// Degradation rate at the reference temperature (1/s).
+    pub k_ref: f64,
     /// Cumulative degradation index \[0, 1\]. 0 = new, 1 = fully degraded.
     pub degradation: f64,
 }
 impl RubberDegradation {
-    /// Create a new degradation tracker.
+    /// Default degradation rate at the reference temperature (1/s).
+    ///
+    /// At `1e-5 /s` a compound held at its reference temperature loses
+    /// roughly one percent of its strength per 17 minutes.
+    pub const DEFAULT_K_REF: f64 = 1.0e-5;
+    /// Lowest temperature (K) used when evaluating the Arrhenius law; this keeps
+    /// `1/T` finite for non-physical inputs.
+    const MIN_TEMPERATURE: f64 = 1.0;
+    /// Upper bound on the Arrhenius exponent, which avoids `inf` rates (and the
+    /// `inf · 0 = NaN` hazard in [`step`](Self::step)) for non-physical parameters.
+    const MAX_EXPONENT: f64 = 700.0;
+    /// Create a new degradation tracker with the default reference rate
+    /// [`DEFAULT_K_REF`](Self::DEFAULT_K_REF).
     pub fn new(t_ref: f64, activation_k: f64) -> Self {
         Self {
             t_ref,
             activation_k,
+            k_ref: Self::DEFAULT_K_REF,
             degradation: 0.0,
         }
+    }
+    /// Return the tracker with its reference-temperature rate set to `k_ref` (1/s).
+    pub fn with_reference_rate(mut self, k_ref: f64) -> Self {
+        self.k_ref = k_ref;
+        self
     }
     /// Default parameters for a racing compound rubber.
     pub fn racing_compound() -> Self {
         Self {
             t_ref: 383.15,
             activation_k: 6000.0,
+            k_ref: Self::DEFAULT_K_REF,
             degradation: 0.0,
         }
     }
-    /// Instantaneous degradation rate at temperature `t` (K).
+    /// Instantaneous degradation rate at temperature `t` (K), in 1/s.
     ///
-    /// rate = exp((T - T_ref) / activation_k)
+    /// `rate = k_ref · exp(activation_k · (1/T_ref − 1/T))` (Arrhenius law with
+    /// `activation_k = E_a / R`).  At `t = t_ref` the rate equals `k_ref`;
+    /// below `t_ref` it is smaller and above it larger.  Temperatures and the
+    /// reference temperature are floored at 1 K to keep the law finite.
     pub fn degradation_rate(&self, t: f64) -> f64 {
-        ((t - self.t_ref) / self.activation_k).exp().max(0.0)
+        let t_ref = self.t_ref.max(Self::MIN_TEMPERATURE);
+        let t = t.max(Self::MIN_TEMPERATURE);
+        let exponent = (self.activation_k * (1.0 / t_ref - 1.0 / t)).min(Self::MAX_EXPONENT);
+        (self.k_ref * exponent.exp()).clamp(0.0, f64::MAX)
     }
     /// Step the model by `dt` at temperature `t`.
     pub fn step(&mut self, t: f64, dt: f64) {

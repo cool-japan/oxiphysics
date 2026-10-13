@@ -32,8 +32,10 @@ fn safe_normalize(v: Vec3) -> Option<Vec3> {
 
 /// Internal result of the shared MPR core.
 enum MprOutcome {
-    /// Shapes overlap; carries the contact normal (B->A), penetration depth and
-    /// the witness points on shapes A and B.
+    /// Shapes overlap; carries the outward Minkowski-difference (A - B) normal,
+    /// which points from A toward B (the public wrappers negate it to the
+    /// crate-wide B -> A convention), the penetration depth and the witness
+    /// points on shapes A and B.
     Hit {
         normal: Vec3,
         depth: f64,
@@ -553,7 +555,9 @@ pub fn mpr_full(
             point_a,
             point_b,
         } => MprResult::Intersecting {
-            normal,
+            // The core works with the outward Minkowski (A - B) normal, which
+            // points from A toward B; the public result is B -> A.
+            normal: -normal,
             depth,
             point: (point_a + point_b) * 0.5,
         },
@@ -575,7 +579,7 @@ pub fn mpr_contact(
             depth,
             point_a,
             point_b,
-        } => Some(Contact::new(point_a, point_b, normal, depth)),
+        } => Some(Contact::new(point_a, point_b, -normal, depth)),
         MprOutcome::Miss => None,
     }
 }

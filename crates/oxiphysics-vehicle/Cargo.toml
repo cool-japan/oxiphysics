@@ -16,4 +16,8 @@ oxiphysics-core = { workspace = true }
 oxiphysics-rigid = { workspace = true }
 oxiphysics-constraints = { workspace = true }
 oxiphysics-fem = { workspace = true }
+oxifft = { workspace = true }
 rand = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

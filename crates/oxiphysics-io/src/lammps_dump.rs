@@ -23,6 +23,16 @@
 
 use std::io::{BufRead, Write};
 
+mod layout;
+#[cfg(test)]
+mod layout_tests;
+mod rdf;
+#[cfg(test)]
+mod rdf_tests;
+
+use layout::{AtomTable, DumpBox, DumpLayout};
+pub use rdf::radial_distribution_function;
+
 /// A single simulation frame from a LAMMPS dump file.
 #[derive(Debug, Clone)]
 pub struct LammpsDumpFrame {
@@ -131,6 +141,16 @@ impl LammpsDumpReader {
     ///
     /// Returns `None` when there is no more data, or
     /// `Some(Err(...))` on a parse / format error.
+    ///
+    /// The columns of the `ITEM: ATOMS` table are located by the names in its
+    /// header, in any order.  `id`, `type` and a complete position triple
+    /// (`x y z`, `xu yu zu`, `xs ys zs` or `xsu ysu zsu`) are required; scaled
+    /// coordinates are converted to Cartesian ones with the (triclinic-aware)
+    /// box.  `vx vy vz` become [`LammpsDumpFrame::velocities`] when all three are
+    /// present.  Every other numeric column, such as `mol`, `q` or `fx`, is
+    /// returned in [`LammpsDumpFrame::custom_properties`]; an `element` column
+    /// holds text and is skipped.  A row with fewer values than the header names
+    /// columns, or a value that is not a number, is an error.
     pub fn read_frame(reader: impl BufRead) -> Option<Result<LammpsDumpFrame, String>> {
         let mut lines = reader.lines().peekable();
 
@@ -142,11 +162,10 @@ impl LammpsDumpReader {
                     lines.next();
                 }
                 Some(Err(_)) => {
-                    let e = lines
-                        .next()
-                        .expect("iterator should have elements")
-                        .expect_err("matched Err(_) arm so value must be Err");
-                    return Some(Err(e.to_string()));
+                    return match lines.next() {
+                        Some(Err(e)) => Some(Err(e.to_string())),
+                        _ => None,
+                    };
                 }
                 _ => break,
             }
@@ -243,106 +262,40 @@ impl LammpsDumpReader {
             }
         }
 
-        // ITEM: ATOMS id type x y z [vx vy vz] [custom...]
+        // ITEM: ATOMS <column names>: the columns are found by name, in any order.
         let header_line = expect_keyword!("ITEM: ATOMS");
-        let has_velocities = header_line.contains("vx");
-
-        // Parse column names from the header
         let col_names: Vec<&str> = header_line
             .trim()
             .strip_prefix("ITEM: ATOMS")
             .unwrap_or("")
             .split_whitespace()
             .collect();
-
-        // Identify custom property columns (beyond id, type, x, y, z, vx, vy, vz)
-        let standard_cols = ["id", "type", "x", "y", "z", "vx", "vy", "vz"];
-        let custom_col_indices: Vec<(usize, String)> = col_names
-            .iter()
-            .enumerate()
-            .filter(|(_, name)| !standard_cols.contains(name))
-            .map(|(i, name)| (i, name.to_string()))
-            .collect();
-
-        let mut atom_ids = Vec::with_capacity(n_atoms);
-        let mut types = Vec::with_capacity(n_atoms);
-        let mut positions = Vec::with_capacity(n_atoms);
-        let mut velocities: Vec<[f64; 3]> = if has_velocities {
-            Vec::with_capacity(n_atoms)
-        } else {
-            Vec::new()
+        let layout = match DumpLayout::from_header(&col_names) {
+            Ok(layout) => layout,
+            Err(e) => return Some(Err(e)),
         };
-        let mut custom_data: Vec<Vec<f64>> = custom_col_indices
-            .iter()
-            .map(|_| Vec::with_capacity(n_atoms))
-            .collect();
-
+        let dump_box = DumpBox::from_bounds(box_bounds, tilt_factors);
+        let mut table = AtomTable::new(&layout, n_atoms);
         for i in 0..n_atoms {
             let al = next_line!(format!("atom {i}"));
-            let parts: Vec<&str> = al.split_whitespace().collect();
-            let min_cols = if has_velocities { 8 } else { 5 };
-            if parts.len() < min_cols {
-                return Some(Err(format!(
-                    "LAMMPS dump: atom line {i} has {} cols, need {}",
-                    parts.len(),
-                    min_cols
-                )));
-            }
-            macro_rules! parse_col {
-                ($idx:expr, $ty:ty, $label:expr) => {
-                    match parts[$idx].parse::<$ty>() {
-                        Ok(v) => v,
-                        Err(e) => {
-                            return Some(Err(format!(
-                                "LAMMPS dump: atom {i} col {} ({}): {e}",
-                                $idx, $label
-                            )))
-                        }
-                    }
-                };
-            }
-            let id = parse_col!(0, u32, "id");
-            let ty = parse_col!(1, u32, "type");
-            let x = parse_col!(2, f64, "x");
-            let y = parse_col!(3, f64, "y");
-            let z = parse_col!(4, f64, "z");
-            atom_ids.push(id);
-            types.push(ty);
-            positions.push([x, y, z]);
-            if has_velocities {
-                let vx = parse_col!(5, f64, "vx");
-                let vy = parse_col!(6, f64, "vy");
-                let vz = parse_col!(7, f64, "vz");
-                velocities.push([vx, vy, vz]);
-            }
-
-            // Parse custom properties
-            for (ci, (col_idx, _)) in custom_col_indices.iter().enumerate() {
-                if let Some(val_str) = parts.get(*col_idx) {
-                    let val = val_str.parse::<f64>().unwrap_or(0.0);
-                    custom_data[ci].push(val);
-                }
+            if let Err(e) = table.push_row(&layout, &dump_box, &al, i) {
+                return Some(Err(e));
             }
         }
-
-        let custom_properties: Vec<(String, Vec<f64>)> = custom_col_indices
-            .into_iter()
-            .zip(custom_data)
-            .map(|((_, name), data)| (name, data))
+        let custom_properties: Vec<(String, Vec<f64>)> = layout
+            .custom_names()
+            .map(str::to_string)
+            .zip(table.custom)
             .collect();
 
         Some(Ok(LammpsDumpFrame {
             timestep,
             n_atoms,
             box_bounds,
-            atom_ids,
-            types,
-            positions,
-            velocities: if has_velocities {
-                Some(velocities)
-            } else {
-                None
-            },
+            atom_ids: table.ids,
+            types: table.types,
+            positions: table.positions,
+            velocities: table.velocities,
             tilt_factors,
             custom_properties,
         }))
@@ -627,83 +580,6 @@ pub fn detect_atom_style(header: &str) -> LammpsAtomStyle {
         (true, false) => LammpsAtomStyle::Molecular,
         _ => LammpsAtomStyle::Atomic,
     }
-}
-
-// ─── Radial distribution function (g(r)) ─────────────────────────────────────
-
-/// Compute the radial distribution function g(r) from a single frame.
-///
-/// Returns `(r_bins, g_of_r)` where `r_bins[i]` is the centre of bin `i`
-/// and `g_of_r[i]` is g(r) at that bin.
-///
-/// Only considers atoms of `type_a` (centre) and `type_b` (neighbours).
-/// Use `type_a = type_b = 0` to include all atoms.
-pub fn radial_distribution_function(
-    frame: &LammpsDumpFrame,
-    type_a: u32,
-    type_b: u32,
-    r_max: f64,
-    n_bins: usize,
-) -> (Vec<f64>, Vec<f64>) {
-    let dr = r_max / n_bins as f64;
-    let mut hist = vec![0u64; n_bins];
-
-    let n = frame.n_atoms;
-    let mut n_a = 0usize;
-    let mut n_b = 0usize;
-
-    for i in 0..n {
-        let ti = frame.types[i];
-        if type_a != 0 && ti != type_a {
-            continue;
-        }
-        n_a += 1;
-        for j in 0..n {
-            if i == j {
-                continue;
-            }
-            let tj = frame.types[j];
-            if type_b != 0 && tj != type_b {
-                continue;
-            }
-            n_b += 1;
-            let pi = frame.positions[i];
-            let pj = frame.positions[j];
-            let dx = pi[0] - pj[0];
-            let dy = pi[1] - pj[1];
-            let dz = pi[2] - pj[2];
-            let r = (dx * dx + dy * dy + dz * dz).sqrt();
-            if r < r_max {
-                let bin = (r / dr) as usize;
-                if bin < n_bins {
-                    hist[bin] += 1;
-                }
-            }
-        }
-    }
-
-    let vol = frame.box_volume();
-    let rho = if n_b > 0 && vol > 0.0 {
-        n_b as f64 / vol
-    } else {
-        1.0
-    };
-
-    let r_bins: Vec<f64> = (0..n_bins).map(|i| (i as f64 + 0.5) * dr).collect();
-    let g_of_r: Vec<f64> = r_bins
-        .iter()
-        .zip(hist.iter())
-        .map(|(&r, &count)| {
-            let shell_vol = 4.0 * std::f64::consts::PI * r * r * dr;
-            let n_ideal = rho * shell_vol;
-            if n_ideal < 1e-30 || n_a == 0 {
-                return 0.0;
-            }
-            count as f64 / (n_a as f64 * n_ideal)
-        })
-        .collect();
-
-    (r_bins, g_of_r)
 }
 
 // ─── Per-atom force extraction ────────────────────────────────────────────────

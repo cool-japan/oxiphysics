@@ -46,6 +46,8 @@ const W9: [f64; 9] = [
 const CX9: [i32; 9] = [0, 1, 0, -1, 0, 1, -1, -1, 1];
 /// D2Q9 y-velocity components.
 const CY9: [i32; 9] = [0, 0, 1, 0, -1, 1, 1, -1, -1];
+/// D2Q9 opposite-direction table: `c[OPP9[i]] = -c[i]`.
+const OPP9: [usize; 9] = [0, 3, 4, 1, 2, 7, 8, 5, 6];
 
 // ─── TurbulentDiffusivity ─────────────────────────────────────────────────
 
@@ -204,6 +206,30 @@ impl ScalarTransport {
         }
     }
 
+    /// Reset every population to the equilibrium of the stored concentration
+    /// field advected by the given velocity field.
+    ///
+    /// Use this after editing [`ScalarTransport::concentration`] directly so
+    /// that the populations stay consistent with the concentration.  It must
+    /// not be called every step: it discards the non-equilibrium part of `g`,
+    /// which is what carries the molecular diffusion (a BGK collision acting
+    /// on an equilibrium state changes nothing, whatever `ω_g` is).
+    ///
+    /// # Arguments
+    /// * `ux_field` – fluid x-velocity at each cell
+    /// * `uy_field` – fluid y-velocity at each cell
+    pub fn equilibrate(&mut self, ux_field: &[f64], uy_field: &[f64]) {
+        let n = self.nx * self.ny;
+        for k in 0..n {
+            let c = self.concentration[k];
+            let ux = ux_field[k];
+            let uy = uy_field[k];
+            for (i, g_i) in self.g.iter_mut().enumerate() {
+                g_i[k] = Self::g_equilibrium(c, ux, uy, i);
+            }
+        }
+    }
+
     /// Scalar equilibrium distribution: g_eq_i = w_i · c · (1 + c_ia·u_a / c_s²).
     ///
     /// # Arguments
@@ -260,13 +286,13 @@ impl ScalarTransport {
                     let xn = ((x as i32 + cx).rem_euclid(nx as i32)) as usize;
                     let yn_i = y as i32 + cy;
                     if yn_i < 0 || yn_i >= ny as i32 {
-                        // Bounce-back: reflect in opposite direction
-                        let opp = (i + 4) % 8;
-                        g_new[opp][k] += self.g[i][k];
+                        // Half-way bounce-back: the population returns to the
+                        // node it left, travelling in the opposite direction.
+                        g_new[OPP9[i]][k] += self.g[i][k];
                     } else {
                         let yn = yn_i as usize;
                         let kn = yn * nx + xn;
-                        g_new[i][kn] = self.g[i][k];
+                        g_new[i][kn] += self.g[i][k];
                     }
                 }
             }
@@ -658,6 +684,10 @@ pub struct DispersionLBM {
     pub scalar: ScalarTransport,
     /// Turbulent diffusivity model (optional; None = laminar).
     pub turb_diff: Option<TurbulentDiffusivity>,
+    /// Molecular diffusivity D_mol (lattice units).  Every step the scalar
+    /// solver is run with the effective diffusivity `D_mol + D_t`, where `D_t`
+    /// is the eddy diffusivity of [`DispersionLBM::turb_diff`] (0 if unset).
+    pub d_mol: f64,
     /// Fluid x-velocity field (lattice units).
     pub ux: Vec<f64>,
     /// Fluid y-velocity field (lattice units).
@@ -680,6 +710,7 @@ impl DispersionLBM {
             ny,
             scalar: ScalarTransport::new(nx, ny, d_mol, 0.0),
             turb_diff: None,
+            d_mol,
             ux: vec![0.0; n],
             uy: vec![0.0; n],
             step: 0,
@@ -693,6 +724,11 @@ impl DispersionLBM {
     }
 
     /// Set the fluid velocity field.
+    ///
+    /// Both vectors must hold `nx * ny` entries.  The scalar populations are
+    /// left untouched: the next collision relaxes them towards the equilibrium
+    /// of the new velocity, so this can be called every step when the carrier
+    /// flow changes in time.
     pub fn set_velocity(&mut self, ux: Vec<f64>, uy: Vec<f64>) {
         self.ux = ux;
         self.uy = uy;
@@ -722,31 +758,34 @@ impl DispersionLBM {
             }
         }
         if total > 0.0 {
-            for (c_k, &w_k) in self.scalar.concentration.iter_mut().zip(weights.iter()) {
-                *c_k += mass * w_k / total;
+            for (k, &w_k) in weights.iter().enumerate() {
+                let delta_c = mass * w_k / total;
+                self.scalar.concentration[k] += delta_c;
+                // Keep the populations consistent with the concentration: the
+                // injected increment enters in equilibrium with the local flow.
+                let ux = self.ux[k];
+                let uy = self.uy[k];
+                for (i, g_i) in self.scalar.g.iter_mut().enumerate() {
+                    g_i[k] += ScalarTransport::g_equilibrium(delta_c, ux, uy, i);
+                }
             }
         }
     }
 
     /// Advance the simulation by one step.
     ///
-    /// Effective diffusivity = D_mol + D_t (from turbulence model if set).
+    /// The scalar is collided with the effective diffusivity
+    /// `D_mol + D_t` (`D_t` from the turbulence model if set) and streamed.
+    /// The populations persist from step to step, so the BGK relaxation rate
+    /// `ω_g = 1/(D/c_s² + 1/2)` really controls the spreading rate: a Gaussian
+    /// blob grows as `σ²(t) = σ²(0) + 2 D t`.
     pub fn advance(&mut self) {
-        // Update effective diffusivity
-        if let Some(ref td) = self.turb_diff {
-            self.scalar.diffusivity = td.eddy_diffusivity() + self.scalar.diffusivity.max(0.0);
-        }
-        // Re-initialise g from current concentration (ensure consistency)
-        let n = self.nx * self.ny;
-        for k in 0..n {
-            let c = self.scalar.concentration[k];
-            let ux = self.ux[k];
-            let uy = self.uy[k];
-            for i in 0..9 {
-                self.scalar.g[i][k] = ScalarTransport::g_equilibrium(c, ux, uy, i);
-            }
-        }
-        self.scalar.collide(&self.ux.clone(), &self.uy.clone());
+        let d_turbulent = self
+            .turb_diff
+            .as_ref()
+            .map_or(0.0, TurbulentDiffusivity::eddy_diffusivity);
+        self.scalar.diffusivity = self.d_mol.max(0.0) + d_turbulent;
+        self.scalar.collide(&self.ux, &self.uy);
         self.scalar.stream();
         self.step += 1;
     }
@@ -941,8 +980,11 @@ mod tests {
         st.collide(&ux, &uy);
         st.stream();
         let mass_after = st.total_mass();
-        // Mass should be conserved (modulo bounce-back losses at walls)
-        assert!((mass_after - mass_before).abs() < mass_before * 0.05);
+        // Periodic in x and half-way bounce-back in y: mass is conserved exactly.
+        assert!(
+            (mass_after - mass_before).abs() < 1e-12 * mass_before,
+            "mass {mass_before} -> {mass_after}"
+        );
     }
 
     #[test]
@@ -1201,5 +1243,221 @@ mod tests {
     fn test_richardson_number_zero_u_stable_inf() {
         let ri = richardson_number(9.81, 1e-3, 1.0, 10.0, 0.0);
         assert!(ri.is_infinite() && ri > 0.0);
+    }
+}
+
+#[cfg(test)]
+mod tests_scalar_regression {
+    use super::*;
+
+    /// Second central moment of the concentration along x.
+    fn variance_x(d: &DispersionLBM) -> f64 {
+        let mut m0 = 0.0;
+        let mut m1 = 0.0;
+        let mut m2 = 0.0;
+        for y in 0..d.ny {
+            for x in 0..d.nx {
+                let c = d.scalar.concentration[y * d.nx + x];
+                m0 += c;
+                m1 += c * x as f64;
+                m2 += c * (x * x) as f64;
+            }
+        }
+        let mean = m1 / m0;
+        m2 / m0 - mean * mean
+    }
+
+    /// Run a Gaussian blob and return the measured diffusivity from the
+    /// variance growth between two times (immune to the initial transient).
+    fn measured_diffusivity(mut d: DispersionLBM, warm_up: usize, steps: usize) -> f64 {
+        d.inject_gaussian(d.nx / 2, d.ny / 2, 50.0, 3.0);
+        for _ in 0..warm_up {
+            d.advance();
+        }
+        let var_a = variance_x(&d);
+        for _ in 0..steps {
+            d.advance();
+        }
+        let var_b = variance_x(&d);
+        (var_b - var_a) / (2.0 * steps as f64)
+    }
+
+    #[test]
+    fn opposite_table_reverses_every_lattice_velocity() {
+        for i in 0..9 {
+            let opp = OPP9[i];
+            assert_eq!(CX9[opp], -CX9[i], "cx of direction {i}");
+            assert_eq!(CY9[opp], -CY9[i], "cy of direction {i}");
+            assert_eq!(OPP9[opp], i, "table must be an involution at {i}");
+        }
+    }
+
+    #[test]
+    fn wall_bounce_back_returns_population_in_the_opposite_direction() {
+        let (nx, ny) = (5, 4);
+        // (direction, row of the wall node, expected direction after reflection)
+        let cases = [
+            (4, 0, 2),
+            (7, 0, 5),
+            (8, 0, 6),
+            (2, ny - 1, 4),
+            (5, ny - 1, 7),
+            (6, ny - 1, 8),
+        ];
+        for (dir, row, expected) in cases {
+            let mut st = ScalarTransport::new(nx, ny, 0.1, 0.0);
+            let k = row * nx + 2;
+            st.g[dir][k] = 1.0;
+            st.stream();
+            assert!(
+                (st.g[expected][k] - 1.0).abs() < 1e-15,
+                "direction {dir} at row {row} must return as {expected} on the same node"
+            );
+            let total: f64 = st.g.iter().flat_map(|g| g.iter()).sum();
+            assert!((total - 1.0).abs() < 1e-15, "population duplicated or lost");
+        }
+    }
+
+    #[test]
+    fn uniform_concentration_at_rest_stays_uniform() {
+        let (nx, ny) = (8, 6);
+        let mut st = ScalarTransport::new(nx, ny, 0.05, 0.0);
+        st.set_uniform_concentration(1.3);
+        let zeros = vec![0.0; nx * ny];
+        for _ in 0..50 {
+            st.collide(&zeros, &zeros);
+            st.stream();
+        }
+        for (k, &c) in st.concentration.iter().enumerate() {
+            assert!((c - 1.3).abs() < 1e-12, "cell {k}: c = {c}");
+        }
+    }
+
+    #[test]
+    fn total_mass_is_conserved_with_flow_through_the_walls() {
+        let (nx, ny) = (7, 5);
+        let n = nx * ny;
+        let mut st = ScalarTransport::new(nx, ny, 0.08, 0.0);
+        for (k, c) in st.concentration.iter_mut().enumerate() {
+            *c = 0.5 + ((k * 7919) % 13) as f64 / 13.0;
+        }
+        let ux = vec![0.05; n];
+        let uy = vec![0.03; n];
+        st.equilibrate(&ux, &uy);
+        let mass0 = st.total_mass();
+        for _ in 0..100 {
+            st.collide(&ux, &uy);
+            st.stream();
+        }
+        let mass1 = st.total_mass();
+        assert!(
+            (mass1 - mass0).abs() < 1e-12 * mass0,
+            "mass drifted: {mass0} -> {mass1}"
+        );
+    }
+
+    #[test]
+    fn equilibrate_makes_populations_consistent_with_concentration() {
+        let (nx, ny) = (4, 3);
+        let n = nx * ny;
+        let mut st = ScalarTransport::new(nx, ny, 0.1, 0.0);
+        st.concentration[5] = 2.5;
+        let ux = vec![0.02; n];
+        let uy = vec![-0.01; n];
+        st.equilibrate(&ux, &uy);
+        for k in 0..n {
+            let sum: f64 = st.g.iter().map(|g| g[k]).sum();
+            assert!((sum - st.concentration[k]).abs() < 1e-15, "cell {k}");
+        }
+        let flux_x: f64 = (0..9).map(|i| CX9[i] as f64 * st.g[i][5]).sum();
+        assert!((flux_x - 2.5 * 0.02).abs() < 1e-15, "x flux {flux_x}");
+    }
+
+    #[test]
+    fn effective_diffusivity_is_set_not_accumulated() {
+        let td = TurbulentDiffusivity::standard(0.5, 0.5);
+        let expected = 0.01 + td.eddy_diffusivity();
+        let mut d = DispersionLBM::new(8, 8, 0.01).with_turbulence(td);
+        d.inject_gaussian(4, 4, 1.0, 1.0);
+        for _ in 0..25 {
+            d.advance();
+            assert!(
+                (d.scalar.diffusivity - expected).abs() < 1e-15,
+                "diffusivity {} != D_mol + D_t = {expected}",
+                d.scalar.diffusivity
+            );
+        }
+        assert_eq!(d.d_mol, 0.01);
+    }
+
+    #[test]
+    fn inject_gaussian_keeps_populations_consistent_with_concentration() {
+        let mut d = DispersionLBM::new(12, 10, 0.05);
+        d.set_velocity(vec![0.03; 120], vec![-0.02; 120]);
+        d.inject_gaussian(6, 5, 7.0, 1.5);
+        for k in 0..120 {
+            let sum: f64 = d.scalar.g.iter().map(|g| g[k]).sum();
+            assert!(
+                (sum - d.scalar.concentration[k]).abs() < 1e-14,
+                "cell {k}: sum g = {sum}, c = {}",
+                d.scalar.concentration[k]
+            );
+        }
+    }
+
+    #[test]
+    fn gaussian_variance_grows_with_the_molecular_diffusivity() {
+        for d_mol in [0.05, 0.15] {
+            let d = DispersionLBM::new(96, 96, d_mol);
+            let measured = measured_diffusivity(d, 60, 200);
+            assert!(
+                (measured - d_mol).abs() < 0.03 * d_mol,
+                "D_mol = {d_mol}: measured {measured}"
+            );
+        }
+    }
+
+    #[test]
+    fn gaussian_variance_grows_with_molecular_plus_eddy_diffusivity() {
+        // nu_t = 0.09 k^2 / eps = 0.07, D_t = nu_t / Sc_t = 0.1.
+        let td = TurbulentDiffusivity::standard(0.0882_f64, 0.01);
+        let d_t = td.eddy_diffusivity();
+        assert!((d_t - 0.1).abs() < 1e-3, "test set-up: D_t = {d_t}");
+        let d_mol = 0.05;
+        let d = DispersionLBM::new(96, 96, d_mol).with_turbulence(td);
+        let measured = measured_diffusivity(d, 60, 200);
+        let expected = d_mol + d_t;
+        assert!(
+            (measured - expected).abs() < 0.03 * expected,
+            "expected {expected}, measured {measured}"
+        );
+    }
+
+    #[test]
+    fn advected_blob_moves_with_the_flow_and_conserves_mass() {
+        // ny odd: the half-way walls at y = -1/2 and y = ny - 1/2 are symmetric
+        // about the injection row 16, so the cross-stream centroid cannot move.
+        let (nx, ny) = (64, 33);
+        let n = nx * ny;
+        let mut d = DispersionLBM::new(nx, ny, 0.05);
+        d.set_velocity(vec![0.05; n], vec![0.0; n]);
+        d.inject_gaussian(16, 16, 10.0, 2.0);
+        let (cx0, _) = d.centroid();
+        let mass0 = d.total_mass();
+        for _ in 0..200 {
+            d.advance();
+        }
+        let (cx1, cy1) = d.centroid();
+        assert!(
+            (cx1 - cx0 - 10.0).abs() < 0.05,
+            "centroid moved {} cells, expected u*t = 10",
+            cx1 - cx0
+        );
+        assert!((cy1 - 16.0).abs() < 1e-6, "no drift across the flow: {cy1}");
+        assert!(
+            (d.total_mass() - mass0).abs() < 1e-12 * mass0,
+            "mass drifted: {mass0} -> {}",
+            d.total_mass()
+        );
     }
 }

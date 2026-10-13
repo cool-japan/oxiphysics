@@ -4,12 +4,13 @@
 
 use super::functions::{
     add, apply_wrinkling, compute_dihedral_angle, compute_lift_force, cross, dot, length,
-    normalize, resolve_cloth_floor_collision, resolve_cloth_sphere_collision,
-    resolve_self_collision, scale, sub,
+    normalize, resolve_cloth_floor_collision, resolve_cloth_sphere_collision, scale, sub,
 };
+use super::self_collision::SelfCollisionGrid;
 use crate::constraint::{BendingConstraint, DistanceConstraint};
 use crate::particle::{SoftBody, SoftParticle};
 use oxiphysics_core::math::{Real, Vec3};
+use std::collections::BTreeMap;
 
 /// A collection of seam constraints acting on a flat position array.
 #[derive(Debug, Clone, Default)]
@@ -143,25 +144,7 @@ impl XpbdClothMesh {
                 }
             }
         }
-        let mut bending_constraints = Vec::new();
-        for j in 0..ny {
-            for i in 0..nx {
-                if i + 2 < nx && j + 1 < ny {
-                    bending_constraints.push(BendingConstraint::from_particles(
-                        [idx(i, j), idx(i + 2, j), idx(i + 1, j), idx(i + 1, j + 1)],
-                        &body.particles,
-                        compliance * 10.0,
-                    ));
-                }
-                if j + 2 < ny && i + 1 < nx {
-                    bending_constraints.push(BendingConstraint::from_particles(
-                        [idx(i, j), idx(i, j + 2), idx(i, j + 1), idx(i + 1, j + 1)],
-                        &body.particles,
-                        compliance * 10.0,
-                    ));
-                }
-            }
-        }
+        let bending_constraints = Self::build_bending_constraints(&body, compliance * 10.0);
         Self {
             body,
             distance_constraints,
@@ -169,6 +152,39 @@ impl XpbdClothMesh {
             nx,
             ny,
         }
+    }
+    /// Build one bending constraint for every interior edge of `body.triangles`.
+    ///
+    /// An edge shared by exactly two triangles becomes the hinge `[a, b, c, d]`:
+    /// `(a, b)` is the shared edge, directed as it appears in the first triangle
+    /// that holds it, `c` is the vertex opposite to the edge in that triangle and
+    /// `d` is the vertex opposite to it in the other triangle.  For consistently
+    /// wound triangles `c` therefore lies to the left of `a -> b` and `d` to the
+    /// right.  Boundary edges (one triangle) and non-manifold edges (more than two
+    /// triangles) get no constraint.  The constraints are ordered by the sorted
+    /// vertex pair of their hinge edge, which makes the result deterministic.
+    fn build_bending_constraints(body: &SoftBody, compliance: Real) -> Vec<BendingConstraint> {
+        let mut hinges: BTreeMap<(usize, usize), ([usize; 2], Vec<usize>)> = BTreeMap::new();
+        for &[v0, v1, v2] in &body.triangles {
+            for (a, b, wing) in [(v0, v1, v2), (v1, v2, v0), (v2, v0, v1)] {
+                hinges
+                    .entry((a.min(b), a.max(b)))
+                    .or_insert_with(|| ([a, b], Vec::new()))
+                    .1
+                    .push(wing);
+            }
+        }
+        hinges
+            .into_values()
+            .filter_map(|(edge, wings)| match wings.as_slice() {
+                [c, d] => Some(BendingConstraint::from_particles(
+                    [edge[0], edge[1], *c, *d],
+                    &body.particles,
+                    compliance,
+                )),
+                _ => None,
+            })
+            .collect()
     }
     /// Total number of particles.
     pub fn num_particles(&self) -> usize {
@@ -245,6 +261,9 @@ pub struct ClothMesh {
     pub air_resistance: f64,
     /// Wind velocity vector.
     pub wind: [f64; 3],
+    /// Broadphase of [`ClothMesh::resolve_self_collision`]; keeping it in the
+    /// mesh lets every step reuse its buffers instead of reallocating them.
+    collision_grid: SelfCollisionGrid,
 }
 impl ClothMesh {
     /// Create a `nx × ny` grid cloth lying in the XZ plane.
@@ -382,6 +401,7 @@ impl ClothMesh {
             gravity: [0.0, -9.81, 0.0],
             air_resistance: 0.1,
             wind: [0.0, 0.0, 0.0],
+            collision_grid: SelfCollisionGrid::new(),
         }
     }
     /// Pin one of the 4 corners (0=top-left, 1=top-right, 2=bottom-left, 3=bottom-right).
@@ -644,9 +664,11 @@ impl ClothMesh {
     /// Resolve pairwise self-collision between all free vertices.
     ///
     /// Pairs closer than `min_dist` are pushed apart using XPBD-style
-    /// positional correction.
+    /// positional correction.  Candidate pairs come from a uniform grid that is
+    /// rebuilt on every call (cost linear in the vertex count for a cloth of
+    /// bounded vertex density) and whose buffers are reused between calls.
     pub fn resolve_self_collision(&mut self, min_dist: f64) {
-        resolve_self_collision(&mut self.vertices, min_dist);
+        self.collision_grid.resolve(&mut self.vertices, min_dist);
     }
     /// Resolve collision of the cloth against a sphere obstacle.
     pub fn collide_with_sphere(&mut self, sphere: &RigidSphere) {

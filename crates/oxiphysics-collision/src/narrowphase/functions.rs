@@ -2,7 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use super::convex_contact;
 use super::functions_2::ray_vs_capsule;
+use super::plane_contact::shape_vs_plane;
+use super::triangle_contact;
 use super::types::{
     CompoundShape, ContactFeature, ContactFilter, FeatureContact, NarrowPhaseContact,
     PointQueryResult, RayCastResult, ShapeKind, TriangleMesh,
@@ -91,6 +94,13 @@ pub fn shape_shape_contact(a: &ShapeKind, b: &ShapeKind) -> Option<NarrowPhaseCo
         (ShapeKind::Capsule { p0, p1, radius: rc }, ShapeKind::Sphere { center, radius }) => {
             sphere_vs_capsule(*center, *radius, *p0, *p1, *rc).map(|c| c.flipped())
         }
+        // An unbounded plane has no finite support mapping, so every plane pair
+        // is resolved in closed form instead of going through `gjk_fallback`.
+        (ShapeKind::Plane { .. }, ShapeKind::Plane { .. }) => None,
+        (shape, ShapeKind::Plane { normal, offset }) => shape_vs_plane(shape, *normal, *offset),
+        (ShapeKind::Plane { normal, offset }, shape) => {
+            shape_vs_plane(shape, *normal, *offset).map(|c| c.flipped())
+        }
         _ => gjk_fallback(a, b),
     }
 }
@@ -131,8 +141,10 @@ pub(super) fn sphere_vs_plane(
     }
     let point_a = sub3(center, scale3(plane_normal, radius));
     let point_b = sub3(center, scale3(plane_normal, dist));
+    // `NarrowPhaseContact::normal` points from A (the sphere) towards B (the
+    // plane), i.e. against the plane's outward normal.
     Some(NarrowPhaseContact {
-        normal: plane_normal,
+        normal: scale3(plane_normal, -1.0),
         depth,
         point_a,
         point_b,
@@ -255,8 +267,19 @@ pub(super) fn sphere_vs_capsule(
         point_b: add3(closest, scale3(normal, rc)),
     })
 }
-/// Very simple GJK-style fallback: check AABB overlap as a quick rejection,
-/// then test support points to see whether the shapes overlap.
+/// General convex-convex contact between two [`ShapeKind`]s via GJK + EPA.
+///
+/// Used for every pair that has no closed-form routine (box/box, box/capsule,
+/// convex hulls against anything, ...). A world-space AABB test rejects distant
+/// pairs cheaply; the remaining pairs run GJK on the Minkowski difference of the
+/// two support mappings and, when they overlap, EPA for the minimum translation
+/// ([`convex_contact::penetration`]).
+///
+/// The contact follows the [`NarrowPhaseContact`] convention: `normal` is the
+/// unit minimum-translation direction pointing from `a` towards `b`, `point_a`
+/// lies on `a`, `point_b` on `b`, and `point_a - point_b == normal * depth`.
+/// Pairs that merely touch yield a contact of depth zero; separated pairs yield
+/// `None`.
 pub(super) fn gjk_fallback(a: &ShapeKind, b: &ShapeKind) -> Option<NarrowPhaseContact> {
     let (a_min, a_max) = a.aabb();
     let (b_min, b_max) = b.aabb();
@@ -265,34 +288,13 @@ pub(super) fn gjk_fallback(a: &ShapeKind, b: &ShapeKind) -> Option<NarrowPhaseCo
             return None;
         }
     }
-    let axes: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    let mut min_depth = f64::INFINITY;
-    let mut best_normal = [0.0_f64, 1.0, 0.0];
-    for axis in axes {
-        let sa = dot3(a.support(axis), axis) - dot3(a.support(scale3(axis, -1.0)), axis);
-        let sb = dot3(b.support(axis), axis) - dot3(b.support(scale3(axis, -1.0)), axis);
-        let _ = (sa, sb);
-        let proj_a_max = dot3(a.support(axis), axis);
-        let proj_a_min = dot3(a.support(scale3(axis, -1.0)), scale3(axis, -1.0));
-        let proj_b_max = dot3(b.support(axis), axis);
-        let proj_b_min = dot3(b.support(scale3(axis, -1.0)), scale3(axis, -1.0));
-        let overlap = proj_a_max.min(proj_b_max) - (-proj_a_min).max(-proj_b_min);
-        if overlap < 0.0 {
-            return None;
-        }
-        if overlap < min_depth {
-            min_depth = overlap;
-            best_normal = axis;
-        }
-    }
-    let ca = a.support(best_normal);
-    let cb = b.support(scale3(best_normal, -1.0));
-    Some(NarrowPhaseContact {
-        normal: best_normal,
-        depth: min_depth,
-        point_a: ca,
-        point_b: cb,
-    })
+    let centre_a = scale3(add3(a_min, a_max), 0.5);
+    let centre_b = scale3(add3(b_min, b_max), 0.5);
+    convex_contact::penetration(
+        &|dir| a.support(dir),
+        &|dir| b.support(dir),
+        sub3(centre_b, centre_a),
+    )
 }
 /// Closest point on segment \[p, q\] to point `v`.
 pub(super) fn closest_point_on_segment(v: [f64; 3], p: [f64; 3], q: [f64; 3]) -> [f64; 3] {
@@ -376,31 +378,24 @@ pub fn shape_shape_feature_contact(a: &ShapeKind, b: &ShapeKind) -> Option<Featu
 }
 /// Route a convex shape against every triangle of a concave mesh and collect contacts.
 ///
-/// Returns all contacts whose depth is ≥ `min_depth`.
+/// Each triangle is collided as the plate it is (see [`triangle_contact`]): a
+/// sphere against the closest point of the triangle, a capsule against the
+/// closest point pair of its axis and the triangle, anything else through the
+/// general GJK/EPA route. Triangles outside the convex shape's AABB are skipped
+/// and zero-area triangles are ignored.
+///
+/// Returns all contacts whose depth is ≥ `min_depth`. Each contact follows the
+/// [`NarrowPhaseContact`] convention: `normal` points from `convex` towards the
+/// triangle it touches, so `convex` leaves by moving along `-normal`.
 pub fn convex_vs_mesh(
     convex: &ShapeKind,
     mesh: &TriangleMesh,
     min_depth: f64,
 ) -> Vec<NarrowPhaseContact> {
-    let mut contacts = Vec::new();
-    for i in 0..mesh.tri_count() {
-        let [v0, v1, v2] = mesh.triangle(i);
-        let centroid = scale3(add3(add3(v0, v1), v2), 1.0 / 3.0);
-        let r0 = len3(sub3(v0, centroid));
-        let r1 = len3(sub3(v1, centroid));
-        let r2 = len3(sub3(v2, centroid));
-        let tri_radius = r0.max(r1).max(r2);
-        let tri_sphere = ShapeKind::Sphere {
-            center: centroid,
-            radius: tri_radius,
-        };
-        if let Some(c) = shape_shape_contact(convex, &tri_sphere)
-            && c.depth >= min_depth
-        {
-            contacts.push(c);
-        }
-    }
-    contacts
+    (0..mesh.tri_count())
+        .filter_map(|i| triangle_contact::convex_vs_triangle(convex, mesh.triangle(i)))
+        .filter(|contact| contact.depth >= min_depth)
+        .collect()
 }
 /// Run narrowphase between a compound shape and a single shape.
 ///

@@ -7,6 +7,10 @@
 //! detection for deformables, proximity query (distance field), swept triangle vs
 //! static mesh, penetration depth estimation, and contact manifold generation.
 
+mod cloth_grid;
+#[cfg(test)]
+mod regression_tests;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Vector math (no nalgebra — use [f64; 3] arrays)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -443,8 +447,21 @@ pub struct TriMeshBvh {
 
 impl TriMeshBvh {
     /// Build a BVH from a list of triangles using the SAH-inspired median split.
+    ///
+    /// An empty triangle list yields an empty tree: `nodes` is empty and `root`
+    /// is the `usize::MAX` sentinel. Every traversal ([`Self::ray_cast`],
+    /// [`Self::query_aabb`], [`Self::refit`], [`mesh_broad_phase`]) treats a node
+    /// index outside `nodes` as "nothing to visit", so queries on an empty mesh
+    /// simply return no hits.
     pub fn build(triangles: Vec<Triangle>) -> Self {
         let n = triangles.len();
+        if n == 0 {
+            return Self {
+                triangles,
+                nodes: Vec::new(),
+                root: usize::MAX,
+            };
+        }
         let mut nodes: Vec<BvhNode> = Vec::with_capacity(2 * n);
         let indices: Vec<usize> = (0..n).collect();
         let root = Self::build_recursive(&triangles, &indices, &mut nodes);
@@ -456,6 +473,12 @@ impl TriMeshBvh {
     }
 
     fn build_recursive(tris: &[Triangle], indices: &[usize], nodes: &mut Vec<BvhNode>) -> usize {
+        // An empty index range has no node; `usize::MAX` is the "no node"
+        // sentinel that every traversal already skips. Without this guard the
+        // median split below would recurse on the same empty slice forever.
+        if indices.is_empty() {
+            return usize::MAX;
+        }
         // Compute AABB for all triangles in this node
         let mut aabb = MeshAabb::empty();
         for &i in indices {
@@ -795,35 +818,77 @@ impl ClothEdge {
 
 /// Cloth self-collision response: push overlapping vertices apart.
 ///
-/// Applies a position correction when two vertices from non-adjacent triangles
-/// come closer than `thickness`.
+/// Applies a position correction when two vertices that do not share a triangle
+/// come closer than `thickness`: they are moved apart along the line joining
+/// them by half the penetration each (a pinned vertex stays where it is).
+/// Pairs are examined in ascending `(i, j)` order and every correction is seen
+/// by the pairs examined after it, so the outcome is identical to the
+/// brute-force double loop over all vertex pairs.
+///
+/// Returns the number of corrected pairs. A `thickness` that is not a finite
+/// number above `1e-15` produces no collisions. Triangle corners that are not
+/// valid vertex indices are ignored.
+///
+/// # Complexity
+///
+/// The vertices live in a uniform grid whose cells are at least `thickness`
+/// wide, so a vertex is only compared with the vertices of the 27 cells around
+/// it, and the triangle adjacency is precomputed once as sorted neighbour
+/// lists. The cost is `O(V + T + k)` for `V` vertices, `T` triangles and `k`
+/// candidate pairs, instead of the `O(V^2 T)` of scanning every triangle for
+/// every vertex pair.
 pub fn cloth_self_collision(
     vertices: &mut [ClothVertex],
     triangles: &[[usize; 3]],
     thickness: f64,
 ) -> usize {
-    let mut n_collisions = 0;
     let n = vertices.len();
+    if n < 2 || !thickness.is_finite() || thickness <= 1e-15 {
+        return 0;
+    }
+    let adjacency = cloth_grid::vertex_adjacency(n, triangles);
+    let mut grid = cloth_grid::VertexGrid::new(thickness);
+    for (index, vertex) in vertices.iter().enumerate() {
+        grid.insert(index, vertex.pos);
+    }
+
+    let mut n_collisions = 0;
+    let mut partners: Vec<usize> = Vec::new();
     for i in 0..n {
-        for j in (i + 1)..n {
-            // Skip if vertices share a triangle
-            let shared = triangles.iter().any(|t| {
-                (t[0] == i || t[1] == i || t[2] == i) && (t[0] == j || t[1] == j || t[2] == j)
-            });
-            if shared {
-                continue;
-            }
+        // The partners of `i` are examined in ascending index order, exactly like
+        // the inner loop of the brute-force scan. The candidate list only has to
+        // be rebuilt when a correction moves `i` into another grid cell: the
+        // other vertices that move are partners that were already examined, so
+        // they cannot enter the neighbourhood as new candidates.
+        let mut cell = grid.cell_of(vertices[i].pos);
+        grid.partners_after(vertices[i].pos, i, &adjacency[i], &mut partners);
+        let mut cursor = 0;
+        while cursor < partners.len() {
+            let j = partners[cursor];
+            cursor += 1;
             let diff = vec3_sub(vertices[i].pos, vertices[j].pos);
             let dist = vec3_len(diff);
-            if dist < thickness && dist > 1e-15 {
-                let push = vec3_scale(vec3_norm(diff), (thickness - dist) * 0.5);
-                if !vertices[i].pinned {
-                    vertices[i].pos = vec3_add(vertices[i].pos, push);
-                }
-                if !vertices[j].pinned {
-                    vertices[j].pos = vec3_sub(vertices[j].pos, push);
-                }
-                n_collisions += 1;
+            let colliding = dist < thickness && dist > 1e-15;
+            if !colliding {
+                continue;
+            }
+            let push = vec3_scale(vec3_norm(diff), (thickness - dist) * 0.5);
+            let (old_i, old_j) = (vertices[i].pos, vertices[j].pos);
+            if !vertices[i].pinned {
+                vertices[i].pos = vec3_add(vertices[i].pos, push);
+            }
+            if !vertices[j].pinned {
+                vertices[j].pos = vec3_sub(vertices[j].pos, push);
+            }
+            grid.relocate(i, old_i, vertices[i].pos);
+            grid.relocate(j, old_j, vertices[j].pos);
+            n_collisions += 1;
+
+            let moved_cell = grid.cell_of(vertices[i].pos);
+            if moved_cell != cell {
+                cell = moved_cell;
+                grid.partners_after(vertices[i].pos, j, &adjacency[i], &mut partners);
+                cursor = 0;
             }
         }
     }

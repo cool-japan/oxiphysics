@@ -4,6 +4,7 @@
 
 use crate::lattice::{CS2, D3Q19_VELOCITIES, D3Q19_WEIGHTS};
 
+use super::central_moments::*;
 use super::functions::*;
 
 /// Advanced BGK overrelaxation collision with viscosity-based construction.
@@ -118,12 +119,30 @@ pub enum CollisionMode {
     /// Entropic LBM (potentially unstable region).
     Entropic,
 }
-/// Cumulant LBM collision operator (Geier, Schönherr, Pasquali, Krafczyk 2015).
+/// Cumulant LBM collision operator on the D3Q19 lattice
+/// (after Geier, Schönherr, Pasquali, Krafczyk 2015).
 ///
-/// Operates in cumulant space (log of the characteristic function) rather than
-/// raw or central moment space.  Cumulants of order ≥ 3 are set to zero to
-/// enforce the Navier-Stokes limit.  The cumulant method dramatically improves
-/// Galilean invariance and stability for high-Re flows.
+/// The populations are mapped to the 19 central moments about the local velocity (the central
+/// moments that exist on D3Q19, see [`central_moments`](super::central_moments)) and from there
+/// to cumulants, i.e. to the moments of the logarithm of the characteristic function. The
+/// cumulants relax towards their equilibrium values:
+///
+/// - the second-order cumulants relax with `omega` (shear stress and normal-stress differences)
+///   and with `omega_b` (trace, i.e. bulk viscosity),
+/// - the third-order cumulants and the three fourth-order cumulants `C_220, C_202, C_022`
+///   relax with rate 1, i.e. they are reset to their equilibrium values,
+/// - density and momentum are conserved.
+///
+/// The fourth-order cumulants are the central moments minus products of the second-order
+/// moments, `C_220 = kappa_220 - (kappa_200 kappa_020 + 2 kappa_110^2) / rho`. Resetting the
+/// cumulant therefore makes the post-collision fourth-order central moment follow the
+/// *relaxed* second-order moments, which is what gives the cumulant operator its improved
+/// Galilean invariance compared with relaxing the central moments independently.
+///
+/// The 27-velocity operator of Geier et al. also relaxes the cumulants that involve all three
+/// axes. On D3Q19 (no corner velocities) those are not independent quantities, so this operator
+/// is the restriction of the cumulant method to the 19 representable moments. The equilibrium
+/// is an exact fixed point, and with `omega == omega_b == 1` the output is the equilibrium.
 ///
 /// Reference: Geier et al., Comput. Fluids 141, 2–17 (2015).
 #[derive(Debug, Clone, Copy)]
@@ -145,9 +164,13 @@ impl CumulantCollision {
         }
     }
     /// Construct with explicit bulk viscosity ζ.
+    ///
+    /// The relaxation times are `τ = 3ν + 1/2` and `τ_b = 9ζ/2 + 1/2`, so that
+    /// [`shear_viscosity`](Self::shear_viscosity) returns `ν` and
+    /// [`bulk_viscosity`](Self::bulk_viscosity) returns `ζ`.
     pub fn from_viscosities(nu: f64, zeta: f64) -> Self {
         let tau = 3.0 * nu + 0.5;
-        let tau_b = 3.0 * (zeta + 2.0 * nu / 3.0) + 0.5;
+        let tau_b = 4.5 * zeta + 0.5;
         Self {
             omega: 1.0 / tau,
             omega_b: 1.0 / tau_b,
@@ -155,34 +178,35 @@ impl CumulantCollision {
     }
     /// Perform cumulant collision.
     ///
-    /// 1. Shift to co-moving frame (subtract mean velocity).
-    /// 2. Compute central moments from shifted distribution.
-    /// 3. Relax stress cumulants; zero out higher-order cumulants.
-    /// 4. Reconstruct central moments, shift back.
+    /// `rho` and `u` must be the density and velocity of `f`.
+    ///
+    /// 1. Compute the central moments of `f` and of its equilibrium in the frame moving with `u`.
+    /// 2. Convert them to cumulants.
+    /// 3. Relax the second-order cumulants (trace with `omega_b`, trace-free part and shear with
+    ///    `omega`) and reset the third- and fourth-order cumulants to their equilibrium values.
+    /// 4. Convert back to central moments and reconstruct the populations with the exact
+    ///    inverse transform, so mass and momentum are conserved to round-off.
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         let feq = compute_equilibrium_d3q19(rho, u);
-        let cm = compute_central_moments_cumulant(f, u);
-        let cm_eq = compute_central_moments_cumulant(&feq, u);
-        let mut cm_out = cm;
-        let k_trace = (cm[4] + cm[5] + cm[6]) / 3.0;
-        let k_trace_eq = (cm_eq[4] + cm_eq[5] + cm_eq[6]) / 3.0;
-        let k_dev_xx = cm[4] - k_trace;
-        let k_dev_yy = cm[5] - k_trace;
-        let k_dev_zz = cm[6] - k_trace;
-        let k_dev_xx_eq = cm_eq[4] - k_trace_eq;
-        let k_dev_yy_eq = cm_eq[5] - k_trace_eq;
-        let k_dev_zz_eq = cm_eq[6] - k_trace_eq;
-        let trace_out = k_trace - self.omega_b * (k_trace - k_trace_eq);
-        cm_out[4] = trace_out + (k_dev_xx - self.omega * (k_dev_xx - k_dev_xx_eq));
-        cm_out[5] = trace_out + (k_dev_yy - self.omega * (k_dev_yy - k_dev_yy_eq));
-        cm_out[6] = trace_out + (k_dev_zz - self.omega * (k_dev_zz - k_dev_zz_eq));
-        cm_out[7] = cm[7] - self.omega * (cm[7] - cm_eq[7]);
-        cm_out[8] = cm[8] - self.omega * (cm[8] - cm_eq[8]);
-        cm_out[9] = cm[9] - self.omega * (cm[9] - cm_eq[9]);
-        for cm_out_i in cm_out[10..19].iter_mut() {
-            *cm_out_i = 0.0;
+        let cumulants = central_moments_to_cumulants_d3q19(&compute_central_moments_cumulant(f, u));
+        let cumulants_eq =
+            central_moments_to_cumulants_d3q19(&compute_central_moments_cumulant(&feq, u));
+        let mut relaxed = cumulants;
+
+        let trace = (cumulants[4] + cumulants[5] + cumulants[6]) / 3.0;
+        let trace_eq = (cumulants_eq[4] + cumulants_eq[5] + cumulants_eq[6]) / 3.0;
+        let trace_out = trace - self.omega_b * (trace - trace_eq);
+        for k in 4..7 {
+            let deviator = cumulants[k] - trace;
+            let deviator_eq = cumulants_eq[k] - trace_eq;
+            relaxed[k] = trace_out + deviator - self.omega * (deviator - deviator_eq);
         }
-        central_moments_to_f_cumulant(&cm_out, rho, u)
+        for k in 7..10 {
+            relaxed[k] = cumulants[k] - self.omega * (cumulants[k] - cumulants_eq[k]);
+        }
+        relaxed[10..19].copy_from_slice(&cumulants_eq[10..19]);
+
+        central_moments_to_populations_d3q19(&cumulants_to_central_moments_d3q19(&relaxed), u)
     }
     /// Return effective shear viscosity.
     pub fn shear_viscosity(&self) -> f64 {
@@ -665,18 +689,28 @@ impl HybridRecursiveRegularized {
         (1.0 / 3.0) * (1.0 / self.omega - 0.5)
     }
 }
-/// Cascaded (central-moment) collision with full D3Q19 central moment set.
+/// Cascaded (central-moment) collision with the full D3Q19 central moment set.
 ///
-/// This improved version computes raw moments, shifts to central moments,
-/// relaxes each central moment to its equilibrium, then transforms back.
+/// The populations are mapped to the 19 central moments about the local velocity, each moment
+/// relaxes towards its equilibrium value with its own rate, and the populations are recovered
+/// with the exact inverse of the central-moment transform (see
+/// [`central_moments`](super::central_moments)). Mass and momentum are conserved to round-off
+/// and a uniform rate reproduces BGK collision.
 #[derive(Debug, Clone)]
 pub struct CentralMomentCollision {
-    /// Relaxation rates for each of the 19 moment groups.
-    /// Typically: s\[1\]=s\[2\]=0 (conservation), s\[3..=5\]=omega_s, s\[6..\]=omega_q.
+    /// Relaxation rates of the 19 central moments, in the order of
+    /// [`MOMENT_EXPONENTS`]: `s\[0\]` density, `s\[1..=3\]` momentum
+    /// (both stay at their equilibrium for consistent input), `s\[4..=6\]` the normal second-order
+    /// moments `kappa_200, kappa_020, kappa_002`, `s\[7..=9\]` the shear moments
+    /// `kappa_110, kappa_101, kappa_011`, `s\[10..=15\]` the third-order moments and
+    /// `s\[16..=18\]` the fourth-order moments `kappa_220, kappa_202, kappa_022`.
     pub s: [f64; 19],
 }
 impl CentralMomentCollision {
     /// Create from kinematic viscosity with standard moment relaxation rates.
+    ///
+    /// The second-order moments relax with `omega = 1 / (3 nu + 1/2)`; all higher-order moments
+    /// relax with rate 1 (they are reset to their equilibrium values).
     pub fn from_viscosity(nu: f64) -> Self {
         let omega_s = 1.0 / (3.0 * nu + 0.5);
         let mut s = [1.0f64; 19];
@@ -697,13 +731,14 @@ impl CentralMomentCollision {
     }
     /// Apply central-moment collision.
     ///
-    /// Computes raw moments → shifts to central moments →
-    /// relaxes → un-shifts → inverse transform back to populations.
+    /// Computes the central moments of `f` and of its equilibrium about `u`, relaxes
+    /// `kappa* = kappa - s (kappa - kappa_eq)` and transforms back to populations with the exact
+    /// inverse (binomial shift to raw moments, then the closed-form raw-moment inverse).
+    /// `rho` and `u` must be the density and velocity of `f`.
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         let feq = compute_equilibrium_d3q19(rho, u);
-        let inv_rho = if rho > 1e-15 { 1.0 / rho } else { 1.0 };
-        let cm_f = compute_central_moments(f, u, inv_rho);
-        let cm_feq = compute_central_moments(&feq, u, inv_rho);
+        let cm_f = compute_central_moments_cumulant(f, u);
+        let cm_feq = compute_central_moments_cumulant(&feq, u);
         let mut cm_post = [0.0f64; 19];
         for (cm_post_i, ((&cm_fi, &cm_feqi), &si)) in cm_post
             .iter_mut()
@@ -711,15 +746,7 @@ impl CentralMomentCollision {
         {
             *cm_post_i = cm_fi - si * (cm_fi - cm_feqi);
         }
-        let mut f_out = feq;
-        for (f_out_i, ((&cm_post_i, &cm_feqi), &wi)) in f_out
-            .iter_mut()
-            .zip(cm_post.iter().zip(cm_feq.iter()).zip(D3Q19_WEIGHTS.iter()))
-        {
-            let neq_cm = cm_post_i - cm_feqi;
-            *f_out_i += neq_cm * wi;
-        }
-        f_out
+        central_moments_to_populations_d3q19(&cm_post, u)
     }
 }
 /// Cascaded collision operator (simplified D3Q19 version).

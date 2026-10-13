@@ -18,8 +18,13 @@ struct Params {
 @group(0) @binding(4) var<storage, read>       params: Params;
 
 @compute @workgroup_size(256)
-fn scatter_kept(@builtin(global_invocation_id) gid_vec: vec3<u32>) {
-    let gid = gid_vec.x;
+fn scatter_kept(
+    @builtin(global_invocation_id) gid_vec: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    // A dispatch wider than one dimension allows is folded into y (see
+    // `dispatch_count_for`): linearise the invocation index.
+    let gid = gid_vec.x + gid_vec.y * nwg.x * 256u;
     if (gid >= params.n) {
         return;
     }

@@ -484,6 +484,23 @@ mod tests {
     }
 
     #[test]
+    fn test_born_solvation_absolute_energy_of_na_like_cation() {
+        // Born energy of a +1 ion with a = 1.68 Å transferred from vacuum into
+        // water (eps = 78.5): -(K/2a)(1 - 1/eps) = -408.23 kJ/mol.  The old
+        // nm-valued constant gave only -40.8 kJ/mol.
+        let born = BornSolvation::new(78.5);
+        let dg = born.solvation_energy(1.0, 1.68);
+        assert!((dg + 408.230_890).abs() < 1e-3, "dG_Born = {dg}");
+        // Charge-squared scaling: a divalent ion at the same radius gains a factor 4.
+        let dg2 = born.solvation_energy(2.0, 1.68);
+        assert!(
+            (dg2 / dg - 4.0).abs() < 1e-12,
+            "dG(2e)/dG(1e) = {}",
+            dg2 / dg
+        );
+    }
+
+    #[test]
     fn test_born_solvation_negative_for_water() {
         let bs = BornSolvation::new(80.0);
         let e = bs.solvation_energy(1.0, 1.5);

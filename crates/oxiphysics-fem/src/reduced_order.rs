@@ -866,174 +866,15 @@ impl EmpiricalInterpolation {
 }
 
 // ---------------------------------------------------------------------------
-// Balanced truncation
+// Balanced truncation, Lyapunov equations and Hankel singular values
 // ---------------------------------------------------------------------------
 
-/// Balanced truncation of a linear time-invariant system.
-///
-/// Given state-space matrices (A, B, C), computes the balanced realization
-/// and truncates to `n_reduced` states.
-///
-/// Returns reduced matrices (A_r, B_r, C_r).
-///
-/// # Algorithm
-/// 1. Compute approximate controllability Gramian W_c via Lyapunov equation.
-/// 2. Compute approximate observability Gramian W_o.
-/// 3. Find balancing transformation via Cholesky + SVD-like power iteration.
-/// 4. Truncate.
-pub fn balanced_truncation(
-    a: &[Vec<f64>],
-    b: &[Vec<f64>],
-    c: &[Vec<f64>],
-    n_reduced: usize,
-) -> BalancedSystem {
-    let n = a.len();
-    if n == 0 || n_reduced == 0 {
-        return (vec![], vec![], vec![]);
-    }
-    let r = n_reduced.min(n);
+mod balancing;
 
-    // Approximate Gramians by low-rank truncation via power iteration on A+A^T
-    let wc = approximate_gramian(a, b, 30);
-    let at = mat_transpose(a);
-    let ct = mat_transpose(c);
-    let wo = approximate_gramian(&at, &ct, 30);
-
-    // Compute square-root factors and balancing
-    let lc = cholesky(&add_regularization(&wc, 1e-10));
-    let lo = cholesky(&add_regularization(&wo, 1e-10));
-
-    // Product M = Lo^T * Lc (n×n)
-    let lo_t = mat_transpose(&lo);
-    let m = mat_mul(&lo_t, &lc);
-
-    // Dominant r singular vectors of M via deflated power iteration
-    let mmt = mat_mul(&m, &mat_transpose(&m));
-    let mut sigma2s: Vec<f64> = Vec::new();
-    let mut us: Vec<Vec<f64>> = Vec::new();
-    let mut work = mmt.clone();
-    for _ in 0..r {
-        let (lam, u) = power_iteration(&work, 500, 1e-10);
-        if lam < 1e-14 {
-            break;
-        }
-        sigma2s.push(lam);
-        us.push(u.clone());
-        work = deflate(&work, lam, &u);
-    }
-
-    // Balancing transformation T = Lc * V * Σ^{-1/2}  (approximated)
-    // Here we use simple projection onto Lc * v_k directions
-    let t_cols: Vec<Vec<f64>> = us
-        .iter()
-        .zip(sigma2s.iter())
-        .map(|(u_vec, &s2)| {
-            let sigma = s2.sqrt().max(1e-14);
-            let lc_u = mat_vec(&lc, u_vec);
-            vec_scale(&lc_u, 1.0 / sigma)
-        })
-        .collect();
-
-    if t_cols.is_empty() {
-        let ar = vec![vec![0.0; r]; r];
-        let br = vec![vec![0.0; b[0].len()]; r];
-        let cr = vec![vec![0.0; r]; c.len()];
-        return (ar, br, cr);
-    }
-
-    // T matrix: n × r, columns are t_cols
-    let t_mat: Vec<Vec<f64>> = (0..n)
-        .map(|i| t_cols.iter().map(|col| col[i]).collect())
-        .collect();
-    let tt = mat_transpose(&t_mat);
-
-    // Reduced system: A_r = T^T A T, B_r = T^T B, C_r = C T
-    let ta = mat_mul(a, &t_mat);
-    let ar = mat_mul(&tt, &ta);
-    let br = mat_mul(&tt, b);
-    let cr = mat_mul(c, &t_mat);
-
-    (ar, br, cr)
-}
-
-/// Add a small regularization to ensure positive definiteness.
-fn add_regularization(a: &[Vec<f64>], eps: f64) -> Vec<Vec<f64>> {
-    let n = a.len();
-    let mut b = a.to_vec();
-    for (i, row) in b.iter_mut().enumerate().take(n) {
-        row[i] += eps;
-    }
-    b
-}
-
-/// Approximate Gramian W ≈ B B^T (ignoring dynamics) for small demonstration.
-///
-/// A more accurate approximation integrates the matrix exponential; here we
-/// use a low-rank approximation: W ≈ Σ_k (A^k B)(A^k B)^T with truncation.
-fn approximate_gramian(a: &[Vec<f64>], b: &[Vec<f64>], n_terms: usize) -> Vec<Vec<f64>> {
-    let n = a.len();
-    let m = b[0].len();
-    let mut w = vec![vec![0.0; n]; n];
-    let mut ak_b = b.to_vec(); // A^0 B = B
-    let decay = 0.5_f64; // convergence factor
-    let mut factor = 1.0_f64;
-    for _ in 0..n_terms {
-        // W += factor * (A^k B)(A^k B)^T
-        for i in 0..n {
-            for j in 0..n {
-                let s: f64 = ak_b[i]
-                    .iter()
-                    .take(m)
-                    .zip(ak_b[j].iter().take(m))
-                    .map(|(a, b)| a * b)
-                    .sum();
-                w[i][j] += factor * s;
-            }
-        }
-        ak_b = mat_mul(a, &ak_b);
-        factor *= decay;
-    }
-    w
-}
-
-// ---------------------------------------------------------------------------
-// Hankel singular values
-// ---------------------------------------------------------------------------
-
-/// Compute approximate Hankel singular values of a linear system (A, B, C).
-///
-/// The Hankel singular values are the square roots of the eigenvalues of
-/// W_c * W_o (controllability × observability Gramian product).
-///
-/// Uses power iteration on the product matrix for efficiency.
-pub fn hankel_singular_values(a: &[Vec<f64>], b: &[Vec<f64>], c: &[Vec<f64>]) -> Vec<f64> {
-    let n = a.len();
-    if n == 0 {
-        return vec![];
-    }
-
-    let wc = approximate_gramian(a, b, 30);
-    let at = mat_transpose(a);
-    let ct = mat_transpose(c);
-    let wo = approximate_gramian(&at, &ct, 30);
-
-    // Product P = Wc * Wo
-    let p = mat_mul(&wc, &wo);
-
-    // Find eigenvalues by deflated power iteration
-    let mut eigenvalues: Vec<f64> = Vec::new();
-    let mut work = p.clone();
-    for _ in 0..n {
-        let (lam, v) = power_iteration(&work, 500, 1e-10);
-        if lam < 1e-14 {
-            break;
-        }
-        eigenvalues.push(lam);
-        work = deflate(&work, lam, &v);
-    }
-
-    eigenvalues.iter().map(|&ev| ev.sqrt().max(0.0)).collect()
-}
+pub use balancing::{
+    BalancingTransform, balanced_truncation, balancing_transform, controllability_gramian,
+    hankel_singular_values, observability_gramian, solve_lyapunov,
+};
 
 // ---------------------------------------------------------------------------
 // Module-level utility: example sinusoidal parametric solve
@@ -1377,53 +1218,6 @@ mod tests {
     }
 
     #[test]
-    fn balanced_truncation_returns_correct_sizes() {
-        let n = 4;
-        let r = 2;
-        // Full-rank B and C so that both controllability and observability Gramians
-        // have enough significant eigenvalues.
-        let a = make_diagonal_matrix(n, -1.0);
-        let b: Vec<Vec<f64>> = (0..n).map(|i| vec![(i + 1) as f64]).collect();
-        let c: Vec<Vec<f64>> = vec![(0..n).map(|i| (i + 1) as f64).collect()];
-        let (ar, br, cr) = balanced_truncation(&a, &b, &c, r);
-        // The function returns up to r modes; actual count may be smaller if
-        // the system Gramians have fewer significant eigenvalues.
-        assert!(ar.len() <= r, "reduced A too large: {}", ar.len());
-        if !ar.is_empty() {
-            assert_eq!(ar[0].len(), ar.len(), "A_r not square");
-        }
-        assert_eq!(br.len(), ar.len(), "B_r row count mismatch");
-        assert_eq!(cr.len(), 1, "C_r should have 1 output row");
-    }
-
-    #[test]
-    fn balanced_truncation_empty_returns_empty() {
-        let (ar, br, cr) = balanced_truncation(&[], &[], &[], 2);
-        assert!(ar.is_empty());
-        assert!(br.is_empty());
-        assert!(cr.is_empty());
-    }
-
-    #[test]
-    fn hankel_singular_values_positive() {
-        let n = 3;
-        let a = make_diagonal_matrix(n, -1.0);
-        let b: Vec<Vec<f64>> = vec![vec![1.0], vec![0.5], vec![0.25]];
-        let c: Vec<Vec<f64>> = vec![(0..n).map(|i| (i + 1) as f64 * 0.1).collect()];
-        let hsv = hankel_singular_values(&a, &b, &c);
-        assert!(!hsv.is_empty());
-        for &s in &hsv {
-            assert!(s >= 0.0 && s.is_finite(), "invalid HSV: {s}");
-        }
-    }
-
-    #[test]
-    fn hankel_singular_values_empty_system() {
-        let hsv = hankel_singular_values(&[], &[], &[]);
-        assert!(hsv.is_empty());
-    }
-
-    #[test]
     fn parametric_sine_solution_length() {
         let u = parametric_sine_solution(1.0, 20);
         assert_eq!(u.len(), 20);
@@ -1526,17 +1320,6 @@ mod tests {
             "eigenvector not unit norm: {}",
             norm(&v)
         );
-    }
-
-    #[test]
-    fn approximate_gramian_positive_diagonal() {
-        let n = 3;
-        let a = make_diagonal_matrix(n, -0.5);
-        let b: Vec<Vec<f64>> = (0..n).map(|i| vec![(i + 1) as f64]).collect();
-        let w = approximate_gramian(&a, &b, 10);
-        for (i, row) in w.iter().enumerate() {
-            assert!(row[i] >= 0.0, "diagonal should be non-negative: {}", row[i]);
-        }
     }
 
     #[test]

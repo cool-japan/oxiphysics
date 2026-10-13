@@ -17,14 +17,17 @@
 //! ```no_run
 //! use oxiphysics_wasm::{WasmPhysicsEngine, webgl_bridge::{WebGlBridge, WebGlCamera}};
 //!
+//! # fn main() -> Result<(), oxiphysics_wasm::Error> {
 //! let mut engine = WasmPhysicsEngine::new(0.0, -9.81, 0.0);
-//! let b = engine.add_dynamic_body(1.0, 0.0, 5.0, 0.0);
-//! engine.add_sphere_collider(b, 0.5);
-//! engine.step(1.0 / 60.0);
+//! let b = engine.add_dynamic_body(1.0, 0.0, 5.0, 0.0)?;
+//! engine.add_sphere_collider(b, 0.5)?;
+//! engine.step(1.0 / 60.0)?;
 //!
 //! // Extract per-frame instance data (positions, rotations, …)
 //! let frame = WebGlBridge::extract_render_frame(&engine);
 //! assert_eq!(frame.body_count as usize, frame.positions().len() / 3);
+//! # Ok(())
+//! # }
 //! ```
 
 use wasm_bindgen::prelude::*;
@@ -1041,8 +1044,12 @@ mod tests {
     fn extract_render_frame_counts() {
         let mut engine = WasmPhysicsEngine::new(0.0, -9.81, 0.0);
         for i in 0..5 {
-            let b = engine.add_dynamic_body(1.0, i as f64, 0.0, 0.0);
-            engine.add_sphere_collider(b, 0.5);
+            let b = engine
+                .add_dynamic_body(1.0, i as f64, 0.0, 0.0)
+                .expect("add dynamic body");
+            engine
+                .add_sphere_collider(b, 0.5)
+                .expect("add sphere collider");
         }
         let frame = WebGlBridge::extract_render_frame(&engine);
         assert_eq!(frame.body_count, 5);

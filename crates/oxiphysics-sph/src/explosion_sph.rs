@@ -89,26 +89,46 @@ pub fn scaled_distance(range: f64, tnt_mass: f64) -> f64 {
     range / w_cbrt
 }
 
-/// Peak incident overpressure from the Kingery–Bulmash polynomial fit
-/// (simplified, valid for `Z` in `[0.5, 40]` m/kg^{1/3}).
+/// Peak incident (side-on) overpressure from the Kinney–Graham (1985) fit,
+/// valid for scaled distances `Z` in `[0.5, 40]` m/kg^{1/3}.
+///
+/// The fit gives the **dimensionless** ratio `P_s / P_0`,
+///
+/// `808 [1 + (Z/4.5)²] / sqrt([1 + (Z/0.048)²] [1 + (Z/0.32)²] [1 + (Z/1.35)²])`,
+///
+/// and the overpressure is `P_s = P_0 × ratio` with `P_0 = `[`AMBIENT_PRESSURE`].
+/// For example `Z = 1` gives a ratio of 9.96 (≈ 1.01 MPa) and `Z = 10` gives
+/// 0.0986 (≈ 10 kPa).
 ///
 /// Returns overpressure in Pa.
-pub fn kingery_bulmash_overpressure(scaled_dist: f64) -> f64 {
+pub fn kinney_graham_overpressure(scaled_dist: f64) -> f64 {
     let z = scaled_dist.max(0.5);
-    // Simplified Kingery–Bulmash: P_s = 808 * (1 + (z/4.5)^2) / sqrt(1+(z/0.048)^2)
-    //                                / sqrt(1+(z/0.32)^2) / sqrt(1+(z/1.35)^2)  [kPa]
     let num = 808.0 * (1.0 + (z / 4.5).powi(2));
     let d1 = (1.0 + (z / 0.048).powi(2)).sqrt();
     let d2 = (1.0 + (z / 0.32).powi(2)).sqrt();
     let d3 = (1.0 + (z / 1.35).powi(2)).sqrt();
-    let ps_kpa = num / (d1 * d2 * d3);
-    ps_kpa * 1000.0 // convert to Pa
+    let pressure_ratio = num / (d1 * d2 * d3);
+    pressure_ratio * AMBIENT_PRESSURE
+}
+
+/// Former name of [`kinney_graham_overpressure`].
+///
+/// The formula was always the Kinney–Graham fit, not the Kingery–Bulmash
+/// polynomial the name suggests; it now returns the correct overpressure in Pa
+/// (it previously returned the dimensionless ratio scaled by 1000 instead of by
+/// the ambient pressure, about 100 times too low).
+#[deprecated(
+    since = "0.1.3",
+    note = "this is the Kinney-Graham fit, not Kingery-Bulmash; use `kinney_graham_overpressure`"
+)]
+pub fn kingery_bulmash_overpressure(scaled_dist: f64) -> f64 {
+    kinney_graham_overpressure(scaled_dist)
 }
 
 /// Peak overpressure at a given range from a TNT charge.
 pub fn peak_overpressure(range: f64, tnt_mass: f64) -> f64 {
     let z = scaled_distance(range, tnt_mass);
-    kingery_bulmash_overpressure(z)
+    kinney_graham_overpressure(z)
 }
 
 // ---------------------------------------------------------------------------
@@ -132,7 +152,7 @@ impl FriedlanderParams {
     /// Create from TNT equivalent charge at given range.
     pub fn from_blast(tnt_mass: f64, range: f64) -> Self {
         let z = scaled_distance(range, tnt_mass);
-        let ps = kingery_bulmash_overpressure(z);
+        let ps = kinney_graham_overpressure(z);
         // Positive phase duration: t_d ≈ 1.0 * W^{1/3} * Z^{0.5} ms (simplified)
         let w_cbrt = tnt_mass.cbrt().max(f64::EPSILON);
         let td = 1.0e-3 * w_cbrt * z.sqrt().max(0.1);
@@ -1345,16 +1365,62 @@ mod tests {
     }
 
     #[test]
-    fn test_kingery_bulmash_positive() {
-        let ps = kingery_bulmash_overpressure(1.0);
+    fn test_kinney_graham_positive() {
+        let ps = kinney_graham_overpressure(1.0);
         assert!(ps > 0.0);
     }
 
     #[test]
-    fn test_kingery_bulmash_decreasing() {
-        let ps1 = kingery_bulmash_overpressure(1.0);
-        let ps2 = kingery_bulmash_overpressure(5.0);
+    fn test_kinney_graham_decreasing() {
+        let ps1 = kinney_graham_overpressure(1.0);
+        let ps2 = kinney_graham_overpressure(5.0);
         assert!(ps1 > ps2, "Overpressure should decrease with distance");
+    }
+
+    /// The Kinney-Graham fit is a *ratio* `P_s / P_0`; the overpressure in Pa is
+    /// that ratio times the ambient pressure (not times 1000).
+    #[test]
+    fn test_kinney_graham_matches_published_overpressure() {
+        // Z = 1 m/kg^(1/3): ratio 9.956 -> 1.009 MPa.
+        let ps1 = kinney_graham_overpressure(1.0);
+        assert!(
+            (ps1 - 1.009e6).abs() / 1.009e6 < 0.05,
+            "Z=1 overpressure {ps1} Pa, expected about 1.009e6 Pa"
+        );
+        // Z = 10 m/kg^(1/3): ratio 0.0986 -> 9.99 kPa.
+        let ps10 = kinney_graham_overpressure(10.0);
+        assert!(
+            (ps10 - 9.99e3).abs() / 9.99e3 < 0.05,
+            "Z=10 overpressure {ps10} Pa, expected about 9.99e3 Pa"
+        );
+        // The raw fit ratio, independent of the ambient-pressure scaling.
+        let ratio = ps1 / AMBIENT_PRESSURE;
+        assert!((ratio - 9.956).abs() < 0.02, "Z=1 ratio {ratio}");
+    }
+
+    /// Peak overpressure obeys Hopkinson-Cranz cube-root scaling: it depends on
+    /// the scaled distance only.
+    #[test]
+    fn test_peak_overpressure_follows_scaled_distance() {
+        let w = 100.0_f64;
+        let range = 10.0 * w.cbrt();
+        let ps = peak_overpressure(range, w);
+        assert!((ps - kinney_graham_overpressure(10.0)).abs() < 1e-6 * ps);
+        // 1 kg at 10 m and 8 kg at 20 m share Z = 10.
+        let a = peak_overpressure(10.0, 1.0);
+        let b = peak_overpressure(20.0, 8.0);
+        assert!((a - b).abs() < 1e-9 * a);
+    }
+
+    #[test]
+    fn test_friedlander_from_blast_peak_is_physical_overpressure() {
+        // 1 kg TNT at 5 m: Z = 5 -> ratio 0.2885 -> about 29 kPa.
+        let fw = FriedlanderParams::from_blast(1.0, 5.0);
+        assert!(
+            (fw.peak_pressure - 2.92e4).abs() / 2.92e4 < 0.05,
+            "peak pressure {} Pa",
+            fw.peak_pressure
+        );
     }
 
     #[test]
@@ -1582,6 +1648,34 @@ mod tests {
     fn test_standoff_distance_positive() {
         let d = standoff_distance(100.0, DamageLevel::Light);
         assert!(d > 0.0);
+    }
+
+    /// 100 kg TNT: light damage (14 kPa) is reached at Z = 7.85, i.e. about 36 m.
+    #[test]
+    fn test_standoff_distance_light_damage_physical_range() {
+        let d = standoff_distance(100.0, DamageLevel::Light);
+        assert!(
+            (30.0..45.0).contains(&d),
+            "standoff distance {d} m should be about 36 m"
+        );
+    }
+
+    /// Just inside the standoff distance of a damage level the blast is worse
+    /// than that level; just outside it the damage is the level itself.
+    #[test]
+    fn test_standoff_distance_matches_damage_classification() {
+        let w = 100.0;
+        for (level, worse) in [
+            (DamageLevel::Light, DamageLevel::Moderate),
+            (DamageLevel::Moderate, DamageLevel::Heavy),
+            (DamageLevel::Heavy, DamageLevel::Destroyed),
+        ] {
+            let d = standoff_distance(w, level);
+            let outside = classify_damage(peak_overpressure(1.01 * d, w));
+            let inside = classify_damage(peak_overpressure(0.99 * d, w));
+            assert_eq!(outside, level, "just outside {d} m for {level:?}");
+            assert_eq!(inside, worse, "just inside {d} m for {level:?}");
+        }
     }
 
     #[test]

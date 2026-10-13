@@ -241,13 +241,18 @@ impl SphKernel for WendlandC6Kernel {
 /// A Gaussian multiplied by a correction polynomial to improve partition of unity.
 /// W(r,h) = σ * (D/2 + 1 - q²) * exp(-q²), q = r/h
 /// D = 3 for 3D, σ = 1/(π^(3/2) h³)
+///
+/// The kernel has an infinite (and, beyond `q = √2.5`, negative) tail; it is
+/// truncated at `q = 4`, where the discarded tail changes `∫ 4π r² W dr` by
+/// less than `1e-5` (a truncation at `q = 3` would bias the normalisation by
+/// more than `3e-3`).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SuperGaussianKernel;
 
 impl SphKernel for SuperGaussianKernel {
     fn w(&self, r: f64, h: f64) -> f64 {
         let q = r / h;
-        if q > 3.0 {
+        if q > 4.0 {
             return 0.0;
         }
         let sigma = 1.0 / (PI.powf(1.5) * h * h * h);
@@ -257,7 +262,7 @@ impl SphKernel for SuperGaussianKernel {
 
     fn grad_w(&self, r: f64, h: f64) -> f64 {
         let q = r / h;
-        if !(1e-14..3.0).contains(&q) {
+        if !(1e-14..4.0).contains(&q) {
             return 0.0;
         }
         let sigma = 1.0 / (PI.powf(1.5) * h * h * h);
@@ -274,7 +279,7 @@ impl SphKernel for SuperGaussianKernel {
 
     fn laplacian_w(&self, r: f64, h: f64) -> f64 {
         let q = r / h;
-        if q > 3.0 {
+        if q > 4.0 {
             return 0.0;
         }
         let eps = 1e-6 * h;
@@ -1036,7 +1041,11 @@ mod tests {
 ///
 /// Compact support at `r/h = 1` (h is the *support radius*).
 /// W(r,h) = σ * (1 - q)^8 * (32q^3 + 25q^2 + 8q + 1)  for q = r/h ≤ 1
-/// σ = 78 / (7 π h³)
+/// σ = 1365 / (64 π h³)
+///
+/// The 3-D normalisation satisfies `∫ 4π r² W dr = 1`.  (The constant
+/// `78 / (7 π)` that this profile carries in two dimensions normalises
+/// `∫ 2π r W dr`, not the 3-D volume integral.)
 ///
 /// This variant keeps h as the support radius instead of the smoothing length.
 #[derive(Debug, Clone, Copy, Default)]
@@ -1048,7 +1057,7 @@ impl SphKernel for QuinticWendlandC6Kernel {
         if q >= 1.0 {
             return 0.0;
         }
-        let sigma = 78.0 / (7.0 * PI * h * h * h);
+        let sigma = 1365.0 / (64.0 * PI * h * h * h);
         let t = 1.0 - q;
         sigma * t.powi(8) * (32.0 * q * q * q + 25.0 * q * q + 8.0 * q + 1.0)
     }
@@ -1058,7 +1067,7 @@ impl SphKernel for QuinticWendlandC6Kernel {
         if !(1e-14..1.0).contains(&q) {
             return 0.0;
         }
-        let sigma = 78.0 / (7.0 * PI * h * h * h);
+        let sigma = 1365.0 / (64.0 * PI * h * h * h);
         let t = 1.0 - q;
         let poly = 32.0 * q * q * q + 25.0 * q * q + 8.0 * q + 1.0;
         let dpoly = 96.0 * q * q + 50.0 * q + 8.0;
@@ -1322,7 +1331,12 @@ pub fn sph_laplacian_1d(
 
 /// Compute the SPH gradient in 3D at particle i.
 ///
-/// `∇f_i ≈ Σ_j (m_j / ρ_j) * (f_j - f_i) * ∇W_ij`
+/// `∇f_i ≈ Σ_j (m_j / ρ_j) * (f_j - f_i) * ∇_i W_ij`
+///
+/// with `∇_i W_ij = (dW/dr) (x_i - x_j) / |x_i - x_j|`.  Because the kernel
+/// decreases with distance (`dW/dr < 0`), `∇_i W_ij` points from `x_i` towards
+/// `x_j`, so a field that increases in the `+x` direction has a positive `x`
+/// gradient.
 pub fn sph_gradient_3d(
     f_i: f64,
     f_neighbors: &[f64],
@@ -1339,9 +1353,9 @@ pub fn sph_gradient_3d(
             continue;
         }
         let r_vec = [
-            pos_j[0] - pos_i[0],
-            pos_j[1] - pos_i[1],
-            pos_j[2] - pos_i[2],
+            pos_i[0] - pos_j[0],
+            pos_i[1] - pos_j[1],
+            pos_i[2] - pos_j[2],
         ];
         let r2 = r_vec[0] * r_vec[0] + r_vec[1] * r_vec[1] + r_vec[2] * r_vec[2];
         if r2 < 1e-28 {
@@ -1388,477 +1402,4 @@ pub fn gaussian_grad(r_vec: [f64; 3], h: f64) -> [f64; 3] {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests_extended {
-    use super::*;
-
-    // --- QuinticWendlandC6Kernel ---
-
-    #[test]
-    fn test_quintic_wendland_c6_positive_inside() {
-        let k = QuinticWendlandC6Kernel;
-        assert!(k.w(0.0, 1.0) > 0.0, "QWC6 at origin should be positive");
-        assert!(k.w(0.3, 1.0) > 0.0, "QWC6 at r=0.3 should be positive");
-        assert!(k.w(0.8, 1.0) > 0.0, "QWC6 at r=0.8 should be positive");
-    }
-
-    #[test]
-    fn test_quintic_wendland_c6_zero_outside() {
-        let k = QuinticWendlandC6Kernel;
-        assert!(k.w(1.0, 1.0).abs() < 1e-14, "QWC6 at boundary should be 0");
-        assert!(
-            k.w(1.5, 1.0).abs() < 1e-14,
-            "QWC6 outside support should be 0"
-        );
-    }
-
-    #[test]
-    fn test_quintic_wendland_c6_gradient_negative() {
-        let k = QuinticWendlandC6Kernel;
-        let dw = k.grad_w(0.3, 1.0);
-        assert!(
-            dw < 0.0,
-            "QWC6 gradient inside support should be negative: {dw}"
-        );
-    }
-
-    #[test]
-    fn test_quintic_wendland_c6_monotonic() {
-        let k = QuinticWendlandC6Kernel;
-        let h = 1.0;
-        let w0 = k.w(0.0, h);
-        let w1 = k.w(0.3, h);
-        let w2 = k.w(0.6, h);
-        let w3 = k.w(0.9, h);
-        assert!(
-            w0 > w1 && w1 > w2 && w2 > w3,
-            "QWC6 should be monotonically decreasing"
-        );
-    }
-
-    #[test]
-    fn test_quintic_wendland_c6_eval_wrapper() {
-        let w = quintic_wendland_c6_eval(0.0, 1.0);
-        assert!(w > 0.0);
-        let w = quintic_wendland_c6_eval(1.5, 1.0);
-        assert!(w.abs() < 1e-14);
-    }
-
-    // --- GaussianKernel ---
-
-    #[test]
-    fn test_gaussian_positive_at_origin() {
-        let k = GaussianKernel;
-        assert!(k.w(0.0, 1.0) > 0.0, "Gaussian at origin should be positive");
-    }
-
-    #[test]
-    fn test_gaussian_decreases_with_distance() {
-        let k = GaussianKernel;
-        let h = 1.0;
-        let w0 = k.w(0.0, h);
-        let w1 = k.w(0.5, h);
-        let w2 = k.w(1.0, h);
-        assert!(w0 > w1 && w1 > w2, "Gaussian should decrease with distance");
-    }
-
-    #[test]
-    fn test_gaussian_gradient_negative() {
-        let k = GaussianKernel;
-        let dw = k.grad_w(0.5, 1.0);
-        assert!(
-            dw < 0.0,
-            "Gaussian gradient inside support should be negative: {dw}"
-        );
-    }
-
-    #[test]
-    fn test_gaussian_gradient_zero_at_origin() {
-        let k = GaussianKernel;
-        assert!(
-            k.grad_w(0.0, 1.0).abs() < 1e-10,
-            "Gaussian gradient at origin should be 0"
-        );
-    }
-
-    #[test]
-    fn test_gaussian_eval_wrapper() {
-        let w = gaussian_eval(0.0, 1.0);
-        assert!(w > 0.0);
-    }
-
-    #[test]
-    fn test_gaussian_integrates_approximately() {
-        let k = GaussianKernel;
-        let h = 1.0;
-        let support = 4.0 * h;
-        let n = 100usize;
-        let dx = 2.0 * support / n as f64;
-        let mut sum = 0.0;
-        for i in 0..n {
-            let x = -support + (i as f64 + 0.5) * dx;
-            for j in 0..n {
-                let y = -support + (j as f64 + 0.5) * dx;
-                for kk in 0..n {
-                    let z = -support + (kk as f64 + 0.5) * dx;
-                    let r = (x * x + y * y + z * z).sqrt();
-                    sum += k.w(r, h) * dx * dx * dx;
-                }
-            }
-        }
-        assert!(
-            (sum - 1.0).abs() < 0.05,
-            "Gaussian integral = {sum}, expected ~1.0"
-        );
-    }
-
-    // --- QuinticSplineKernel ---
-
-    #[test]
-    fn test_quintic_spline_positive_inside() {
-        let k = QuinticSplineKernel;
-        let h = 1.0;
-        assert!(k.w(0.0, h) > 0.0, "QS at origin should be positive");
-        assert!(k.w(0.5, h) > 0.0, "QS at r=0.5 should be positive");
-        assert!(k.w(1.5, h) > 0.0, "QS at r=1.5 should be positive");
-        assert!(k.w(2.5, h) > 0.0, "QS at r=2.5 should be positive");
-    }
-
-    #[test]
-    fn test_quintic_spline_zero_outside() {
-        let k = QuinticSplineKernel;
-        let h = 1.0;
-        assert!(k.w(3.0, h).abs() < 1e-14, "QS at boundary should be 0");
-        assert!(k.w(3.5, h).abs() < 1e-14, "QS outside support should be 0");
-    }
-
-    #[test]
-    fn test_quintic_spline_gradient_zero_at_origin() {
-        let k = QuinticSplineKernel;
-        assert!(k.grad_w(0.0, 1.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_quintic_spline_eval_wrapper() {
-        let w = quintic_spline_eval(0.0, 1.0);
-        assert!(w > 0.0);
-        let w_out = quintic_spline_eval(3.5, 1.0);
-        assert!(w_out.abs() < 1e-14);
-    }
-
-    // --- KSPH gradient correction ---
-
-    #[test]
-    fn test_ksph_corrected_gradient_identity() {
-        // With identity correction matrix, gradient should be unchanged
-        let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let g = [1.0, 2.0, 3.0];
-        let result = ksph_corrected_gradient(g, id);
-        for i in 0..3 {
-            assert!(
-                (result[i] - g[i]).abs() < 1e-12,
-                "Identity correction should preserve gradient: result[{i}]={}",
-                result[i]
-            );
-        }
-    }
-
-    #[test]
-    fn test_ksph_corrected_gradient_scales() {
-        // Diagonal scaling matrix: should scale each component
-        let scale = [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 0.5]];
-        let g = [1.0, 1.0, 1.0];
-        let result = ksph_corrected_gradient(g, scale);
-        assert!((result[0] - 2.0).abs() < 1e-12);
-        assert!((result[1] - 3.0).abs() < 1e-12);
-        assert!((result[2] - 0.5).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_ksph_correct_all_gradients_count() {
-        let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let grads = vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let result = ksph_correct_all_gradients(&grads, id);
-        assert_eq!(result.len(), grads.len());
-    }
-
-    // --- Second moment matrix ---
-
-    #[test]
-    fn test_second_moment_matrix_symmetric() {
-        let pos_i = [0.0; 3];
-        let neighbors = vec![[0.1, 0.2, 0.3], [-0.1, 0.1, -0.2]];
-        let w_vals = vec![1.0, 1.0];
-        let masses = vec![1.0, 1.0];
-        let densities = vec![1.0, 1.0];
-        let m = second_moment_matrix(pos_i, &neighbors, &w_vals, &masses, &densities);
-        for (i, row) in m.iter().enumerate() {
-            for (j, &val) in row.iter().enumerate() {
-                assert!(
-                    (val - m[j][i]).abs() < 1e-12,
-                    "Second moment matrix should be symmetric: m[{i}][{j}]={} != m[{j}][{i}]={}",
-                    val,
-                    m[j][i]
-                );
-            }
-        }
-    }
-
-    // --- Kernel renormalization ---
-
-    #[test]
-    fn test_renormalize_kernel_sums_to_one() {
-        let w_vals = vec![0.5, 0.3, 0.2];
-        let vols = vec![1.0, 1.0, 1.0];
-        let scale = renormalize_kernel(&w_vals, &vols);
-        // sum = 1.0, scale = 1.0
-        assert!((scale - 1.0).abs() < 1e-12, "scale={scale}");
-    }
-
-    #[test]
-    fn test_renormalize_kernel_non_unit_sum() {
-        let w_vals = vec![0.4, 0.4];
-        let vols = vec![1.0, 1.0];
-        let scale = renormalize_kernel(&w_vals, &vols);
-        // sum = 0.8, scale = 1.25
-        assert!((scale - 1.25).abs() < 1e-12, "scale={scale}");
-    }
-
-    #[test]
-    fn test_apply_renormalization_modifies_in_place() {
-        let mut w_vals = vec![0.4, 0.4];
-        let vols = vec![1.0, 1.0];
-        apply_renormalization(&mut w_vals, &vols);
-        let sum: f64 = w_vals.iter().zip(vols.iter()).map(|(&w, &v)| w * v).sum();
-        assert!(
-            (sum - 1.0).abs() < 1e-12,
-            "After renormalization, sum should be 1: {sum}"
-        );
-    }
-
-    #[test]
-    fn test_kernel_renorm_factor_matches_shepard() {
-        let w = vec![0.6, 0.4];
-        let m = vec![1.0, 1.0];
-        let d = vec![1.0, 1.0];
-        let factor = kernel_renorm_factor(&w, &m, &d);
-        let shepard = shepard_correction(&w, &m, &d);
-        assert!((factor - shepard).abs() < 1e-12);
-    }
-
-    // --- SPH gradient and Laplacian stencils ---
-
-    #[test]
-    fn test_sph_laplacian_1d_constant_field() {
-        // Constant field: Laplacian should be 0
-        let k = CubicSplineKernel;
-        let h = 0.2;
-        let f_i = 5.0;
-        let pos_neighbors = vec![-0.1, 0.0, 0.1];
-        let f_neighbors = vec![5.0, 5.0, 5.0];
-        let masses = vec![0.001, 0.001, 0.001];
-        let densities = vec![1000.0, 1000.0, 1000.0];
-        let lap = sph_laplacian_1d(
-            f_i,
-            &f_neighbors,
-            0.0,
-            &pos_neighbors,
-            &masses,
-            &densities,
-            &k,
-            h,
-        );
-        // The Laplacian of a constant field should be approximately 0
-        assert!(
-            lap.abs() < 1.0,
-            "Laplacian of constant field should be ~0: {lap}"
-        );
-    }
-
-    #[test]
-    fn test_sph_gradient_3d_single_neighbor() {
-        // sph_gradient_3d uses r_vec = pos_j - pos_i and dW/dr < 0
-        // For f_j > f_i with neighbor in +x direction, result[0] = vol*(f_j-f_i)*(dW/dr)/r * r_x
-        // dW/dr < 0 for cubic spline, so gradient[0] < 0
-        let k = CubicSplineKernel;
-        let h = 1.0;
-        let pos_i = [0.0, 0.0, 0.0];
-        let pos_neighbors = vec![[0.5, 0.0, 0.0]];
-        let f_neighbors = vec![1.0];
-        let masses = vec![1.0];
-        let densities = vec![1.0];
-        let grad_f = sph_gradient_3d(
-            0.0,
-            &f_neighbors,
-            pos_i,
-            &pos_neighbors,
-            &masses,
-            &densities,
-            &k,
-            h,
-        );
-        // Gradient is non-zero
-        assert!(
-            grad_f[0].abs() > 1e-10,
-            "Gradient x should be non-zero: {}",
-            grad_f[0]
-        );
-        assert!(
-            grad_f[1].abs() < 1e-12,
-            "Gradient y should be 0: {}",
-            grad_f[1]
-        );
-        assert!(
-            grad_f[2].abs() < 1e-12,
-            "Gradient z should be 0: {}",
-            grad_f[2]
-        );
-    }
-
-    #[test]
-    fn test_sph_gradient_3d_antisymmetric() {
-        // Two symmetric neighbors with antisymmetric field → gradient non-zero
-        let k = CubicSplineKernel;
-        let h = 1.0;
-        let pos_i = [0.0, 0.0, 0.0];
-        let pos_neighbors = vec![[0.5, 0.0, 0.0], [-0.5, 0.0, 0.0]];
-        let f_neighbors = vec![1.0, -1.0]; // antisymmetric field
-        let masses = vec![1.0, 1.0];
-        let densities = vec![1.0, 1.0];
-        let grad_f = sph_gradient_3d(
-            0.0,
-            &f_neighbors,
-            pos_i,
-            &pos_neighbors,
-            &masses,
-            &densities,
-            &k,
-            h,
-        );
-        // Should have non-zero x gradient (antisymmetric field → contributions add up)
-        assert!(
-            grad_f[0].abs() > 1e-10,
-            "Antisymmetric field should give non-zero x gradient: {}",
-            grad_f[0]
-        );
-    }
-
-    // --- Gaussian gradient vector ---
-
-    #[test]
-    fn test_gaussian_grad_points_opposite_to_displacement() {
-        let h = 1.0;
-        let r_vec = [0.5, 0.0, 0.0];
-        let g = gaussian_grad(r_vec, h);
-        assert!(
-            g[0] < 0.0,
-            "Gaussian grad x should be negative (away from origin): {}",
-            g[0]
-        );
-        assert!(g[1].abs() < 1e-12);
-        assert!(g[2].abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_gaussian_grad_zero_at_origin() {
-        let g = gaussian_grad([0.0; 3], 1.0);
-        let mag = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
-        assert!(
-            mag < 1e-10,
-            "Gaussian grad at origin should be 0: mag={mag}"
-        );
-    }
-
-    // --- Kernel comparison with new kernels ---
-
-    #[test]
-    fn test_gaussian_different_from_cubic_spline() {
-        let (max_abs, _) = compare_kernels(&GaussianKernel, &CubicSplineKernel, 1.0, 100);
-        assert!(max_abs > 0.0, "Gaussian and CubicSpline should differ");
-    }
-
-    #[test]
-    fn test_quintic_spline_different_from_cubic_spline() {
-        let (max_abs, _) = compare_kernels(&QuinticSplineKernel, &CubicSplineKernel, 1.0, 100);
-        assert!(
-            max_abs > 0.0,
-            "Quintic spline and CubicSpline should differ"
-        );
-    }
-
-    // --- Laplacian sign tests ---
-
-    #[test]
-    fn test_gaussian_laplacian_negative_near_origin() {
-        // Gaussian is concave near origin → Laplacian should be negative
-        let k = GaussianKernel;
-        // At r=0: d²W/dr² = sigma * (-2/h²) → negative
-        // But the 3D Laplacian includes 2/r * dW/dr term
-        // Just check it's finite
-        let lap = k.laplacian_w(0.1, 1.0);
-        assert!(
-            lap.is_finite(),
-            "Gaussian Laplacian should be finite: {lap}"
-        );
-    }
-
-    #[test]
-    fn test_quintic_spline_laplacian_finite() {
-        let k = QuinticSplineKernel;
-        for r in [0.1, 0.5, 1.0, 1.5, 2.0, 2.5] {
-            let lap = k.laplacian_w(r, 1.0);
-            assert!(
-                lap.is_finite(),
-                "Quintic spline Laplacian should be finite at r={r}: {lap}"
-            );
-        }
-    }
-
-    // --- Kernel symmetry: w(-r) = w(r) since kernels use |r| ---
-
-    #[test]
-    fn test_kernels_use_scalar_distance() {
-        let kernels: Vec<(&str, Box<dyn SphKernel>)> = vec![
-            ("Gaussian", Box::new(GaussianKernel)),
-            ("QuinticSpline", Box::new(QuinticSplineKernel)),
-            ("QuinticWendlandC6", Box::new(QuinticWendlandC6Kernel)),
-        ];
-        for (name, k) in &kernels {
-            let w = k.w(0.3, 1.0);
-            assert!(w > 0.0, "{name} should be positive at r=0.3: w={w}");
-        }
-    }
-
-    // --- Test gradient magnitudes for new kernels ---
-
-    #[test]
-    fn test_gaussian_grad_magnitude_matches_scalar() {
-        let h = 1.0;
-        let r = 0.5;
-        let r_vec = [r, 0.0, 0.0];
-        let scalar_dw = GaussianKernel.grad_w(r, h).abs();
-        let vec_g = gaussian_grad(r_vec, h);
-        let mag = (vec_g[0] * vec_g[0] + vec_g[1] * vec_g[1] + vec_g[2] * vec_g[2]).sqrt();
-        assert!(
-            (mag - scalar_dw).abs() < 1e-12,
-            "Gaussian grad magnitude mismatch: {mag:.6e} vs {scalar_dw:.6e}"
-        );
-    }
-
-    #[test]
-    fn test_quintic_wendland_c6_gradient_zero_at_origin() {
-        let k = QuinticWendlandC6Kernel;
-        assert!(
-            k.grad_w(0.0, 1.0).abs() < 1e-10,
-            "QWC6 gradient at origin should be 0"
-        );
-    }
-
-    #[test]
-    fn test_quintic_wendland_c6_gradient_zero_outside() {
-        let k = QuinticWendlandC6Kernel;
-        assert!(
-            k.grad_w(1.5, 1.0).abs() < 1e-14,
-            "QWC6 gradient outside support should be 0"
-        );
-    }
-}
+mod tests_extended;

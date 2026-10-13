@@ -14,6 +14,11 @@ use serde::{Deserialize, Serialize};
 
 use oxiphysics_lbm::d3q19_full::D3q19Simulation;
 
+use crate::error::Error;
+
+#[path = "fluid_bridge_sph.rs"]
+mod sph_forces;
+
 // ---------------------------------------------------------------------------
 // SPH helper — compact cubic spline kernel (σ = 8/(π h³))
 // ---------------------------------------------------------------------------
@@ -33,7 +38,13 @@ fn cubic_spline_compact(r: f64, h: f64) -> f64 {
     }
 }
 
-/// Compute SPH density ρᵢ = Σⱼ mⱼ · W(|rᵢ − rⱼ|, h) for all fluid particles.
+/// Brute-force `O(n²)` SPH density ρᵢ = Σⱼ mⱼ · W(|rᵢ − rⱼ|, h) of every
+/// particle (fluid and boundary).
+///
+/// Kept as the reference that the cell-list implementation used by
+/// [`WasmSphSimulation::step`] (`sph_forces::compute_densities`) is verified
+/// against.
+#[cfg(test)]
 fn compute_sph_densities(particles: &[WasmSphParticle], h: f64) -> Vec<f64> {
     let n = particles.len();
     let mut densities = vec![0.0_f64; n];
@@ -118,15 +129,19 @@ fn largest_eigenvalue_sym3(m: &[[f64; 3]; 3]) -> f64 {
 #[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmSphConfig {
-    /// Particle radius r (m).
+    /// Particle radius r (m); also the contact distance at which a fluid
+    /// particle collides with a boundary particle (see `boundary_restitution`).
+    /// A radius at or above the resting gap to a wall (about 0.9 particle
+    /// spacings) makes that contact a hard floor under the pressure force.
     pub particle_radius: f64,
     /// Smoothing length h (m); typically 2r.
     pub smoothing_length: f64,
     /// Rest (reference) density ρ₀ (kg/m³).
     pub rest_density: f64,
-    /// Dynamic viscosity μ (Pa·s).
+    /// Dynamic viscosity μ (Pa·s), applied as Morris laminar viscosity.
     pub viscosity: f64,
-    /// Surface tension coefficient γ (N/m).
+    /// Surface tension coefficient γ (N/m), applied as a continuum surface
+    /// force on free-surface particles; `0` disables it.
     pub surface_tension: f64,
     /// Equation of state stiffness B (Pa).
     pub stiffness: f64,
@@ -134,11 +149,15 @@ pub struct WasmSphConfig {
     pub tait_exponent: f64,
     /// Gravity vector [gx, gy, gz] (m/s²) — private; use getters/setters from JS.
     gravity: [f64; 3],
-    /// Coefficient of restitution for boundary collisions.
+    /// Coefficient of restitution `e` in `[0, 1]` for boundary collisions: a
+    /// fluid particle that penetrates closer than `particle_radius` to a
+    /// boundary particle is pushed back out and the velocity component into
+    /// the boundary is reflected and scaled by `e`.
     pub boundary_restitution: f64,
     /// Enable XSPH velocity correction.
     pub xsph_enabled: bool,
-    /// XSPH ε coefficient.
+    /// XSPH ε coefficient (fraction of the kernel-weighted velocity
+    /// difference to the neighbours that is blended in each step).
     pub xsph_epsilon: f64,
 }
 
@@ -273,7 +292,10 @@ pub struct WasmSphParticle {
     pub mass: f64,
     /// Whether this particle is a boundary (static) particle.
     pub is_boundary: bool,
-    /// Smoothed colour field value (for surface detection).
+    /// Smoothed colour field value `Σ_j (m_j/ρ_j) W_ij`, refreshed for fluid
+    /// particles by every simulation step.  It is about `1` everywhere inside
+    /// the fluid; free surfaces show up in its gradient (the interface
+    /// normal), which also drives the surface-tension force.
     pub colour: f64,
     /// Particle unique ID — private; use get_id from JS.
     id: u64,
@@ -424,25 +446,96 @@ impl WasmSphSimulation {
         }
     }
 
-    /// Advance the simulation by `dt` seconds (Euler integration).
+    /// Add a static boundary particle and return its index.
+    ///
+    /// Boundary particles fill the density and pressure fields near walls and
+    /// repel approaching fluid particles, but they are never integrated.  Give
+    /// them the mass of a fluid particle (`rest_density * spacing³`) so that a
+    /// wall layer is as dense as the fluid it supports.
+    pub fn add_boundary_particle(&mut self, position: [f64; 3], mass: f64) -> usize {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.particles
+            .push(WasmSphParticle::boundary(id, position, mass));
+        self.particles.len() - 1
+    }
+
+    /// Add boundary particles from a flat position array
+    /// `[x0,y0,z0, x1,y1,z1, ...]` (a trailing incomplete triple is ignored).
+    pub fn add_boundary_particles(&mut self, positions_flat: &[f64], mass: f64) {
+        for chunk in positions_flat.chunks_exact(3) {
+            self.add_boundary_particle([chunk[0], chunk[1], chunk[2]], mass);
+        }
+    }
+
+    /// Advance the simulation by `dt` seconds.
+    ///
+    /// One weakly compressible SPH step with semi-implicit (symplectic) Euler
+    /// integration:
+    ///
+    /// 1. densities `ρ_i = Σ_j m_j W_ij` are summed over all particles, fluid
+    ///    and boundary, and the Tait equation of state turns them into
+    ///    pressures (clamped at zero);
+    /// 2. every fluid particle accelerates under gravity, the symmetric
+    ///    pressure-gradient force, Morris viscosity (`viscosity`) and, for
+    ///    `surface_tension > 0`, the continuum surface force;
+    /// 3. velocities are advanced, optionally smoothed with XSPH
+    ///    (`xsph_enabled`, `xsph_epsilon`), and positions follow with the new
+    ///    velocities;
+    /// 4. fluid particles that ended up closer than `particle_radius` to a
+    ///    boundary particle are pushed back out and bounce with
+    ///    `boundary_restitution`.
+    ///
+    /// Boundary particles take part in the sums but never move.  The
+    /// weakly compressible scheme is only stable for small steps, roughly
+    /// `dt <= 0.25 · smoothing_length / c` with the numerical speed of sound
+    /// `c = sqrt(tait_exponent · stiffness / rest_density)`; choose
+    /// `stiffness` so that `c` is about ten times the fastest flow speed.
+    ///
+    /// When `smoothing_length` or `rest_density` is not finite and positive
+    /// (see [`WasmSphConfig::validate`]) the kernel and the equation of state
+    /// are undefined, and the particles fall under gravity alone.
     pub fn step(&mut self, dt: f64) {
         let grav = self.config.gravity;
-        let h = self.config.smoothing_length;
-        let densities = compute_sph_densities(&self.particles, h);
-        for (i, p) in self.particles.iter_mut().enumerate() {
-            if p.is_boundary {
-                continue;
+        let interacting = sph_forces::interaction_enabled(&self.config);
+        if interacting {
+            let h = self.config.smoothing_length;
+            let grid = sph_forces::NeighborGrid::build(&self.particles, h);
+            let densities = sph_forces::compute_densities(&self.particles, h, &grid);
+            for (p, &rho) in self.particles.iter_mut().zip(&densities) {
+                p.density = rho;
+                p.pressure = sph_forces::tait_pressure(rho, &self.config);
             }
-            p.density = densities[i];
-            let ratio = p.density / self.config.rest_density;
-            p.pressure = self.config.stiffness * (ratio.powf(self.config.tait_exponent) - 1.0);
+            let forces = sph_forces::compute_forces(&self.particles, &self.config, &grid);
+            for ((p, accel), &colour) in self
+                .particles
+                .iter_mut()
+                .zip(&forces.acceleration)
+                .zip(&forces.colour)
+                .filter(|((p, _), _)| !p.is_boundary)
+            {
+                p.acceleration = *accel;
+                p.colour = colour;
+                sph_forces::axpy(&mut p.velocity, dt, *accel);
+            }
+            if self.config.xsph_enabled && self.config.xsph_epsilon != 0.0 {
+                let corrections =
+                    sph_forces::xsph_corrections(&self.particles, &self.config, &grid);
+                for (p, dv) in self.particles.iter_mut().zip(&corrections) {
+                    sph_forces::axpy(&mut p.velocity, 1.0, *dv);
+                }
+            }
+        } else {
+            for p in self.particles.iter_mut().filter(|p| !p.is_boundary) {
+                p.acceleration = grav;
+                sph_forces::axpy(&mut p.velocity, dt, grav);
+            }
         }
         for p in self.particles.iter_mut().filter(|p| !p.is_boundary) {
-            p.acceleration = grav;
-            for k in 0..3 {
-                p.velocity[k] += p.acceleration[k] * dt;
-                p.position[k] += p.velocity[k] * dt;
-            }
+            sph_forces::axpy(&mut p.position, dt, p.velocity);
+        }
+        if interacting {
+            sph_forces::resolve_boundary_contacts(&mut self.particles, &self.config);
         }
         self.time += dt;
         self.step_count += 1;
@@ -501,6 +594,16 @@ impl WasmSphSimulation {
     /// Add particles from flat [x0,y0,z0, ...] array (JS-compatible).
     pub fn add_particles_js(&mut self, positions_flat: &[f64], mass: f64) {
         self.add_particles(positions_flat, mass);
+    }
+
+    /// Add a static boundary particle at (x, y, z); returns its index as u32.
+    pub fn add_boundary_particle_js(&mut self, x: f64, y: f64, z: f64, mass: f64) -> u32 {
+        self.add_boundary_particle([x, y, z], mass) as u32
+    }
+
+    /// Add static boundary particles from a flat [x0,y0,z0, ...] array.
+    pub fn add_boundary_particles_js(&mut self, positions_flat: &[f64], mass: f64) {
+        self.add_boundary_particles(positions_flat, mass);
     }
 
     /// Advance simulation by dt seconds.
@@ -710,12 +813,20 @@ pub struct WasmLbmSimulation {
     #[wasm_bindgen(skip)]
     pub pressure: Vec<f64>,
     /// Boundary mask (true = solid wall node).
+    ///
+    /// This mask is the source of truth for the solid nodes: it is copied into
+    /// the inner grid before every step, so setting it directly (or restoring
+    /// it from a serialised simulation) is as effective as [`Self::set_boundary`].
     #[wasm_bindgen(skip)]
     pub boundary: Vec<bool>,
     /// Simulation step counter — private; use get_step_count from JS.
     step_count: u64,
     /// Simulated time (lattice time units).
     pub time: f64,
+    /// Prescribed x-velocity of the inlet face (`ix = 0`) in lattice units;
+    /// `None` leaves the domain fully periodic and undriven.
+    #[serde(default)]
+    inlet_velocity: Option<f64>,
     /// Inner D3Q19 BGK grid — excluded from serialisation.
     #[serde(skip)]
     grid: Option<D3q19Simulation>,
@@ -724,6 +835,48 @@ pub struct WasmLbmSimulation {
 /// Build a fresh `D3q19Simulation` from a `WasmLbmConfig`.
 fn make_d3q19(config: &WasmLbmConfig) -> D3q19Simulation {
     D3q19Simulation::new(config.nx, config.ny, config.nz, config.tau)
+}
+
+/// Copy the public boundary mask into the grid's solid-node flags.
+///
+/// Both use the layout `x + y * nx + z * nx * ny`.  A mask that is shorter
+/// than the grid leaves the remaining nodes fluid.
+fn apply_solid_mask(grid: &mut D3q19Simulation, boundary: &[bool]) {
+    for (cell, &solid) in grid.solid.iter_mut().zip(boundary) {
+        *cell = solid;
+    }
+}
+
+/// The grid of a simulation, rebuilt from `config` (with the solid mask
+/// imposed) when it does not exist, e.g. after a serde round trip.
+fn grid_or_rebuild<'a>(
+    grid: &'a mut Option<D3q19Simulation>,
+    config: &WasmLbmConfig,
+    boundary: &[bool],
+) -> &'a mut D3q19Simulation {
+    grid.get_or_insert_with(|| {
+        let mut rebuilt = make_d3q19(config);
+        apply_solid_mask(&mut rebuilt, boundary);
+        rebuilt
+    })
+}
+
+/// Advance `grid` by one LBM step.
+///
+/// Without an inlet this is the plain periodic collide / stream /
+/// bounce-back step.  With an inlet the x = 0 face is driven to
+/// `(inlet_velocity, 0, 0)` by a Zou-He condition imposed right after
+/// streaming, before the solid nodes bounce back.
+fn advance_grid(grid: &mut D3q19Simulation, inlet_velocity: Option<f64>) {
+    match inlet_velocity {
+        Some(ux) => {
+            grid.collide();
+            grid.stream();
+            grid.apply_zou_he_inlet_x(ux);
+            grid.apply_bounce_back();
+        }
+        None => grid.step(),
+    }
 }
 
 impl WasmLbmSimulation {
@@ -743,37 +896,62 @@ impl WasmLbmSimulation {
             boundary: vec![false; n],
             step_count: 0,
             time: 0.0,
+            inlet_velocity: None,
             grid: Some(grid),
             config,
         }
     }
 
     /// Obtain a mutable reference to the inner grid, reconstructing from
-    /// config if it was dropped (e.g. after serde round-trip).
+    /// config (and the solid mask) if it was dropped (e.g. after serde
+    /// round-trip).
     fn grid_mut(&mut self) -> &mut D3q19Simulation {
-        if self.grid.is_none() {
-            self.grid = Some(make_d3q19(&self.config));
-        }
-        self.grid.as_mut().expect("grid is always Some after init")
+        grid_or_rebuild(&mut self.grid, &self.config, &self.boundary)
     }
 
     /// Sync the public macroscopic caches from the current grid state.
+    ///
+    /// The reported velocity of a solid node is `0`: it is a no-slip wall, and
+    /// the populations that on-node bounce-back parks there carry no physical
+    /// velocity.  Densities are reported as stored so that the total mass of
+    /// the (closed) domain stays conserved.
     fn sync_macroscopic(&mut self) {
         if let Some(ref g) = self.grid {
             let cs2 = self.config.sound_speed * self.config.sound_speed;
             self.density = g.density_field();
             let vel_field = g.velocity_field();
             self.velocity = vel_field.iter().flat_map(|v| v.iter().copied()).collect();
+            for (node, _) in self
+                .boundary
+                .iter()
+                .enumerate()
+                .filter(|(_, solid)| **solid)
+            {
+                if let Some(u) = self.velocity.get_mut(node * 3..node * 3 + 3) {
+                    u.fill(0.0);
+                }
+            }
             for (p, rho) in self.pressure.iter_mut().zip(self.density.iter()) {
                 *p = rho * cs2;
             }
         }
     }
 
-    /// Mark node (ix, iy, iz) as solid boundary.
+    /// Mark node (ix, iy, iz) as a solid no-slip wall (`solid = true`) or
+    /// return it to the fluid (`false`).
+    ///
+    /// The flag takes effect in the lattice immediately: solid nodes are
+    /// skipped by the collision step and reflect the populations that reach
+    /// them (full-way bounce-back).  Coordinates outside the grid are
+    /// ignored.
     pub fn set_boundary(&mut self, ix: usize, iy: usize, iz: usize, solid: bool) {
         if let Some(idx) = self.node_index(ix, iy, iz) {
-            self.boundary[idx] = solid;
+            if let Some(flag) = self.boundary.get_mut(idx) {
+                *flag = solid;
+            }
+            if let Some(cell) = self.grid.as_mut().and_then(|g| g.solid.get_mut(idx)) {
+                *cell = solid;
+            }
         }
     }
 
@@ -787,8 +965,14 @@ impl WasmLbmSimulation {
     }
 
     /// Advance one LBM time step.
+    ///
+    /// The solid nodes of [`Self::boundary`] and the inlet velocity (if one
+    /// was set) are imposed on the lattice.
     pub fn step(&mut self) {
-        self.grid_mut().step();
+        let inlet_velocity = self.inlet_velocity;
+        let grid = grid_or_rebuild(&mut self.grid, &self.config, &self.boundary);
+        apply_solid_mask(grid, &self.boundary);
+        advance_grid(grid, inlet_velocity);
         self.sync_macroscopic();
         self.step_count += 1;
         self.time += 1.0;
@@ -817,15 +1001,38 @@ impl WasmLbmSimulation {
         self.density.iter().sum::<f64>() / self.density.len() as f64
     }
 
-    /// Set a uniform inlet velocity (x-direction) on the left boundary (ix=0).
-    pub fn set_inlet_velocity(&mut self, vx: f64) {
-        for iy in 0..self.config.ny {
-            for iz in 0..self.config.nz {
-                if let Some(idx) = self.node_index(0, iy, iz) {
-                    self.velocity[idx * 3] = vx;
-                }
-            }
+    /// Drive the domain with a uniform inlet velocity `vx` (lattice units,
+    /// x-direction) on the left face (`ix = 0`).
+    ///
+    /// The velocity is imposed on every fluid node of the face with a Zou-He
+    /// condition after each streaming step, so the flow it creates persists
+    /// until [`Self::clear_inlet_velocity`] is called.  The rest of the box
+    /// stays periodic.  Lattice Boltzmann is only accurate at low Mach
+    /// number; keep `|vx|` well below `0.3`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidParameter`] (`inlet_velocity`) when `vx` is not finite
+    /// or `|vx| >= 1` (the Zou-He density `rho = known / (1 - vx)` is
+    /// singular there); the simulation is left unchanged.
+    pub fn set_inlet_velocity(&mut self, vx: f64) -> Result<(), Error> {
+        if !(vx.is_finite() && vx.abs() < 1.0) {
+            return Err(Error::invalid_param(
+                "inlet_velocity",
+                format!("must be finite with |vx| < 1 in lattice units, got {vx}"),
+            ));
         }
+        self.inlet_velocity = Some(vx);
+        // Impose it right away so the reported fields already show the inlet.
+        self.grid_mut().apply_zou_he_inlet_x(vx);
+        self.sync_macroscopic();
+        Ok(())
+    }
+
+    /// Remove the inlet driving added by [`Self::set_inlet_velocity`]; the
+    /// flow then evolves freely in the periodic box.
+    pub fn clear_inlet_velocity(&mut self) {
+        self.inlet_velocity = None;
     }
 }
 
@@ -871,9 +1078,16 @@ impl WasmLbmSimulation {
         self.set_boundary(ix as usize, iy as usize, iz as usize, solid);
     }
 
-    /// Set inlet velocity (JS-exposed).
-    pub fn set_inlet_velocity_js(&mut self, vx: f64) {
-        self.set_inlet_velocity(vx);
+    /// Drive the domain with an inlet velocity on the left face (JS-exposed).
+    ///
+    /// Throws when `vx` is not finite or `|vx| >= 1`.
+    pub fn set_inlet_velocity_js(&mut self, vx: f64) -> Result<(), JsValue> {
+        Ok(self.set_inlet_velocity(vx)?)
+    }
+
+    /// Remove the inlet velocity (JS-exposed).
+    pub fn clear_inlet_velocity_js(&mut self) {
+        self.clear_inlet_velocity();
     }
 
     /// Step counter as f64.
@@ -1747,3 +1961,7 @@ impl WasmFlowAnalyzer {
 #[cfg(test)]
 #[path = "fluid_bridge_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "fluid_bridge_solver_tests.rs"]
+mod solver_tests;

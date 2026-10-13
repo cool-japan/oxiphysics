@@ -741,55 +741,6 @@ mod tests {
         }
     }
     #[test]
-    fn test_dynamic_smagorinsky_coefficient_nonneg() {
-        let ds = DynamicSmagorinsky::new(0.1, 2.0);
-        let s_grid: Mat3 = [[1.0, 0.5, 0.0], [0.5, -0.5, 0.0], [0.0, 0.0, -0.5]];
-        let s_test: Mat3 = [[0.5, 0.25, 0.0], [0.25, -0.25, 0.0], [0.0, 0.0, -0.25]];
-        let c = ds.dynamic_coefficient(s_grid, s_test);
-        assert!(
-            c >= 0.0,
-            "Dynamic Smagorinsky coefficient must be non-negative, got {c}"
-        );
-        assert!(
-            c <= ds.c_max,
-            "Dynamic Smagorinsky coefficient exceeds c_max={}",
-            ds.c_max
-        );
-    }
-    #[test]
-    fn test_dynamic_smagorinsky_eddy_viscosity_nonneg() {
-        let ds = DynamicSmagorinsky::default();
-        let s: Mat3 = [[2.0, 1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 0.0, -1.0]];
-        let s_test: Mat3 = [[1.0, 0.5, 0.0], [0.5, -0.5, 0.0], [0.0, 0.0, -0.5]];
-        let nu_t = ds.eddy_viscosity(s, s_test);
-        assert!(nu_t >= 0.0, "Dynamic eddy viscosity must be non-negative");
-    }
-    #[test]
-    fn test_dynamic_smagorinsky_sgs_stress_symmetric() {
-        let ds = DynamicSmagorinsky::new(0.05, 2.0);
-        let s: Mat3 = [[1.0, 0.3, 0.2], [0.3, -0.5, 0.1], [0.2, 0.1, -0.5]];
-        let s_test: Mat3 = [[0.5, 0.15, 0.1], [0.15, -0.25, 0.05], [0.1, 0.05, -0.25]];
-        let tau = ds.sgs_stress(s, s_test, 1000.0);
-        for (i, row) in tau.iter().enumerate() {
-            for (j, &val) in row.iter().enumerate() {
-                assert!(
-                    (val - tau[j][i]).abs() < 1e-12,
-                    "Dynamic SGS stress must be symmetric"
-                );
-            }
-        }
-    }
-    #[test]
-    fn test_dynamic_smagorinsky_zero_strain() {
-        let ds = DynamicSmagorinsky::new(0.1, 2.0);
-        let zero: Mat3 = [[0.0; 3]; 3];
-        let c = ds.dynamic_coefficient(zero, zero);
-        assert!(
-            c.abs() < 1e-14,
-            "Zero strain → zero dynamic coefficient, got {c}"
-        );
-    }
-    #[test]
     fn test_wale_eddy_viscosity_nonneg() {
         let wale = WaleModel::new(0.325, 0.1);
         let s: Mat3 = [[1.0, 0.5, 0.0], [0.5, -0.5, 0.0], [0.0, 0.0, -0.5]];
@@ -1225,39 +1176,6 @@ mod tests_turbulence_extended {
         let acc = model.sgs_acceleration(&tau, rho, &nbr_tau, &nbr_rho, &nbr_mass, &grads);
         for &a in &acc {
             assert!(a.is_finite());
-        }
-    }
-    #[test]
-    fn test_dynamic_smagorinsky_cs_sq_range() {
-        let model = DynamicSmagorinskyLes::default();
-        let s: Mat3 = [[1.0, 0.5, 0.0], [0.5, -1.0, 0.0], [0.0, 0.0, 0.0]];
-        let cs_sq = model.compute_cs_sq(&s, &s);
-        assert!((0.0..=0.04).contains(&cs_sq), "cs_sq={cs_sq} out of range");
-    }
-    #[test]
-    fn test_dynamic_smagorinsky_zero_strain_zero_viscosity() {
-        let model = DynamicSmagorinskyLes::default();
-        let s_zero: Mat3 = [[0.0; 3]; 3];
-        let nu_t = model.eddy_viscosity(&s_zero, &s_zero);
-        assert_eq!(nu_t, 0.0);
-    }
-    #[test]
-    fn test_dynamic_smagorinsky_eddy_viscosity_nonneg() {
-        let model = DynamicSmagorinskyLes::new(0.1, 2.0);
-        let s_bar: Mat3 = [[2.0, 1.0, 0.0], [1.0, -2.0, 0.0], [0.0, 0.0, 0.0]];
-        let s_hat: Mat3 = [[1.0, 0.5, 0.0], [0.5, -1.0, 0.0], [0.0, 0.0, 0.0]];
-        let nu_t = model.eddy_viscosity(&s_bar, &s_hat);
-        assert!(nu_t >= 0.0, "Dynamic Smagorinsky ν_t must be non-negative");
-    }
-    #[test]
-    fn test_dynamic_smagorinsky_sgs_stress_finite() {
-        let model = DynamicSmagorinskyLes::default();
-        let s: Mat3 = [[3.0, 0.0, 0.0], [0.0, -1.5, 0.0], [0.0, 0.0, -1.5]];
-        let tau = model.sgs_stress(&s, &s, 1000.0);
-        for row in &tau {
-            for &val in row {
-                assert!(val.is_finite(), "SGS stress should be finite");
-            }
         }
     }
     #[test]

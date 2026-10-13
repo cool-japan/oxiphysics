@@ -467,6 +467,111 @@ mod nano_extended_tests {
         assert!(p > 0.0);
     }
     #[test]
+    fn virial_silicon_rve_atom_count_is_cubic_in_side() {
+        // 8 atoms per conventional cell of edge 0.543 nm.
+        assert_eq!(VirialStress::silicon_rve(0.543).n_atoms, 8);
+        assert_eq!(VirialStress::silicon_rve(5.43).n_atoms, 8000);
+        assert_eq!(VirialStress::silicon_rve(10.86).n_atoms, 64_000);
+    }
+    #[test]
+    fn virial_kinetic_stress_equals_n_kb_t_over_v() {
+        let vs = VirialStress::silicon_rve(5.43);
+        let kb = 1.380649e-23;
+        let volume = (5.43e-9_f64).powi(3);
+        let expected = 8000.0 * kb * 300.0 / volume;
+        let p = vs.kinetic_stress_pa();
+        assert!(
+            (p - expected).abs() / expected < 1e-12,
+            "P_kin = {p}, N kB T / V = {expected}"
+        );
+        // 8 kB T / a^3 with a = 0.543 nm is about 2.07e8 Pa.
+        assert!((p - 2.07e8).abs() / 2.07e8 < 0.01, "P_kin = {p}");
+    }
+    #[test]
+    fn virial_kinetic_stress_is_independent_of_atom_mass_and_rve_size() {
+        let mut light = VirialStress::silicon_rve(5.43);
+        let p_ref = light.kinetic_stress_pa();
+        light.atom_mass *= 7.0;
+        assert!((light.kinetic_stress_pa() - p_ref).abs() / p_ref < 1e-15);
+        // Atom number density is the lattice value, so the pressure is intensive.
+        let big = VirialStress::silicon_rve(10.86);
+        assert!((big.kinetic_stress_pa() - p_ref).abs() / p_ref < 1e-9);
+    }
+    #[test]
+    fn hardy_stress_with_zero_velocities_equals_potential_virial_stress() {
+        let vs = VirialStress::silicon_rve(5.0);
+        let pairs = vec![
+            (-1.0e-9, 0.0, 0.0, 0.3e-9, 0.0, 0.0),
+            (2.0e-10, 1.0e-10, 0.0, -0.25e-9, 0.1e-9, 0.0),
+            (-5.0e-10, 0.0, 3.0e-10, 0.2e-9, 0.0, -0.1e-9),
+        ];
+        let velocities = vec![[0.0; 3]; 4];
+        let hardy = vs.hardy_stress_xx(&velocities, &pairs);
+        let virial = vs.potential_stress_xx(&pairs);
+        assert!(virial != 0.0);
+        assert!((hardy - virial).abs() <= 1e-15 * virial.abs());
+    }
+    #[test]
+    fn hardy_stress_kinetic_term_uses_thermal_velocities() {
+        let vs = VirialStress::silicon_rve(5.0);
+        // Two atoms with opposite x-velocities: zero mean, so both are thermal.
+        let velocities = vec![[100.0, 0.0, 0.0], [-100.0, 0.0, 0.0]];
+        let sigma = vs.hardy_stress_xx(&velocities, &[]);
+        let expected = -2.0 * vs.atom_mass * 1.0e4 / vs.volume_m3;
+        assert!(
+            (sigma - expected).abs() / expected.abs() < 1e-12,
+            "sigma_xx = {sigma}, expected {expected}"
+        );
+        assert!(sigma < 0.0, "kinetic stress is compressive (negative)");
+    }
+    #[test]
+    fn hardy_stress_is_invariant_under_uniform_translation() {
+        let vs = VirialStress::silicon_rve(5.0);
+        let pairs = vec![(-1.0e-9, 0.0, 0.0, 0.3e-9, 0.0, 0.0)];
+        let base = vec![[120.0, 5.0, -3.0], [-40.0, 1.0, 2.0], [-80.0, -6.0, 1.0]];
+        let shifted: Vec<[f64; 3]> = base.iter().map(|v| [v[0] + 250.0, v[1], v[2]]).collect();
+        let s0 = vs.hardy_stress_xx(&base, &pairs);
+        let s1 = vs.hardy_stress_xx(&shifted, &pairs);
+        assert!((s0 - s1).abs() / s0.abs() < 1e-9, "{s0} vs {s1}");
+        // A rigidly translating body without pair forces carries no stress at all.
+        let rigid = vec![[300.0, 0.0, 0.0]; 5];
+        assert_eq!(vs.hardy_stress_xx(&rigid, &[]), 0.0);
+    }
+    #[test]
+    fn hardy_stress_is_sum_of_kinetic_and_configurational_parts() {
+        let vs = VirialStress::silicon_rve(5.0);
+        let pairs = vec![
+            (-1.0e-9, 0.0, 0.0, 0.3e-9, 0.0, 0.0),
+            (4.0e-10, 0.0, 0.0, -0.2e-9, 0.0, 0.0),
+        ];
+        let velocities = vec![[60.0, 0.0, 0.0], [-20.0, 0.0, 0.0], [-40.0, 0.0, 0.0]];
+        let total = vs.hardy_stress_xx(&velocities, &pairs);
+        let kinetic_only = vs.hardy_stress_xx(&velocities, &[]);
+        let virial_only = vs.potential_stress_xx(&pairs);
+        assert!((total - (kinetic_only + virial_only)).abs() <= 1e-12 * total.abs());
+        // Attractive pair (f . r < 0) is tensile, repulsive pair compressive.
+        let attractive = vs.potential_stress_xx(&[(-1.0e-9, 0.0, 0.0, 0.3e-9, 0.0, 0.0)]);
+        let repulsive = vs.potential_stress_xx(&[(1.0e-9, 0.0, 0.0, 0.3e-9, 0.0, 0.0)]);
+        assert!(attractive > 0.0 && repulsive < 0.0);
+    }
+    #[test]
+    fn hardy_kinetic_stress_matches_equipartition_pressure() {
+        // 512-atom RVE (4 x 4 x 4 conventional cells) at 300 K whose x-velocities are
+        // +-v_th with m v_th^2 = k_B T: the Hardy kinetic stress is exactly -N k_B T / V.
+        let vs = VirialStress::silicon_rve(4.0 * 0.543);
+        assert_eq!(vs.n_atoms, 512);
+        let v_th = (1.380649e-23 * vs.temperature / vs.atom_mass).sqrt();
+        let velocities: Vec<[f64; 3]> = (0..vs.n_atoms)
+            .map(|i| [if i % 2 == 0 { v_th } else { -v_th }, 0.0, 0.0])
+            .collect();
+        let sigma = vs.hardy_stress_xx(&velocities, &[]);
+        let expected = -vs.kinetic_stress_pa();
+        assert!(
+            (sigma - expected).abs() / expected.abs() < 1e-12,
+            "sigma_xx = {sigma}, -P_kin = {expected}"
+        );
+    }
+    #[test]
     fn virial_cauchy_born_identity_gives_zero_strain() {
         let f_identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         let e = VirialStress::cauchy_born_strain(&f_identity);

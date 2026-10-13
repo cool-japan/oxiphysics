@@ -26,8 +26,13 @@ struct BoundaryParams {
 @group(0) @binding(2) var<storage, read>       params:     BoundaryParams;
 
 @compute @workgroup_size(64)
-fn sph_boundary(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
+fn sph_boundary(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    // A dispatch wider than one dimension allows is folded into y (see
+    // `dispatch_count_for`): linearise the invocation index.
+    let i = gid.x + gid.y * nwg.x * 64u;
     if (i >= params.n) { return; }
     let e = params.restitution;
     let b = i * 3u;

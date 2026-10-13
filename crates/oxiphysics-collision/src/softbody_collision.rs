@@ -9,6 +9,10 @@
 
 use std::collections::HashMap;
 
+mod edge_ccd;
+
+pub use crate::soft_body_collision::EdgeCcdResult;
+
 // ---------------------------------------------------------------------------
 // Helper free functions
 // ---------------------------------------------------------------------------
@@ -792,6 +796,23 @@ impl CcdDeformable {
     }
 
     /// Edge-edge CCD between two edge sets over a timestep.
+    ///
+    /// Each edge is a pair of vertex indices into the position arrays of its
+    /// mesh; `verts0_*` hold the positions at the start of the step, `verts1_*`
+    /// the positions at its end, and every vertex moves linearly in between.
+    /// The time of impact of an edge pair is exact: the earliest root of the
+    /// coplanarity cubic of the four end points at which the closest points of
+    /// the two edges are within `edge_radius` (Provot 1997, Bridson et al.
+    /// 2002), or the first time the edges enter the `edge_radius` shell without
+    /// ever becoming coplanar. `toi` is in `[0, 1]`.
+    ///
+    /// Every colliding pair `(edge_a, edge_b)` yields one [`EdgeCcdResult`]
+    /// whose indices refer to `edges_a` and `edges_b`; `normal` points from
+    /// edge B towards edge A. Edges with a vertex index outside the position
+    /// arrays of their mesh are skipped. Edges of the two sets that are
+    /// topological neighbours (they share a vertex of one mesh) always report a
+    /// contact at `toi = 0`, so callers doing self-collision must exclude such
+    /// pairs themselves.
     pub fn edge_edge_ccd(
         &self,
         edges_a: &[(usize, usize)],
@@ -800,33 +821,17 @@ impl CcdDeformable {
         edges_b: &[(usize, usize)],
         verts0_b: &[[f64; 3]],
         verts1_b: &[[f64; 3]],
-    ) -> Vec<CcdDeformableResult> {
-        let mut results = Vec::new();
-        for (ia, &(a0, a1)) in edges_a.iter().enumerate() {
-            for &(b0, b1) in edges_b {
-                // Sample midpoints and test CCD as approximation
-                let pa0 = midpoint(verts0_a[a0], verts0_a[a1]);
-                let pa1 = midpoint(verts1_a[a0], verts1_a[a1]);
-                let pb0 = midpoint(verts0_b[b0], verts0_b[b1]);
-                let pb1 = midpoint(verts1_b[b0], verts1_b[b1]);
-                if let Some(toi) = pairwise_ccd_dt(pa0, pa1, pb0, pb1, self.edge_radius) {
-                    let pt = add3(pa0, scale3(sub3(pa1, pa0), toi));
-                    let qt = add3(pb0, scale3(sub3(pb1, pb0), toi));
-                    let normal = normalize3(sub3(pt, qt));
-                    results.push(CcdDeformableResult {
-                        vertex_index: ia,
-                        toi,
-                        normal,
-                    });
-                }
-            }
-        }
-        results
+    ) -> Vec<EdgeCcdResult> {
+        edge_ccd::edge_edge_ccd(
+            self.edge_radius,
+            edges_a,
+            verts0_a,
+            verts1_a,
+            edges_b,
+            verts0_b,
+            verts1_b,
+        )
     }
-}
-
-fn midpoint(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    scale3(add3(a, b), 0.5)
 }
 
 // ---------------------------------------------------------------------------
@@ -893,35 +898,51 @@ impl PrimitiveVsDeformable {
     }
 
     /// Test all vertices against an axis-aligned box.
+    ///
+    /// A vertex strictly inside the box is reported with the penetration depth
+    /// to its nearest face, the outward unit normal of that face and the vertex
+    /// projected onto that face, so pushing the vertex along `normal` by `depth`
+    /// resolves the contact over the shortest distance. Ties between equally
+    /// distant faces are resolved in the order `-X, +X, -Y, +Y, -Z, +Z`.
+    /// Vertices on or outside the surface are not reported; use
+    /// [`PrimitiveVsDeformable::query_box_with_thickness`] to also report
+    /// vertices that lie within a contact shell outside the box.
+    ///
+    /// An inverted box (`box_min[k] > box_max[k]` on some axis, or NaN bounds)
+    /// is empty and produces no contacts.
     pub fn query_box(
         vertices: &[[f64; 3]],
         box_min: [f64; 3],
         box_max: [f64; 3],
     ) -> Vec<PrimitiveDeformContact> {
+        Self::query_box_with_thickness(vertices, box_min, box_max, 0.0)
+    }
+
+    /// Test all vertices against an axis-aligned box with a contact shell.
+    ///
+    /// Let `sd` be the signed distance from a vertex to the box surface
+    /// (negative inside, positive outside). A vertex is in contact when
+    /// `sd < thickness`; the penetration `depth` is `thickness - sd`. For a
+    /// vertex outside the box the `normal` is the unit vector from the closest
+    /// surface point to the vertex, for a vertex inside it is the outward normal
+    /// of the nearest face. `point` is always the closest point on the box
+    /// surface (not on the offset shell). A negative or NaN `thickness` is
+    /// treated as zero, which reproduces [`PrimitiveVsDeformable::query_box`].
+    pub fn query_box_with_thickness(
+        vertices: &[[f64; 3]],
+        box_min: [f64; 3],
+        box_max: [f64; 3],
+        thickness: f64,
+    ) -> Vec<PrimitiveDeformContact> {
+        let well_formed = box_min.iter().zip(box_max.iter()).all(|(lo, hi)| lo <= hi);
+        if !well_formed {
+            return Vec::new();
+        }
+        let thickness = thickness.max(0.0);
         vertices
             .iter()
             .enumerate()
-            .filter_map(|(i, &v)| {
-                // Closest point on box
-                let cx = v[0].clamp(box_min[0], box_max[0]);
-                let cy = v[1].clamp(box_min[1], box_max[1]);
-                let cz = v[2].clamp(box_min[2], box_max[2]);
-                let closest = [cx, cy, cz];
-                let diff = sub3(v, closest);
-                let dist = len3(diff);
-                if dist < 1e-6 {
-                    // Vertex inside box
-                    let normal = [0.0, 1.0, 0.0];
-                    Some(PrimitiveDeformContact {
-                        vertex_index: i,
-                        depth: 1e-6,
-                        normal,
-                        point: closest,
-                    })
-                } else {
-                    None
-                }
-            })
+            .filter_map(|(i, &v)| box_vertex_contact(i, v, box_min, box_max, thickness))
             .collect()
     }
 
@@ -968,6 +989,81 @@ impl PrimitiveVsDeformable {
     }
 }
 
+/// Contact between vertex `v` and the solid axis-aligned box `[box_min, box_max]`.
+///
+/// The box must be well formed (`box_min <= box_max` on every axis) and
+/// `thickness` non-negative. See [`PrimitiveVsDeformable::query_box_with_thickness`]
+/// for the contact convention.
+fn box_vertex_contact(
+    vertex_index: usize,
+    v: [f64; 3],
+    box_min: [f64; 3],
+    box_max: [f64; 3],
+    thickness: f64,
+) -> Option<PrimitiveDeformContact> {
+    if !v.iter().all(|c| c.is_finite()) {
+        return None;
+    }
+    let closest = [
+        v[0].clamp(box_min[0], box_max[0]),
+        v[1].clamp(box_min[1], box_max[1]),
+        v[2].clamp(box_min[2], box_max[2]),
+    ];
+    let outside = sub3(v, closest);
+    let dist = len3(outside);
+    if dist > 0.0 {
+        // Outside the solid box: the signed distance is +dist.
+        if dist >= thickness {
+            return None;
+        }
+        let normal = [outside[0] / dist, outside[1] / dist, outside[2] / dist];
+        return Some(PrimitiveDeformContact {
+            vertex_index,
+            depth: thickness - dist,
+            normal,
+            point: closest,
+        });
+    }
+
+    // Inside (or on the boundary of) the box: leave through the nearest face.
+    let mut face_dist = f64::INFINITY;
+    let mut axis = 0usize;
+    let mut sign = -1.0_f64;
+    for k in 0..3 {
+        let to_min = v[k] - box_min[k];
+        if to_min < face_dist {
+            face_dist = to_min;
+            axis = k;
+            sign = -1.0;
+        }
+        let to_max = box_max[k] - v[k];
+        if to_max < face_dist {
+            face_dist = to_max;
+            axis = k;
+            sign = 1.0;
+        }
+    }
+    // The signed distance is -face_dist; a vertex exactly on the surface is
+    // only in contact when a shell thickness is requested.
+    if face_dist <= -thickness {
+        return None;
+    }
+    let mut normal = [0.0; 3];
+    normal[axis] = sign;
+    let mut point = v;
+    point[axis] = if sign < 0.0 {
+        box_min[axis]
+    } else {
+        box_max[axis]
+    };
+    Some(PrimitiveDeformContact {
+        vertex_index,
+        depth: thickness + face_dist,
+        normal,
+        point,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Contact Response
 // ---------------------------------------------------------------------------
@@ -985,23 +1081,108 @@ pub struct VertexImpulse {
 
 /// Contact response system: compute position corrections and velocity impulses
 /// for deformable vs rigid contacts.
+///
+/// Every impulse is a momentum change (mass times velocity change), so a
+/// consumer applies `impulse / mass` to the velocity of the vertex.
 pub struct ContactResponse {
     /// Restitution coefficient (0 = fully inelastic, 1 = elastic).
     pub restitution: f64,
-    /// Friction coefficient.
+    /// Coulomb friction coefficient (dimensionless).
     pub friction: f64,
+    /// Contact thickness (a length). An edge-edge contact is reported while two
+    /// edges are closer than the detector threshold, and its penetration depth
+    /// is `thickness - distance`, so this must equal the `threshold` of the
+    /// [`EdgeEdgeContact`] that produced the results.
+    pub thickness: f64,
 }
 
 impl ContactResponse {
     /// Construct with restitution and friction coefficients.
+    ///
+    /// The contact thickness is zero, so edge-edge contacts do not produce a
+    /// position correction until [`ContactResponse::with_thickness`] is used.
     pub fn new(restitution: f64, friction: f64) -> Self {
         ContactResponse {
             restitution,
             friction,
+            thickness: 0.0,
         }
     }
 
+    /// Set the contact thickness used to turn an edge-edge distance into a
+    /// penetration depth.
+    pub fn with_thickness(mut self, thickness: f64) -> Self {
+        self.thickness = thickness;
+        self
+    }
+
+    /// Velocity impulse (momentum change) of a vertex of the given `mass` and
+    /// `velocity` in contact with a surface whose unit normal `normal` points
+    /// towards the vertex.
+    ///
+    /// Returns `None` when the vertex is not approaching the surface
+    /// (`velocity . normal >= 0`): a separating or resting contact must not
+    /// receive a normal impulse, otherwise it would be pulled back into the
+    /// surface. The Coulomb friction impulse is limited by `friction * |j_n|`
+    /// and by the impulse that merely stops the tangential motion
+    /// (`mass * |v_t|`), so friction never reverses the sliding direction.
+    fn contact_impulse(&self, velocity: [f64; 3], mass: f64, normal: [f64; 3]) -> Option<[f64; 3]> {
+        let vn = dot3(velocity, normal);
+        if vn.is_nan() || vn >= 0.0 {
+            return None;
+        }
+        let j_n = (1.0 + self.restitution).max(0.0) * -vn * mass;
+        let impulse_n = scale3(normal, j_n);
+        let v_tang = sub3(velocity, scale3(normal, vn));
+        let v_tang_len = len3(v_tang);
+        let impulse_t = if v_tang_len > 1e-14 {
+            let magnitude = (self.friction.max(0.0) * j_n).min(v_tang_len * mass);
+            scale3(v_tang, -magnitude / v_tang_len)
+        } else {
+            [0.0; 3]
+        };
+        Some(add3(impulse_n, impulse_t))
+    }
+
+    /// Response of one vertex: the velocity impulse (if it approaches the
+    /// surface) and the position correction (if it penetrates by `depth`).
+    ///
+    /// Returns `None` for a vertex of non-positive or non-finite mass and for a
+    /// contact that needs neither an impulse nor a correction.
+    fn vertex_response(
+        &self,
+        vertex_index: usize,
+        velocity: [f64; 3],
+        mass: f64,
+        normal: [f64; 3],
+        depth: f64,
+    ) -> Option<VertexImpulse> {
+        if !(mass.is_finite() && mass > 0.0) {
+            return None;
+        }
+        let impulse = self.contact_impulse(velocity, mass, normal);
+        let penetrating = depth > 0.0;
+        if impulse.is_none() && !penetrating {
+            return None;
+        }
+        let correction = if penetrating {
+            scale3(normal, depth)
+        } else {
+            [0.0; 3]
+        };
+        Some(VertexImpulse {
+            vertex_index,
+            correction,
+            impulse: impulse.unwrap_or([0.0; 3]),
+        })
+    }
+
     /// Compute vertex impulses for deformable vs rigid contacts.
+    ///
+    /// Contacts whose vertex index is outside `velocities` or `masses`, and
+    /// contacts of vertices with non-positive mass, are skipped. A vertex that
+    /// is separating from the surface keeps its position correction (while it
+    /// still penetrates) but receives a zero velocity impulse.
     pub fn solve_deform_rigid(
         &self,
         contacts: &[DeformContact],
@@ -1010,35 +1191,22 @@ impl ContactResponse {
     ) -> Vec<VertexImpulse> {
         contacts
             .iter()
-            .map(|c| {
+            .filter_map(|c| {
                 let vi = c.vertex_index;
-                let v = velocities[vi];
-                let m = masses[vi];
-                let vn = dot3(v, c.normal);
-                // Correction: push vertex out of penetration
-                let correction = scale3(c.normal, c.depth);
-                // Impulse: reflect normal component
-                let j_n = -(1.0 + self.restitution) * vn * m;
-                let impulse_n = scale3(c.normal, j_n);
-                // Tangential friction (simple Coulomb)
-                let v_tang = sub3(v, scale3(c.normal, vn));
-                let v_tang_len = len3(v_tang);
-                let impulse_t = if v_tang_len > 1e-14 {
-                    scale3(v_tang, -self.friction * j_n.abs() / v_tang_len)
-                } else {
-                    [0.0; 3]
-                };
-                let impulse = add3(impulse_n, impulse_t);
-                VertexImpulse {
-                    vertex_index: vi,
-                    correction,
-                    impulse,
-                }
+                let velocity = *velocities.get(vi)?;
+                let mass = *masses.get(vi)?;
+                self.vertex_response(vi, velocity, mass, c.normal, c.depth)
             })
             .collect()
     }
 
     /// Compute vertex impulses for edge-edge contacts.
+    ///
+    /// The responses are produced for the two end vertices of edge A of each
+    /// result; `edges_a` is indexed by [`EdgeEdgeResult::edge_a`]. The penetration
+    /// depth is `thickness - distance` (see [`ContactResponse::thickness`]).
+    /// Results referring to a missing edge and vertices outside `velocities` or
+    /// `masses` are skipped, as are vertices of non-positive mass.
     pub fn solve_edge_edge(
         &self,
         results: &[EdgeEdgeResult],
@@ -1048,20 +1216,17 @@ impl ContactResponse {
     ) -> Vec<VertexImpulse> {
         let mut impulses = Vec::new();
         for r in results {
-            let (a0, a1) = edges_a[r.edge_a];
-            for &vi in &[a0, a1] {
-                let v = velocities[vi];
-                let m = masses[vi];
-                let vn = dot3(v, r.normal);
-                let depth = (self.friction - r.distance).max(0.0);
-                let correction = scale3(r.normal, depth);
-                let j = -(1.0 + self.restitution) * vn * m;
-                let impulse = scale3(r.normal, j);
-                impulses.push(VertexImpulse {
-                    vertex_index: vi,
-                    correction,
-                    impulse,
-                });
+            let Some(&(a0, a1)) = edges_a.get(r.edge_a) else {
+                continue;
+            };
+            let depth = (self.thickness - r.distance).max(0.0);
+            for vi in [a0, a1] {
+                let (Some(&velocity), Some(&mass)) = (velocities.get(vi), masses.get(vi)) else {
+                    continue;
+                };
+                if let Some(response) = self.vertex_response(vi, velocity, mass, r.normal, depth) {
+                    impulses.push(response);
+                }
             }
         }
         impulses
@@ -1234,6 +1399,9 @@ fn tri_area(tri: [[f64; 3]; 3]) -> f64 {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod regression_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1677,14 +1845,6 @@ mod tests {
     }
 
     #[test]
-    fn midpoint_test() {
-        let a = [0.0f64, 0.0, 0.0];
-        let b = [2.0f64, 0.0, 0.0];
-        let m = midpoint(a, b);
-        assert!((m[0] - 1.0).abs() < 1e-14);
-    }
-
-    #[test]
     fn sdf_interpolate_outside_grid_returns_max() {
         let sdf = ClothSdfContact::new(3, 3, 3, 1.0, [0.0, 0.0, 0.0], vec![1.0; 27], 0.1);
         let val = sdf.interpolate([100.0, 100.0, 100.0]);
@@ -1709,22 +1869,6 @@ mod tests {
         for p in &pairs {
             assert!(p.a < p.b);
         }
-    }
-
-    #[test]
-    fn ccd_deformable_edge_edge() {
-        let ccd = CcdDeformable::new(0.1, 0.1);
-        let verts0_a = vec![[0.0f64, 0.0, 0.0], [1.0, 0.0, 0.0]];
-        let verts1_a = vec![[0.0f64, 0.0, 0.0], [1.0, 0.0, 0.0]];
-        let verts0_b = vec![[0.5, 1.0, 0.0], [0.5, 0.1, 0.0]];
-        let verts1_b = vec![[0.5, 0.05, 0.0], [0.5, -0.85, 0.0]];
-        let edges_a = vec![(0, 1)];
-        let edges_b = vec![(0, 1)];
-        let results = ccd.edge_edge_ccd(
-            &edges_a, &verts0_a, &verts1_a, &edges_b, &verts0_b, &verts1_b,
-        );
-        // Just ensure no panic
-        let _ = results;
     }
 
     #[test]

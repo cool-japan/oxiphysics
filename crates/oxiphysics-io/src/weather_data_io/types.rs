@@ -393,7 +393,10 @@ pub struct GevParameters {
     pub location: f64,
     /// Scale parameter (sigma > 0).
     pub scale: f64,
-    /// Shape parameter (xi).
+    /// Shape parameter (xi) in the Coles (2001) convention used by
+    /// [`GevParameters::quantile`] and [`GevParameters::pdf`]: `xi > 0` is the
+    /// heavy-tailed Frechet type, `xi < 0` the bounded-tail Weibull type and
+    /// `xi = 0` the Gumbel limit.  It is the negative of Hosking's shape `k`.
     pub shape: f64,
 }
 impl GevParameters {
@@ -671,12 +674,15 @@ impl PrecipitationAnalysis {
             .push(value);
     }
     /// Fit GEV distribution to annual maxima using the method of L-moments.
+    ///
+    /// Returns `None` when no maxima were recorded for `duration_min`, when
+    /// there are fewer than three of them, or when any value is not finite.
     pub fn fit_gev(&mut self, duration_min: u32) -> Option<GevParameters> {
         let data = self.annual_maxima.get(&duration_min)?;
         if data.len() < 3 {
             return None;
         }
-        let params = fit_gev_lmoments(data);
+        let params = fit_gev_lmoments(data)?;
         self.gev_fits.insert(duration_min, params);
         Some(params)
     }

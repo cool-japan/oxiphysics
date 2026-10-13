@@ -158,8 +158,15 @@ mod tests {
 }
 /// Compute the closest points between two line segments.
 ///
-/// Returns `(t_a, t_b, point_a, point_b)` where `t` is the parametric distance
-/// along each segment.
+/// Segment A is `p1 + t * d1` and segment B is `p2 + s * d2`, both with
+/// `t, s` in `[0, 1]`. Returns `(t_a, t_b, point_a, point_b)` where `t_a` and
+/// `t_b` are the parameters of the closest points on segments A and B.
+///
+/// This is the clamped closest-point computation from Ericson, *Real-Time
+/// Collision Detection* (5.1.9): once the parameter of one segment has been
+/// clamped to its end point, the other parameter is recomputed against that end
+/// point, so the returned pair is the true minimum-distance pair (not merely a
+/// pair of clamped line-line closest points).
 pub fn closest_points_on_segments(
     p1: [f64; 3],
     d1: [f64; 3],
@@ -170,29 +177,37 @@ pub fn closest_points_on_segments(
     let a = dot(d1, d1);
     let e = dot(d2, d2);
     let f = dot(d2, r);
-    let (t, s);
-    if a < 1e-12 && e < 1e-12 {
-        t = 0.0;
-        s = 0.0;
+    let (t, s) = if a < 1e-12 && e < 1e-12 {
+        (0.0, 0.0)
     } else if a < 1e-12 {
-        s = (f / e).clamp(0.0, 1.0);
-        t = 0.0;
+        (0.0, (f / e).clamp(0.0, 1.0))
     } else {
         let c = dot(d1, r);
         if e < 1e-12 {
-            t = (-c / a).clamp(0.0, 1.0);
-            s = 0.0;
+            ((-c / a).clamp(0.0, 1.0), 0.0)
         } else {
             let b = dot(d1, d2);
             let denom = a * e - b * b;
-            t = if denom.abs() > 1e-12 {
+            // Parameter of the point on segment A closest to the (infinite)
+            // line of segment B; any value works when the segments are parallel.
+            let t_line = if denom > 1e-12 * a * e {
                 ((b * f - c * e) / denom).clamp(0.0, 1.0)
             } else {
                 0.0
             };
-            s = ((b * t + f) / e).clamp(0.0, 1.0);
+            // Parameter of B's closest point to that point, scaled by `e`.
+            let s_nom = b * t_line + f;
+            if s_nom < 0.0 {
+                // Clamp B to its start and recompute A against it.
+                ((-c / a).clamp(0.0, 1.0), 0.0)
+            } else if s_nom > e {
+                // Clamp B to its end and recompute A against it.
+                (((b - c) / a).clamp(0.0, 1.0), 1.0)
+            } else {
+                (t_line, s_nom / e)
+            }
         }
-    }
+    };
     let pt_a = add(p1, scale(d1, t));
     let pt_b = add(p2, scale(d2, s));
     (t, s, pt_a, pt_b)
@@ -410,11 +425,14 @@ mod extra_tests {
 
     use crate::SatAxisCache;
 
+    use crate::closest_points_on_segments;
     use crate::obb_bvh_pair_query;
     use crate::obb_overlap_on_axis;
     use crate::obb_project;
     use crate::sat_collision::add;
     use crate::sat_collision::length;
+    use crate::sat_collision::scale;
+    use crate::sat_collision::sub;
 
     #[test]
     fn sat_cache_initially_invalid() {
@@ -672,5 +690,107 @@ mod extra_tests {
         let a = unit_cube_poly();
         let b = translate_poly(&a, [3.0, 3.0, 3.0]);
         assert!(ConvexPolyhedraSat::is_separated(&a, &b));
+    }
+
+    #[test]
+    fn closest_points_on_segments_reclamps_after_end_point_clamp() {
+        // Segment A: (0,0,0) + t * (10,0,0). Segment B: (5,1,0) + s * (1,1,0).
+        // The line-line closest pair clamps s to 0 and used to keep t = 0.5-ish,
+        // returning (4,0,0)/(5,1,0) at distance sqrt(2). The true minimum is
+        // 1.0 at (5,0,0) / (5,1,0).
+        let (t, s, pa, pb) = closest_points_on_segments(
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [5.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+        );
+        assert!((t - 0.5).abs() < 1e-12, "t={t}");
+        assert!(s.abs() < 1e-12, "s={s}");
+        assert!(length(sub(pa, [5.0, 0.0, 0.0])) < 1e-12, "pa={pa:?}");
+        assert!(length(sub(pb, [5.0, 1.0, 0.0])) < 1e-12, "pb={pb:?}");
+        assert!((length(sub(pa, pb)) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn closest_points_on_segments_matches_brute_force() {
+        // Compare against a dense grid search over both parameters for a family
+        // of skew and end-clamped configurations.
+        let cases = [
+            (
+                [0.0, 0.0, 0.0],
+                [4.0, 0.0, 0.0],
+                [6.0, 1.0, 1.0],
+                [-3.0, 2.0, 0.0],
+            ),
+            (
+                [1.0, 2.0, 3.0],
+                [-1.0, 0.5, 2.0],
+                [0.0, 0.0, 0.0],
+                [3.0, 1.0, -1.0],
+            ),
+            (
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [3.0, 0.5, 0.0],
+                [0.0, 1.0, 0.0],
+            ),
+            (
+                [0.0, 0.0, 0.0],
+                [10.0, 0.0, 0.0],
+                [12.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+            ),
+            (
+                [-2.0, 1.0, 0.0],
+                [0.5, -4.0, 1.0],
+                [2.0, 0.0, 0.5],
+                [-1.0, 3.0, 0.0],
+            ),
+        ];
+        for (p1, d1, p2, d2) in cases {
+            let (_, _, pa, pb) = closest_points_on_segments(p1, d1, p2, d2);
+            let got = length(sub(pa, pb));
+            let steps = 400;
+            let mut best = f64::INFINITY;
+            for i in 0..=steps {
+                let t = i as f64 / steps as f64;
+                let qa = add(p1, scale(d1, t));
+                for j in 0..=steps {
+                    let u = j as f64 / steps as f64;
+                    let qb = add(p2, scale(d2, u));
+                    best = best.min(length(sub(qa, qb)));
+                }
+            }
+            assert!(
+                got <= best + 1e-9,
+                "closest_points_on_segments returned distance {got}, brute force found {best}"
+            );
+            assert!(
+                got >= best - 5e-2,
+                "distance {got} below grid minimum {best}"
+            );
+        }
+    }
+
+    #[test]
+    fn closest_points_on_segments_degenerate_segments() {
+        // Point vs point.
+        let (t, s, pa, pb) = closest_points_on_segments(
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        );
+        assert_eq!((t, s), (0.0, 0.0));
+        assert!((length(sub(pa, pb)) - 3.0).abs() < 1e-12);
+        // Point vs segment (clamped to the far end point).
+        let (_, s, _, pb) = closest_points_on_segments(
+            [9.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+        );
+        assert!((s - 1.0).abs() < 1e-12, "s={s}");
+        assert!(length(sub(pb, [2.0, 0.0, 0.0])) < 1e-12);
     }
 }

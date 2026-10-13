@@ -260,6 +260,9 @@ impl GpuBenchHarness {
         // CPU path
         {
             let mut sim = LbmSimulation::new(cfg.clone());
+            // This report is labelled `BackendKind::Cpu`: pin the CPU reference
+            // so the default wgpu path does not silently run on the GPU.
+            sim.disable_gpu();
             sim.set_lid_velocity(0.1, 0.0, 0.0);
 
             for _ in 0..self.warmup {
@@ -401,14 +404,19 @@ impl GpuBenchHarness {
             use crate::compute::wgpu_backend::real::WgpuBackendReal;
 
             let backend_result = WgpuBackendReal::try_new();
-            if let Ok(mut backend) = backend_result {
+            if let Ok(mut backend) = backend_result
+                && let Ok(workgroups) = WgpuBackendReal::dispatch_count_for(n, 64)
+            {
                 const COPY_WGSL: &str = r#"
 @group(0) @binding(0) var<storage, read>       in_buf:  array<f32>;
 @group(0) @binding(1) var<storage, read_write> out_buf: array<f32>;
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let i = gid.x + gid.y * nwg.x * 64u;
     if (i < arrayLength(&in_buf)) {
         out_buf[i] = in_buf[i];
     }
@@ -417,8 +425,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let in_buf = backend.create_buffer_f64(n);
                 let out_buf = backend.create_buffer_f64(n);
                 backend.write_buffer_f64(in_buf, &data);
-
-                let workgroups = WgpuBackendReal::dispatch_count_for(n, 64);
 
                 // Warm-up
                 for _ in 0..self.warmup {

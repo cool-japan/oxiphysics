@@ -28,7 +28,8 @@
 //! `OrthogonalMatchingPursuit` provides a greedy alternative.
 //! `KSvd` implements the K-SVD dictionary learning algorithm.
 
-use rand::RngExt;
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Free functions
@@ -819,23 +820,51 @@ impl RecoveryGuarantee {
 // KSvd — Dictionary Learning
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Default seed of [`KSvd`] (the ASCII bytes of "KSVD").
+const KSVD_DEFAULT_SEED: u64 = 0x4B53_5644;
+
+/// Power iterations per atom in the rank-1 dictionary update.
+const KSVD_POWER_ITERATIONS: usize = 10;
+
 /// K-SVD dictionary learning algorithm.
 ///
 /// Alternates between a sparse coding stage (OMP) and a dictionary update stage
-/// (rank-1 SVD update) to learn an overcomplete dictionary adapted to training data.
+/// (rank-1 update of every atom *together with* the coefficients that use it) to
+/// learn a possibly overcomplete dictionary adapted to training data.
+///
+/// Training is deterministic: the initial atoms and the replacements of unused
+/// ("dead") atoms are drawn from a generator seeded with [`KSvd::seed`].
 ///
 /// Reference: Aharon, Elad & Bruckstein (2006).
+#[derive(Debug, Clone)]
 pub struct KSvd {
-    /// Number of dictionary atoms (columns).
+    /// Number of dictionary atoms (columns).  May exceed the signal dimension
+    /// (overcomplete dictionary).
     pub n_atoms: usize,
     /// Target sparsity per signal.
     pub sparsity: usize,
     /// Number of training iterations.
     pub n_iter: usize,
+    /// Seed of the pseudo-random generator used to pick the initial atoms and to
+    /// re-initialise atoms that no signal uses.
+    pub seed: u64,
+}
+
+/// Representation errors ‖Y − D C‖_F recorded for one K-SVD iteration by
+/// [`KSvd::fit_with_history`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KSvdIterationError {
+    /// Error after the sparse-coding (OMP) stage, with the dictionary of the
+    /// previous iteration.
+    pub after_coding: f64,
+    /// Error after the dictionary-update stage, i.e. after every atom and the
+    /// coefficients using it were refreshed.  The update stage never increases
+    /// the error, so this is at most `after_coding` (up to rounding).
+    pub after_update: f64,
 }
 
 impl KSvd {
-    /// Create a new K-SVD learner.
+    /// Create a new K-SVD learner with the default seed.
     ///
     /// - `n_atoms` — number of dictionary atoms
     /// - `sparsity` — maximum number of atoms per signal
@@ -845,135 +874,103 @@ impl KSvd {
             n_atoms,
             sparsity,
             n_iter,
+            seed: KSVD_DEFAULT_SEED,
         }
+    }
+
+    /// Return the learner with the random seed replaced by `seed`.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self
     }
 
     /// Learn a dictionary from training signals.
     ///
     /// - `signals` — list of training signals (each of the same length `d`)
     ///
-    /// Returns a dictionary matrix `D` of shape `d × n_atoms` (columns are atoms,
-    /// stored as `Vec<Vec`f64`>` in row-major form, i.e. `D[i][j]` is row `i`, atom `j`).
+    /// Returns the dictionary as `n_atoms` atoms of length `d`: `dict[k]` is the
+    /// `k`-th atom (unit ℓ₂ norm) and `dict[k][i]` its `i`-th component.  The
+    /// dictionary may be overcomplete (`n_atoms > d`).  Returns an empty vector
+    /// if there are no signals or if the signals are empty or differ in length.
     pub fn fit(&self, signals: &[Vec<f64>]) -> Vec<Vec<f64>> {
-        if signals.is_empty() {
-            return Vec::new();
-        }
-        let d = signals[0].len();
-        let n_signals = signals.len();
-        let n_atoms = self.n_atoms.min(d);
+        self.fit_impl(signals, false).0
+    }
 
-        // Initialise dictionary by picking random training signals as atoms
-        let mut rng = rand::rng();
+    /// Learn a dictionary like [`KSvd::fit`] and also report the representation
+    /// error ‖Y − D C‖_F after the coding and after the update stage of every
+    /// iteration, which allows monitoring convergence.
+    pub fn fit_with_history(
+        &self,
+        signals: &[Vec<f64>],
+    ) -> (Vec<Vec<f64>>, Vec<KSvdIterationError>) {
+        self.fit_impl(signals, true)
+    }
+
+    /// Shared training loop; `track_errors` enables the (costly) error history.
+    fn fit_impl(
+        &self,
+        signals: &[Vec<f64>],
+        track_errors: bool,
+    ) -> (Vec<Vec<f64>>, Vec<KSvdIterationError>) {
+        let mut history: Vec<KSvdIterationError> = Vec::new();
+        let Some(first) = signals.first() else {
+            return (Vec::new(), history);
+        };
+        let d = first.len();
+        if d == 0 || signals.iter().any(|y| y.len() != d) {
+            return (Vec::new(), history);
+        }
+        let n_signals = signals.len();
+        let n_atoms = self.n_atoms;
+        let mut rng = StdRng::seed_from_u64(self.seed);
+
+        // Initialise the dictionary with distinct, randomly chosen training
+        // signals (Fisher–Yates shuffle of the signal indices), normalised.
+        let mut order: Vec<usize> = (0..n_signals).collect();
+        for i in (1..n_signals).rev() {
+            let j = rng.random_range(0..=i);
+            order.swap(i, j);
+        }
         let mut dict: Vec<Vec<f64>> = (0..n_atoms)
-            .map(|k| {
-                let idx = k % n_signals;
-                let _ = idx; // use deterministic init
-                let pick = rng.random_range(0..n_signals);
-                let mut atom = signals[pick].clone();
-                let norm = l2_norm(&atom);
-                if norm > 1e-14 {
-                    for v in atom.iter_mut() {
-                        *v /= norm;
-                    }
-                }
-                atom
-            })
+            .map(|k| unit_atom(&signals[order[k % n_signals]]))
             .collect();
 
         let omp = OrthogonalMatchingPursuit::new(self.sparsity);
 
-        for _iter in 0..self.n_iter {
-            // --- Sparse Coding stage: encode each signal with OMP ---
-            // Build measurement matrix: D^T (n_atoms × d signals), as A for OMP
-            // OMP expects A of shape m×n where b is length m.
-            // Here we measure each signal y: we want sparse c s.t. D c ≈ y.
-            // A = D (d × n_atoms), b = y (length d).
-            // Transpose: pass dict^T as the A matrix for OMP.
+        for _ in 0..self.n_iter {
+            // --- Sparse coding stage: encode each signal with OMP ---
+            // We want a sparse code c with D c ≈ y, i.e. A = D (d × n_atoms) and
+            // b = y (length d); OMP takes A row-major, so pass D transposed
+            // relative to the stored atoms.
             let dict_t: Vec<Vec<f64>> = (0..d)
-                .map(|i| (0..n_atoms).map(|k| dict[k][i]).collect())
+                .map(|i| dict.iter().map(|atom| atom[i]).collect())
                 .collect();
+            let mut codes: Vec<Vec<f64>> = signals.iter().map(|y| omp.solve(&dict_t, y)).collect();
+            let after_coding = if track_errors {
+                representation_error(signals, &dict, &codes)
+            } else {
+                0.0
+            };
 
-            let codes: Vec<Vec<f64>> = signals.iter().map(|y| omp.solve(&dict_t, y)).collect();
-
-            // --- Dictionary Update stage: update each atom via rank-1 SVD ---
+            // --- Dictionary update stage: rank-1 update of each atom and of
+            //     the coefficients that use it ---
             for k in 0..n_atoms {
-                // Find signals that use atom k
-                let using: Vec<usize> = (0..n_signals)
-                    .filter(|&s| codes[s][k].abs() > 1e-14)
-                    .collect();
-                if using.is_empty() {
-                    // Re-initialise dead atom
+                if !ksvd_update_atom(signals, &mut dict, &mut codes, k) {
+                    // Re-initialise a dead atom with a random training signal.
                     let pick = rng.random_range(0..n_signals);
-                    let mut atom = signals[pick].clone();
-                    let norm = l2_norm(&atom);
-                    if norm > 1e-14 {
-                        for v in atom.iter_mut() {
-                            *v /= norm;
-                        }
-                    }
-                    dict[k] = atom;
-                    continue;
+                    dict[k] = unit_atom(&signals[pick]);
                 }
+            }
 
-                // Compute error matrix for atom k:
-                // E_k = Y - sum_{j≠k} d_j c_j^T
-                // Then update d_k and c_k via rank-1 approximation of E_k.
-                let e_rows: Vec<Vec<f64>> = using
-                    .iter()
-                    .map(|&s| {
-                        let mut e = signals[s].clone();
-                        for (j, dict_j) in dict.iter().enumerate() {
-                            if j == k {
-                                continue;
-                            }
-                            let coef = codes[s][j];
-                            for (ei, &dji) in e.iter_mut().zip(dict_j.iter()) {
-                                *ei -= coef * dji;
-                            }
-                        }
-                        e
-                    })
-                    .collect();
-
-                // Power iteration on E_k to find dominant left singular vector
-                let mut atom = dict[k].clone();
-                for _pi in 0..10 {
-                    // atom_new = E_k^T (E_k atom) / ||E_k atom||
-                    // E_k is (#using × d): rows are e_rows
-                    let e_atom: Vec<f64> = e_rows
-                        .iter()
-                        .map(|row| row.iter().zip(atom.iter()).map(|(a, b)| a * b).sum::<f64>())
-                        .collect();
-                    let mut new_atom = vec![0.0_f64; d];
-                    for (e_row, &ea) in e_rows.iter().zip(e_atom.iter()) {
-                        for (i, &ei) in e_row.iter().enumerate() {
-                            new_atom[i] += ei * ea;
-                        }
-                    }
-                    normalise(&mut new_atom);
-                    atom = new_atom;
-                }
-                dict[k] = atom;
-
-                // Update coefficients (project signals onto new atom)
-                for &s in &using {
-                    e_rows.iter().position(|_| true).map(|_| ()).unwrap_or(());
-                    // find position in using
-                    if let Some(pos) = using.iter().position(|&u| u == s) {
-                        let dot: f64 = e_rows[pos]
-                            .iter()
-                            .zip(dict[k].iter())
-                            .map(|(a, b)| a * b)
-                            .sum();
-                        let _ = (s, dot, pos);
-                    }
-                }
-                // Reset e_rows to satisfy borrow checker (it was moved conceptually)
-                let _ = e_rows.len();
+            if track_errors {
+                history.push(KSvdIterationError {
+                    after_coding,
+                    after_update: representation_error(signals, &dict, &codes),
+                });
             }
         }
 
-        dict
+        (dict, history)
     }
 
     /// Encode a single signal using the learned dictionary.
@@ -1012,6 +1009,118 @@ impl KSvd {
         }
         out
     }
+}
+
+/// Copy of `signal` scaled to unit ℓ₂ norm (a zero signal stays zero).
+fn unit_atom(signal: &[f64]) -> Vec<f64> {
+    let norm = l2_norm(signal);
+    if norm > 0.0 && norm.is_finite() {
+        signal.iter().map(|v| v / norm).collect()
+    } else {
+        signal.to_vec()
+    }
+}
+
+/// Rank-1 K-SVD update of atom `k` and of the coefficients that use it.
+///
+/// With `E_k = Y_k − Σ_{j≠k} d_j c_jᵀ` the residual of the signals `Y_k` that use
+/// atom `k` (computed from the *current* atoms and codes), the best rank-1 fit
+/// `E_k ≈ d_k c_kᵀ` is obtained by taking `d_k` as the dominant direction of
+/// `E_k` and refreshing the coefficients to the projections `c_k = E_k d_k`.
+/// Refreshing the coefficients together with the atom is essential: the other
+/// atoms' residuals are built from `codes`, and stale coefficients would also
+/// make the stage non-monotone.
+///
+/// Returns `false` (leaving everything untouched) if no signal uses atom `k`.
+fn ksvd_update_atom(
+    signals: &[Vec<f64>],
+    dict: &mut [Vec<f64>],
+    codes: &mut [Vec<f64>],
+    k: usize,
+) -> bool {
+    // Signals that use atom k.
+    let using: Vec<usize> = (0..signals.len())
+        .filter(|&s| codes[s][k].abs() > 1e-14)
+        .collect();
+    if using.is_empty() {
+        return false;
+    }
+
+    let e_rows: Vec<Vec<f64>> = using
+        .iter()
+        .map(|&s| {
+            let mut e = signals[s].clone();
+            for (j, dict_j) in dict.iter().enumerate() {
+                let coef = codes[s][j];
+                if j == k || coef == 0.0 {
+                    continue;
+                }
+                for (ei, &dji) in e.iter_mut().zip(dict_j.iter()) {
+                    *ei -= coef * dji;
+                }
+            }
+            e
+        })
+        .collect();
+
+    // The power iteration is warm-started at the current (unit-norm) atom, so
+    // the rank-1 fit never gets worse than with the previous atom.
+    let atom = dominant_direction(&e_rows, &dict[k]);
+    for (row, &s) in e_rows.iter().zip(using.iter()) {
+        codes[s][k] = row.iter().zip(atom.iter()).map(|(a, b)| a * b).sum();
+    }
+    dict[k] = atom;
+    true
+}
+
+/// Dominant right singular direction of the matrix whose rows are `rows`.
+///
+/// Runs power iteration on `RᵀR` starting from the unit vector `start`.  The
+/// Rayleigh quotient `Σ_r (row_r · v)²` never decreases along the iteration, so
+/// the result fits `rows` at least as well (as a rank-1 direction) as `start`.
+/// If every row is orthogonal to the current iterate the iteration stops and
+/// keeps it.
+fn dominant_direction(rows: &[Vec<f64>], start: &[f64]) -> Vec<f64> {
+    let mut atom = start.to_vec();
+    for _ in 0..KSVD_POWER_ITERATIONS {
+        let mut next = vec![0.0_f64; atom.len()];
+        for row in rows {
+            let projection: f64 = row.iter().zip(atom.iter()).map(|(a, b)| a * b).sum();
+            for (n_i, &r_i) in next.iter_mut().zip(row.iter()) {
+                *n_i += r_i * projection;
+            }
+        }
+        let norm = l2_norm(&next);
+        if norm == 0.0 || !norm.is_finite() {
+            break;
+        }
+        for v in next.iter_mut() {
+            *v /= norm;
+        }
+        atom = next;
+    }
+    atom
+}
+
+/// Frobenius norm ‖Y − D C‖_F of the representation residual.
+///
+/// `dict[k]` is atom `k` and `codes[s][k]` the coefficient of atom `k` in the
+/// code of signal `s`.
+fn representation_error(signals: &[Vec<f64>], dict: &[Vec<f64>], codes: &[Vec<f64>]) -> f64 {
+    let mut total = 0.0_f64;
+    for (signal, code) in signals.iter().zip(codes.iter()) {
+        let mut residual = signal.clone();
+        for (atom, &coef) in dict.iter().zip(code.iter()) {
+            if coef == 0.0 {
+                continue;
+            }
+            for (r, &a) in residual.iter_mut().zip(atom.iter()) {
+                *r -= coef * a;
+            }
+        }
+        total += residual.iter().map(|r| r * r).sum::<f64>();
+    }
+    total.sqrt()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1193,683 +1302,5 @@ impl SparseSignal {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ---- soft_threshold ----
-
-    #[test]
-    fn test_soft_threshold_positive_above() {
-        assert!((soft_threshold(3.0, 1.0) - 2.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_soft_threshold_positive_below() {
-        assert_eq!(soft_threshold(0.5, 1.0), 0.0);
-    }
-
-    #[test]
-    fn test_soft_threshold_negative_above() {
-        assert!((soft_threshold(-3.0, 1.0) + 2.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_soft_threshold_zero() {
-        assert_eq!(soft_threshold(0.0, 1.0), 0.0);
-    }
-
-    #[test]
-    fn test_soft_threshold_exact_boundary() {
-        assert_eq!(soft_threshold(1.0, 1.0), 0.0);
-        assert_eq!(soft_threshold(-1.0, 1.0), 0.0);
-    }
-
-    #[test]
-    fn test_soft_threshold_zero_lambda() {
-        assert!((soft_threshold(5.0, 0.0) - 5.0).abs() < 1e-12);
-    }
-
-    // ---- nyquist_rate ----
-
-    #[test]
-    fn test_nyquist_rate_basic() {
-        assert!((nyquist_rate(1000.0) - 2000.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_nyquist_rate_zero() {
-        assert_eq!(nyquist_rate(0.0), 0.0);
-    }
-
-    // ---- compression_ratio ----
-
-    #[test]
-    fn test_compression_ratio_half() {
-        assert!((compression_ratio(100, 50) - 0.5).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_compression_ratio_zero_n() {
-        assert_eq!(compression_ratio(0, 10), 0.0);
-    }
-
-    #[test]
-    fn test_compression_ratio_full() {
-        assert!((compression_ratio(10, 10) - 1.0).abs() < 1e-12);
-    }
-
-    // ---- l2_norm / normalise ----
-
-    #[test]
-    fn test_l2_norm_known() {
-        let x = vec![3.0, 4.0];
-        assert!((l2_norm(&x) - 5.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_normalise_unit_vector() {
-        let mut v = vec![3.0, 0.0, 4.0];
-        normalise(&mut v);
-        assert!((l2_norm(&v) - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_normalise_zero_vector_unchanged() {
-        let mut v = vec![0.0, 0.0, 0.0];
-        normalise(&mut v);
-        assert_eq!(v, vec![0.0, 0.0, 0.0]);
-    }
-
-    // ---- mat_vec / mat_transpose_vec ----
-
-    #[test]
-    fn test_mat_vec_identity() {
-        let a = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
-        let x = vec![3.0, 7.0];
-        let y = mat_vec(&a, &x);
-        assert!((y[0] - 3.0).abs() < 1e-12);
-        assert!((y[1] - 7.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_mat_transpose_vec_basic() {
-        let a = vec![vec![1.0, 2.0, 3.0]]; // 1×3
-        let x = vec![2.0]; // length 1
-        let y = mat_transpose_vec(&a, &x);
-        assert_eq!(y.len(), 3);
-        assert!((y[0] - 2.0).abs() < 1e-12);
-        assert!((y[1] - 4.0).abs() < 1e-12);
-        assert!((y[2] - 6.0).abs() < 1e-12);
-    }
-
-    // ---- DctBasis ----
-
-    #[test]
-    fn test_dct_roundtrip() {
-        let n = 8;
-        let basis = DctBasis::new(n);
-        let signal: Vec<f64> = (0..n).map(|i| (i as f64).sin()).collect();
-        let coeffs = basis.transform(&signal);
-        let recovered = basis.inverse(&coeffs);
-        for (a, b) in signal.iter().zip(recovered.iter()) {
-            assert!((a - b).abs() < 1e-10, "DCT roundtrip mismatch: {a} vs {b}");
-        }
-    }
-
-    #[test]
-    fn test_dct_dc_component() {
-        // Constant signal → only DC (k=0) is non-zero.
-        let n = 8;
-        let basis = DctBasis::new(n);
-        let signal = vec![1.0_f64; n];
-        let coeffs = basis.transform(&signal);
-        for (k, &c) in coeffs.iter().enumerate().skip(1) {
-            assert!(
-                c.abs() < 1e-10,
-                "non-DC coefficient k={k} should be ~0, got {}",
-                c
-            );
-        }
-        assert!(coeffs[0].abs() > 0.5, "DC component should be non-zero");
-    }
-
-    #[test]
-    fn test_dct_length_preserved() {
-        let n = 16;
-        let basis = DctBasis::new(n);
-        let signal: Vec<f64> = vec![1.0; n];
-        let coeffs = basis.transform(&signal);
-        assert_eq!(coeffs.len(), n);
-    }
-
-    #[test]
-    fn test_dct_energy_preservation() {
-        // Parseval's theorem: ||x||^2 ≈ ||X||^2 for orthonormal DCT.
-        let n = 8;
-        let basis = DctBasis::new(n);
-        let signal: Vec<f64> = (0..n).map(|i| i as f64).collect();
-        let coeffs = basis.transform(&signal);
-        let e_signal: f64 = signal.iter().map(|x| x * x).sum();
-        let e_coeffs: f64 = coeffs.iter().map(|x| x * x).sum();
-        assert!((e_signal - e_coeffs).abs() / (e_signal + 1.0) < 1e-10);
-    }
-
-    #[test]
-    fn test_dct_new_n() {
-        let basis = DctBasis::new(4);
-        assert_eq!(basis.n, 4);
-    }
-
-    #[test]
-    fn test_dct_truncate_keeps_k_largest() {
-        let basis = DctBasis::new(8);
-        let coeffs = vec![1.0, 5.0, 0.1, 3.0, 0.0, 2.0, 0.0, 0.0];
-        let truncated = basis.truncate(&coeffs, 2);
-        let nonzero = truncated.iter().filter(|&&v| v.abs() > 1e-14).count();
-        assert_eq!(nonzero, 2, "truncate(k=2) should leave 2 non-zeros");
-        assert!((truncated[1] - 5.0).abs() < 1e-12, "5.0 should be kept");
-        assert!((truncated[3] - 3.0).abs() < 1e-12, "3.0 should be kept");
-    }
-
-    // ---- RandomMeasurementMatrix ----
-
-    #[test]
-    fn test_random_measurement_matrix_dimensions() {
-        let mat = RandomMeasurementMatrix::generate_gaussian(10, 20);
-        assert_eq!(mat.m, 10);
-        assert_eq!(mat.n, 20);
-        assert_eq!(mat.matrix.len(), 10);
-        assert_eq!(mat.matrix[0].len(), 20);
-    }
-
-    #[test]
-    fn test_measurement_output_length() {
-        let mat = RandomMeasurementMatrix::generate_gaussian(5, 10);
-        let x = vec![1.0_f64; 10];
-        let y = mat.measure(&x);
-        assert_eq!(y.len(), 5);
-    }
-
-    #[test]
-    fn test_measurement_linearity() {
-        let mat = RandomMeasurementMatrix::generate_gaussian(5, 8);
-        let x1: Vec<f64> = (0..8).map(|i| i as f64).collect();
-        let x2: Vec<f64> = (0..8).map(|i| (8 - i) as f64).collect();
-        let y1 = mat.measure(&x1);
-        let y2 = mat.measure(&x2);
-        let y_sum: Vec<f64> = x1.iter().zip(x2.iter()).map(|(a, b)| a + b).collect();
-        let y_direct = mat.measure(&y_sum);
-        for (a, b) in y_direct
-            .iter()
-            .zip(y1.iter().zip(y2.iter()).map(|(a, b)| a + b))
-        {
-            assert!((a - b).abs() < 1e-10, "linearity: {a} vs {b}");
-        }
-    }
-
-    #[test]
-    fn test_bernoulli_matrix_dimensions() {
-        let mat = RandomMeasurementMatrix::generate_bernoulli(8, 16);
-        assert_eq!(mat.m, 8);
-        assert_eq!(mat.n, 16);
-    }
-
-    #[test]
-    fn test_bernoulli_entries_are_plus_minus_scale() {
-        let m = 5;
-        let n = 10;
-        let mat = RandomMeasurementMatrix::generate_bernoulli(m, n);
-        let scale = 1.0 / (m as f64).sqrt();
-        for row in &mat.matrix {
-            for &v in row {
-                let diff = (v.abs() - scale).abs();
-                assert!(diff < 1e-12, "Bernoulli entry |{v}| ≠ {scale}");
-            }
-        }
-    }
-
-    // ---- BasisPursuit (ISTA) ----
-
-    #[test]
-    fn test_ista_trivial_identity() {
-        // A = I_4, b = [1,0,0,0], lambda small → recover e_0
-        let a: Vec<Vec<f64>> = (0..4)
-            .map(|i| (0..4).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
-            .collect();
-        let b = vec![1.0, 0.0, 0.0, 0.0];
-        let x = BasisPursuit::solve_lasso(&a, &b, 1e-4, 200);
-        assert_eq!(x.len(), 4);
-        assert!((x[0] - 1.0).abs() < 0.05, "x[0] should be ~1, got {}", x[0]);
-        assert!(x[1].abs() < 0.05);
-    }
-
-    #[test]
-    fn test_ista_empty_input() {
-        let x = BasisPursuit::solve_lasso(&[], &[], 1.0, 100);
-        assert!(x.is_empty());
-    }
-
-    #[test]
-    fn test_ista_sparse_recovery() {
-        // A = 4×4 identity, sparse signal [3, 0, 0, 0]
-        let a: Vec<Vec<f64>> = (0..4)
-            .map(|i| (0..4).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
-            .collect();
-        let b = vec![3.0, 0.0, 0.0, 0.0];
-        let x = BasisPursuit::solve_lasso(&a, &b, 0.01, 300);
-        assert!((x[0] - 3.0).abs() < 0.1, "x[0] ≈ 3, got {}", x[0]);
-    }
-
-    // ---- FISTA ----
-
-    #[test]
-    fn test_fista_identity_recovery() {
-        let a: Vec<Vec<f64>> = (0..4)
-            .map(|i| (0..4).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
-            .collect();
-        let b = vec![0.0, 2.5, 0.0, 0.0];
-        let x = BasisPursuit::solve_fista(&a, &b, 1e-3, 300);
-        assert!((x[1] - 2.5).abs() < 0.05, "x[1] ≈ 2.5, got {}", x[1]);
-    }
-
-    #[test]
-    fn test_fista_empty_input() {
-        let x = BasisPursuit::solve_fista(&[], &[], 1.0, 100);
-        assert!(x.is_empty());
-    }
-
-    #[test]
-    fn test_fista_objective_decreases() {
-        let a: Vec<Vec<f64>> = (0..3)
-            .map(|i| (0..3).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
-            .collect();
-        let b = vec![1.0, -1.0, 0.5];
-        let lambda = 0.1;
-        let x0 = vec![0.0_f64; 3];
-        let obj0 = BasisPursuit::objective(&a, &b, &x0, lambda);
-        let x_hat = BasisPursuit::solve_fista(&a, &b, lambda, 100);
-        let obj1 = BasisPursuit::objective(&a, &b, &x_hat, lambda);
-        assert!(
-            obj1 <= obj0 + 1e-10,
-            "FISTA should decrease objective: {obj1} > {obj0}"
-        );
-    }
-
-    // ---- OMP ----
-
-    #[test]
-    fn test_omp_exact_1_sparse() {
-        // Identity system with 1-sparse signal
-        let a: Vec<Vec<f64>> = (0..4)
-            .map(|i| (0..4).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
-            .collect();
-        let b = vec![0.0, 5.0, 0.0, 0.0];
-        let omp = OrthogonalMatchingPursuit::new(1);
-        let x = omp.solve(&a, &b);
-        assert_eq!(x.len(), 4);
-        assert!((x[1] - 5.0).abs() < 1e-10, "x[1] should be 5, got {}", x[1]);
-    }
-
-    #[test]
-    fn test_omp_exact_2_sparse() {
-        let a: Vec<Vec<f64>> = (0..4)
-            .map(|i| (0..4).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
-            .collect();
-        let b = vec![2.0, 0.0, 7.0, 0.0];
-        let omp = OrthogonalMatchingPursuit::new(2);
-        let x = omp.solve(&a, &b);
-        assert!((x[0] - 2.0).abs() < 1e-8);
-        assert!((x[2] - 7.0).abs() < 1e-8);
-    }
-
-    #[test]
-    fn test_omp_empty_input() {
-        let omp = OrthogonalMatchingPursuit::new(3);
-        let x = omp.solve(&[], &[]);
-        assert!(x.is_empty());
-    }
-
-    #[test]
-    fn test_omp_new() {
-        let omp = OrthogonalMatchingPursuit::new(5);
-        assert_eq!(omp.max_k, 5);
-    }
-
-    #[test]
-    fn test_omp_residual_decreases() {
-        // Random orthogonal system: with enough sparsity the residual should shrink.
-        let a: Vec<Vec<f64>> = (0..6)
-            .map(|i| (0..6).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
-            .collect();
-        let b = vec![1.0, -1.0, 2.0, 0.0, -2.0, 0.0];
-        let omp = OrthogonalMatchingPursuit::new(4);
-        let x = omp.solve(&a, &b);
-        // Residual after recovery
-        let residual: f64 = b
-            .iter()
-            .enumerate()
-            .map(|(i, &bi)| {
-                let ax: f64 = a[i].iter().zip(x.iter()).map(|(aij, xj)| aij * xj).sum();
-                (bi - ax).powi(2)
-            })
-            .sum::<f64>()
-            .sqrt();
-        assert!(residual < 1e-8, "residual should be tiny, got {residual}");
-    }
-
-    #[test]
-    fn test_omp_support_length() {
-        let a: Vec<Vec<f64>> = (0..5)
-            .map(|i| (0..5).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
-            .collect();
-        let b = vec![1.0, 0.0, 3.0, 0.0, 2.0];
-        let omp = OrthogonalMatchingPursuit::new(3);
-        let supp = omp.support(&a, &b);
-        assert_eq!(
-            supp.len(),
-            3,
-            "support should have 3 elements, got {}",
-            supp.len()
-        );
-    }
-
-    // ---- SparsityMetrics ----
-
-    #[test]
-    fn test_l0_norm_basic() {
-        let x = vec![0.0, 1.0, 0.0, -2.0, 0.001];
-        assert_eq!(SparsityMetrics::l0_norm(&x, 0.5), 2); // 1.0 and -2.0
-    }
-
-    #[test]
-    fn test_l0_norm_all_zero() {
-        let x = vec![0.0, 0.0, 0.0];
-        assert_eq!(SparsityMetrics::l0_norm(&x, 1e-6), 0);
-    }
-
-    #[test]
-    fn test_l1_norm_basic() {
-        let x = vec![1.0, -2.0, 3.0];
-        assert!((SparsityMetrics::l1_norm(&x) - 6.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_l1_norm_empty() {
-        assert_eq!(SparsityMetrics::l1_norm(&[]), 0.0);
-    }
-
-    #[test]
-    fn test_l2_norm_sparsity() {
-        let x = vec![3.0, 4.0];
-        assert!((SparsityMetrics::l2_norm(&x) - 5.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_gini_sparse_is_near_one() {
-        let x = vec![0.0, 0.0, 0.0, 10.0]; // very sparse
-        let g = SparsityMetrics::gini(&x);
-        assert!(g > 0.6, "sparse signal should have high Gini, got {g}");
-    }
-
-    #[test]
-    fn test_gini_uniform_is_near_zero() {
-        let x = vec![1.0, 1.0, 1.0, 1.0]; // flat = dense
-        let g = SparsityMetrics::gini(&x);
-        assert!(g < 0.1, "uniform signal should have low Gini, got {g}");
-    }
-
-    #[test]
-    fn test_coherence_identity_is_zero() {
-        // Columns of the identity are orthogonal → coherence = 0
-        let a: Vec<Vec<f64>> = (0..4)
-            .map(|i| (0..4).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
-            .collect();
-        let mu = SparsityMetrics::coherence(&a);
-        assert!(mu < 1e-12, "identity coherence should be 0, got {mu}");
-    }
-
-    #[test]
-    fn test_coherence_empty() {
-        assert_eq!(SparsityMetrics::coherence(&[]), 0.0);
-    }
-
-    #[test]
-    fn test_coherence_collinear_columns() {
-        // Two identical columns → coherence = 1
-        let a = vec![vec![1.0, 1.0], vec![0.0, 0.0]];
-        let mu = SparsityMetrics::coherence(&a);
-        assert!(
-            (mu - 1.0).abs() < 1e-10,
-            "collinear columns → coherence=1, got {mu}"
-        );
-    }
-
-    #[test]
-    fn test_babel_function_identity() {
-        let a: Vec<Vec<f64>> = (0..4)
-            .map(|i| (0..4).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
-            .collect();
-        let babel = SparsityMetrics::babel_function(&a, 2);
-        assert!(babel < 1e-12, "identity babel should be 0, got {babel}");
-    }
-
-    // ---- RecoveryGuarantee ----
-
-    #[test]
-    fn test_exact_recovery_condition_sufficient_measurements() {
-        // k=1, n=100 → need m >= 2*ln(100) ≈ 9.2 → m=20 is sufficient
-        assert!(RecoveryGuarantee::exact_recovery_condition(1, 20, 100));
-    }
-
-    #[test]
-    fn test_exact_recovery_condition_insufficient() {
-        // k=50, n=100 → need m >= 100*ln(2) ≈ 69 → m=5 is not sufficient
-        assert!(!RecoveryGuarantee::exact_recovery_condition(50, 5, 100));
-    }
-
-    #[test]
-    fn test_exact_recovery_condition_k_zero() {
-        assert!(RecoveryGuarantee::exact_recovery_condition(0, 0, 100));
-    }
-
-    #[test]
-    fn test_rip_constant_identity() {
-        // For the identity matrix (m=n), RIP constant should be ~0
-        let n = 4;
-        let a: Vec<Vec<f64>> = (0..n)
-            .map(|i| (0..n).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
-            .collect();
-        let delta = RecoveryGuarantee::rip_constant(&a, 1);
-        assert!(
-            delta < 1e-10,
-            "identity RIP constant should be ~0, got {delta}"
-        );
-    }
-
-    #[test]
-    fn test_rip_constant_empty() {
-        assert_eq!(RecoveryGuarantee::rip_constant(&[], 1), 0.0);
-    }
-
-    #[test]
-    fn test_rip_measurement_lower_bound_nonzero() {
-        let lb = RecoveryGuarantee::rip_measurement_lower_bound(5, 100);
-        assert!(lb > 0, "lower bound should be positive");
-    }
-
-    #[test]
-    fn test_lasso_error_bound_positive() {
-        let bound = RecoveryGuarantee::lasso_error_bound(0.1, 4, 0.1);
-        assert!(bound > 0.0, "LASSO error bound should be positive");
-    }
-
-    // ---- gauss_solve ----
-
-    #[test]
-    fn test_gauss_solve_2x2() {
-        // [2 1; 1 3] x = [5; 10] → x = [1, 3]
-        let a = vec![vec![2.0, 1.0], vec![1.0, 3.0]];
-        let b = vec![5.0, 10.0];
-        let x = gauss_solve(&a, &b);
-        assert!((x[0] - 1.0).abs() < 1e-10, "x[0]={}", x[0]);
-        assert!((x[1] - 3.0).abs() < 1e-10, "x[1]={}", x[1]);
-    }
-
-    #[test]
-    fn test_gauss_solve_1x1() {
-        let a = vec![vec![4.0]];
-        let b = vec![8.0];
-        let x = gauss_solve(&a, &b);
-        assert!((x[0] - 2.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_gauss_solve_empty() {
-        let x = gauss_solve(&[], &[]);
-        assert!(x.is_empty());
-    }
-
-    // ---- MriCompressedSensing ----
-
-    #[test]
-    fn test_mri_cs_new() {
-        let mri = MriCompressedSensing::new(64, 20);
-        assert_eq!(mri.n, 64);
-        assert_eq!(mri.m, 20);
-    }
-
-    #[test]
-    fn test_mri_kspace_indices_length() {
-        let mri = MriCompressedSensing::new(32, 10);
-        let idx = mri.sample_kspace_indices();
-        assert_eq!(idx.len(), 10);
-    }
-
-    #[test]
-    fn test_mri_measurement_matrix_shape() {
-        let mri = MriCompressedSensing::new(16, 8);
-        let idx: Vec<usize> = (0..8).collect();
-        let a = mri.build_measurement_matrix(&idx);
-        assert_eq!(a.len(), 8);
-        assert_eq!(a[0].len(), 16);
-    }
-
-    #[test]
-    fn test_psnr_identical_signals() {
-        let s = vec![1.0, 2.0, 3.0];
-        let psnr = MriCompressedSensing::psnr(&s, &s, 3.0);
-        assert!(psnr.is_infinite(), "identical signals → PSNR = ∞");
-    }
-
-    #[test]
-    fn test_psnr_known_value() {
-        let original = vec![1.0, 0.0];
-        let reconstructed = vec![0.0, 0.0];
-        let psnr = MriCompressedSensing::psnr(&original, &reconstructed, 1.0);
-        assert!(psnr.is_finite(), "PSNR should be finite for non-identical");
-    }
-
-    // ---- SparseSignal ----
-
-    #[test]
-    fn test_sparse_signal_generate_sparsity() {
-        let sig = SparseSignal::generate(20, 3, 1.0);
-        assert_eq!(sig.len(), 20);
-        let nnz = sig.iter().filter(|&&v| v.abs() > 1e-14).count();
-        assert_eq!(
-            nnz, 3,
-            "generated signal should have exactly 3 non-zeros, got {nnz}"
-        );
-    }
-
-    #[test]
-    fn test_sparse_signal_generate_length() {
-        let sig = SparseSignal::generate(100, 5, 2.0);
-        assert_eq!(sig.len(), 100);
-    }
-
-    #[test]
-    fn test_sparse_signal_relative_error_zero() {
-        let s = vec![1.0, 2.0, 3.0];
-        let err = SparseSignal::relative_error(&s, &s);
-        assert!(
-            err < 1e-12,
-            "identical signals should have 0 relative error"
-        );
-    }
-
-    #[test]
-    fn test_sparse_signal_support_error_identical() {
-        let s = vec![0.0, 1.0, 0.0, 2.0];
-        let err = SparseSignal::support_error(&s, &s, 0.5);
-        assert_eq!(err, 0.0, "identical support → error = 0");
-    }
-
-    // ---- KSvd ----
-
-    #[test]
-    fn test_ksvd_new() {
-        let k = KSvd::new(8, 2, 5);
-        assert_eq!(k.n_atoms, 8);
-        assert_eq!(k.sparsity, 2);
-        assert_eq!(k.n_iter, 5);
-    }
-
-    #[test]
-    fn test_ksvd_reconstruct_zero_code() {
-        let dict: Vec<Vec<f64>> = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
-        let code = vec![0.0, 0.0];
-        let rec = KSvd::reconstruct(&dict, &code);
-        assert_eq!(rec, vec![0.0, 0.0]);
-    }
-
-    #[test]
-    fn test_ksvd_reconstruct_unit_code() {
-        let dict: Vec<Vec<f64>> = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
-        let code = vec![3.0, 5.0];
-        let rec = KSvd::reconstruct(&dict, &code);
-        assert!((rec[0] - 3.0).abs() < 1e-12);
-        assert!((rec[1] - 5.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_ksvd_fit_returns_correct_shape() {
-        // 4 signals of length 6, 4 atoms
-        let signals: Vec<Vec<f64>> = (0..4)
-            .map(|i| (0..6).map(|j| if j == i { 1.0 } else { 0.0 }).collect())
-            .collect();
-        let ksvd = KSvd::new(4, 1, 2);
-        let dict = ksvd.fit(&signals);
-        assert_eq!(dict.len(), 4, "dict should have 4 atoms");
-        assert_eq!(dict[0].len(), 6, "each atom should have length 6");
-    }
-
-    #[test]
-    fn test_ksvd_encode_length() {
-        let dict: Vec<Vec<f64>> = (0..4)
-            .map(|i| (0..4).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
-            .collect();
-        let ksvd = KSvd::new(4, 1, 1);
-        let signal = vec![0.0, 1.0, 0.0, 0.0];
-        let code = ksvd.encode(&dict, &signal);
-        assert_eq!(code.len(), 4, "code length should match n_atoms");
-    }
-
-    #[test]
-    fn test_spectral_norm_identity() {
-        let a: Vec<Vec<f64>> = (0..4)
-            .map(|i| (0..4).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
-            .collect();
-        let sn = spectral_norm(&a, 30);
-        assert!(
-            (sn - 1.0).abs() < 0.01,
-            "spectral norm of I should be ~1, got {sn}"
-        );
-    }
-
-    #[test]
-    fn test_spectral_norm_empty() {
-        let sn = spectral_norm(&[], 10);
-        assert_eq!(sn, 0.0);
-    }
-}
+#[path = "compressed_sensing_tests.rs"]
+mod tests;

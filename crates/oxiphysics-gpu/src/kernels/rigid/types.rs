@@ -76,17 +76,44 @@ pub struct RigidBodyState {
     pub angular_velocity: [f64; 3],
     /// Inverse mass (0 = infinite mass / static body).
     pub inverse_mass: f64,
+    /// Diagonal of the inverse inertia tensor in the body's principal-axis frame
+    /// (kg⁻¹·m⁻²).  A zero entry means infinite inertia about that axis, so an
+    /// all-zero array describes a body that never accelerates rotationally
+    /// (static or kinematic).
+    pub inv_inertia_body: [f64; 3],
 }
 impl RigidBodyState {
     /// Construct a `RigidBodyState` at rest.
-    pub fn at_rest(position: [f64; 3], inverse_mass: f64) -> Self {
+    ///
+    /// `inv_inertia_body` is the diagonal of the body-frame inverse inertia
+    /// tensor in the principal-axis frame (kg⁻¹·m⁻²); pass `[0.0; 3]` for a
+    /// static body.
+    pub fn at_rest(position: [f64; 3], inverse_mass: f64, inv_inertia_body: [f64; 3]) -> Self {
         Self {
             position,
             velocity: [0.0; 3],
             orientation: [0.0, 0.0, 0.0, 1.0],
             angular_velocity: [0.0; 3],
             inverse_mass,
+            inv_inertia_body,
         }
+    }
+    /// Construct a solid-sphere body at rest: `I = 2/5 · m · r²` about every axis.
+    ///
+    /// A non-positive or non-finite `mass` yields a static body (zero inverse
+    /// mass and zero inverse inertia).  A non-positive or non-finite `radius`
+    /// gives zero inverse inertia, i.e. the body has no rotational response.
+    pub fn with_sphere_inertia(position: [f64; 3], mass: f64, radius: f64) -> Self {
+        if !(mass.is_finite() && mass > 0.0) {
+            return Self::at_rest(position, 0.0, [0.0; 3]);
+        }
+        let inertia = 0.4 * mass * radius * radius;
+        let inv_inertia = if inertia.is_finite() && inertia > 0.0 {
+            1.0 / inertia
+        } else {
+            0.0
+        };
+        Self::at_rest(position, 1.0 / mass, [inv_inertia; 3])
     }
 }
 /// Sleeping state for a rigid body.
@@ -334,11 +361,23 @@ impl AccumulatedImpulse {
         }
     }
     /// Apply the accumulated impulse to a body state.
+    ///
+    /// The linear impulse is scaled by the inverse mass; the angular impulse is
+    /// mapped through the world-frame inverse inertia tensor
+    /// `I_w⁻¹ = R · diag(inv_inertia_body) · Rᵀ`.
     pub fn apply(&self, state: &mut RigidBodyState) {
         let im = state.inverse_mass;
-        for k in 0..3 {
-            state.velocity[k] += self.linear[k] * im;
-            state.angular_velocity[k] += self.angular[k] * im;
+        let inv_inertia_world = world_inv_inertia(state.orientation, state.inv_inertia_body);
+        for (v, &impulse) in state.velocity.iter_mut().zip(self.linear.iter()) {
+            *v += impulse * im;
+        }
+        for (omega, row) in state
+            .angular_velocity
+            .iter_mut()
+            .zip(inv_inertia_world.iter())
+        {
+            *omega +=
+                row[0] * self.angular[0] + row[1] * self.angular[1] + row[2] * self.angular[2];
         }
     }
     /// L2 norm of the linear impulse.
@@ -386,6 +425,12 @@ pub struct SoaRigidBody {
     pub omega_y: Vec<f64>,
     pub omega_z: Vec<f64>,
     pub inv_mass: Vec<f64>,
+    /// Body-frame inverse inertia (principal axis 0).
+    pub inv_inertia_x: Vec<f64>,
+    /// Body-frame inverse inertia (principal axis 1).
+    pub inv_inertia_y: Vec<f64>,
+    /// Body-frame inverse inertia (principal axis 2).
+    pub inv_inertia_z: Vec<f64>,
 }
 impl SoaRigidBody {
     /// Build an SoA buffer from a slice of `RigidBodyState` values.
@@ -407,6 +452,9 @@ impl SoaRigidBody {
             omega_y: Vec::with_capacity(n),
             omega_z: Vec::with_capacity(n),
             inv_mass: Vec::with_capacity(n),
+            inv_inertia_x: Vec::with_capacity(n),
+            inv_inertia_y: Vec::with_capacity(n),
+            inv_inertia_z: Vec::with_capacity(n),
         };
         for rb in states {
             s.pos_x.push(rb.position[0]);
@@ -423,6 +471,9 @@ impl SoaRigidBody {
             s.omega_y.push(rb.angular_velocity[1]);
             s.omega_z.push(rb.angular_velocity[2]);
             s.inv_mass.push(rb.inverse_mass);
+            s.inv_inertia_x.push(rb.inv_inertia_body[0]);
+            s.inv_inertia_y.push(rb.inv_inertia_body[1]);
+            s.inv_inertia_z.push(rb.inv_inertia_body[2]);
         }
         s
     }
@@ -440,6 +491,11 @@ impl SoaRigidBody {
                 ],
                 angular_velocity: [self.omega_x[i], self.omega_y[i], self.omega_z[i]],
                 inverse_mass: self.inv_mass[i],
+                inv_inertia_body: [
+                    self.inv_inertia_x[i],
+                    self.inv_inertia_y[i],
+                    self.inv_inertia_z[i],
+                ],
             })
             .collect()
     }
@@ -459,18 +515,25 @@ impl SoaRigidBody {
             self.pos_x[i] += self.vel_x[i] * dt;
             self.pos_y[i] += self.vel_y[i] * dt;
             self.pos_z[i] += self.vel_z[i] * dt;
-            let alpha_x = torques[i][0] * im;
-            let alpha_y = torques[i][1] * im;
-            let alpha_z = torques[i][2] * im;
-            self.omega_x[i] += alpha_x * dt;
-            self.omega_y[i] += alpha_y * dt;
-            self.omega_z[i] += alpha_z * dt;
             let q = [
                 self.quat_x[i],
                 self.quat_y[i],
                 self.quat_z[i],
                 self.quat_w[i],
             ];
+            let alpha = angular_acceleration(
+                q,
+                [self.omega_x[i], self.omega_y[i], self.omega_z[i]],
+                [
+                    self.inv_inertia_x[i],
+                    self.inv_inertia_y[i],
+                    self.inv_inertia_z[i],
+                ],
+                torques[i],
+            );
+            self.omega_x[i] += alpha[0] * dt;
+            self.omega_y[i] += alpha[1] * dt;
+            self.omega_z[i] += alpha[2] * dt;
             let omega = [self.omega_x[i], self.omega_y[i], self.omega_z[i]];
             let dq = quat_derivative(q, omega);
             self.quat_x[i] += dq[0] * dt;

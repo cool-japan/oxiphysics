@@ -25,6 +25,13 @@ const SLOP: Real = 0.005;
 /// Velocity threshold below which restitution is suppressed.
 const RESTITUTION_VELOCITY_THRESHOLD: Real = 1.0;
 
+/// Smallest SOR factor accepted by [`Constraint::solve_velocity_relaxed`].
+const MIN_SOR_OMEGA: Real = 0.01;
+
+/// Largest SOR factor accepted by [`Constraint::solve_velocity_relaxed`]
+/// (successive over-relaxation diverges for `omega >= 2`).
+const MAX_SOR_OMEGA: Real = 1.99;
+
 /// Maximum number of contacts in a reduced manifold.
 const MAX_MANIFOLD_CONTACTS: usize = 4;
 
@@ -43,7 +50,11 @@ const MAX_CONTACT_AGE: u32 = 120;
 /// Implements the sequential impulse method with:
 /// - Normal impulse for non-penetration
 /// - Two tangent impulses for Coulomb friction (friction cone clamping)
-/// - Warm starting via accumulated impulses
+/// - Warm starting via accumulated impulses, either its own (a persistent
+///   constraint) or the rows a solver hands in through
+///   [`Constraint::apply_warm_start`]
+/// - Successive over-relaxation that scales the impulse update before it is
+///   projected onto its bounds ([`Constraint::solve_velocity_relaxed`])
 /// - Baumgarte stabilization for position correction
 #[derive(Debug, Clone)]
 pub struct ContactConstraint {
@@ -92,6 +103,9 @@ pub struct ContactConstraint {
     r_b: Vec3,
     /// Whether warm-start has already been applied this timestep.
     warm_started: bool,
+    /// Size of the velocity update of the most recent velocity solve (see
+    /// [`Constraint::residual`]).
+    last_residual: Real,
 }
 
 impl ContactConstraint {
@@ -130,6 +144,7 @@ impl ContactConstraint {
             r_a: Vec3::zeros(),
             r_b: Vec3::zeros(),
             warm_started: false,
+            last_residual: 0.0,
         }
     }
 
@@ -219,6 +234,138 @@ impl ContactConstraint {
         self.accumulated_normal_impulse = normal_impulse.max(0.0);
         self.accumulated_tangent1_impulse = tangent1_impulse;
         self.accumulated_tangent2_impulse = tangent2_impulse;
+    }
+
+    /// Linear and angular velocities `(v_a, w_a, v_b, w_b)` of both bodies, or
+    /// `None` when a body handle is stale.
+    fn body_velocities(&self, bodies: &RigidBodySet) -> Option<(Vec3, Vec3, Vec3, Vec3)> {
+        let a = bodies.get(self.body_handle_a)?;
+        let b = bodies.get(self.body_handle_b)?;
+        Some((
+            a.velocity,
+            a.angular_velocity,
+            b.velocity,
+            b.angular_velocity,
+        ))
+    }
+
+    /// Relative velocity of the contact point along `direction`, `None` when a
+    /// body handle is stale.
+    fn contact_velocity_along(&self, bodies: &RigidBodySet, direction: &Vec3) -> Option<Real> {
+        let (vel_a, ang_vel_a, vel_b, ang_vel_b) = self.body_velocities(bodies)?;
+        Some(relative_velocity_along(
+            &vel_a, &ang_vel_a, &vel_b, &ang_vel_b, &self.r_a, &self.r_b, direction,
+        ))
+    }
+
+    /// One Gauss-Seidel sweep over the normal and both friction rows.
+    ///
+    /// `omega` is the successive over-relaxation factor: every row's impulse
+    /// update is scaled by `omega` *before* the accumulated impulse is
+    /// projected onto its bounds (`λ_n >= 0`, Coulomb cone for friction), so
+    /// the accumulated impulses stay feasible for any `omega`.  `omega = 1`
+    /// is the plain sequential-impulse update.
+    ///
+    /// Stores the size of the update in `last_residual`: the Euclidean norm of
+    /// the relative-velocity change `Δλ_k / m_eff,k` the three rows produced.
+    fn solve_rows(&mut self, bodies: &mut RigidBodySet, omega: Real) {
+        self.last_residual = 0.0;
+
+        // Apply warm-start impulses exactly once per timestep (first call after prepare).
+        if !self.warm_started {
+            let warm_impulse = self.normal * self.accumulated_normal_impulse
+                + self.tangent1 * self.accumulated_tangent1_impulse
+                + self.tangent2 * self.accumulated_tangent2_impulse;
+            if warm_impulse.norm_squared() > 1e-20 {
+                apply_impulse_to_pair(
+                    bodies,
+                    self.body_handle_a,
+                    self.body_handle_b,
+                    warm_impulse,
+                    &self.r_a,
+                    &self.r_b,
+                );
+            }
+            self.warm_started = true;
+        }
+
+        // --- Normal impulse ---
+        let Some(vn) = self.contact_velocity_along(bodies, &self.normal) else {
+            return;
+        };
+        let lambda_n = self.effective_mass_normal * (-vn + self.velocity_bias) * omega;
+
+        // Clamp: accumulated normal impulse >= 0 (no pulling)
+        let old_accumulated = self.accumulated_normal_impulse;
+        self.accumulated_normal_impulse = (old_accumulated + lambda_n).max(0.0);
+        let applied_lambda_n = self.accumulated_normal_impulse - old_accumulated;
+
+        let normal_impulse = self.normal * applied_lambda_n;
+        apply_impulse_to_pair(
+            bodies,
+            self.body_handle_a,
+            self.body_handle_b,
+            normal_impulse,
+            &self.r_a,
+            &self.r_b,
+        );
+
+        // The friction cone is evaluated with the freshly updated normal impulse.
+        let friction_limit = (self.friction * self.accumulated_normal_impulse).max(0.0);
+
+        // --- Tangent1 impulse (friction) ---
+        let Some(vt1) = self.contact_velocity_along(bodies, &self.tangent1) else {
+            return;
+        };
+        let lambda_t1 = self.effective_mass_tangent1 * (-vt1) * omega;
+
+        let old_t1 = self.accumulated_tangent1_impulse;
+        self.accumulated_tangent1_impulse =
+            (old_t1 + lambda_t1).clamp(-friction_limit, friction_limit);
+        let applied_t1 = self.accumulated_tangent1_impulse - old_t1;
+
+        let tangent1_impulse = self.tangent1 * applied_t1;
+        apply_impulse_to_pair(
+            bodies,
+            self.body_handle_a,
+            self.body_handle_b,
+            tangent1_impulse,
+            &self.r_a,
+            &self.r_b,
+        );
+
+        // --- Tangent2 impulse (friction) ---
+        let Some(vt2) = self.contact_velocity_along(bodies, &self.tangent2) else {
+            return;
+        };
+        let lambda_t2 = self.effective_mass_tangent2 * (-vt2) * omega;
+
+        let old_t2 = self.accumulated_tangent2_impulse;
+        self.accumulated_tangent2_impulse =
+            (old_t2 + lambda_t2).clamp(-friction_limit, friction_limit);
+        let applied_t2 = self.accumulated_tangent2_impulse - old_t2;
+
+        let tangent2_impulse = self.tangent2 * applied_t2;
+        apply_impulse_to_pair(
+            bodies,
+            self.body_handle_a,
+            self.body_handle_b,
+            tangent2_impulse,
+            &self.r_a,
+            &self.r_b,
+        );
+
+        let velocity_change = |applied: Real, effective_mass: Real| {
+            if effective_mass > 1e-12 {
+                applied / effective_mass
+            } else {
+                0.0
+            }
+        };
+        let dn = velocity_change(applied_lambda_n, self.effective_mass_normal);
+        let dt1 = velocity_change(applied_t1, self.effective_mass_tangent1);
+        let dt2 = velocity_change(applied_t2, self.effective_mass_tangent2);
+        self.last_residual = (dn * dn + dt1 * dt1 + dt2 * dt2).sqrt();
     }
 }
 
@@ -385,153 +532,60 @@ impl Constraint for ContactConstraint {
     }
 
     fn solve_velocity(&mut self, bodies: &mut RigidBodySet, _dt: f64) {
-        // Apply warm-start impulses exactly once per timestep (first call after prepare).
-        if !self.warm_started {
-            let warm_impulse = self.normal * self.accumulated_normal_impulse
-                + self.tangent1 * self.accumulated_tangent1_impulse
-                + self.tangent2 * self.accumulated_tangent2_impulse;
-            if warm_impulse.norm_squared() > 1e-20 {
-                apply_impulse_to_pair(
-                    bodies,
-                    self.body_handle_a,
-                    self.body_handle_b,
-                    warm_impulse,
-                    &self.r_a,
-                    &self.r_b,
-                );
-            }
-            self.warm_started = true;
+        self.solve_rows(bodies, 1.0);
+    }
+
+    fn solve_velocity_relaxed(&mut self, bodies: &mut RigidBodySet, _dt: f64, omega: f64) -> f64 {
+        let omega = if omega.is_nan() {
+            1.0
+        } else {
+            omega.clamp(MIN_SOR_OMEGA, MAX_SOR_OMEGA)
+        };
+        self.solve_rows(bodies, omega);
+        self.last_residual
+    }
+
+    fn residual(&self) -> f64 {
+        self.last_residual
+    }
+
+    fn apply_warm_start(&mut self, bodies: &mut RigidBodySet, impulses: &[f64]) {
+        let row = |k: usize| {
+            impulses
+                .get(k)
+                .copied()
+                .filter(|v| v.is_finite())
+                .unwrap_or(0.0)
+        };
+        let normal = row(0).max(0.0);
+        let friction_limit = (self.friction * normal).max(0.0);
+        let tangent1 = row(1).clamp(-friction_limit, friction_limit);
+        let tangent2 = row(2).clamp(-friction_limit, friction_limit);
+        self.accumulated_normal_impulse = normal;
+        self.accumulated_tangent1_impulse = tangent1;
+        self.accumulated_tangent2_impulse = tangent2;
+        let impulse = self.normal * normal + self.tangent1 * tangent1 + self.tangent2 * tangent2;
+        if impulse.norm_squared() > 1e-20 {
+            apply_impulse_to_pair(
+                bodies,
+                self.body_handle_a,
+                self.body_handle_b,
+                impulse,
+                &self.r_a,
+                &self.r_b,
+            );
         }
+        // The impulses were just applied: the first velocity solve after
+        // `prepare` must not apply them a second time.
+        self.warm_started = true;
+    }
 
-        // Read current velocities
-        let (vel_a, ang_vel_a) = {
-            if let Some(body) = bodies.get(self.body_handle_a) {
-                (body.velocity, body.angular_velocity)
-            } else {
-                return;
-            }
-        };
-        let (vel_b, ang_vel_b) = {
-            if let Some(body) = bodies.get(self.body_handle_b) {
-                (body.velocity, body.angular_velocity)
-            } else {
-                return;
-            }
-        };
-
-        // --- Normal impulse ---
-        let vn = relative_velocity_along(
-            &vel_a,
-            &ang_vel_a,
-            &vel_b,
-            &ang_vel_b,
-            &self.r_a,
-            &self.r_b,
-            &self.normal,
-        );
-        let lambda_n = self.effective_mass_normal * (-vn + self.velocity_bias);
-
-        // Clamp: accumulated normal impulse >= 0 (no pulling)
-        let old_accumulated = self.accumulated_normal_impulse;
-        self.accumulated_normal_impulse = (old_accumulated + lambda_n).max(0.0);
-        let applied_lambda_n = self.accumulated_normal_impulse - old_accumulated;
-
-        let normal_impulse = self.normal * applied_lambda_n;
-        apply_impulse_to_pair(
-            bodies,
-            self.body_handle_a,
-            self.body_handle_b,
-            normal_impulse,
-            &self.r_a,
-            &self.r_b,
-        );
-
-        // Re-read velocities after normal impulse
-        let (vel_a, ang_vel_a) = {
-            if let Some(body) = bodies.get(self.body_handle_a) {
-                (body.velocity, body.angular_velocity)
-            } else {
-                return;
-            }
-        };
-        let (vel_b, ang_vel_b) = {
-            if let Some(body) = bodies.get(self.body_handle_b) {
-                (body.velocity, body.angular_velocity)
-            } else {
-                return;
-            }
-        };
-
-        // --- Tangent1 impulse (friction) ---
-        let vt1 = relative_velocity_along(
-            &vel_a,
-            &ang_vel_a,
-            &vel_b,
-            &ang_vel_b,
-            &self.r_a,
-            &self.r_b,
-            &self.tangent1,
-        );
-        let lambda_t1 = self.effective_mass_tangent1 * (-vt1);
-
-        let friction_limit = self.friction * self.accumulated_normal_impulse;
-        let old_t1 = self.accumulated_tangent1_impulse;
-        self.accumulated_tangent1_impulse =
-            (old_t1 + lambda_t1).clamp(-friction_limit, friction_limit);
-        let applied_t1 = self.accumulated_tangent1_impulse - old_t1;
-
-        let tangent1_impulse = self.tangent1 * applied_t1;
-        apply_impulse_to_pair(
-            bodies,
-            self.body_handle_a,
-            self.body_handle_b,
-            tangent1_impulse,
-            &self.r_a,
-            &self.r_b,
-        );
-
-        // Re-read velocities for tangent2
-        let (vel_a, ang_vel_a) = {
-            if let Some(body) = bodies.get(self.body_handle_a) {
-                (body.velocity, body.angular_velocity)
-            } else {
-                return;
-            }
-        };
-        let (vel_b, ang_vel_b) = {
-            if let Some(body) = bodies.get(self.body_handle_b) {
-                (body.velocity, body.angular_velocity)
-            } else {
-                return;
-            }
-        };
-
-        // --- Tangent2 impulse (friction) ---
-        let vt2 = relative_velocity_along(
-            &vel_a,
-            &ang_vel_a,
-            &vel_b,
-            &ang_vel_b,
-            &self.r_a,
-            &self.r_b,
-            &self.tangent2,
-        );
-        let lambda_t2 = self.effective_mass_tangent2 * (-vt2);
-
-        let old_t2 = self.accumulated_tangent2_impulse;
-        self.accumulated_tangent2_impulse =
-            (old_t2 + lambda_t2).clamp(-friction_limit, friction_limit);
-        let applied_t2 = self.accumulated_tangent2_impulse - old_t2;
-
-        let tangent2_impulse = self.tangent2 * applied_t2;
-        apply_impulse_to_pair(
-            bodies,
-            self.body_handle_a,
-            self.body_handle_b,
-            tangent2_impulse,
-            &self.r_a,
-            &self.r_b,
-        );
+    fn accumulated_impulses(&self) -> Vec<f64> {
+        vec![
+            self.accumulated_normal_impulse,
+            self.accumulated_tangent1_impulse,
+            self.accumulated_tangent2_impulse,
+        ]
     }
 
     fn solve_position(&mut self, bodies: &mut RigidBodySet, _dt: f64) {

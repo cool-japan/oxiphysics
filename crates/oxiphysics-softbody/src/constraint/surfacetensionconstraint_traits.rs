@@ -58,4 +58,8 @@ impl SoftConstraint for SurfaceTensionConstraint {
         particles[i1].position += grad1 * (delta_lambda * ws[1]);
         particles[i2].position += grad2 * (delta_lambda * ws[2]);
     }
+
+    fn reset_lambda(&mut self) {
+        Self::reset_lambda(self);
+    }
 }

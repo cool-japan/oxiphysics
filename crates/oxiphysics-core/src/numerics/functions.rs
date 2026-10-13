@@ -390,56 +390,106 @@ pub fn lgamma(x: f64) -> f64 {
 pub fn factorial(n: u64) -> f64 {
     gamma(n as f64 + 1.0)
 }
-/// Regularized incomplete beta function I(x; a, b).
+/// Continued fraction of the regularized incomplete beta function
+/// (modified Lentz method, Numerical Recipes `betacf`).
 ///
-/// Uses continued fraction expansion (Lentz method).
-pub fn inc_beta(x: f64, a: f64, b: f64) -> f64 {
-    if !(0.0..=1.0).contains(&x) {
-        return 0.0;
-    }
-    if x == 0.0 {
-        return 0.0;
-    }
-    if x == 1.0 {
-        return 1.0;
-    }
-    if x > (a + 1.0) / (a + b + 2.0) {
-        return 1.0 - inc_beta(1.0 - x, b, a);
-    }
-    let lbeta = lgamma(a) + lgamma(b) - lgamma(a + b);
-    let front = (x.powf(a) * (1.0 - x).powf(b) / a) * (-lbeta).exp();
-    let mut c = 1.0;
-    let mut d = 1.0 - (a + b) * x / (a + 1.0);
-    if d.abs() < 1e-300 {
-        d = 1e-300;
+/// Returns `h` such that `I_x(a, b) = x^a (1-x)^b / (a B(a, b)) * h`.  The
+/// fraction converges quickly for `x < (a + 1) / (a + b + 2)`.
+fn inc_beta_continued_fraction(a: f64, b: f64, x: f64) -> f64 {
+    const FPMIN: f64 = 1.0e-300;
+    const EPS: f64 = 1.0e-15;
+    const MAX_ITER: usize = 10_000;
+    let qab = a + b;
+    let qap = a + 1.0;
+    let qam = a - 1.0;
+    let mut c = 1.0_f64;
+    let mut d = 1.0 - qab * x / qap;
+    if d.abs() < FPMIN {
+        d = FPMIN;
     }
     d = 1.0 / d;
-    let mut cf = d;
-    for m in 1_usize..200 {
+    let mut h = d;
+    for m in 1..=MAX_ITER {
         let mf = m as f64;
-        for step in 0..2 {
-            let num = if step == 0 {
-                -(a + mf) * (a + b + mf) * x / ((a + 2.0 * mf - 1.0) * (a + 2.0 * mf))
-            } else {
-                mf * (b - mf) * x / ((a + 2.0 * mf - 1.0) * (a + 2.0 * mf))
-            };
-            d = 1.0 + num * d;
-            if d.abs() < 1e-300 {
-                d = 1e-300;
-            }
-            d = 1.0 / d;
-            c = 1.0 + num / c;
-            if c.abs() < 1e-300 {
-                c = 1e-300;
-            }
-            let delta = c * d;
-            cf *= delta;
-            if (delta - 1.0).abs() < 1e-14 {
-                break;
-            }
+        let m2 = 2.0 * mf;
+        // Even step d_{2m}.
+        let aa = mf * (b - mf) * x / ((qam + m2) * (a + m2));
+        d = 1.0 + aa * d;
+        if d.abs() < FPMIN {
+            d = FPMIN;
+        }
+        c = 1.0 + aa / c;
+        if c.abs() < FPMIN {
+            c = FPMIN;
+        }
+        d = 1.0 / d;
+        h *= d * c;
+        // Odd step d_{2m+1}.
+        let aa = -(a + mf) * (qab + mf) * x / ((a + m2) * (qap + m2));
+        d = 1.0 + aa * d;
+        if d.abs() < FPMIN {
+            d = FPMIN;
+        }
+        c = 1.0 + aa / c;
+        if c.abs() < FPMIN {
+            c = FPMIN;
+        }
+        d = 1.0 / d;
+        let delta = d * c;
+        h *= delta;
+        if (delta - 1.0).abs() < EPS {
+            break;
         }
     }
-    front * cf
+    h
+}
+/// Regularized incomplete beta function `I_x(a, b)` for a point `x` whose
+/// complement `y = 1 - x` is supplied separately.
+///
+/// Callers that can form `y` without rounding error (for example
+/// `y = t² / (ν + t²)` in the Student-t CDF) keep full relative accuracy in the
+/// tails, where `1.0 - x` would lose all significant digits.
+///
+/// Returns `NaN` for `NaN` input or non-positive shape parameters.
+pub(crate) fn inc_beta_xy(x: f64, y: f64, a: f64, b: f64) -> f64 {
+    if x.is_nan() || y.is_nan() || a.is_nan() || b.is_nan() || a <= 0.0 || b <= 0.0 {
+        return f64::NAN;
+    }
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if y <= 0.0 {
+        return 1.0;
+    }
+    let ln_beta = lgamma(a) + lgamma(b) - lgamma(a + b);
+    let front = (a * x.ln() + b * y.ln() - ln_beta).exp();
+    if x < (a + 1.0) / (a + b + 2.0) {
+        front * inc_beta_continued_fraction(a, b, x) / a
+    } else {
+        1.0 - front * inc_beta_continued_fraction(b, a, y) / b
+    }
+}
+/// Regularized incomplete beta function `I_x(a, b)`.
+///
+/// `I_x(a, b) = B(x; a, b) / B(a, b)` is the CDF of a Beta(`a`, `b`) variate.
+/// Evaluated with the modified Lentz continued fraction, switching to the
+/// reflection `I_x(a, b) = 1 - I_{1-x}(b, a)` for `x > (a + 1) / (a + b + 2)`.
+///
+/// Note the argument order: the evaluation point `x` comes first, followed by
+/// the shape parameters `a` and `b`.
+///
+/// `x <= 0` gives `0`, `x >= 1` gives `1`; `NaN` input or non-positive shape
+/// parameters give `NaN`.
+///
+/// # Accuracy
+///
+/// The absolute error is a few `1e-16` for shape parameters up to about `10`
+/// and stays below `1e-12` up to `1e3`.  It then grows with the shape
+/// parameters, because `ln B(a, b)` is formed from `lgamma` differences whose
+/// cancellation error scales like `eps * (a + b) * ln(a + b)`: about `3e-10` at
+/// `1e5` and `1e-9` at `1e6`.  Beyond roughly `1e8` the result is unreliable.
+pub fn inc_beta(x: f64, a: f64, b: f64) -> f64 {
+    inc_beta_xy(x, 1.0 - x, a, b)
 }
 /// Error function erf(x) using a rational approximation.
 pub fn erf(x: f64) -> f64 {

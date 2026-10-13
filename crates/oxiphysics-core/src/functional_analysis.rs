@@ -11,6 +11,10 @@
 
 use std::f64::consts::PI;
 
+mod operator_spectrum;
+
+pub use operator_spectrum::OperatorSpectrum;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // FunctionSpace
 // ─────────────────────────────────────────────────────────────────────────────
@@ -500,147 +504,6 @@ impl BanachSpace {
         let norm_f = self.norm(f);
         let norm_g = self.dual_norm(g);
         (inner, norm_f * norm_g)
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// OperatorSpectrum
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Spectral analysis of compact operators represented as finite matrices.
-///
-/// Provides eigenvalue computation via power iteration, spectral radius
-/// estimation, and resolvent norm.
-#[derive(Debug, Clone)]
-pub struct OperatorSpectrum {
-    /// Matrix representation of the operator (row-major, square).
-    pub matrix: Vec<Vec<f64>>,
-    /// Size of the square matrix.
-    pub n: usize,
-}
-
-impl OperatorSpectrum {
-    /// Create an `OperatorSpectrum` from a square matrix.
-    ///
-    /// Panics if the matrix is not square.
-    pub fn new(matrix: Vec<Vec<f64>>) -> Self {
-        let n = matrix.len();
-        assert!(
-            matrix.iter().all(|row| row.len() == n),
-            "matrix must be square"
-        );
-        Self { matrix, n }
-    }
-
-    /// Estimate the largest eigenvalue (spectral radius) via the power method.
-    ///
-    /// Returns the dominant eigenvalue after `max_iter` iterations.
-    pub fn spectral_radius(&self, max_iter: usize) -> f64 {
-        if self.n == 0 {
-            return 0.0;
-        }
-        let mut v = vec![1.0 / (self.n as f64).sqrt(); self.n];
-        let mut lambda = 0.0_f64;
-        for _ in 0..max_iter {
-            let w = self.matvec(&v);
-            let norm: f64 = w.iter().map(|x| x * x).sum::<f64>().sqrt();
-            if norm < 1e-15 {
-                break;
-            }
-            lambda = w.iter().zip(v.iter()).map(|(wi, vi)| wi * vi).sum::<f64>();
-            for (vi, wi) in v.iter_mut().zip(w.iter()) {
-                *vi = wi / norm;
-            }
-        }
-        lambda
-    }
-
-    /// Estimate the smallest eigenvalue via inverse power iteration with shift.
-    ///
-    /// Uses Rayleigh quotient shift `mu` (default 0.0 ≈ smallest eigenvalue).
-    pub fn smallest_eigenvalue(&self, shift: f64, max_iter: usize) -> f64 {
-        if self.n == 0 {
-            return 0.0;
-        }
-        // Shifted matrix: A - shift*I
-        let shifted: Vec<Vec<f64>> = self
-            .matrix
-            .iter()
-            .enumerate()
-            .map(|(i, row)| {
-                row.iter()
-                    .enumerate()
-                    .map(|(j, &a)| if i == j { a - shift } else { a })
-                    .collect()
-            })
-            .collect();
-
-        let op = OperatorSpectrum::new(shifted);
-        // Power iteration on shifted operator
-        let lam = op.spectral_radius(max_iter);
-        lam + shift
-    }
-
-    /// Compute the trace of the matrix (sum of diagonal elements).
-    pub fn trace(&self) -> f64 {
-        (0..self.n).map(|i| self.matrix[i][i]).sum()
-    }
-
-    /// Compute the Frobenius norm `‖A‖_F = √(Σ aᵢⱼ²)`.
-    pub fn frobenius_norm(&self) -> f64 {
-        self.matrix
-            .iter()
-            .flat_map(|row| row.iter())
-            .map(|x| x * x)
-            .sum::<f64>()
-            .sqrt()
-    }
-
-    /// Estimate the resolvent norm `‖(A - λI)⁻¹‖` at a regular point `lambda`.
-    ///
-    /// Uses power iteration on the shifted operator `(A - λI)`.  Returns
-    /// `1 / smallest_singular_value`, approximated via the Frobenius norm of
-    /// the shifted matrix.
-    pub fn resolvent_norm(&self, lambda: f64) -> f64 {
-        // Build (A - λI)
-        let shifted: Vec<Vec<f64>> = self
-            .matrix
-            .iter()
-            .enumerate()
-            .map(|(i, row)| {
-                row.iter()
-                    .enumerate()
-                    .map(|(j, &a)| if i == j { a - lambda } else { a })
-                    .collect()
-            })
-            .collect();
-        let frob: f64 = shifted
-            .iter()
-            .flat_map(|r| r.iter())
-            .map(|x| x * x)
-            .sum::<f64>()
-            .sqrt();
-        if frob < 1e-15 {
-            return f64::INFINITY;
-        }
-        1.0 / frob
-    }
-
-    /// Apply the operator (matrix-vector multiplication) to `v`.
-    pub fn apply(&self, v: &[f64]) -> Vec<f64> {
-        self.matvec(v)
-    }
-
-    /// Compute all diagonal elements (approximate eigenvalues of a diagonal operator).
-    pub fn diagonal(&self) -> Vec<f64> {
-        (0..self.n).map(|i| self.matrix[i][i]).collect()
-    }
-
-    fn matvec(&self, v: &[f64]) -> Vec<f64> {
-        self.matrix
-            .iter()
-            .map(|row| row.iter().zip(v.iter()).map(|(a, x)| a * x).sum())
-            .collect()
     }
 }
 
@@ -1522,59 +1385,6 @@ mod tests {
         // φ(f) = (1*2 + 1*2) * 0.5 = 2
         let val = bs.bounded_linear_functional(&f, &g);
         assert!((val - 2.0).abs() < 1e-12, "functional = {val}");
-    }
-
-    // ── OperatorSpectrum ──────────────────────────────────────────────────────
-
-    #[test]
-    fn test_operator_spectrum_trace() {
-        let m = vec![vec![2.0, 1.0], vec![0.0, 3.0]];
-        let op = OperatorSpectrum::new(m);
-        assert!((op.trace() - 5.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_operator_spectrum_frobenius() {
-        let m = vec![vec![3.0, 4.0], vec![0.0, 0.0]];
-        let op = OperatorSpectrum::new(m);
-        assert!((op.frobenius_norm() - 5.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_operator_spectrum_apply() {
-        let m = vec![vec![2.0, 0.0], vec![0.0, 3.0]];
-        let op = OperatorSpectrum::new(m);
-        let v = vec![1.0, 2.0];
-        let w = op.apply(&v);
-        assert!((w[0] - 2.0).abs() < 1e-12);
-        assert!((w[1] - 6.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_operator_spectrum_spectral_radius() {
-        // Diagonal matrix: spectral radius = max eigenvalue
-        let m = vec![vec![5.0, 0.0], vec![0.0, 2.0]];
-        let op = OperatorSpectrum::new(m);
-        let rho = op.spectral_radius(200);
-        assert!((rho - 5.0).abs() < 0.1, "spectral radius = {rho}");
-    }
-
-    #[test]
-    fn test_operator_spectrum_diagonal() {
-        let m = vec![vec![7.0, 0.0], vec![0.0, 3.0]];
-        let op = OperatorSpectrum::new(m);
-        let d = op.diagonal();
-        assert!((d[0] - 7.0).abs() < 1e-12);
-        assert!((d[1] - 3.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_operator_spectrum_resolvent_finite() {
-        let m = vec![vec![1.0, 0.0], vec![0.0, 2.0]];
-        let op = OperatorSpectrum::new(m);
-        // At a regular point (e.g., λ=10) resolvent should be finite
-        let r = op.resolvent_norm(10.0);
-        assert!(r.is_finite() && r > 0.0, "resolvent = {r}");
     }
 
     // ── SobolevSpace ──────────────────────────────────────────────────────────

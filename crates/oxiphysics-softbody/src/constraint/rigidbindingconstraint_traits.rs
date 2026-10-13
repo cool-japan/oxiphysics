@@ -30,4 +30,8 @@ impl SoftConstraint for RigidBindingConstraint {
         self.lambda += delta_lambda;
         particles[self.particle].position += (diff / dist) * (delta_lambda * w);
     }
+
+    fn reset_lambda(&mut self) {
+        Self::reset_lambda(self);
+    }
 }

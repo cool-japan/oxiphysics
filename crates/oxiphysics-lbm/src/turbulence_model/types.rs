@@ -956,11 +956,20 @@ impl BardinalFullModel {
 }
 /// Anisotropic Minimum Dissipation (AMD) SGS model.
 ///
-/// The AMD model computes the eddy viscosity by ensuring the resolved kinetic
-/// energy dissipation exactly balances the SGS energy production:
-/// `ν_t = max(0, −C (δᵢ ∂u / ∂xⱼ)² (∂u / ∂xⱼ)²) / ((∂u / ∂xⱼ)²)²`
+/// The AMD model gives the smallest eddy viscosity that still removes the
+/// energy transferred to the unresolved scales.  With `∂̂ₖ = δₖ ∂ₖ` (no sum)
+/// the eddy viscosity is
 ///
-/// where δᵢ are the mesh spacings and C is a model constant (typically 0.3).
+/// ```text
+/// ν_t = C · max(0, −(∂̂ₖ uᵢ)(∂̂ₖ uⱼ) Sᵢⱼ) / ((∂ₗ uₘ)(∂ₗ uₘ))
+/// ```
+///
+/// where `Sᵢⱼ` is the resolved strain-rate tensor, δₖ are the mesh spacings
+/// and C is the model constant (1/3 for spectral methods, 1/12 for
+/// second-order finite volume).  On an isotropic grid (`δₖ = δ`) the numerator
+/// is `δ² [−tr(S³) + tr(W²S)]` with `W` the rotation-rate tensor (strain
+/// self-amplification and vortex stretching), so ν_t vanishes in solid-body
+/// rotation (`S = 0`) and for a pure axisymmetric extension.
 ///
 /// Reference: Rozema et al., Phys. Fluids 27, 085107 (2015).
 #[derive(Debug, Clone, Copy)]
@@ -985,27 +994,29 @@ impl AmdModel {
     /// Compute the AMD eddy viscosity from the velocity gradient tensor.
     ///
     /// # Arguments
-    /// * `g` – velocity gradient ∂u_i/∂x_j as 9-element row-major array
+    /// * `g` – velocity gradient `∂u_i/∂x_j` as 9-element row-major array
+    ///   (`g[3 i + j] = ∂u_i/∂x_j`)
+    ///
+    /// Returns `C · max(0, −Σ_k δ_k² Σ_ij g_ik g_jk S_ij) / Σ_ij g_ij²`, or 0
+    /// when the gradient vanishes.
     pub fn eddy_viscosity(&self, g: [f64; 9]) -> f64 {
-        let d = &self.delta;
-        let mut numer = 0.0f64;
-        for i in 0..3 {
-            let mut sum_ij = 0.0f64;
-            for j in 0..3 {
-                sum_ij += g[j * 3 + i] * g[j * 3 + i];
+        let strain = strain_rate_tensor(g);
+        let grad_sq: f64 = g.iter().map(|v| v * v).sum();
+        if grad_sq <= 1e-20 {
+            return 0.0;
+        }
+        // Σ_k δ_k² (∂_k u_i)(∂_k u_j) S_ij with ∂_k u_i = g[3 i + k].
+        let mut stretching = 0.0f64;
+        for (k, &dk) in self.delta.iter().enumerate() {
+            let mut contraction = 0.0f64;
+            for i in 0..3 {
+                for j in 0..3 {
+                    contraction += g[i * 3 + k] * g[j * 3 + k] * strain[i * 3 + j];
+                }
             }
-            numer -= d[i] * d[i] * sum_ij;
+            stretching += dk * dk * contraction;
         }
-        numer *= self.c;
-        let s = strain_rate_tensor(g);
-        let denom = 2.0 * s.iter().map(|v| v * v).sum::<f64>();
-        if denom > 1e-20 && numer < 0.0 {
-            0.0
-        } else if denom > 1e-20 {
-            numer / denom
-        } else {
-            0.0
-        }
+        self.c * (-stretching).max(0.0) / grad_sq
     }
     /// Compute the anisotropy factor: ratio of largest to smallest grid spacing.
     pub fn anisotropy_factor(&self) -> f64 {

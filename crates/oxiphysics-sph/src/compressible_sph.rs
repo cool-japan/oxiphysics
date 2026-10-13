@@ -8,6 +8,8 @@
 //!
 //! - [`CompressibleParticle`]: State variables for a compressible SPH particle
 //! - [`CompressibleSph`]: Full compressible SPH solver with ideal-gas EOS
+//!   (kick-drift-kick leapfrog, optional Monaghan artificial viscosity)
+//! - [`KernelDimension`]: 1-D / 2-D / 3-D normalisation of the cubic-spline kernel
 //! - [`ArtificialViscosityCs`]: Monaghan-style artificial viscosity
 //! - [`GodunovSph`]: Godunov-type SPH using embedded Riemann solvers
 //! - [`RiemannSolverType`]: Available Riemann solver variants
@@ -37,9 +39,6 @@
 // ============================================================================
 // Math helpers
 // ============================================================================
-
-/// Snapshot tuple for per-particle thermodynamic state used in energy_update.
-type ParticleSnap = (f64, f64, [f64; 3], [f64; 3], f64);
 
 #[inline]
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -141,9 +140,61 @@ impl CompressibleParticle {
 // CompressibleSph
 // ============================================================================
 
+/// Spatial dimension used to normalise the cubic-spline SPH kernel.
+///
+/// Particles always carry 3-D positions, but the kernel normalisation has to
+/// match the dimensionality of the flow: particles arranged on a line need
+/// the 1-D constant, a planar flow the 2-D one.  With the wrong constant the
+/// summation density — and with it every pressure and force — is off by a
+/// factor of order `h^(d_used − d)`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KernelDimension {
+    /// One-dimensional flow (particles on a line).
+    One,
+    /// Two-dimensional (planar) flow.
+    Two,
+    /// Three-dimensional flow.
+    #[default]
+    Three,
+}
+
+impl KernelDimension {
+    /// Number of spatial dimensions.
+    pub fn count(self) -> usize {
+        match self {
+            KernelDimension::One => 1,
+            KernelDimension::Two => 2,
+            KernelDimension::Three => 3,
+        }
+    }
+
+    /// Normalisation `σ_d(h)` of the cubic spline written as
+    /// `W = σ_d (2/3 − q² + q³/2)` for `q < 1` and `σ_d (2 − q)³ / 6` for
+    /// `1 ≤ q < 2`, so that `∫ W dV = 1` in `d` dimensions:
+    /// `1/h` (1-D), `15/(7π h²)` (2-D) and `3/(2π h³)` (3-D).
+    pub fn normalisation(self, h: f64) -> f64 {
+        match self {
+            KernelDimension::One => 1.0 / h,
+            KernelDimension::Two => 15.0 / (7.0 * std::f64::consts::PI * h * h),
+            KernelDimension::Three => 3.0 / (2.0 * std::f64::consts::PI * h * h * h),
+        }
+    }
+}
+
 /// Compressible SPH solver for high-speed and shock-dominated flows.
 ///
-/// Uses an ideal-gas EOS p = (γ-1)·ρ·e and explicit Euler time integration.
+/// Uses an ideal-gas EOS p = (γ-1)·ρ·e and a second-order kick-drift-kick
+/// leapfrog integrator.  The momentum and energy equations use the symmetric
+/// SPH form
+///
+/// ```text
+/// dv_i/dt = −Σ_j m_j (p_i/ρ_i² + p_j/ρ_j² + Π_ij) ∇_i W_ij
+/// de_i/dt =  Σ_j m_j (p_i/ρ_i² + ½ Π_ij) (v_i − v_j) · ∇_i W_ij
+/// ```
+///
+/// where `Π_ij` is the optional Monaghan artificial viscosity.  Every pair
+/// interaction is antisymmetric, so linear momentum and the total energy
+/// `Σ m (e + ½ v²)` are conserved by the force evaluation.
 pub struct CompressibleSph {
     /// Collection of all particles.
     pub particles: Vec<CompressibleParticle>,
@@ -151,16 +202,38 @@ pub struct CompressibleSph {
     pub gamma: f64,
     /// Global smoothing length h (m).
     pub h: f64,
+    /// Dimensionality of the flow; selects the kernel normalisation.
+    pub dim: KernelDimension,
+    /// Monaghan artificial viscosity for shock capturing (`None` = inviscid).
+    pub viscosity: Option<ArtificialViscosityCs>,
 }
 
 impl CompressibleSph {
     /// Create a new solver with no particles.
+    ///
+    /// The kernel is 3-D ([`KernelDimension::Three`]) and the flow is inviscid;
+    /// use [`with_dimension`](Self::with_dimension) and
+    /// [`with_viscosity`](Self::with_viscosity) to change that.
     pub fn new(gamma: f64, h: f64) -> Self {
         Self {
             particles: Vec::new(),
             gamma,
             h,
+            dim: KernelDimension::Three,
+            viscosity: None,
         }
+    }
+
+    /// Select the dimensionality of the flow (kernel normalisation).
+    pub fn with_dimension(mut self, dim: KernelDimension) -> Self {
+        self.dim = dim;
+        self
+    }
+
+    /// Enable Monaghan artificial viscosity for shock capturing.
+    pub fn with_viscosity(mut self, viscosity: ArtificialViscosityCs) -> Self {
+        self.viscosity = Some(viscosity);
+        self
     }
 
     /// Add a particle.
@@ -197,24 +270,72 @@ impl CompressibleSph {
 
     /// Perform one explicit time step of size `dt` (s).
     ///
-    /// The sequence is:
-    /// 1. Update densities (continuity),
-    /// 2. Update momenta (momentum equation),
-    /// 3. Update energies (energy equation),
-    /// 4. Update thermodynamics.
-    pub fn step(&mut self, _dt: f64) {
+    /// Kick-drift-kick leapfrog:
+    /// 1. densities (summation) and pressure / sound speed are brought up to
+    ///    date for the current positions, then the accelerations and energy
+    ///    rates are evaluated;
+    /// 2. half-kick of velocities and specific energies, drift of the
+    ///    positions with the half-step velocity;
+    /// 3. density and thermodynamics are recomputed at the new positions and
+    ///    the rates are re-evaluated — the velocity-dependent terms (viscosity,
+    ///    compression work) use the velocity and energy predicted to the end of
+    ///    the step;
+    /// 4. closing half-kick from the half-step state.
+    ///
+    /// Nothing happens for a non-positive or non-finite `dt`.
+    pub fn step(&mut self, dt: f64) {
+        if !dt.is_finite() || dt <= 0.0 || self.particles.is_empty() {
+            return;
+        }
+        let half = 0.5 * dt;
+
         self.density_update();
-        self.momentum_update();
-        self.energy_update();
-        self.compute_sound_speed();
+        self.update_thermodynamics();
+        let (acc_start, de_start) = self.compute_rates();
+
+        for (p, (a, de)) in self
+            .particles
+            .iter_mut()
+            .zip(acc_start.iter().zip(de_start.iter()))
+        {
+            p.vel = add3(p.vel, scale3(*a, half));
+            p.energy = (p.energy + half * de).max(0.0);
+        }
+        for p in &mut self.particles {
+            p.pos = add3(p.pos, scale3(p.vel, dt));
+        }
+
+        let half_step: Vec<([f64; 3], f64)> =
+            self.particles.iter().map(|p| (p.vel, p.energy)).collect();
+        for (p, (a, de)) in self
+            .particles
+            .iter_mut()
+            .zip(acc_start.iter().zip(de_start.iter()))
+        {
+            p.vel = add3(p.vel, scale3(*a, half));
+            p.energy = (p.energy + half * de).max(0.0);
+        }
+        self.density_update();
+        self.update_thermodynamics();
+        let (acc_end, de_end) = self.compute_rates();
+
+        for (p, ((vel_half, energy_half), (a, de))) in self
+            .particles
+            .iter_mut()
+            .zip(half_step.iter().zip(acc_end.iter().zip(de_end.iter())))
+        {
+            p.vel = add3(*vel_half, scale3(*a, half));
+            p.energy = (*energy_half + half * de).max(0.0);
+        }
+        self.update_thermodynamics();
     }
 
     /// Update densities using the SPH continuity equation (summation density).
     ///
     /// ρ_i = Σ_j m_j · W(|x_i - x_j|, h)
     pub fn density_update(&mut self) {
-        let _n = self.particles.len();
         let h = self.h;
+        let dim = self.dim;
         let positions: Vec<[f64; 3]> = self.particles.iter().map(|p| p.pos).collect();
         let masses: Vec<f64> = self.particles.iter().map(|p| p.mass).collect();
         for (p_i, pos_i) in self.particles.iter_mut().zip(positions.iter()) {
@@ -223,7 +344,7 @@ impl CompressibleSph {
                 .zip(masses.iter())
                 .map(|(pos_j, &mj)| {
                     let r = len3(sub3(*pos_i, *pos_j));
-                    mj * cubic_spline_kernel(r, h)
+                    mj * cubic_spline_kernel(r, h, dim)
                 })
                 .sum::<f64>()
                 .max(1e-10);
@@ -231,91 +352,103 @@ impl CompressibleSph {
         }
     }
 
-    /// Update velocities using the SPH momentum equation (pressure gradient).
+    /// Accelerations `dv/dt` and specific-energy rates `de/dt` of all
+    /// particles for the current state (positions, velocities, densities,
+    /// pressures and sound speeds are taken as they are).
     ///
-    /// d**v**_i/dt = -Σ_j m_j (p_i/ρ_i² + p_j/ρ_j²) ∇W_ij
-    pub fn momentum_update(&mut self) {
-        let _n = self.particles.len();
+    /// Each unordered pair is visited once and contributes equal and opposite
+    /// momentum changes, so `Σ m_i a_i = 0` up to rounding.
+    fn compute_rates(&self) -> (Vec<[f64; 3]>, Vec<f64>) {
+        let n = self.particles.len();
         let h = self.h;
-        // Snapshot current pressures / densities / positions
-        let snap: Vec<(f64, f64, [f64; 3], f64)> = self
-            .particles
-            .iter()
-            .map(|p| (p.pressure, p.density, p.pos, p.mass))
-            .collect();
-
-        for (i, p) in self.particles.iter_mut().enumerate() {
-            let (pi, rhoi, xi, _) = snap[i];
-            let mut acc = [0.0_f64; 3];
-            for (j, &(pj, rhoj, xj, mj)) in snap.iter().enumerate() {
-                if i == j {
-                    continue;
-                }
-                let rij = sub3(xi, xj);
-                let r = len3(rij);
-                let dw = cubic_spline_kernel_grad(r, h);
-                if r > 1e-300 {
-                    let dir = scale3(rij, 1.0 / r);
-                    let coeff = mj * (pi / (rhoi * rhoi) + pj / (rhoj * rhoj)) * dw;
-                    acc = sub3(acc, scale3(dir, coeff));
-                }
-            }
-            // Simple Euler update (dt = 1 for this helper; caller uses step())
-            p.vel = add3(p.vel, acc);
-        }
-    }
-
-    /// Update specific internal energies using the SPH energy equation.
-    ///
-    /// de_i/dt = (p_i/ρ_i²) Σ_j m_j (**v**_i - **v**_j) · ∇W_ij
-    pub fn energy_update(&mut self) {
-        let h = self.h;
-        let snap: Vec<ParticleSnap> = self
-            .particles
-            .iter()
-            .map(|p| (p.pressure, p.density, p.pos, p.vel, p.mass))
-            .collect();
-
-        for (i, p) in self.particles.iter_mut().enumerate() {
-            let (pi, rhoi, xi, vi, _) = snap[i];
-            if rhoi.abs() < 1e-300 {
+        let mut acc = vec![[0.0_f64; 3]; n];
+        let mut de_dt = vec![0.0_f64; n];
+        for i in 0..n {
+            let pi = &self.particles[i];
+            if pi.density.abs() < 1e-300 {
                 continue;
             }
-            let mut de = 0.0;
-            for (j, &(_pj, _rhoj, xj, vj, mj)) in snap.iter().enumerate() {
-                if i == j {
+            let press_i = pi.pressure / (pi.density * pi.density);
+            for j in (i + 1)..n {
+                let pj = &self.particles[j];
+                if pj.density.abs() < 1e-300 {
                     continue;
                 }
-                let rij = sub3(xi, xj);
+                let rij = sub3(pi.pos, pj.pos);
                 let r = len3(rij);
-                let dw = cubic_spline_kernel_grad(r, h);
-                if r > 1e-300 {
-                    let dir = scale3(rij, 1.0 / r);
-                    let dv = sub3(vi, vj);
-                    de += mj * dot3(dv, dir) * dw;
+                if r <= 1e-300 {
+                    continue;
                 }
+                let dw = cubic_spline_kernel_grad(r, h, self.dim);
+                if dw == 0.0 {
+                    continue;
+                }
+                // ∇_i W_ij = (dW/dr) r̂_ij  (points along x_i − x_j)
+                let grad_w = scale3(rij, dw / r);
+                let press_j = pj.pressure / (pj.density * pj.density);
+                let visc = self
+                    .viscosity
+                    .as_ref()
+                    .map_or(0.0, |av| av.viscosity_term(pi, pj, h));
+                let coeff = press_i + press_j + visc;
+                acc[i] = sub3(acc[i], scale3(grad_w, pj.mass * coeff));
+                acc[j] = add3(acc[j], scale3(grad_w, pi.mass * coeff));
+                let v_dot_grad_w = dot3(sub3(pi.vel, pj.vel), grad_w);
+                de_dt[i] += pj.mass * (press_i + 0.5 * visc) * v_dot_grad_w;
+                de_dt[j] += pi.mass * (press_j + 0.5 * visc) * v_dot_grad_w;
             }
-            p.energy += (pi / (rhoi * rhoi)) * de;
-            p.energy = p.energy.max(0.0);
+        }
+        (acc, de_dt)
+    }
+
+    /// Advance velocities by `dt` with the SPH momentum equation
+    /// (pressure gradient plus the optional artificial viscosity):
+    ///
+    /// d**v**_i/dt = -Σ_j m_j (p_i/ρ_i² + p_j/ρ_j² + Π_ij) ∇_i W_ij
+    ///
+    /// This is an explicit Euler kick with the densities, pressures and
+    /// positions currently stored in the particles; call
+    /// [`density_update`](Self::density_update) and
+    /// [`compute_sound_speed`](Self::compute_sound_speed) first so they are
+    /// consistent.  [`step`](Self::step) composes these building blocks into a
+    /// second-order integrator.
+    pub fn momentum_update(&mut self, dt: f64) {
+        let (acc, _) = self.compute_rates();
+        for (p, a) in self.particles.iter_mut().zip(acc.iter()) {
+            p.vel = add3(p.vel, scale3(*a, dt));
         }
     }
 
-    /// Recompute the sound speed c_s = √(γ·p/ρ) for every particle.
-    pub fn compute_sound_speed(&mut self) {
-        let gamma = self.gamma;
-        for p in &mut self.particles {
-            p.sound_speed = if p.density > 0.0 && p.pressure > 0.0 {
-                (gamma * p.pressure / p.density).sqrt()
-            } else {
-                0.0
-            };
+    /// Advance specific internal energies by `dt` with the SPH energy equation:
+    ///
+    /// de_i/dt = Σ_j m_j (p_i/ρ_i² + ½ Π_ij) (**v**_i - **v**_j) · ∇_i W_ij
+    ///
+    /// Explicit Euler update with the state currently stored in the particles
+    /// (see [`momentum_update`](Self::momentum_update)); energies stay
+    /// non-negative.
+    pub fn energy_update(&mut self, dt: f64) {
+        let (_, de_dt) = self.compute_rates();
+        for (p, de) in self.particles.iter_mut().zip(de_dt.iter()) {
+            p.energy = (p.energy + de * dt).max(0.0);
         }
+    }
+
+    /// Recompute the pressure and sound speed c_s = √(γ·p/ρ) of every particle
+    /// from its current density and specific internal energy.
+    pub fn compute_sound_speed(&mut self) {
         self.update_thermodynamics();
     }
 
     /// Total mechanical energy E_tot = Σ m_i · (e_i + ½|v_i|²).
     pub fn total_energy(&self) -> f64 {
         self.particles.iter().map(|p| p.total_energy()).sum()
+    }
+
+    /// Total linear momentum Σ m_i **v**_i.
+    pub fn total_momentum(&self) -> [f64; 3] {
+        self.particles
+            .iter()
+            .fold([0.0; 3], |acc, p| add3(acc, scale3(p.vel, p.mass)))
     }
 
     /// Maximum sound speed among all particles (m/s).
@@ -327,6 +460,11 @@ impl CompressibleSph {
     }
 
     /// CFL time step: dt = CFL · h / (c_s,max + |v|_max).
+    ///
+    /// The estimate uses the sound speed and the particle speeds only; it does
+    /// not include the signal speed of the artificial viscosity.  For strong
+    /// shocks or supersonic collisions with viscosity enabled, use a CFL
+    /// number of about 0.1 or smaller to keep the total-energy error small.
     pub fn dt_cfl(&self, cfl: f64) -> f64 {
         let cs_max = self.max_sound_speed();
         let v_max = self
@@ -343,16 +481,17 @@ impl CompressibleSph {
 }
 
 // ============================================================================
-// SPH kernel functions (cubic spline, 1-D normalisation)
+// SPH kernel functions (cubic spline, 1-D / 2-D / 3-D normalisation)
 // ============================================================================
 
-/// Cubic-spline SPH kernel W(r, h).
-fn cubic_spline_kernel(r: f64, h: f64) -> f64 {
+/// Cubic-spline SPH kernel W(r, h) with the normalisation of `dim`
+/// (support radius 2h).
+fn cubic_spline_kernel(r: f64, h: f64, dim: KernelDimension) -> f64 {
     if h <= 0.0 {
         return 0.0;
     }
     let q = r / h;
-    let norm = 1.0 / h; // 1-D normalisation
+    let norm = dim.normalisation(h);
     if q < 1.0 {
         norm * (2.0 / 3.0 - q * q + 0.5 * q * q * q)
     } else if q < 2.0 {
@@ -363,13 +502,13 @@ fn cubic_spline_kernel(r: f64, h: f64) -> f64 {
     }
 }
 
-/// Magnitude of the gradient of the cubic-spline kernel |dW/dr|.
-fn cubic_spline_kernel_grad(r: f64, h: f64) -> f64 {
+/// Radial derivative dW/dr of the cubic-spline kernel (non-positive).
+fn cubic_spline_kernel_grad(r: f64, h: f64, dim: KernelDimension) -> f64 {
     if h <= 0.0 {
         return 0.0;
     }
     let q = r / h;
-    let norm = 1.0 / (h * h);
+    let norm = dim.normalisation(h) / h;
     if q < 1.0 {
         norm * (-2.0 * q + 1.5 * q * q)
     } else if q < 2.0 {
@@ -1181,5 +1320,545 @@ mod tests {
     fn test_rh_u2_finite() {
         let (_rho2, _p2, u2) = rankine_hugoniot(1.2, 1e5, 500.0, 3.0, 1.4);
         assert!(u2.is_finite());
+    }
+}
+
+#[cfg(test)]
+mod tests_dynamics {
+    use super::*;
+    use std::f64::consts::PI;
+
+    const GAMMA: f64 = 1.4;
+
+    /// Gas particle with the given kinematics; density, pressure and sound
+    /// speed are (re)computed by the solver.
+    fn gas(pos: [f64; 3], vel: [f64; 3], mass: f64, energy: f64, h: f64) -> CompressibleParticle {
+        CompressibleParticle::new(pos, vel, 1.0, 0.0, energy, 0.0, mass, h)
+    }
+
+    /// `n`³ lattice of unit-mass particles with spacing `dx`.
+    fn lattice_3d(n: usize, dx: f64, h: f64, energy: f64) -> CompressibleSph {
+        let mut sph = CompressibleSph::new(GAMMA, h);
+        for i in 0..n {
+            for j in 0..n {
+                for k in 0..n {
+                    let pos = [i as f64 * dx, j as f64 * dx, k as f64 * dx];
+                    sph.add_particle(gas(pos, [0.0; 3], dx * dx * dx, energy, h));
+                }
+            }
+        }
+        sph.density_update();
+        sph.compute_sound_speed();
+        sph
+    }
+
+    /// Classic Sod shock tube on `x ∈ [−0.5, 0.5]` (ρ = 1, p = 1 left of the
+    /// diaphragm, ρ = 0.125, p = 0.1 right of it).
+    ///
+    /// All particles have the same mass `ρ_L Δx_L`: `n_left` particles with
+    /// spacing `Δx_L = 0.5 / n_left` fill the left half and `n_left / 8`
+    /// particles with eight times the spacing fill the right half.  Equal
+    /// masses keep the summation density consistent across the density jump
+    /// (variable-mass particles on a uniform lattice would need a smoothing
+    /// length of several spacings to avoid an O(1) error at the contact), and
+    /// the global smoothing length `h = 1.3 Δx_R` covers the coarse right side.
+    fn sod_tube(n_left: usize) -> CompressibleSph {
+        let n_right = n_left / 8;
+        let dx_left = 0.5 / n_left as f64;
+        let dx_right = 0.5 / n_right as f64;
+        let mass = dx_left;
+        let h = 1.3 * dx_right;
+        let mut sph = CompressibleSph::new(GAMMA, h)
+            .with_dimension(KernelDimension::One)
+            .with_viscosity(ArtificialViscosityCs::new(1.0, 2.0));
+        let left = (0..n_left).map(|i| (-0.5 + (i as f64 + 0.5) * dx_left, 1.0, 1.0));
+        let right = (0..n_right).map(|i| ((i as f64 + 0.5) * dx_right, 0.125, 0.1));
+        for (x, rho, p) in left.chain(right) {
+            let energy = p / ((GAMMA - 1.0) * rho);
+            sph.add_particle(CompressibleParticle::new(
+                [x, 0.0, 0.0],
+                [0.0; 3],
+                rho,
+                p,
+                energy,
+                (GAMMA * p / rho).sqrt(),
+                mass,
+                h,
+            ));
+        }
+        sph.density_update();
+        sph.compute_sound_speed();
+        sph
+    }
+
+    /// Advance with CFL-limited steps up to `t_end`; returns the step count.
+    fn evolve(sph: &mut CompressibleSph, t_end: f64, cfl: f64) -> usize {
+        let mut time = 0.0;
+        let mut steps = 0;
+        while time < t_end {
+            let dt = sph.dt_cfl(cfl).min(t_end - time);
+            sph.step(dt);
+            time += dt;
+            steps += 1;
+        }
+        steps
+    }
+
+    /// Midpoint-rule integral of `f(r) * area(r) dr` over the support `[0, 2h]`.
+    fn radial_integral(h: f64, area: impl Fn(f64) -> f64, f: impl Fn(f64) -> f64) -> f64 {
+        let n = 40_000;
+        let dr = 2.0 * h / n as f64;
+        (0..n)
+            .map(|i| {
+                let r = (i as f64 + 0.5) * dr;
+                f(r) * area(r) * dr
+            })
+            .sum()
+    }
+
+    // ---- kernel normalisation -------------------------------------------------
+
+    #[test]
+    fn test_kernel_dimension_counts() {
+        assert_eq!(KernelDimension::One.count(), 1);
+        assert_eq!(KernelDimension::Two.count(), 2);
+        assert_eq!(KernelDimension::Three.count(), 3);
+        assert_eq!(KernelDimension::default(), KernelDimension::Three);
+    }
+
+    #[test]
+    fn test_cubic_spline_kernel_is_unit_normalised_in_each_dimension() {
+        for &h in &[0.1, 1.0, 2.7] {
+            let one = radial_integral(
+                h,
+                |_| 2.0,
+                |r| cubic_spline_kernel(r, h, KernelDimension::One),
+            );
+            let two = radial_integral(
+                h,
+                |r| 2.0 * PI * r,
+                |r| cubic_spline_kernel(r, h, KernelDimension::Two),
+            );
+            let three = radial_integral(
+                h,
+                |r| 4.0 * PI * r * r,
+                |r| cubic_spline_kernel(r, h, KernelDimension::Three),
+            );
+            assert!((one - 1.0).abs() < 1.0e-6, "1-D, h = {h}: {one}");
+            assert!((two - 1.0).abs() < 1.0e-6, "2-D, h = {h}: {two}");
+            assert!((three - 1.0).abs() < 1.0e-6, "3-D, h = {h}: {three}");
+        }
+    }
+
+    #[test]
+    fn test_cubic_spline_kernel_gradient_matches_central_difference() {
+        let h = 0.8;
+        for dim in [
+            KernelDimension::One,
+            KernelDimension::Two,
+            KernelDimension::Three,
+        ] {
+            for i in 1..32 {
+                let r = i as f64 * 0.05 * h;
+                let eps = 1.0e-6 * h;
+                let numeric = (cubic_spline_kernel(r + eps, h, dim)
+                    - cubic_spline_kernel(r - eps, h, dim))
+                    / (2.0 * eps);
+                let analytic = cubic_spline_kernel_grad(r, h, dim);
+                assert!(analytic <= 0.0);
+                assert!(
+                    (analytic - numeric).abs() <= 1.0e-6 * numeric.abs().max(1.0e-9),
+                    "{dim:?}, r = {r}: analytic = {analytic}, numeric = {numeric}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_summation_density_reproduces_rest_density_per_dimension() {
+        // Equal-mass particles on a regular 1-D, 2-D and 3-D lattice must give
+        // the lattice density in the centre when the matching kernel
+        // normalisation is selected (the former fixed 1-D constant was wrong
+        // by a factor ~ h^(1 - d) for planar and volumetric flows).
+        let dx = 0.1;
+        let h = 1.3 * dx;
+        let rho0 = 2.0;
+        let cases: [(KernelDimension, usize, f64); 3] = [
+            (KernelDimension::One, 21, rho0 * dx),
+            (KernelDimension::Two, 11, rho0 * dx * dx),
+            (KernelDimension::Three, 7, rho0 * dx * dx * dx),
+        ];
+        for (dim, n, mass) in cases {
+            let mut sph = CompressibleSph::new(GAMMA, h).with_dimension(dim);
+            // Number of lattice points along x, y and z (1 along unused axes).
+            let counts = [
+                n,
+                if dim.count() >= 2 { n } else { 1 },
+                if dim.count() >= 3 { n } else { 1 },
+            ];
+            let coord =
+                |index: usize, count: usize| (index as f64 - 0.5 * (count as f64 - 1.0)) * dx;
+            for i in 0..counts[0] {
+                for j in 0..counts[1] {
+                    for k in 0..counts[2] {
+                        let pos = [
+                            coord(i, counts[0]),
+                            coord(j, counts[1]),
+                            coord(k, counts[2]),
+                        ];
+                        sph.add_particle(gas(pos, [0.0; 3], mass, 1.0, h));
+                    }
+                }
+            }
+            sph.density_update();
+            let middle = sph
+                .particles
+                .iter()
+                .min_by(|a, b| len3(a.pos).total_cmp(&len3(b.pos)))
+                .map(|p| p.density)
+                .unwrap_or(0.0);
+            assert!(
+                (middle - rho0).abs() / rho0 < 0.01,
+                "{dim:?}: centre density {middle}, expected {rho0}"
+            );
+        }
+    }
+
+    // ---- time integration -----------------------------------------------------
+
+    #[test]
+    fn test_step_drifts_an_isolated_particle_by_velocity_times_dt() {
+        let mut sph = CompressibleSph::new(GAMMA, 0.5);
+        sph.add_particle(gas([0.0; 3], [2.0, -1.0, 0.5], 0.1, 1.0, 0.5));
+        sph.step(0.1);
+        let p = &sph.particles[0];
+        for (got, want) in p.pos.iter().zip([0.2, -0.1, 0.05]) {
+            assert!((got - want).abs() < 1.0e-14, "pos {:?}", p.pos);
+        }
+        // No neighbours: no force and no energy exchange.
+        assert_eq!(p.vel, [2.0, -1.0, 0.5]);
+        assert!((p.energy - 1.0).abs() < 1.0e-14);
+    }
+
+    #[test]
+    fn test_step_ignores_non_positive_or_non_finite_dt() {
+        let mut sph = lattice_3d(2, 1.0, 1.3, 1.0);
+        let before: Vec<([f64; 3], [f64; 3], f64)> = sph
+            .particles
+            .iter()
+            .map(|p| (p.pos, p.vel, p.energy))
+            .collect();
+        for dt in [0.0, -0.1, f64::NAN, f64::INFINITY] {
+            sph.step(dt);
+        }
+        for (p, (pos, vel, energy)) in sph.particles.iter().zip(before) {
+            assert_eq!(p.pos, pos);
+            assert_eq!(p.vel, vel);
+            assert_eq!(p.energy, energy);
+        }
+    }
+
+    #[test]
+    fn test_step_velocity_change_scales_linearly_with_dt() {
+        // Two hot particles at rest push each other apart.  For a tiny step
+        // the velocity change is a·dt, so doubling dt doubles it — the old
+        // code ignored dt altogether.
+        let kick = |dt: f64| {
+            let mut sph = CompressibleSph::new(GAMMA, 1.0);
+            sph.add_particle(gas([0.0; 3], [0.0; 3], 1.0, 2.5, 1.0));
+            sph.add_particle(gas([1.0, 0.0, 0.0], [0.0; 3], 1.0, 2.5, 1.0));
+            sph.step(dt);
+            (sph.particles[0].vel, sph.particles[1].vel)
+        };
+        let (v0_small, v1_small) = kick(1.0e-4);
+        let (v0_large, _) = kick(2.0e-4);
+        assert!(
+            v0_small[0] < 0.0,
+            "left particle must move to -x: {v0_small:?}"
+        );
+        assert!(
+            v1_small[0] > 0.0,
+            "right particle must move to +x: {v1_small:?}"
+        );
+        let ratio = v0_large[0] / v0_small[0];
+        assert!((ratio - 2.0).abs() < 1.0e-3, "velocity ratio {ratio}");
+        // Equal masses: exact momentum balance.
+        assert!((v0_small[0] + v1_small[0]).abs() <= 1.0e-12 * v0_small[0].abs());
+    }
+
+    #[test]
+    fn test_step_moves_particles_and_changes_kinematics() {
+        let mut sph = lattice_3d(3, 1.0, 1.3, 1.0);
+        let start: Vec<[f64; 3]> = sph.particles.iter().map(|p| p.pos).collect();
+        sph.step(0.1);
+        let moved = sph
+            .particles
+            .iter()
+            .zip(start.iter())
+            .map(|(p, x0)| len3(sub3(p.pos, *x0)))
+            .fold(0.0_f64, f64::max);
+        assert!(moved > 1.0e-4, "particles must move: {moved}");
+        let vmax = sph
+            .particles
+            .iter()
+            .map(|p| len3(p.vel))
+            .fold(0.0_f64, f64::max);
+        assert!(vmax > 0.0);
+    }
+
+    #[test]
+    fn test_momentum_and_energy_updates_apply_dt_exactly() {
+        let build = || {
+            let mut sph = CompressibleSph::new(GAMMA, 1.0);
+            sph.add_particle(gas([0.0; 3], [0.5, 0.0, 0.0], 1.0, 2.5, 1.0));
+            sph.add_particle(gas([0.9, 0.2, 0.0], [-0.5, 0.1, 0.0], 2.0, 1.5, 1.0));
+            sph.density_update();
+            sph.compute_sound_speed();
+            sph
+        };
+        // Velocity change over dt: linear in dt for a fixed state.
+        let kick = |dt: f64| {
+            let mut sph = build();
+            let before = sph.particles[0].vel;
+            sph.momentum_update(dt);
+            let after = sph.particles[0].vel;
+            [
+                after[0] - before[0],
+                after[1] - before[1],
+                after[2] - before[2],
+            ]
+        };
+        let dv_one = kick(1.0e-3);
+        let dv_two = kick(2.0e-3);
+        assert!(len3(dv_one) > 0.0, "momentum_update must act");
+        for d in 0..3 {
+            assert!((dv_two[d] - 2.0 * dv_one[d]).abs() <= 1.0e-12 * len3(dv_one));
+        }
+        // Specific-energy change over dt: also linear in dt.
+        let heat = |dt: f64| {
+            let mut sph = build();
+            let before = sph.particles[1].energy;
+            sph.energy_update(dt);
+            sph.particles[1].energy - before
+        };
+        let de_one = heat(1.0e-3);
+        let de_two = heat(2.0e-3);
+        assert!(de_one != 0.0, "energy_update must act");
+        assert!((de_two - 2.0 * de_one).abs() <= 1.0e-12 * de_one.abs());
+        // Zero time step leaves the state untouched.
+        let mut idle = build();
+        let snapshot: Vec<([f64; 3], f64)> =
+            idle.particles.iter().map(|p| (p.vel, p.energy)).collect();
+        idle.momentum_update(0.0);
+        idle.energy_update(0.0);
+        for (p, (vel, energy)) in idle.particles.iter().zip(snapshot) {
+            assert_eq!(p.vel, vel);
+            assert_eq!(p.energy, energy);
+        }
+    }
+
+    #[test]
+    fn test_total_momentum_sums_particle_momenta() {
+        let mut sph = CompressibleSph::new(GAMMA, 0.5);
+        sph.add_particle(gas([0.0; 3], [1.0, 2.0, 3.0], 2.0, 1.0, 0.5));
+        sph.add_particle(gas([5.0; 3], [-1.0, 0.0, 1.0], 3.0, 1.0, 0.5));
+        let p = sph.total_momentum();
+        for (got, want) in p.iter().zip([-1.0, 4.0, 9.0]) {
+            assert!((got - want).abs() < 1.0e-14);
+        }
+    }
+
+    #[test]
+    fn test_pair_forces_conserve_momentum_and_energy_for_a_3d_cluster() {
+        // Hot 4³ cluster with a velocity field, artificial viscosity on: the
+        // pair interactions are antisymmetric, so momentum is conserved to
+        // rounding and the leapfrog keeps the total energy to second order.
+        let mut sph =
+            lattice_3d(4, 1.0, 1.3, 1.0).with_viscosity(ArtificialViscosityCs::new(1.0, 2.0));
+        for p in sph.particles.iter_mut() {
+            p.vel = [
+                0.2 - 0.1 * p.pos[0] + 0.05 * p.pos[1],
+                -0.1 + 0.08 * p.pos[2],
+                0.15 * (p.pos[0] - 1.5),
+            ];
+        }
+        sph.density_update();
+        sph.compute_sound_speed();
+        let e0 = sph.total_energy();
+        let mom0 = sph.total_momentum();
+        assert!(len3(mom0) > 1.0);
+        evolve(&mut sph, 2.0, 0.1);
+        let e1 = sph.total_energy();
+        let mom1 = sph.total_momentum();
+        assert!(
+            (e1 - e0).abs() / e0 < 2.0e-3,
+            "energy drift {}",
+            (e1 - e0) / e0
+        );
+        assert!(
+            len3(sub3(mom1, mom0)) < 1.0e-12 * len3(mom0),
+            "momentum {mom0:?} -> {mom1:?}"
+        );
+    }
+
+    #[test]
+    fn test_hot_cluster_expands_and_converts_heat_into_motion() {
+        let mut sph = lattice_3d(4, 1.0, 1.3, 2.0);
+        let radius = |s: &CompressibleSph| {
+            let n = s.particles.len() as f64;
+            let c = s.particles.iter().fold([0.0; 3], |a, p| add3(a, p.pos));
+            let c = scale3(c, 1.0 / n);
+            s.particles
+                .iter()
+                .map(|p| len3(sub3(p.pos, c)))
+                .fold(0.0_f64, f64::max)
+        };
+        let r0 = radius(&sph);
+        let u0: f64 = sph.particles.iter().map(|p| p.mass * p.energy).sum();
+        evolve(&mut sph, 3.0, 0.1);
+        assert!(
+            radius(&sph) > 1.3 * r0,
+            "cluster must expand: {} vs {r0}",
+            radius(&sph)
+        );
+        let u1: f64 = sph.particles.iter().map(|p| p.mass * p.energy).sum();
+        let ke: f64 = sph
+            .particles
+            .iter()
+            .map(|p| 0.5 * p.mass * dot3(p.vel, p.vel))
+            .sum();
+        assert!(u1 < u0, "adiabatic expansion must cool the gas");
+        assert!(ke > 0.1 * u0, "kinetic energy {ke}");
+    }
+
+    #[test]
+    fn test_artificial_viscosity_decelerates_converging_flow_and_heats_it() {
+        // Two lattice blocks approach each other along x.
+        let build = |viscosity: Option<ArtificialViscosityCs>| {
+            let mut sph = CompressibleSph::new(GAMMA, 1.3).with_dimension(KernelDimension::One);
+            if let Some(av) = viscosity {
+                sph = sph.with_viscosity(av);
+            }
+            for i in 0..20 {
+                let x = i as f64;
+                let v = if i < 10 { 1.0 } else { -1.0 };
+                sph.add_particle(gas([x, 0.0, 0.0], [v, 0.0, 0.0], 1.0, 0.5, 1.3));
+            }
+            sph.density_update();
+            sph.compute_sound_speed();
+            sph
+        };
+        let mut plain = build(None);
+        let mut damped = build(Some(ArtificialViscosityCs::new(1.0, 2.0)));
+        let e0 = plain.total_energy();
+        // Strong shocks need a small CFL number: dt_cfl ignores the viscous
+        // signal speed of the supersonic collision.
+        evolve(&mut plain, 3.0, 0.1);
+        evolve(&mut damped, 3.0, 0.1);
+        let kinetic = |s: &CompressibleSph| -> f64 {
+            s.particles
+                .iter()
+                .map(|p| 0.5 * p.mass * dot3(p.vel, p.vel))
+                .sum()
+        };
+        let thermal =
+            |s: &CompressibleSph| -> f64 { s.particles.iter().map(|p| p.mass * p.energy).sum() };
+        assert!(
+            kinetic(&damped) < kinetic(&plain),
+            "viscosity must dissipate kinetic energy"
+        );
+        assert!(
+            thermal(&damped) > thermal(&plain),
+            "dissipated energy must heat the gas"
+        );
+        assert!((damped.total_energy() - e0).abs() / e0 < 0.01);
+        assert!((plain.total_energy() - e0).abs() / e0 < 0.01);
+    }
+
+    // ---- Sod shock tube -------------------------------------------------------
+
+    #[test]
+    fn test_sod_shock_tube_moves_particles_and_conserves_energy_and_momentum() {
+        let mut sph = sod_tube(200);
+        let x0: Vec<f64> = sph.particles.iter().map(|p| p.pos[0]).collect();
+        let e0 = sph.total_energy();
+        let steps = evolve(&mut sph, 0.15, 0.25);
+        assert!(steps > 10);
+        // Particles move: the gas around the diaphragm is accelerated to the
+        // contact speed u* ≈ 0.927.
+        let displacement = sph
+            .particles
+            .iter()
+            .zip(x0.iter())
+            .map(|(p, x)| (p.pos[0] - x).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(displacement > 0.05, "max displacement {displacement}");
+        // Total energy within 1 %, momentum conserved to rounding.
+        let e1 = sph.total_energy();
+        assert!(
+            (e1 - e0).abs() / e0 < 0.01,
+            "energy drift {}",
+            (e1 - e0) / e0
+        );
+        let mom = sph.total_momentum();
+        let scale = sph
+            .particles
+            .iter()
+            .map(|p| p.mass * p.vel[0].abs())
+            .sum::<f64>();
+        assert!(len3(mom) < 1.0e-12 * scale, "momentum {mom:?}");
+        // Motion stays on the tube axis.
+        for p in &sph.particles {
+            assert_eq!(p.pos[1], 0.0);
+            assert_eq!(p.pos[2], 0.0);
+        }
+    }
+
+    #[test]
+    fn test_sod_shock_tube_plateaus_match_exact_riemann_solution() {
+        // Exact solution (γ = 1.4): p* = 0.30313, u* = 0.92745, ρ*_L = 0.42632
+        // between the rarefaction tail (x = −0.0105 at t = 0.15) and the
+        // contact (x = u* t = 0.139), ρ*_R = 0.26557 between contact and shock
+        // (x = 1.7522 t = 0.263).  The windows below lie inside these regions.
+        let mut sph = sod_tube(200);
+        evolve(&mut sph, 0.15, 0.25);
+        let mean = |lo: f64, hi: f64, f: &dyn Fn(&CompressibleParticle) -> f64| -> f64 {
+            let vals: Vec<f64> = sph
+                .particles
+                .iter()
+                .filter(|p| (lo..=hi).contains(&p.pos[0]))
+                .map(f)
+                .collect();
+            assert!(!vals.is_empty(), "no particles in [{lo}, {hi}]");
+            vals.iter().sum::<f64>() / vals.len() as f64
+        };
+        // Star region behind the rarefaction.
+        let u_left = mean(0.03, 0.12, &|p| p.vel[0]);
+        let p_left = mean(0.03, 0.12, &|p| p.pressure);
+        let rho_left = mean(0.03, 0.12, &|p| p.density);
+        assert!((u_left - 0.92745).abs() < 0.04, "u* = {u_left}");
+        assert!((p_left - 0.30313).abs() < 0.02, "p* = {p_left}");
+        assert!((rho_left - 0.42632).abs() < 0.03, "rho*_L = {rho_left}");
+        // Shocked gas between contact and shock.
+        let u_right = mean(0.17, 0.24, &|p| p.vel[0]);
+        let p_right = mean(0.17, 0.24, &|p| p.pressure);
+        let rho_right = mean(0.17, 0.24, &|p| p.density);
+        assert!(
+            (u_right - 0.92745).abs() < 0.04,
+            "u after shock = {u_right}"
+        );
+        assert!(
+            (p_right - 0.30313).abs() < 0.02,
+            "p after shock = {p_right}"
+        );
+        assert!((rho_right - 0.26557).abs() < 0.02, "rho*_R = {rho_right}");
+        // The undisturbed left state ahead of the rarefaction head.
+        let rho_far_left = mean(-0.30, -0.20, &|p| p.density);
+        let u_far_left = mean(-0.30, -0.20, &|p| p.vel[0]);
+        assert!(
+            (rho_far_left - 1.0).abs() < 0.03,
+            "left state {rho_far_left}"
+        );
+        assert!(u_far_left.abs() < 0.01, "left state velocity {u_far_left}");
     }
 }

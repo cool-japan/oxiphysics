@@ -848,13 +848,19 @@ impl Trajectory {
             })
             .collect()
     }
-    /// Translate each frame so its centre of mass coincides with that of
-    /// `reference`, then apply a *simplified* least-squares rotation using
-    /// the Kabsch algorithm (iterative gradient-free 3×3 SVD-free version).
+    /// Superimpose every frame onto `reference` with the minimum-RMSD rigid
+    /// motion (the Kabsch problem).
     ///
-    /// **Note:** This implementation uses an analytical closed-form
-    /// solution for the 3-D case that is exact for rigid bodies when N ≥ 3.
-    /// For very small N the result is still the minimum-RMSD superposition.
+    /// Each frame is translated so that its centroid (all atoms weighted
+    /// equally) coincides with the centroid of `reference` and is then rotated
+    /// about that centroid by the optimal rotation.  The rotation is found in
+    /// closed form with Horn's quaternion method: it is the eigenvector of the
+    /// largest eigenvalue of a symmetric 4×4 matrix built from the
+    /// cross-covariance of the two centred coordinate sets.  The result is
+    /// always a *proper* rotation (determinant +1), never a reflection, and
+    /// planar, collinear and single-atom configurations need no special
+    /// handling (for degenerate sets several rotations are equally optimal and
+    /// one of them is used).
     ///
     /// Returns a new `Vec<TrajectoryFrame>` with aligned coordinates.
     /// Frames whose atom count differs from `reference` are returned unchanged.
@@ -881,6 +887,8 @@ impl Trajectory {
                     .iter()
                     .map(|p| [p[0] - com[0], p[1] - com[1], p[2] - com[2]])
                     .collect();
+                // Cross-covariance h[i][j] = sum_k moving_k[i] * reference_k[j];
+                // `kabsch_rotation` returns the rotation that maps moving onto reference.
                 let mut h = [[0.0_f64; 3]; 3];
                 for (c, r) in centred.iter().zip(ref_centred.iter()) {
                     for i in 0..3 {
@@ -889,7 +897,7 @@ impl Trajectory {
                         }
                     }
                 }
-                let rot = polar_rotation_3x3(h);
+                let rot = kabsch_rotation(h);
                 let positions: Vec<[f64; 3]> = centred
                     .iter()
                     .map(|c| {

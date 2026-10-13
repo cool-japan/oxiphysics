@@ -21,7 +21,9 @@ fn test_engine_creation() {
 #[test]
 fn test_add_remove_body() {
     let mut engine = WasmPhysicsEngine::new(0.0, -9.81, 0.0);
-    let h = engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+    let h = engine
+        .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
     assert_eq!(engine.get_body_count(), 1);
     engine.remove_body(h).expect("should remove");
     assert_eq!(engine.get_body_count(), 0);
@@ -36,11 +38,15 @@ fn test_remove_invalid_handle() {
 #[test]
 fn test_add_bodies_and_step() {
     let mut engine = WasmPhysicsEngine::new(0.0, -10.0, 0.0);
-    let h0 = engine.add_dynamic_body(1.0, 0.0, 100.0, 0.0);
-    let h1 = engine.add_static_body(0.0, 0.0, 0.0);
+    let h0 = engine
+        .add_dynamic_body(1.0, 0.0, 100.0, 0.0)
+        .expect("add dynamic body");
+    let h1 = engine
+        .add_static_body(0.0, 0.0, 0.0)
+        .expect("add static body");
     assert_eq!(engine.get_body_count(), 2);
 
-    engine.step(1.0);
+    engine.step(1.0).expect("step");
 
     // Dynamic body should have moved (below 100)
     let pos = engine.get_position(h0);
@@ -54,12 +60,14 @@ fn test_add_bodies_and_step() {
 #[test]
 fn test_gravity_integration() {
     let mut engine = WasmPhysicsEngine::new(0.0, -10.0, 0.0);
-    let h = engine.add_dynamic_body(1.0, 0.0, 50.0, 0.0);
+    let h = engine
+        .add_dynamic_body(1.0, 0.0, 50.0, 0.0)
+        .expect("add dynamic body");
     // Step with one substep of exactly 0.5s
     let mut cfg = engine.config.clone();
     cfg.fixed_dt = 0.5;
     engine.config = cfg;
-    engine.step(0.5);
+    engine.step(0.5).expect("step");
 
     let vel = engine.get_velocity(h);
     // v = g * dt = -10 * 0.5 = -5 (approximately, with damping)
@@ -73,13 +81,15 @@ fn test_gravity_integration() {
 #[test]
 fn test_set_velocity() {
     let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0); // no gravity
-    let h = engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+    let h = engine
+        .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
     engine
         .set_velocity(h, 10.0, 0.0, 0.0)
         .expect("set velocity");
-    engine.set_fixed_dt(1.0);
+    engine.set_fixed_dt(1.0).expect("set fixed dt");
     engine.set_body_linear_damping(h, 0.0).expect("set damping");
-    engine.step(1.0);
+    engine.step(1.0).expect("step");
 
     let pos = engine.get_position(h);
     assert!(
@@ -92,11 +102,13 @@ fn test_set_velocity() {
 #[test]
 fn test_apply_force() {
     let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-    let h = engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+    let h = engine
+        .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
     engine.apply_force(h, 10.0, 0.0, 0.0).expect("apply force");
     engine.set_body_linear_damping(h, 0.0).expect("set damping");
-    engine.set_fixed_dt(1.0);
-    engine.step(1.0);
+    engine.set_fixed_dt(1.0).expect("set fixed dt");
+    engine.step(1.0).expect("step");
     let vel = engine.get_velocity(h);
     // v = F/m * dt = 10 * 1 = 10
     assert!(
@@ -109,7 +121,9 @@ fn test_apply_force() {
 #[test]
 fn test_apply_impulse() {
     let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-    let h = engine.add_dynamic_body(2.0, 0.0, 0.0, 0.0);
+    let h = engine
+        .add_dynamic_body(2.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
     engine
         .apply_impulse(h, 10.0, 0.0, 0.0)
         .expect("apply impulse");
@@ -125,8 +139,12 @@ fn test_apply_impulse() {
 #[test]
 fn test_get_all_positions_flat() {
     let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-    engine.add_dynamic_body(1.0, 1.0, 2.0, 3.0);
-    engine.add_dynamic_body(1.0, 4.0, 5.0, 6.0);
+    engine
+        .add_dynamic_body(1.0, 1.0, 2.0, 3.0)
+        .expect("add dynamic body");
+    engine
+        .add_dynamic_body(1.0, 4.0, 5.0, 6.0)
+        .expect("add dynamic body");
 
     let all = engine.get_all_positions();
     assert_eq!(all.len(), 6);
@@ -138,9 +156,15 @@ fn test_get_all_positions_flat() {
 #[test]
 fn test_colliders_sphere() {
     let mut engine = WasmPhysicsEngine::new(0.0, -9.81, 0.0);
-    let body = engine.add_dynamic_body(1.0, 0.0, 10.0, 0.0);
-    let c0 = engine.add_sphere_collider(body, 0.5);
-    let c1 = engine.add_box_collider(body, 1.0, 1.0, 1.0);
+    let body = engine
+        .add_dynamic_body(1.0, 0.0, 10.0, 0.0)
+        .expect("add dynamic body");
+    let c0 = engine
+        .add_sphere_collider(body, 0.5)
+        .expect("add sphere collider");
+    let c1 = engine
+        .add_box_collider(body, 1.0, 1.0, 1.0)
+        .expect("add box collider");
     assert_eq!(c0, 0);
     assert_eq!(c1, 1);
 }
@@ -149,12 +173,20 @@ fn test_colliders_sphere() {
 fn test_sphere_plane_contact() {
     let mut engine = WasmPhysicsEngine::new(0.0, -10.0, 0.0);
     // Body starts near the plane (y=1, sphere radius=1.5 -> penetrating plane at y=0)
-    let dyn_body = engine.add_dynamic_body(1.0, 0.0, 1.0, 0.0);
-    let static_body = engine.add_static_body(0.0, 0.0, 0.0);
-    engine.add_sphere_collider(dyn_body, 1.5);
-    engine.add_plane_collider(static_body, 0.0, 1.0, 0.0, 0.0);
+    let dyn_body = engine
+        .add_dynamic_body(1.0, 0.0, 1.0, 0.0)
+        .expect("add dynamic body");
+    let static_body = engine
+        .add_static_body(0.0, 0.0, 0.0)
+        .expect("add static body");
+    engine
+        .add_sphere_collider(dyn_body, 1.5)
+        .expect("add sphere collider");
+    engine
+        .add_plane_collider(static_body, 0.0, 1.0, 0.0, 0.0)
+        .expect("add plane collider");
 
-    engine.step(1.0 / 60.0);
+    engine.step(1.0 / 60.0).expect("step");
     // Should have at least one contact
     assert!(
         engine.get_contact_count() >= 1,
@@ -166,24 +198,52 @@ fn test_sphere_plane_contact() {
 #[test]
 fn test_sphere_sphere_contact() {
     let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-    let b0 = engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
-    let b1 = engine.add_dynamic_body(1.0, 1.5, 0.0, 0.0); // distance = 1.5 < r0+r1=2.0
-    engine.add_sphere_collider(b0, 1.0);
-    engine.add_sphere_collider(b1, 1.0);
-    let _ = engine.set_velocity(b0, 2.0, 0.0, 0.0);
-    let _ = engine.set_velocity(b1, -2.0, 0.0, 0.0);
-    engine.step(1.0 / 60.0);
-    assert!(
-        engine.get_contact_count() >= 1,
-        "expected sphere-sphere contact"
+    let b0 = engine
+        .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
+    let b1 = engine
+        .add_dynamic_body(1.0, 1.5, 0.0, 0.0)
+        .expect("add dynamic body"); // distance = 1.5 < r0+r1=2.0
+    engine
+        .add_sphere_collider(b0, 1.0)
+        .expect("add sphere collider");
+    engine
+        .add_sphere_collider(b1, 1.0)
+        .expect("add sphere collider");
+    engine
+        .set_velocity(b0, 2.0, 0.0, 0.0)
+        .expect("set velocity");
+    engine
+        .set_velocity(b1, -2.0, 0.0, 0.0)
+        .expect("set velocity");
+    engine.step(1.0 / 60.0).expect("step");
+    assert_eq!(
+        engine.get_contact_count(),
+        1,
+        "expected one sphere-sphere contact"
     );
+
+    // The contact normal points from B toward A, so the approaching spheres
+    // are decelerated and pushed back instead of passing through each other.
+    let contact = &engine.get_contacts()[0];
+    assert_eq!((contact.body_a, contact.body_b), (b0, b1));
+    assert!(
+        contact.normal[0] < -0.999,
+        "A is left of B, the normal must point toward -x, got {:?}",
+        contact.normal
+    );
+    assert!(contact.depth > 0.0 && contact.impulse > 0.0);
+    assert!(engine.get_velocity(b0)[0] <= 0.0, "A is pushed back");
+    assert!(engine.get_velocity(b1)[0] >= 0.0, "B is pushed back");
 }
 
 #[test]
 fn test_reset() {
     let mut engine = WasmPhysicsEngine::new(0.0, -9.81, 0.0);
-    engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
-    engine.step(1.0 / 60.0);
+    engine
+        .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
+    engine.step(1.0 / 60.0).expect("step");
     engine.reset();
     assert_eq!(engine.get_body_count(), 0);
     assert!((engine.time()).abs() < 1e-15);
@@ -199,7 +259,9 @@ fn test_set_gravity() {
 #[test]
 fn test_get_body_state() {
     let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-    let h = engine.add_dynamic_body(2.0, 1.0, 2.0, 3.0);
+    let h = engine
+        .add_dynamic_body(2.0, 1.0, 2.0, 3.0)
+        .expect("add dynamic body");
     let state = engine.get_body_state(h).expect("should have state");
     assert_eq!(state.handle, h);
     assert!((state.position[0] - 1.0).abs() < 1e-10);
@@ -208,20 +270,33 @@ fn test_get_body_state() {
 #[test]
 fn test_handle_reuse_after_remove() {
     let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-    let h0 = engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+    let h0 = engine
+        .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
     engine.remove_body(h0).expect("remove body");
-    let h1 = engine.add_dynamic_body(1.0, 5.0, 5.0, 5.0);
-    // The free list reuses the slot
-    assert_eq!(h1, h0);
+    let h1 = engine
+        .add_dynamic_body(1.0, 5.0, 5.0, 5.0)
+        .expect("add dynamic body");
+    // The free list reuses the slot, but under a new generation: the stale
+    // handle of the removed body must not address the new body.
+    assert_eq!(engine.bodies.len(), 1, "the slot was recycled");
+    assert_ne!(h1, h0, "the recycled slot has a new generation");
     let pos = engine.get_position(h1);
     assert!((pos[0] - 5.0).abs() < 1e-10);
+    assert_eq!(engine.get_position(h0), [0.0; 3]);
+    assert!(engine.set_velocity(h0, 1.0, 0.0, 0.0).is_err());
+    assert_eq!(engine.get_velocity(h1), [0.0; 3]);
 }
 
 #[test]
 fn test_raycast_sphere_hit() {
     let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-    let b = engine.add_dynamic_body(1.0, 10.0, 0.0, 0.0);
-    engine.add_sphere_collider(b, 1.0);
+    let b = engine
+        .add_dynamic_body(1.0, 10.0, 0.0, 0.0)
+        .expect("add dynamic body");
+    engine
+        .add_sphere_collider(b, 1.0)
+        .expect("add sphere collider");
     let result = engine.raycast(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 100.0);
     assert!(result.hit, "expected ray to hit sphere");
     assert!((result.distance - 9.0).abs() < 1e-6);
@@ -230,8 +305,12 @@ fn test_raycast_sphere_hit() {
 #[test]
 fn test_raycast_no_hit() {
     let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-    let b = engine.add_dynamic_body(1.0, 0.0, 100.0, 0.0); // sphere above
-    engine.add_sphere_collider(b, 1.0);
+    let b = engine
+        .add_dynamic_body(1.0, 0.0, 100.0, 0.0)
+        .expect("add dynamic body"); // sphere above
+    engine
+        .add_sphere_collider(b, 1.0)
+        .expect("add sphere collider");
     let result = engine.raycast(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 50.0);
     assert!(!result.hit);
 }
@@ -239,7 +318,9 @@ fn test_raycast_no_hit() {
 #[test]
 fn test_get_all_transforms() {
     let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-    engine.add_dynamic_body(1.0, 1.0, 2.0, 3.0);
+    engine
+        .add_dynamic_body(1.0, 1.0, 2.0, 3.0)
+        .expect("add dynamic body");
     let t = engine.get_all_transforms();
     assert_eq!(t.len(), 7); // one body -> 7 floats
     assert!((t[0] - 1.0).abs() < 1e-10);
@@ -472,8 +553,12 @@ fn test_constraint_solver_add_constraint() {
 #[test]
 fn test_constraint_solver_solve() {
     let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-    let b0 = engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
-    let b1 = engine.add_dynamic_body(1.0, 0.1, 0.0, 0.0);
+    let b0 = engine
+        .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
+    let b1 = engine
+        .add_dynamic_body(1.0, 0.1, 0.0, 0.0)
+        .expect("add dynamic body");
 
     let mut solver = EngineConstraintSolver::new();
     // Contact: bodies overlapping at depth 0.05
@@ -737,7 +822,9 @@ fn test_wasm_bindings_new() {
 #[test]
 fn test_wasm_bindings_add_rigid_body() {
     let mut api = WasmBindings::new(0.0, -9.81, 0.0);
-    let id = api.add_rigid_body(0.0, 10.0, 0.0, 1.0);
+    let id = api
+        .add_rigid_body(0.0, 10.0, 0.0, 1.0)
+        .expect("add rigid body");
     assert_eq!(api.body_count(), 1);
     let pos = api.get_position(id);
     assert_eq!(pos.len(), 3);
@@ -747,15 +834,19 @@ fn test_wasm_bindings_add_rigid_body() {
 #[test]
 fn test_wasm_bindings_add_static_body() {
     let mut api = WasmBindings::new(0.0, -9.81, 0.0);
-    let _id = api.add_rigid_body(0.0, 0.0, 0.0, 0.0); // mass=0 -> static
+    let _id = api
+        .add_rigid_body(0.0, 0.0, 0.0, 0.0)
+        .expect("add rigid body"); // mass=0 -> static
     assert_eq!(api.body_count(), 1);
 }
 
 #[test]
 fn test_wasm_bindings_step_moves_body() {
     let mut api = WasmBindings::new(0.0, -9.81, 0.0);
-    let id = api.add_rigid_body(0.0, 10.0, 0.0, 1.0);
-    api.step(1.0 / 60.0);
+    let id = api
+        .add_rigid_body(0.0, 10.0, 0.0, 1.0)
+        .expect("add rigid body");
+    api.step(1.0 / 60.0).expect("step");
     let pos = api.get_position(id);
     assert!(pos[1] < 10.0, "body should have fallen");
 }
@@ -763,9 +854,11 @@ fn test_wasm_bindings_step_moves_body() {
 #[test]
 fn test_wasm_bindings_set_velocity() {
     let mut api = WasmBindings::new(0.0, 0.0, 0.0);
-    let id = api.add_rigid_body(0.0, 0.0, 0.0, 1.0);
+    let id = api
+        .add_rigid_body(0.0, 0.0, 0.0, 1.0)
+        .expect("add rigid body");
     api.set_velocity(id, 10.0, 0.0, 0.0);
-    api.step(1.0);
+    api.step(1.0).expect("step");
     let pos = api.get_position(id);
     assert!(
         pos[0] > 0.5,
@@ -777,8 +870,10 @@ fn test_wasm_bindings_set_velocity() {
 #[test]
 fn test_wasm_bindings_get_all_positions() {
     let mut api = WasmBindings::new(0.0, 0.0, 0.0);
-    api.add_rigid_body(1.0, 2.0, 3.0, 1.0);
-    api.add_rigid_body(4.0, 5.0, 6.0, 1.0);
+    api.add_rigid_body(1.0, 2.0, 3.0, 1.0)
+        .expect("add rigid body");
+    api.add_rigid_body(4.0, 5.0, 6.0, 1.0)
+        .expect("add rigid body");
     let all = api.get_all_positions();
     assert_eq!(all.len(), 6);
     assert!((all[0] - 1.0).abs() < 1e-12);
@@ -796,9 +891,15 @@ fn test_wasm_bindings_set_gravity() {
 #[test]
 fn test_wasm_bindings_add_colliders() {
     let mut api = WasmBindings::new(0.0, -9.81, 0.0);
-    let id = api.add_rigid_body(0.0, 5.0, 0.0, 1.0);
-    let c0 = api.add_collider_sphere(id, 0.5);
-    let c1 = api.add_collider_box(id, 1.0, 1.0, 1.0);
+    let id = api
+        .add_rigid_body(0.0, 5.0, 0.0, 1.0)
+        .expect("add rigid body");
+    let c0 = api
+        .add_collider_sphere(id, 0.5)
+        .expect("add sphere collider");
+    let c1 = api
+        .add_collider_box(id, 1.0, 1.0, 1.0)
+        .expect("add box collider");
     assert_eq!(c0, 0);
     assert_eq!(c1, 1);
 }
@@ -806,13 +907,19 @@ fn test_wasm_bindings_add_colliders() {
 #[test]
 fn test_wasm_bindings_contacts_flat() {
     let mut api = WasmBindings::new(0.0, 0.0, 0.0);
-    let b0 = api.add_rigid_body(0.0, 0.0, 0.0, 1.0);
-    let b1 = api.add_rigid_body(1.5, 0.0, 0.0, 1.0);
-    api.add_collider_sphere(b0, 1.0);
-    api.add_collider_sphere(b1, 1.0);
+    let b0 = api
+        .add_rigid_body(0.0, 0.0, 0.0, 1.0)
+        .expect("add rigid body");
+    let b1 = api
+        .add_rigid_body(1.5, 0.0, 0.0, 1.0)
+        .expect("add rigid body");
+    api.add_collider_sphere(b0, 1.0)
+        .expect("add sphere collider");
+    api.add_collider_sphere(b1, 1.0)
+        .expect("add sphere collider");
     api.set_velocity(b0, 2.0, 0.0, 0.0);
     api.set_velocity(b1, -2.0, 0.0, 0.0);
-    api.step(1.0 / 60.0);
+    api.step(1.0 / 60.0).expect("step");
     // Flat output length should be a multiple of 12
     let flat = api.get_contacts_flat();
     assert_eq!(flat.len() % 12, 0);
@@ -824,11 +931,17 @@ fn test_wasm_bindings_contacts_flat() {
 #[test]
 fn test_wasm_bindings_contacts_json() {
     let mut api = WasmBindings::new(0.0, 0.0, 0.0);
-    let b0 = api.add_rigid_body(0.0, 0.0, 0.0, 1.0);
-    let b1 = api.add_rigid_body(1.5, 0.0, 0.0, 1.0);
-    api.add_collider_sphere(b0, 1.0);
-    api.add_collider_sphere(b1, 1.0);
-    api.step(1.0 / 60.0);
+    let b0 = api
+        .add_rigid_body(0.0, 0.0, 0.0, 1.0)
+        .expect("add rigid body");
+    let b1 = api
+        .add_rigid_body(1.5, 0.0, 0.0, 1.0)
+        .expect("add rigid body");
+    api.add_collider_sphere(b0, 1.0)
+        .expect("add sphere collider");
+    api.add_collider_sphere(b1, 1.0)
+        .expect("add sphere collider");
+    api.step(1.0 / 60.0).expect("step");
     let json_list = api.get_contacts_json();
     for j in &json_list {
         assert!(j.contains("bodyA"));
@@ -839,9 +952,10 @@ fn test_wasm_bindings_contacts_json() {
 #[test]
 fn test_wasm_bindings_time_query() {
     let mut api = WasmBindings::new(0.0, -9.81, 0.0);
-    api.add_rigid_body(0.0, 1.0, 0.0, 1.0);
+    api.add_rigid_body(0.0, 1.0, 0.0, 1.0)
+        .expect("add rigid body");
     assert_eq!(api.time(), 0.0, "a fresh engine starts at t = 0");
-    api.step(1.0 / 60.0);
+    api.step(1.0 / 60.0).expect("step");
     assert!(
         (api.time() - 1.0 / 60.0).abs() < 1e-12,
         "time must advance by the stepped dt, got {}",
@@ -852,7 +966,9 @@ fn test_wasm_bindings_time_query() {
 #[test]
 fn test_wasm_bindings_get_transform() {
     let mut api = WasmBindings::new(0.0, 0.0, 0.0);
-    let id = api.add_rigid_body(1.0, 2.0, 3.0, 1.0);
+    let id = api
+        .add_rigid_body(1.0, 2.0, 3.0, 1.0)
+        .expect("add rigid body");
     let t = api.get_transform(id);
     let p = t.position();
     assert!((p.x() - 1.0).abs() < 1e-12);
@@ -863,7 +979,8 @@ fn test_wasm_bindings_get_transform() {
 #[test]
 fn test_wasm_bindings_get_all_transforms_flat() {
     let mut api = WasmBindings::new(0.0, 0.0, 0.0);
-    api.add_rigid_body(1.0, 2.0, 3.0, 1.0);
+    api.add_rigid_body(1.0, 2.0, 3.0, 1.0)
+        .expect("add rigid body");
     let t = api.get_all_transforms_flat();
     assert_eq!(t.len(), 7);
     assert!((t[0] - 1.0).abs() < 1e-12);
@@ -872,8 +989,9 @@ fn test_wasm_bindings_get_all_transforms_flat() {
 #[test]
 fn test_wasm_bindings_state_to_json() {
     let mut api = WasmBindings::new(0.0, -9.81, 0.0);
-    api.add_rigid_body(0.0, 5.0, 0.0, 1.0);
-    api.step(0.016);
+    api.add_rigid_body(0.0, 5.0, 0.0, 1.0)
+        .expect("add rigid body");
+    api.step(0.016).expect("step");
     let json = api.state_to_json();
     assert!(json.contains("\"time\""));
     assert!(json.contains("\"gravity\""));
@@ -884,7 +1002,8 @@ fn test_wasm_bindings_state_to_json() {
 #[test]
 fn test_wasm_bindings_reset() {
     let mut api = WasmBindings::new(0.0, -9.81, 0.0);
-    api.add_rigid_body(0.0, 0.0, 0.0, 1.0);
+    api.add_rigid_body(0.0, 0.0, 0.0, 1.0)
+        .expect("add rigid body");
     api.reset();
     assert_eq!(api.body_count(), 0);
 }
@@ -892,9 +1011,11 @@ fn test_wasm_bindings_reset() {
 #[test]
 fn test_wasm_bindings_apply_force() {
     let mut api = WasmBindings::new(0.0, 0.0, 0.0);
-    let id = api.add_rigid_body(0.0, 0.0, 0.0, 1.0);
+    let id = api
+        .add_rigid_body(0.0, 0.0, 0.0, 1.0)
+        .expect("add rigid body");
     api.apply_force(id, 100.0, 0.0, 0.0);
-    api.step(0.1);
+    api.step(0.1).expect("step");
     let pos = api.get_position(id);
     assert!(pos[0] > 0.0, "body should move along X from applied force");
 }
@@ -902,9 +1023,11 @@ fn test_wasm_bindings_apply_force() {
 #[test]
 fn test_wasm_bindings_apply_impulse() {
     let mut api = WasmBindings::new(0.0, 0.0, 0.0);
-    let id = api.add_rigid_body(0.0, 0.0, 0.0, 2.0);
+    let id = api
+        .add_rigid_body(0.0, 0.0, 0.0, 2.0)
+        .expect("add rigid body");
     api.apply_impulse(id, 4.0, 0.0, 0.0);
-    api.step(1.0);
+    api.step(1.0).expect("step");
     let pos = api.get_position(id);
     assert!(pos[0] > 0.1, "body should move along X, got {}", pos[0]);
 }
@@ -977,11 +1100,17 @@ fn test_contact_info_entry_to_json() {
 #[test]
 fn test_wasm_bindings_get_contacts_structured() {
     let mut api = WasmBindings::new(0.0, 0.0, 0.0);
-    let b0 = api.add_rigid_body(0.0, 0.0, 0.0, 1.0);
-    let b1 = api.add_rigid_body(1.5, 0.0, 0.0, 1.0);
-    api.add_collider_sphere(b0, 1.0);
-    api.add_collider_sphere(b1, 1.0);
-    api.step(1.0 / 60.0);
+    let b0 = api
+        .add_rigid_body(0.0, 0.0, 0.0, 1.0)
+        .expect("add rigid body");
+    let b1 = api
+        .add_rigid_body(1.5, 0.0, 0.0, 1.0)
+        .expect("add rigid body");
+    api.add_collider_sphere(b0, 1.0)
+        .expect("add sphere collider");
+    api.add_collider_sphere(b1, 1.0)
+        .expect("add sphere collider");
+    api.step(1.0 / 60.0).expect("step");
     let clist = api.get_contacts_structured();
     for i in 0..clist.len() as usize {
         let entry = clist.get(i).expect("should have entry");
@@ -1005,8 +1134,12 @@ fn test_get_performance_metrics_empty() {
 #[test]
 fn test_get_performance_metrics_body_count() {
     let mut engine = WasmEngine::new(0.0, -9.81, 0.0);
-    engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
-    engine.add_dynamic_body(2.0, 5.0, 0.0, 0.0);
+    engine
+        .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
+    engine
+        .add_dynamic_body(2.0, 5.0, 0.0, 0.0)
+        .expect("add dynamic body");
     let m = engine.get_performance_metrics();
     assert_eq!(m.body_count, 2);
 }
@@ -1014,8 +1147,10 @@ fn test_get_performance_metrics_body_count() {
 #[test]
 fn test_get_performance_metrics_sim_time_advances() {
     let mut engine = WasmEngine::new(0.0, -9.81, 0.0);
-    engine.add_dynamic_body(1.0, 0.0, 10.0, 0.0);
-    engine.step(0.1);
+    engine
+        .add_dynamic_body(1.0, 0.0, 10.0, 0.0)
+        .expect("add dynamic body");
+    engine.step(0.1).expect("step");
     let m = engine.get_performance_metrics();
     assert!(m.sim_time > 0.0, "sim_time should be > 0 after step");
 }
@@ -1023,7 +1158,7 @@ fn test_get_performance_metrics_sim_time_advances() {
 #[test]
 fn test_get_performance_metrics_fps_from_step_time() {
     let mut engine = WasmEngine::new(0.0, -9.81, 0.0);
-    engine.step(0.016); // ~60 fps
+    engine.step(0.016).expect("step"); // ~60 fps
     let m = engine.get_performance_metrics();
     assert!((m.fps - 62.5).abs() < 1.0, "fps ~ 62.5, got {}", m.fps);
 }
@@ -1072,8 +1207,12 @@ fn test_compute_ray_cast_miss() {
 #[test]
 fn test_compute_ray_cast_hit_sphere() {
     let mut engine = WasmEngine::new(0.0, 0.0, 0.0);
-    let body = engine.add_dynamic_body(1.0, 0.0, 0.0, 10.0);
-    engine.add_sphere_collider(body, 1.0);
+    let body = engine
+        .add_dynamic_body(1.0, 0.0, 0.0, 10.0)
+        .expect("add dynamic body");
+    engine
+        .add_sphere_collider(body, 1.0)
+        .expect("add sphere collider");
     let result = engine.compute_ray_cast(0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1000.0);
     assert!(result.hit, "Ray should hit sphere at z=10");
     assert!(
@@ -1104,15 +1243,17 @@ fn test_compute_ray_cast_flat_miss_encoding() {
 #[test]
 fn test_step_n_advances_time() {
     let mut e = WasmEngine::new(0.0, -9.81, 0.0);
-    e.step_n(5, 0.016);
+    e.step_n(5, 0.016).expect("step");
     assert!(e.elapsed_time() > 0.0, "time should advance after step_n");
 }
 
 #[test]
 fn test_step_n_moves_body() {
     let mut e = WasmEngine::new(0.0, -9.81, 0.0);
-    let h = e.add_dynamic_body(1.0, 0.0, 10.0, 0.0);
-    e.step_n(10, 0.016);
+    let h = e
+        .add_dynamic_body(1.0, 0.0, 10.0, 0.0)
+        .expect("add dynamic body");
+    e.step_n(10, 0.016).expect("step");
     let pos = e.get_body_position(h);
     assert!(pos[1] < 10.0, "body should fall under gravity");
 }
@@ -1120,14 +1261,18 @@ fn test_step_n_moves_body() {
 #[test]
 fn test_add_dynamic_sphere_returns_handle() {
     let mut e = WasmEngine::new(0.0, -9.81, 0.0);
-    let h = e.add_dynamic_sphere(1.0, 0.0, 5.0, 0.0, 0.5);
+    let h = e
+        .add_dynamic_sphere(1.0, 0.0, 5.0, 0.0, 0.5)
+        .expect("add dynamic sphere");
     assert!(e.get_body_snapshot(h).is_some());
 }
 
 #[test]
 fn test_add_static_plane_returns_valid_handle() {
     let mut e = WasmEngine::new(0.0, -9.81, 0.0);
-    let h = e.add_static_plane(0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+    let h = e
+        .add_static_plane(0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+        .expect("add static plane");
     assert!(
         e.body_count() >= 1,
         "static plane body must be registered; handle={h}"
@@ -1135,9 +1280,29 @@ fn test_add_static_plane_returns_valid_handle() {
 }
 
 #[test]
+fn test_add_static_plane_is_anchored_at_its_position() {
+    let mut e = WasmEngine::new(0.0, -9.81, 0.0);
+    // The normal need not be a unit vector; the plane passes through the
+    // position of its body, here (0, 5, 0).
+    e.add_static_plane(0.0, 5.0, 0.0, 0.0, 2.0, 0.0, 0.0)
+        .expect("add static plane");
+    let ball = e
+        .add_dynamic_sphere(1.0, 0.0, 7.0, 0.0, 0.5)
+        .expect("add dynamic sphere");
+    e.step_n(180, 1.0 / 60.0).expect("step");
+    let y = e.get_body_position(ball)[1];
+    assert!(
+        (5.45..=5.5 + 1e-9).contains(&y),
+        "the ball must rest on the plane y = 5, got y = {y}"
+    );
+}
+
+#[test]
 fn test_remove_body_returns_true() {
     let mut e = WasmEngine::new(0.0, -9.81, 0.0);
-    let h = e.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+    let h = e
+        .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
     assert!(
         e.remove_body(h),
         "remove_body should return true for existing handle"
@@ -1156,7 +1321,9 @@ fn test_remove_body_invalid_returns_false() {
 #[test]
 fn test_set_body_position_changes_position() {
     let mut e = WasmEngine::new(0.0, 0.0, 0.0);
-    let h = e.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+    let h = e
+        .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
     let ok = e.set_body_position(h, 5.0, 5.0, 5.0);
     assert!(ok, "set_body_position should succeed");
     let p = e.get_body_position(h);
@@ -1168,7 +1335,9 @@ fn test_set_body_position_changes_position() {
 #[test]
 fn test_set_body_velocity_changes_velocity() {
     let mut e = WasmEngine::new(0.0, 0.0, 0.0);
-    let h = e.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+    let h = e
+        .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
     e.set_body_velocity(h, 3.0, 0.0, 0.0);
     let v = e.get_body_velocity(h);
     assert!((v[0] - 3.0).abs() < 1e-10, "vx should be 3");
@@ -1177,9 +1346,13 @@ fn test_set_body_velocity_changes_velocity() {
 #[test]
 fn test_apply_body_force_creates_acceleration() {
     let mut e = WasmEngine::new(0.0, 0.0, 0.0);
-    let h = e.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+    let h = e
+        .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
     e.apply_body_force(h, 100.0, 0.0, 0.0);
-    e.step(0.016);
+    // One full fixed substep (1/60 s): a shorter step would only fill the
+    // accumulator and leave the force unused.
+    e.step(1.0 / 60.0).expect("step");
     let v = e.get_body_velocity(h);
     assert!(v[0] > 0.0, "force should produce positive x velocity");
 }
@@ -1187,7 +1360,9 @@ fn test_apply_body_force_creates_acceleration() {
 #[test]
 fn test_apply_body_impulse_creates_velocity() {
     let mut e = WasmEngine::new(0.0, 0.0, 0.0);
-    let h = e.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+    let h = e
+        .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
     e.apply_body_impulse(h, 10.0, 0.0, 0.0);
     let v = e.get_body_velocity(h);
     assert!(v[0] > 0.0, "impulse should create velocity");
@@ -1196,7 +1371,9 @@ fn test_apply_body_impulse_creates_velocity() {
 #[test]
 fn test_set_linear_damping_succeeds() {
     let mut e = WasmEngine::new(0.0, 0.0, 0.0);
-    let h = e.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+    let h = e
+        .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
     assert!(e.set_linear_damping(h, 0.1));
 }
 
@@ -1211,7 +1388,8 @@ fn test_set_gravity_changes_gravity() {
 #[test]
 fn test_reset_with_new_gravity_empties_world() {
     let mut e = WasmEngine::new(0.0, -9.81, 0.0);
-    e.add_dynamic_body(1.0, 0.0, 10.0, 0.0);
+    e.add_dynamic_body(1.0, 0.0, 10.0, 0.0)
+        .expect("add dynamic body");
     e.reset_with_new_gravity(0.0, -1.62, 0.0);
     assert_eq!(e.body_count(), 0, "reset should clear all bodies");
 }
@@ -1219,7 +1397,9 @@ fn test_reset_with_new_gravity_empties_world() {
 #[test]
 fn test_body_snapshot_valid_handle() {
     let mut e = WasmEngine::new(0.0, -9.81, 0.0);
-    let h = e.add_dynamic_body(2.0, 1.0, 2.0, 3.0);
+    let h = e
+        .add_dynamic_body(2.0, 1.0, 2.0, 3.0)
+        .expect("add dynamic body");
     let snap = e.get_body_snapshot(h).expect("snapshot should exist");
     assert!((snap.position[0] - 1.0).abs() < 1e-8, "snapshot x");
     assert!((snap.position[1] - 2.0).abs() < 1e-8, "snapshot y");
@@ -1235,7 +1415,9 @@ fn test_body_snapshot_invalid_handle_returns_none() {
 #[test]
 fn test_get_body_speed_at_rest() {
     let mut e = WasmEngine::new(0.0, 0.0, 0.0);
-    let h = e.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+    let h = e
+        .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
     assert!(
         (e.get_body_speed(h)).abs() < 1e-10,
         "speed at rest should be 0"
@@ -1245,7 +1427,9 @@ fn test_get_body_speed_at_rest() {
 #[test]
 fn test_query_aabb_finds_body_inside() {
     let mut e = WasmEngine::new(0.0, 0.0, 0.0);
-    let h = e.add_dynamic_body(1.0, 5.0, 5.0, 5.0);
+    let h = e
+        .add_dynamic_body(1.0, 5.0, 5.0, 5.0)
+        .expect("add dynamic body");
     let q = e.query_aabb([0.0, 0.0, 0.0, 10.0, 10.0, 10.0]);
     assert!(
         q.handles.contains(&h),
@@ -1256,7 +1440,9 @@ fn test_query_aabb_finds_body_inside() {
 #[test]
 fn test_query_aabb_excludes_body_outside() {
     let mut e = WasmEngine::new(0.0, 0.0, 0.0);
-    let h = e.add_dynamic_body(1.0, 100.0, 100.0, 100.0);
+    let h = e
+        .add_dynamic_body(1.0, 100.0, 100.0, 100.0)
+        .expect("add dynamic body");
     let q = e.query_aabb([0.0, 0.0, 0.0, 10.0, 10.0, 10.0]);
     assert!(
         !q.handles.contains(&h),
@@ -1267,7 +1453,9 @@ fn test_query_aabb_excludes_body_outside() {
 #[test]
 fn test_query_sphere_overlap_finds_body_inside() {
     let mut e = WasmEngine::new(0.0, 0.0, 0.0);
-    let h = e.add_dynamic_body(1.0, 1.0, 0.0, 0.0);
+    let h = e
+        .add_dynamic_body(1.0, 1.0, 0.0, 0.0)
+        .expect("add dynamic body");
     let q = e.query_sphere_overlap(0.0, 0.0, 0.0, 5.0);
     assert!(q.handles.contains(&h));
 }
@@ -1281,8 +1469,12 @@ fn test_find_closest_body_empty_returns_none() {
 #[test]
 fn test_find_closest_body_returns_nearest() {
     let mut e = WasmEngine::new(0.0, 0.0, 0.0);
-    let _far = e.add_dynamic_body(1.0, 100.0, 0.0, 0.0);
-    let near = e.add_dynamic_body(1.0, 1.0, 0.0, 0.0);
+    let _far = e
+        .add_dynamic_body(1.0, 100.0, 0.0, 0.0)
+        .expect("add dynamic body");
+    let near = e
+        .add_dynamic_body(1.0, 1.0, 0.0, 0.0)
+        .expect("add dynamic body");
     let closest = e
         .find_closest_body(0.0, 0.0, 0.0)
         .expect("should find a body");
@@ -1300,8 +1492,10 @@ fn test_simulation_summary_empty() {
 #[test]
 fn test_simulation_summary_body_count() {
     let mut e = WasmEngine::new(0.0, -9.81, 0.0);
-    e.add_dynamic_body(1.0, 0.0, 10.0, 0.0);
-    e.add_dynamic_body(2.0, 1.0, 10.0, 0.0);
+    e.add_dynamic_body(1.0, 0.0, 10.0, 0.0)
+        .expect("add dynamic body");
+    e.add_dynamic_body(2.0, 1.0, 10.0, 0.0)
+        .expect("add dynamic body");
     let s = e.simulation_summary();
     assert_eq!(s.active_body_count, 2);
 }
@@ -1315,14 +1509,17 @@ fn test_is_empty_true_when_empty() {
 #[test]
 fn test_is_empty_false_after_add() {
     let mut e = WasmEngine::new(0.0, -9.81, 0.0);
-    e.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+    e.add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
     assert!(!e.is_empty());
 }
 
 #[test]
 fn test_serialise_body_flat_length() {
     let mut e = WasmEngine::new(0.0, -9.81, 0.0);
-    let h = e.add_dynamic_body(1.0, 3.0, 4.0, 5.0);
+    let h = e
+        .add_dynamic_body(1.0, 3.0, 4.0, 5.0)
+        .expect("add dynamic body");
     let flat = e.serialise_body_flat(h);
     assert_eq!(flat.len(), BODY_STATE_FLAT_LEN);
 }
@@ -1330,7 +1527,9 @@ fn test_serialise_body_flat_length() {
 #[test]
 fn test_serialise_body_flat_position_values() {
     let mut e = WasmEngine::new(0.0, 0.0, 0.0);
-    let h = e.add_dynamic_body(1.0, 3.0, 4.0, 5.0);
+    let h = e
+        .add_dynamic_body(1.0, 3.0, 4.0, 5.0)
+        .expect("add dynamic body");
     let flat = e.serialise_body_flat(h);
     assert!((flat[1] - 3.0).abs() < 1e-8, "px should be 3.0");
     assert!((flat[2] - 4.0).abs() < 1e-8, "py should be 4.0");
@@ -1350,8 +1549,10 @@ fn test_serialise_body_flat_invalid_handle_nan() {
 #[test]
 fn test_serialise_all_bodies_flat_length() {
     let mut e = WasmEngine::new(0.0, -9.81, 0.0);
-    e.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
-    e.add_dynamic_body(2.0, 1.0, 0.0, 0.0);
+    e.add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
+    e.add_dynamic_body(2.0, 1.0, 0.0, 0.0)
+        .expect("add dynamic body");
     let flat = e.serialise_all_bodies_flat();
     assert_eq!(flat.len(), 2 * BODY_STATE_FLAT_LEN);
 }
@@ -1359,7 +1560,9 @@ fn test_serialise_all_bodies_flat_length() {
 #[test]
 fn test_deserialise_body_flat_updates_position() {
     let mut e = WasmEngine::new(0.0, 0.0, 0.0);
-    let h = e.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+    let h = e
+        .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
     let mut data = [0.0f64; BODY_STATE_FLAT_LEN];
     data[0] = h as f64;
     data[1] = 7.0;
@@ -1377,9 +1580,62 @@ fn test_deserialise_body_flat_too_short_returns_false() {
 }
 
 #[test]
+fn test_deserialise_body_flat_is_all_or_nothing() {
+    let mut e = WasmEngine::new(0.0, 0.0, 0.0);
+    let h = e
+        .add_dynamic_body(1.0, 1.0, 2.0, 3.0)
+        .expect("add dynamic body");
+    let mut valid = [0.0f64; BODY_STATE_FLAT_LEN];
+    valid[0] = h as f64;
+    valid[1..4].copy_from_slice(&[7.0, 8.0, 9.0]);
+    valid[8..11].copy_from_slice(&[1.0, 2.0, 3.0]);
+
+    // A non-finite velocity must not leave the (valid) position applied, and
+    // vice versa.
+    let mut bad_velocity = valid;
+    bad_velocity[9] = f64::NAN;
+    assert!(!e.deserialise_body_flat(&bad_velocity));
+    let mut bad_position = valid;
+    bad_position[2] = f64::INFINITY;
+    assert!(!e.deserialise_body_flat(&bad_position));
+    assert_eq!(e.get_body_position(h), [1.0, 2.0, 3.0]);
+    assert_eq!(e.get_body_velocity(h), [0.0; 3]);
+
+    // A handle must be a whole, non-negative number that fits `u32`: a NaN
+    // handle used to be truncated to handle 0 and poison that body.
+    for raw in [f64::NAN, -1.0, 0.5, f64::INFINITY, 5.0e9] {
+        let mut data = valid;
+        data[0] = raw;
+        assert!(!e.deserialise_body_flat(&data), "handle {raw}");
+    }
+    assert_eq!(e.get_body_position(h), [1.0, 2.0, 3.0]);
+
+    // A record of a dead handle is rejected, and so is the all-NaN record that
+    // `serialise_body_flat` returns for an invalid handle.
+    let mut dead = valid;
+    dead[0] = 77.0;
+    assert!(!e.deserialise_body_flat(&dead));
+    let nan_record = e.serialise_body_flat(9999);
+    assert!(!e.deserialise_body_flat(&nan_record));
+    assert_eq!(e.get_body_position(h), [1.0, 2.0, 3.0]);
+
+    // The valid record is applied completely, through both entry points.
+    assert!(e.deserialise_body_flat(&valid));
+    assert_eq!(e.get_body_position(h), [7.0, 8.0, 9.0]);
+    assert_eq!(e.get_body_velocity(h), [1.0, 2.0, 3.0]);
+    let mut moved = valid;
+    moved[1] = -4.0;
+    assert!(e.deserialise_body_flat_js(moved.to_vec()));
+    assert_eq!(e.get_body_position(h), [-4.0, 8.0, 9.0]);
+    assert!(!e.deserialise_body_flat_js(bad_velocity.to_vec()));
+    assert_eq!(e.get_body_position(h), [-4.0, 8.0, 9.0]);
+}
+
+#[test]
 fn test_state_to_json_extended_is_valid_json_prefix() {
     let mut e = WasmEngine::new(0.0, -9.81, 0.0);
-    e.add_dynamic_body(1.0, 0.0, 5.0, 0.0);
+    e.add_dynamic_body(1.0, 0.0, 5.0, 0.0)
+        .expect("add dynamic body");
     let json = e.state_to_json_extended();
     assert!(json.starts_with('{'), "JSON should start with a brace");
     assert!(json.contains("\"time\""), "JSON should contain time field");
@@ -1412,6 +1668,8 @@ fn test_get_all_handles_empty() {
 #[test]
 fn test_get_all_handles_after_add() {
     let mut e = WasmEngine::new(0.0, -9.81, 0.0);
-    let h = e.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+    let h = e
+        .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+        .expect("add dynamic body");
     assert!(e.get_all_handles().contains(&h));
 }

@@ -13,6 +13,22 @@ pub trait SoftConstraint: Send + Sync {
     ///
     /// `dt_sub` is the sub-step time step used by XPBD for compliance scaling.
     fn project(&mut self, particles: &mut [SoftParticle], dt_sub: Real);
+
+    /// Reset the accumulated XPBD Lagrange multiplier(s) of this constraint to zero.
+    ///
+    /// XPBD requires `lambda = 0` at the start of the iterations of every
+    /// sub-step: the multiplier measures the constraint impulse accumulated
+    /// *within one sub-step*, so carrying it over to the next sub-step (or the
+    /// next frame) makes every compliant constraint progressively softer.
+    /// The solvers that drive constraints through `dyn SoftConstraint`
+    /// ([`crate::XpbdSolver`], [`crate::solver::solve_with_ordering`],
+    /// [`crate::solver::GaussSeidelSolver`] and
+    /// [`crate::pbd_constraints::ConstraintSolver`]) call this once per
+    /// sub-step, after prediction and before the first projection.
+    ///
+    /// The default implementation does nothing, which is correct for
+    /// constraints that carry no multiplier (for example plane collision).
+    fn reset_lambda(&mut self) {}
 }
 /// Compute the unit normal of a triangle (p0, p1, p2).
 ///
@@ -656,7 +672,7 @@ mod new_constraint_tests {
         assert!((j - 1.0).abs() < 1e-10, "det(I) = 1: {j}");
     }
     #[test]
-    fn neo_hookean_project_doesnt_panic() {
+    fn neo_hookean_project_pulls_a_stretched_tet_back_towards_rest() {
         let mut particles = vec![
             p(0.0, 0.0, 0.0, 1.0),
             p(1.0, 0.0, 0.0, 1.0),
@@ -665,7 +681,26 @@ mod new_constraint_tests {
         ];
         let mut c = NeoHookeanConstraint::from_particles([0, 1, 2, 3], &particles, 1.0, 1.0, 0.0);
         particles[1].position = Vec3::new(1.5, 0.0, 0.0);
+        let centroid_before = particles
+            .iter()
+            .fold(Vec3::zeros(), |acc, q| acc + q.position)
+            / 4.0;
+        let j_before = NeoHookeanConstraint::compute_j(c.deformation_gradient(&particles));
         c.project(&mut particles, 0.01);
+        let j_after = NeoHookeanConstraint::compute_j(c.deformation_gradient(&particles));
+        assert!((j_before - 1.5).abs() < 1e-12, "J before = {j_before}");
+        assert!(
+            j_after < j_before && j_after > 1.0,
+            "J must move from {j_before} towards 1, got {j_after}"
+        );
+        let centroid_after = particles
+            .iter()
+            .fold(Vec3::zeros(), |acc, q| acc + q.position)
+            / 4.0;
+        assert!(
+            (centroid_after - centroid_before).norm() < 1e-12,
+            "equal masses: the centroid must not move"
+        );
     }
     #[test]
     fn neo_hookean_rest_volume_correct() {

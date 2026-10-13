@@ -431,12 +431,19 @@ impl ParticleCollider {
 // ParticlePool — fixed-size free-list pool
 // ---------------------------------------------------------------------------
 
-/// Fixed-capacity particle pool with a free list for O(1) emit/recycle.
+/// Fixed-capacity particle pool with a free list.
+///
+/// [`emit`](Self::emit) is O(1).  [`recycle_dead`](Self::recycle_dead) is one
+/// O(capacity) sweep over the slots: a per-slot `in_free` flag makes the
+/// "is this slot already on the free list?" test O(1), so the cost does not
+/// grow with the number of free slots.
 pub struct ParticlePool {
     /// All particle slots.
     pub slots: Vec<GpuParticle>,
     /// Indices of currently free (dead) slots.
     free_list: Vec<usize>,
+    /// `in_free[i]` is `true` exactly when slot `i` is on `free_list`.
+    in_free: Vec<bool>,
     /// Capacity of the pool.
     capacity: usize,
 }
@@ -449,6 +456,7 @@ impl ParticlePool {
         Self {
             slots,
             free_list,
+            in_free: vec![true; capacity],
             capacity,
         }
     }
@@ -473,13 +481,27 @@ impl ParticlePool {
     pub fn emit(&mut self, particle: GpuParticle) -> Option<usize> {
         let idx = self.free_list.pop()?;
         self.slots[idx] = particle;
+        if let Some(flag) = self.in_free.get_mut(idx) {
+            *flag = false;
+        }
         Some(idx)
     }
 
     /// Recycle all dead particles back to the free list.
+    ///
+    /// A single O(capacity) pass; slots that are already free are skipped via
+    /// the `in_free` flags, so repeated calls never create duplicates.  A
+    /// particle emitted with `life <= 0` occupies its slot until the next call
+    /// reclaims it.
     pub fn recycle_dead(&mut self) {
-        for i in 0..self.capacity {
-            if !self.slots[i].is_alive() && !self.free_list.contains(&i) {
+        for (i, slot) in self.slots.iter().enumerate() {
+            if slot.is_alive() {
+                continue;
+            }
+            if let Some(flag) = self.in_free.get_mut(i)
+                && !*flag
+            {
+                *flag = true;
                 self.free_list.push(i);
             }
         }
@@ -991,6 +1013,151 @@ mod tests {
         let alive: Vec<_> = pool.alive_iter().collect();
         assert_eq!(alive.len(), 1);
         assert_eq!(alive[0].position, [1.0, 2.0, 3.0]);
+    }
+
+    /// Structural invariants of the pool: the alive and free slots partition
+    /// the capacity, the free list has no duplicates, and the `in_free` flags
+    /// mirror the free list exactly.
+    fn assert_pool_consistent(pool: &ParticlePool) {
+        assert_eq!(pool.alive_count() + pool.free_count(), pool.capacity());
+        let mut sorted = pool.free_list.clone();
+        sorted.sort_unstable();
+        let before = sorted.len();
+        sorted.dedup();
+        assert_eq!(sorted.len(), before, "free list contains duplicate slots");
+        assert!(sorted.iter().all(|&i| i < pool.capacity()));
+        assert_eq!(pool.in_free.len(), pool.capacity());
+        for (i, &flag) in pool.in_free.iter().enumerate() {
+            assert_eq!(
+                flag,
+                sorted.binary_search(&i).is_ok(),
+                "in_free[{i}] out of sync with the free list"
+            );
+        }
+    }
+
+    fn live_particle() -> GpuParticle {
+        GpuParticle::new([0.0; 3], [0.0; 3], 1.0, [1.0; 4], 1.0)
+    }
+
+    /// Regression for the O(capacity x free) recycle sweep: a 200k pool with
+    /// 1000 dead particles must recycle in a single linear pass (the former
+    /// `Vec::contains` scan needed ~4e10 comparisons here).
+    #[test]
+    fn test_pool_recycle_dead_large_capacity_consistent() {
+        let capacity = 200_000;
+        let mut pool = ParticlePool::new(capacity);
+        let slots: Vec<usize> = (0..1000)
+            .map(|_| pool.emit(live_particle()).unwrap())
+            .collect();
+        assert_eq!(pool.alive_count(), 1000);
+        assert_pool_consistent(&pool);
+
+        for &s in &slots {
+            pool.slots[s].life = 0.0;
+        }
+        pool.recycle_dead();
+        assert_eq!(pool.alive_count(), 0);
+        assert_eq!(pool.free_count(), capacity);
+        assert_pool_consistent(&pool);
+    }
+
+    /// Same scenario through the high-level `tick` entry point: every particle
+    /// expires within the step and is recycled by the sweep inside `tick`.
+    #[test]
+    fn test_tick_recycles_expired_particles_in_large_pool() {
+        let capacity = 200_000;
+        let mut pool = ParticlePool::new(capacity);
+        for _ in 0..1000 {
+            let p = GpuParticle::new([0.0, 5.0, 0.0], [0.0; 3], 0.05, [1.0; 4], 1.0);
+            pool.emit(p).unwrap();
+        }
+        // Zero emission rate: nothing is spawned back.
+        let mut emitter = ParticleEmitter::new([0.0; 3], 0.0, [0.0; 3], 0.0, 1.0);
+        let gravity = GravityForce::new([0.0; 3]);
+        let mut turbulence = TurbulenceForce::new(0.0, 1.0);
+        let collider = ParticleCollider::floor(-100.0, 0.5);
+        let col = ColorOverLife::new([1.0; 4], [0.0; 4], 1.0);
+        let sizer = SizeOverLife::new(1.0, 0.0, 1.0);
+        let mut rng = Lcg::new(11);
+
+        tick(
+            &mut pool,
+            &mut emitter,
+            &gravity,
+            &mut turbulence,
+            &collider,
+            &col,
+            &sizer,
+            0.1,
+            &mut rng,
+        );
+        assert_eq!(pool.alive_count(), 0);
+        assert_eq!(pool.free_count(), capacity);
+        assert_pool_consistent(&pool);
+    }
+
+    #[test]
+    fn test_pool_recycle_dead_is_idempotent() {
+        let mut pool = ParticlePool::new(64);
+        let slots: Vec<usize> = (0..10)
+            .map(|_| pool.emit(live_particle()).unwrap())
+            .collect();
+        for &s in slots.iter().take(6) {
+            pool.slots[s].life = -1.0;
+        }
+        pool.recycle_dead();
+        let free_after_first = pool.free_count();
+        assert_eq!(free_after_first, 64 - 4);
+        pool.recycle_dead();
+        pool.recycle_dead();
+        assert_eq!(pool.free_count(), free_after_first);
+        assert_eq!(pool.alive_count(), 4);
+        assert_pool_consistent(&pool);
+    }
+
+    /// Recycled slots are reusable and the pool never hands out a slot that is
+    /// still occupied by a live particle.
+    #[test]
+    fn test_pool_reuses_recycled_slots_without_aliasing() {
+        let mut pool = ParticlePool::new(8);
+        let slots: Vec<usize> = (0..8)
+            .map(|_| pool.emit(live_particle()).unwrap())
+            .collect();
+        assert!(pool.emit(live_particle()).is_none());
+
+        // Kill the even slots only.
+        let killed: Vec<usize> = slots.iter().copied().filter(|s| s % 2 == 0).collect();
+        for &s in &killed {
+            pool.slots[s].life = 0.0;
+        }
+        pool.recycle_dead();
+        assert_eq!(pool.free_count(), killed.len());
+
+        let mut reused: Vec<usize> = (0..killed.len())
+            .map(|_| pool.emit(live_particle()).unwrap())
+            .collect();
+        assert!(pool.emit(live_particle()).is_none());
+        reused.sort_unstable();
+        let mut expected = killed.clone();
+        expected.sort_unstable();
+        assert_eq!(reused, expected, "only the killed slots may be reused");
+        assert_pool_consistent(&pool);
+    }
+
+    /// A particle emitted already dead occupies its slot until the next sweep
+    /// reclaims it; it must not leak the slot permanently.
+    #[test]
+    fn test_pool_emit_dead_particle_is_reclaimed() {
+        let mut pool = ParticlePool::new(3);
+        let dead = GpuParticle::new([0.0; 3], [0.0; 3], 0.0, [1.0; 4], 1.0);
+        let idx = pool.emit(dead).unwrap();
+        assert_eq!(pool.free_count(), 2);
+        assert!(!pool.in_free[idx]);
+        pool.recycle_dead();
+        assert_eq!(pool.free_count(), 3);
+        assert!(pool.in_free[idx]);
+        assert_pool_consistent(&pool);
     }
 
     // -- ParticleEmitter --

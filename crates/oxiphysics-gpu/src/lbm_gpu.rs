@@ -22,6 +22,26 @@
 //!
 //! The relaxation time τ relates to kinematic viscosity: ν = cs²(τ − 0.5)Δt.
 //!
+//! ## Forcing
+//!
+//! Body forces use the Guo, Zheng & Shi (2002) scheme: the equilibrium is
+//! evaluated at the shifted velocity u = (Σ fᵢ eᵢ + F/2)/ρ and the source term
+//! Sᵢ = (1 − 1/(2τ)) wᵢ [3(eᵢ − u) + 9(eᵢ·u) eᵢ]·F is added after collision.
+//!
+//! ## Boundaries
+//!
+//! * Solid cells (see [`LbmSimulation::set_solid`]) are no-slip walls handled
+//!   by halfway bounce-back; the wall sits halfway between the last fluid node
+//!   and the first solid node.
+//! * Solid cells on the lid plane `y = ny − 1` move with the lid velocity
+//!   ([`LbmSimulation::set_lid_velocity`]) using Ladd's moving-wall
+//!   bounce-back fᵢ̄(x, t+1) = fᵢ*(x, t) − 6 wᵢ ρ (eᵢ·u_lid).
+//! * Directions without a solid neighbour wrap periodically.
+//!
+//! The CPU reference ([`LbmSimulation`] with the GPU disabled) and the WGSL
+//! kernel (`shaders/lbm_bgk_d3q19.wgsl`) implement exactly the same
+//! collide-then-push algorithm; the GPU path stores populations in `f32`.
+//!
 //! ## Grid layout
 //!
 //! Flat SoA: one `Vec<f64>` per velocity direction (19 arrays of N×M×P cells).
@@ -35,22 +55,38 @@
 //! let cfg = LbmConfig { nx: 8, ny: 8, nz: 8, tau: 0.6, ..LbmConfig::default() };
 //! let mut sim = LbmSimulation::new(cfg);
 //!
-//! // Drive lid (top layer) at u = 0.1 in X
+//! // Drive the lid (top layer, y = ny - 1) at u = 0.1 in X
 //! sim.set_lid_velocity(0.1, 0.0, 0.0);
 //!
 //! for _ in 0..20 { sim.step(); }
 //!
-//! // Mean velocity should be non-zero in the interior
-//! let (ux, uy, uz) = sim.mean_velocity();
-//! // Interior velocity should be driven by the lid
-//! assert!(ux.abs() > 0.0 || uy.abs() > 0.0 || uz.abs() > 0.0
-//!         || true,  // relaxed: small grid, just check no panic
-//!         "mean velocity: ({:.4}, {:.4}, {:.4})", ux, uy, uz);
+//! // The lid drags the fluid along +X: the mean flow is positive in X and
+//! // the layer just below the lid moves faster than the layer above the floor.
+//! let (ux, _, _) = sim.mean_velocity();
+//! assert!(ux > 0.0, "mean ux = {ux}");
+//! let (_, u_top) = sim.cell_macro(4, 6, 4);
+//! let (_, u_bottom) = sim.cell_macro(4, 1, 4);
+//! assert!(u_top[0] > u_bottom[0], "top {} vs bottom {}", u_top[0], u_bottom[0]);
 //! ```
 
-use crate::compute::WgpuBufferHandle;
+use crate::GpuError;
 #[cfg(feature = "wgpu-backend")]
-use {crate::compute::WgpuInitError, crate::compute::wgpu_backend::real::WgpuBackendReal, wgpu};
+use {crate::compute::WgpuBufferHandle, crate::compute::wgpu_backend::real::WgpuBackendReal, wgpu};
+
+/// WGSL source of the D3Q19 BGK kernel dispatched by the GPU path.
+///
+/// Bindings: `0` params (`[nx, ny, nz, ω, Fx, Fy, Fz, u_lid.x, u_lid.y,
+/// u_lid.z]` as `u32` words, floats bit-cast), `1` `f_in`, `2` `f_out`
+/// (q-major `f32`), `3` solid mask (`u32` per cell).
+pub const LBM_BGK_D3Q19_WGSL: &str = include_str!("shaders/lbm_bgk_d3q19.wgsl");
+
+/// Number of `u32` words in the GPU params buffer.
+#[cfg(feature = "wgpu-backend")]
+const LBM_PARAM_WORDS: usize = 10;
+
+/// Workgroup edge length of the WGSL kernel (`@workgroup_size(4, 4, 4)`).
+#[cfg(feature = "wgpu-backend")]
+const LBM_WORKGROUP_EDGE: u32 = 4;
 
 // ── D3Q19 velocity set ────────────────────────────────────────────────────────
 
@@ -150,9 +186,11 @@ impl LbmConfig {
 
 /// GPU resources owned by `LbmSimulation` when the `wgpu-backend` feature is active.
 ///
-/// Holds ping-pong f32 buffers for f_in / f_out and the params buffer.
-/// Upload happens once at lazy init; readback happens lazily when macroscopic
-/// quantities are requested after one or more GPU steps.
+/// Holds ping-pong f32 buffers for f_in / f_out, the params buffer and the
+/// solid mask.  Upload happens at lazy init (and again whenever the CPU-side
+/// geometry, parameters or populations are changed through the setters);
+/// readback happens lazily when macroscopic quantities are requested after
+/// one or more GPU steps.
 #[cfg(feature = "wgpu-backend")]
 struct LbmGpuState {
     backend: WgpuBackendReal,
@@ -160,51 +198,72 @@ struct LbmGpuState {
     f_buf_a: WgpuBufferHandle,
     /// Buffer B — alternates between input and output roles.
     f_buf_b: WgpuBufferHandle,
-    /// Params buffer: [nx, ny, nz, omega_bits, _pad] (5 × u32 = 20 bytes).
+    /// Params buffer: `LBM_PARAM_WORDS` × u32 (see [`LBM_BGK_D3Q19_WGSL`]).
     params_buf: WgpuBufferHandle,
+    /// Solid mask: one u32 per cell (1 = solid).
+    solid_buf: WgpuBufferHandle,
     /// When `false`, A is the current input; when `true`, B is current input.
     b_is_input: bool,
+    /// Copy of the params words last written to `params_buf`.
+    uploaded_params: [u32; LBM_PARAM_WORDS],
+    /// Workgroup counts `[ceil(nx/4), ceil(ny/4), ceil(nz/4)]`.
+    workgroups: [u32; 3],
 }
 
 #[cfg(feature = "wgpu-backend")]
 impl LbmGpuState {
-    /// Try to create GPU state, uploading initial populations from `sim`.
+    /// Try to create GPU state, uploading populations, solid mask and
+    /// parameters from `sim`.
     ///
-    /// Returns `Err` when no compatible adapter is available.
-    fn try_new(sim: &LbmSimulation) -> Result<Self, WgpuInitError> {
-        let mut backend = WgpuBackendReal::try_new()?;
-
-        let nx = sim.config.nx as u32;
-        let ny = sim.config.ny as u32;
-        let nz = sim.config.nz as u32;
+    /// Returns `Err` when the grid cannot be represented on the GPU or when no
+    /// compatible adapter is available.
+    fn try_new(sim: &LbmSimulation) -> Result<Self, GpuError> {
         let nc = sim.config.n_cells();
+        if nc == 0 {
+            return Err(GpuError::BackendInit("LBM grid has no cells".to_string()));
+        }
+        let params = sim.gpu_params()?;
+        let workgroups = [
+            params[0].div_ceil(LBM_WORKGROUP_EDGE),
+            params[1].div_ceil(LBM_WORKGROUP_EDGE),
+            params[2].div_ceil(LBM_WORKGROUP_EDGE),
+        ];
+        let f_bytes = 19_usize
+            .checked_mul(nc)
+            .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
+            .and_then(|v| u64::try_from(v).ok())
+            .ok_or_else(|| {
+                GpuError::BackendInit(format!("LBM population buffer for {nc} cells overflows"))
+            })?;
+        let solid_bytes = nc
+            .checked_mul(std::mem::size_of::<u32>())
+            .and_then(|v| u64::try_from(v).ok())
+            .ok_or_else(|| {
+                GpuError::BackendInit(format!("LBM solid mask for {nc} cells overflows"))
+            })?;
+        let params_bytes = (LBM_PARAM_WORDS * std::mem::size_of::<u32>()) as u64;
 
-        // Allocate f32 ping-pong buffers: 19 * nc * 4 bytes each.
-        let f_bytes = (19 * nc * 4) as u64;
+        let mut backend =
+            WgpuBackendReal::try_new().map_err(|e| GpuError::BackendInit(e.to_string()))?;
+
         let f_buf_a = backend.create_buffer_storage(f_bytes);
         let f_buf_b = backend.create_buffer_storage(f_bytes);
+        let params_buf = backend.create_buffer_storage(params_bytes);
+        let solid_buf = backend.create_buffer_storage(solid_bytes);
 
-        // Allocate params buffer: 5 × u32 = 20 bytes.
-        let params_buf = backend.create_buffer_storage(20_u64);
-
-        // Write params: [nx, ny, nz, omega_bits, _pad]
-        let omega = (1.0_f64 / sim.config.tau) as f32;
-        let params_data: [u32; 5] = [nx, ny, nz, omega.to_bits(), 0u32];
-        backend.queue_write_buffer_raw(&params_buf, bytemuck::cast_slice(&params_data));
-
-        // Upload initial populations using q-major layout.
-        // WGSL index: q * (nx*ny*nz) + z*(nx*ny) + y*nx + x
-        // Rust SoA:   sim.f[q][x + nx*(y + ny*z)]
-        // Both are the same: q*nc + cell_index
-        let f_flat: Vec<f32> = flatten_soa_to_f32(&sim.f, nc);
-        backend.queue_write_buffer_f32(&f_buf_a, &f_flat);
+        backend.queue_write_buffer_raw(&params_buf, bytemuck::cast_slice(&params));
+        backend.queue_write_buffer_raw(&solid_buf, bytemuck::cast_slice(&solid_words(&sim.solid)));
+        backend.queue_write_buffer_f32(&f_buf_a, &flatten_soa_to_f32(&sim.f, nc));
 
         Ok(Self {
             backend,
             f_buf_a,
             f_buf_b,
             params_buf,
+            solid_buf,
             b_is_input: false,
+            uploaded_params: params,
+            workgroups,
         })
     }
 
@@ -225,14 +284,100 @@ impl LbmGpuState {
             self.f_buf_b
         }
     }
+
+    /// Overwrite the current input populations with the CPU-side `f`.
+    fn upload_populations(&self, f: &[Vec<f64>], nc: usize) {
+        let input = self.input_buf();
+        self.backend
+            .queue_write_buffer_f32(&input, &flatten_soa_to_f32(f, nc));
+    }
+
+    /// Overwrite the GPU solid mask.
+    fn upload_solid(&self, solid: &[bool]) {
+        self.backend
+            .queue_write_buffer_raw(&self.solid_buf, bytemuck::cast_slice(&solid_words(solid)));
+    }
+
+    /// Re-upload the params words when they differ from the last upload.
+    fn upload_params_if_changed(&mut self, params: [u32; LBM_PARAM_WORDS]) {
+        if params != self.uploaded_params {
+            self.backend
+                .queue_write_buffer_raw(&self.params_buf, bytemuck::cast_slice(&params));
+            self.uploaded_params = params;
+        }
+    }
+
+    /// Run one collide-and-stream kernel dispatch and swap the ping-pong
+    /// buffers.  On error the buffers are left unswapped, so the input buffer
+    /// still holds the last valid state.
+    fn dispatch(&mut self) -> Result<(), GpuError> {
+        let input = self.input_buf();
+        let output = self.output_buf();
+        self.backend
+            .dispatch_wgsl(
+                LBM_BGK_D3Q19_WGSL,
+                "main",
+                &[
+                    (
+                        self.params_buf,
+                        wgpu::BufferBindingType::Storage { read_only: true },
+                    ),
+                    (input, wgpu::BufferBindingType::Storage { read_only: true }),
+                    (
+                        output,
+                        wgpu::BufferBindingType::Storage { read_only: false },
+                    ),
+                    (
+                        self.solid_buf,
+                        wgpu::BufferBindingType::Storage { read_only: true },
+                    ),
+                ],
+                self.workgroups,
+            )
+            .map_err(|e| GpuError::ShaderDispatch(e.to_string()))?;
+        self.b_is_input = !self.b_is_input;
+        Ok(())
+    }
+
+    /// Read the current populations back into SoA `f64` form.
+    fn read_populations(&self, nc: usize) -> Result<Vec<Vec<f64>>, GpuError> {
+        let flat = self
+            .backend
+            .read_buffer_f32(self.input_buf())
+            .map_err(|e| GpuError::ReadBack(e.to_string()))?;
+        unflatten_f32_to_soa(&flat, nc)
+    }
+}
+
+/// Availability of the GPU path of an [`LbmSimulation`].
+#[cfg(feature = "wgpu-backend")]
+enum GpuSlot {
+    /// GPU initialisation has not been attempted yet (lazy, on first step).
+    Untried,
+    /// GPU resources are live; steps run on the GPU.
+    Ready(Box<LbmGpuState>),
+    /// Initialisation or a later dispatch/readback failed.  The failure is
+    /// remembered so the (expensive) adapter request is never retried and all
+    /// further steps run on the CPU.
+    Unavailable(GpuError),
+    /// The GPU path was switched off explicitly with
+    /// [`LbmSimulation::disable_gpu`].
+    Disabled,
+}
+
+/// Convert the boolean solid mask into the `u32` words used by the kernel.
+#[cfg(feature = "wgpu-backend")]
+fn solid_words(solid: &[bool]) -> Vec<u32> {
+    solid.iter().map(|&s| u32::from(s)).collect()
 }
 
 /// Flatten SoA distribution functions to a flat f32 buffer using q-major layout.
 ///
 /// q-major: `flat[q * nc + cell] = f[q][cell]`
 ///
-/// This matches the WGSL `idx` function: `q * (nx*ny*nz) + z*(nx*ny) + y*nx + x`
-/// since `cell = x + nx*(y + ny*z)`.
+/// This matches the WGSL indexing `q * (nx*ny*nz) + cell` with
+/// `cell = x + nx*(y + ny*z)`.
+#[cfg(feature = "wgpu-backend")]
 fn flatten_soa_to_f32(f: &[Vec<f64>], nc: usize) -> Vec<f32> {
     let mut flat = Vec::with_capacity(19 * nc);
     for dir in f.iter().take(19) {
@@ -246,36 +391,55 @@ fn flatten_soa_to_f32(f: &[Vec<f64>], nc: usize) -> Vec<f32> {
 /// Unflatten a q-major f32 buffer back into SoA f64 format.
 ///
 /// Inverse of `flatten_soa_to_f32`: `f[q][cell] = flat[q * nc + cell]`.
-fn unflatten_f32_to_soa(flat: &[f32], nc: usize) -> Vec<Vec<f64>> {
-    let mut f = Vec::with_capacity(19);
-    for q in 0..19 {
-        let mut dir = Vec::with_capacity(nc);
-        for cell in 0..nc {
-            let idx = q * nc + cell;
-            dir.push(if idx < flat.len() {
-                flat[idx] as f64
-            } else {
-                0.0
-            });
-        }
-        f.push(dir);
+/// A buffer of the wrong length (e.g. an empty vector from a failed
+/// readback) is reported as [`GpuError::ReadBack`] instead of being padded
+/// with zeros.
+#[cfg(feature = "wgpu-backend")]
+fn unflatten_f32_to_soa(flat: &[f32], nc: usize) -> Result<Vec<Vec<f64>>, GpuError> {
+    if flat.len() != 19 * nc {
+        return Err(GpuError::ReadBack(format!(
+            "expected {} population values, got {}",
+            19 * nc,
+            flat.len()
+        )));
     }
-    f
+    Ok(flat
+        .chunks_exact(nc.max(1))
+        .take(19)
+        .map(|dir| dir.iter().map(|&v| f64::from(v)).collect())
+        .collect())
 }
 
 /// D3Q19 BGK LBM simulation.
 ///
 /// Population arrays are indexed `f[dir][cell_index]` where
 /// `cell_index = x + nx * (y + ny * z)`.
+///
+/// With the `wgpu-backend` feature (default) [`step`](Self::step) runs the
+/// WGSL kernel on the first available GPU adapter and falls back to the CPU
+/// reference when none is available; both paths implement the same physics
+/// (Guo forcing, halfway bounce-back walls, Ladd moving lid).
 pub struct LbmSimulation {
     /// Configuration.
+    ///
+    /// `tau` and `force_*` may be changed between steps; the GPU parameters
+    /// are re-uploaded automatically.  The grid dimensions must not change.
     pub config: LbmConfig,
     /// Distribution functions f_i (19 × N_cells).
+    ///
+    /// Reading is always safe after an observation method
+    /// ([`mean_velocity`](Self::mean_velocity), [`populations`](Self::populations),
+    /// …) has synchronised the GPU state.  Mutate the populations through
+    /// [`populations_mut`](Self::populations_mut), which also schedules the
+    /// re-upload to the GPU; writes made directly to this field while the GPU
+    /// path is active are not seen by the GPU.
     pub f: Vec<Vec<f64>>,
     /// Temporary buffer for streaming step.
     f_tmp: Vec<Vec<f64>>,
-    /// Solid (no-slip) mask: true = bounce-back wall.
-    pub solid: Vec<bool>,
+    /// Solid (no-slip) mask: true = bounce-back wall.  Changed through
+    /// [`set_solid`](Self::set_solid) / [`set_solid_mask`](Self::set_solid_mask)
+    /// so that the GPU copy stays in sync.
+    solid: Vec<bool>,
     /// Lid velocity (X component).
     pub lid_vel_x: f64,
     /// Lid velocity (Y component).
@@ -284,17 +448,25 @@ pub struct LbmSimulation {
     pub lid_vel_z: f64,
     /// Total steps executed.
     pub step_count: u64,
-    /// GPU state (lazily initialised on first `step_gpu` call).
-    ///
-    /// `None` until the first GPU step, or when no adapter is available.
+    /// GPU availability / resources (lazily initialised on the first step).
     #[cfg(feature = "wgpu-backend")]
-    gpu_state: Option<LbmGpuState>,
+    gpu: GpuSlot,
     /// Set to `true` after a GPU step; cleared when `f` is synchronised from GPU.
     ///
     /// Observation methods (`mean_velocity`, `mean_density`, etc.) call
     /// `sync_from_gpu()` when this flag is set.
     #[cfg(feature = "wgpu-backend")]
     gpu_dirty: bool,
+    /// The CPU-side populations were modified and must be uploaded before the
+    /// next GPU step.
+    #[cfg(feature = "wgpu-backend")]
+    f_upload_pending: bool,
+    /// The solid mask was modified and must be uploaded before the next GPU step.
+    #[cfg(feature = "wgpu-backend")]
+    solid_upload_pending: bool,
+    /// Number of GPU initialisation attempts (test instrumentation).
+    #[cfg(all(test, feature = "wgpu-backend"))]
+    gpu_init_attempts: u32,
 }
 
 impl LbmSimulation {
@@ -316,16 +488,15 @@ impl LbmSimulation {
         // acts as a true periodic boundary condition there.  This is the canonical
         // Poiseuille-flow / body-force-driven-channel setup: walls perpendicular to
         // Y and Z provide the no-slip surfaces, while X is the flow direction with
-        // periodic inflow/outflow.  Body forces applied in X therefore drive a
-        // sustained mean flow rather than being immediately cancelled by closed-box
-        // bounce-backs.
+        // periodic inflow/outflow.  The solid layer at y = ny − 1 doubles as the
+        // moving lid when a lid velocity is set.
         let mut solid = vec![false; nc];
         let (nx, ny, nz) = (config.nx, config.ny, config.nz);
         for z in 0..nz {
             for y in 0..ny {
                 for x in 0..nx {
                     let idx = x + nx * (y + ny * z);
-                    if y == 0 || y == ny - 1 || z == 0 || z == nz - 1 {
+                    if y == 0 || y + 1 == ny || z == 0 || z + 1 == nz {
                         solid[idx] = true;
                     }
                 }
@@ -342,26 +513,115 @@ impl LbmSimulation {
             lid_vel_z: 0.0,
             step_count: 0,
             #[cfg(feature = "wgpu-backend")]
-            gpu_state: None,
+            gpu: GpuSlot::Untried,
             #[cfg(feature = "wgpu-backend")]
             gpu_dirty: false,
+            #[cfg(feature = "wgpu-backend")]
+            f_upload_pending: false,
+            #[cfg(feature = "wgpu-backend")]
+            solid_upload_pending: false,
+            #[cfg(all(test, feature = "wgpu-backend"))]
+            gpu_init_attempts: 0,
         }
     }
 
-    /// Set the lid (top-face, y = ny-1) moving at (ux, uy, uz).
+    /// Set the lid (the solid layer on the top face, y = ny − 1) moving at
+    /// (ux, uy, uz).
+    ///
+    /// The lid is applied with Ladd's moving-wall bounce-back to every solid
+    /// cell on the plane y = ny − 1.  Tangential components (`ux`, `uz`)
+    /// conserve mass exactly; a non-zero wall-normal component `uy` makes the
+    /// lid act as a porous wall that injects (uy < 0) or removes (uy > 0) mass.
     pub fn set_lid_velocity(&mut self, ux: f64, uy: f64, uz: f64) {
         self.lid_vel_x = ux;
         self.lid_vel_y = uy;
         self.lid_vel_z = uz;
     }
 
+    /// Solid mask (`true` = bounce-back wall), indexed by
+    /// `x + nx * (y + ny * z)`.
+    pub fn solid(&self) -> &[bool] {
+        &self.solid
+    }
+
+    /// Mark cell `(x, y, z)` as solid (`true`) or fluid (`false`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError::InvalidHandle`] carrying the flat index when the
+    /// coordinates lie outside the grid.
+    pub fn set_solid(
+        &mut self,
+        x: usize,
+        y: usize,
+        z: usize,
+        is_solid: bool,
+    ) -> Result<(), GpuError> {
+        let (nx, ny, nz) = (self.config.nx, self.config.ny, self.config.nz);
+        if x >= nx || y >= ny || z >= nz {
+            return Err(GpuError::InvalidHandle(x + nx * (y + ny * z)));
+        }
+        let idx = x + nx * (y + ny * z);
+        if let Some(cell) = self.solid.get_mut(idx)
+            && *cell != is_solid
+        {
+            *cell = is_solid;
+            self.mark_solid_changed();
+        }
+        Ok(())
+    }
+
+    /// Replace the whole solid mask.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError::InvalidHandle`] carrying the supplied length when
+    /// `mask.len()` differs from the number of cells.
+    pub fn set_solid_mask(&mut self, mask: Vec<bool>) -> Result<(), GpuError> {
+        if mask.len() != self.config.n_cells() {
+            return Err(GpuError::InvalidHandle(mask.len()));
+        }
+        self.solid = mask;
+        self.mark_solid_changed();
+        Ok(())
+    }
+
+    /// Record that the solid mask changed so the GPU copy is refreshed.
+    fn mark_solid_changed(&mut self) {
+        #[cfg(feature = "wgpu-backend")]
+        {
+            self.solid_upload_pending = true;
+        }
+    }
+
+    /// Current populations (synchronised from the GPU when necessary).
+    pub fn populations(&mut self) -> &[Vec<f64>] {
+        #[cfg(feature = "wgpu-backend")]
+        self.sync_from_gpu();
+        &self.f
+    }
+
+    /// Mutable access to the populations.
+    ///
+    /// The GPU state is synchronised first, and the modified populations are
+    /// uploaded again before the next GPU step.
+    pub fn populations_mut(&mut self) -> &mut [Vec<f64>] {
+        #[cfg(feature = "wgpu-backend")]
+        {
+            self.sync_from_gpu();
+            self.f_upload_pending = true;
+        }
+        &mut self.f
+    }
+
     /// True if a real GPU adapter was successfully initialised.
     ///
-    /// Returns `false` before the first call to `step()` (GPU state is lazy).
+    /// Returns `false` before the first call to `step()` (GPU state is lazy;
+    /// use [`ensure_gpu`](Self::ensure_gpu) to initialise eagerly).
     pub fn has_gpu(&self) -> bool {
         #[cfg(feature = "wgpu-backend")]
         {
-            self.gpu_state.is_some()
+            matches!(self.gpu, GpuSlot::Ready(_))
         }
         #[cfg(not(feature = "wgpu-backend"))]
         {
@@ -369,158 +629,291 @@ impl LbmSimulation {
         }
     }
 
-    /// Advance one LBM step: BGK collision + streaming + boundary.
+    /// Initialise the GPU path now instead of on the first step.
     ///
-    /// When the `wgpu-backend` feature is enabled the GPU path is tried first;
-    /// it falls back to CPU if no adapter is available.
-    pub fn step(&mut self) {
+    /// Returns `true` when the GPU is active.  A failed attempt is remembered
+    /// (see [`gpu_error`](Self::gpu_error)) and never retried.
+    pub fn ensure_gpu(&mut self) -> bool {
         #[cfg(feature = "wgpu-backend")]
         {
-            self.step_gpu();
+            if matches!(self.gpu, GpuSlot::Untried) {
+                self.try_init_gpu();
+            }
+        }
+        self.has_gpu()
+    }
+
+    /// Switch the GPU path off; all further steps run on the CPU reference.
+    ///
+    /// Pending GPU results are synchronised into [`f`](Self::f) first.
+    pub fn disable_gpu(&mut self) {
+        #[cfg(feature = "wgpu-backend")]
+        {
+            self.sync_from_gpu();
+            if !matches!(self.gpu, GpuSlot::Unavailable(_)) {
+                self.gpu = GpuSlot::Disabled;
+            }
+            self.gpu_dirty = false;
+        }
+    }
+
+    /// Why the GPU path is unavailable, if it failed.
+    ///
+    /// `Some` after GPU initialisation failed (e.g. no adapter) or a later
+    /// dispatch / readback failed; the simulation then runs on the CPU.
+    /// `None` while the GPU is untried, active, explicitly disabled, or when
+    /// the crate is built without the `wgpu-backend` feature.
+    pub fn gpu_error(&self) -> Option<&GpuError> {
+        #[cfg(feature = "wgpu-backend")]
+        {
+            match &self.gpu {
+                GpuSlot::Unavailable(e) => Some(e),
+                _ => None,
+            }
+        }
+        #[cfg(not(feature = "wgpu-backend"))]
+        {
+            None
+        }
+    }
+
+    /// Advance one LBM step: BGK collision (Guo forcing) + streaming with
+    /// bounce-back walls and the moving lid.
+    ///
+    /// When the `wgpu-backend` feature is enabled the GPU path is used when an
+    /// adapter is available and the CPU reference otherwise.  If the GPU fails
+    /// mid-run and its state cannot even be read back (device lost), the step
+    /// is taken on the CPU from the most recently synchronised populations; the
+    /// failure is reported by [`gpu_error`](Self::gpu_error) and by
+    /// [`try_step`](Self::try_step).
+    pub fn step(&mut self) {
+        if self.try_step().is_err() {
+            self.step_cpu();
+            self.step_count += 1;
+        }
+    }
+
+    /// Advance one LBM step, reporting unrecoverable GPU failures.
+    ///
+    /// A GPU that is missing, or whose dispatch fails while its populations can
+    /// still be read back, is not an error: the step is taken on the CPU.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError::ReadBack`] when a GPU dispatch failed and the GPU
+    /// populations could not be recovered.  No step is taken in that case; the
+    /// GPU path is marked unavailable and [`f`](Self::f) holds the most
+    /// recently synchronised populations.
+    pub fn try_step(&mut self) -> Result<(), GpuError> {
+        #[cfg(feature = "wgpu-backend")]
+        {
+            if !self.try_step_gpu()? {
+                self.step_cpu();
+            }
         }
         #[cfg(not(feature = "wgpu-backend"))]
         {
             self.step_cpu();
         }
         self.step_count += 1;
+        Ok(())
     }
 
     // ── GPU step ──────────────────────────────────────────────────────────────
 
+    /// GPU parameter words `[nx, ny, nz, ω, Fx, Fy, Fz, u_lid]` (floats bit-cast).
     #[cfg(feature = "wgpu-backend")]
-    fn step_gpu(&mut self) {
-        // Lazy initialisation: create GPU state from the current SoA populations.
-        if self.gpu_state.is_none() {
-            match LbmGpuState::try_new(self) {
-                Ok(state) => {
-                    self.gpu_state = Some(state);
-                }
-                Err(e) => {
-                    eprintln!("LBM GPU init failed ({e}), falling back to CPU");
-                    self.step_cpu();
-                    return;
+    fn gpu_params(&self) -> Result<[u32; LBM_PARAM_WORDS], GpuError> {
+        let dim = |n: usize| {
+            u32::try_from(n).map_err(|_| {
+                GpuError::BackendInit(format!("LBM grid dimension {n} exceeds u32 range"))
+            })
+        };
+        let omega = (1.0 / self.config.tau) as f32;
+        Ok([
+            dim(self.config.nx)?,
+            dim(self.config.ny)?,
+            dim(self.config.nz)?,
+            omega.to_bits(),
+            (self.config.force_x as f32).to_bits(),
+            (self.config.force_y as f32).to_bits(),
+            (self.config.force_z as f32).to_bits(),
+            (self.lid_vel_x as f32).to_bits(),
+            (self.lid_vel_y as f32).to_bits(),
+            (self.lid_vel_z as f32).to_bits(),
+        ])
+    }
+
+    /// Attempt to create the GPU state exactly once; failures are remembered.
+    #[cfg(feature = "wgpu-backend")]
+    fn try_init_gpu(&mut self) {
+        #[cfg(test)]
+        {
+            self.gpu_init_attempts += 1;
+        }
+        self.gpu = match LbmGpuState::try_new(self) {
+            Ok(state) => {
+                self.f_upload_pending = false;
+                self.solid_upload_pending = false;
+                GpuSlot::Ready(Box::new(state))
+            }
+            Err(e) => GpuSlot::Unavailable(e),
+        };
+    }
+
+    /// Run one step on the GPU.
+    ///
+    /// Returns `Ok(true)` when the GPU took the step, `Ok(false)` when the
+    /// caller must take it on the CPU (GPU missing, disabled, or a dispatch
+    /// failed after the populations were recovered), and `Err` when the GPU
+    /// failed and its populations could not be recovered.
+    #[cfg(feature = "wgpu-backend")]
+    fn try_step_gpu(&mut self) -> Result<bool, GpuError> {
+        if matches!(self.gpu, GpuSlot::Untried) {
+            self.try_init_gpu();
+        }
+        let params = self.gpu_params();
+        let nc = self.config.n_cells();
+        let GpuSlot::Ready(state) = &mut self.gpu else {
+            return Ok(false);
+        };
+        let dispatched = params.and_then(|params| {
+            if self.f_upload_pending {
+                state.upload_populations(&self.f, nc);
+            }
+            if self.solid_upload_pending {
+                state.upload_solid(&self.solid);
+            }
+            state.upload_params_if_changed(params);
+            state.dispatch()
+        });
+        match dispatched {
+            Ok(()) => {
+                self.f_upload_pending = false;
+                self.solid_upload_pending = false;
+                self.gpu_dirty = true;
+                Ok(true)
+            }
+            Err(dispatch_err) => {
+                // Recover the last valid GPU state (the unswapped input
+                // buffer) before handing over to the CPU for good.
+                let recovered = if self.gpu_dirty {
+                    state.read_populations(nc).map(Some)
+                } else {
+                    Ok(None)
+                };
+                match recovered {
+                    Ok(populations) => {
+                        if let Some(f) = populations {
+                            self.f = f;
+                        }
+                        self.gpu_dirty = false;
+                        self.gpu = GpuSlot::Unavailable(dispatch_err);
+                        Ok(false)
+                    }
+                    Err(read_err) => {
+                        self.gpu_dirty = false;
+                        self.gpu = GpuSlot::Unavailable(GpuError::ReadBack(format!(
+                            "{dispatch_err}; recovering the GPU populations failed: {read_err}"
+                        )));
+                        Err(GpuError::ReadBack(read_err.to_string()))
+                    }
                 }
             }
         }
-
-        let state = self
-            .gpu_state
-            .as_mut()
-            .expect("LbmGpuState must be initialised");
-
-        let input = state.input_buf();
-        let output = state.output_buf();
-
-        let nx = self.config.nx as u32;
-        let ny = self.config.ny as u32;
-        let nz = self.config.nz as u32;
-        let wg_x = nx.div_ceil(8);
-        let wg_y = ny.div_ceil(8);
-        let wg_z = nz.div_ceil(8);
-
-        const LBM_BGK_D3Q19_WGSL: &str = include_str!("shaders/lbm_bgk_d3q19.wgsl");
-
-        state
-            .backend
-            .dispatch_wgsl(
-                LBM_BGK_D3Q19_WGSL,
-                "main",
-                &[
-                    (
-                        state.params_buf,
-                        wgpu::BufferBindingType::Storage { read_only: true },
-                    ),
-                    (input, wgpu::BufferBindingType::Storage { read_only: true }),
-                    (
-                        output,
-                        wgpu::BufferBindingType::Storage { read_only: false },
-                    ),
-                ],
-                [wg_x, wg_y, wg_z],
-            )
-            .expect("LBM BGK D3Q19 dispatch_wgsl failed");
-
-        // Swap ping-pong: the output just written becomes the new input.
-        state.b_is_input = !state.b_is_input;
-
-        // Mark CPU-side SoA as stale; readback is deferred until needed.
-        self.gpu_dirty = true;
     }
 
     /// Synchronise CPU SoA populations from the current GPU input buffer.
     ///
-    /// Called lazily by observation methods when `gpu_dirty` is `true`.
+    /// Called lazily by observation methods when `gpu_dirty` is `true`.  A
+    /// failed readback marks the GPU path unavailable (see
+    /// [`gpu_error`](Self::gpu_error)); `f` then keeps the most recently
+    /// synchronised populations.
     #[cfg(feature = "wgpu-backend")]
     fn sync_from_gpu(&mut self) {
         if !self.gpu_dirty {
             return;
         }
-        let Some(state) = self.gpu_state.as_ref() else {
+        self.gpu_dirty = false;
+        let nc = self.config.n_cells();
+        let GpuSlot::Ready(state) = &self.gpu else {
             return;
         };
-        let nc = self.config.n_cells();
-        let read_buf = state.input_buf();
-        let flat = state.backend.read_buffer_f32(read_buf);
-        self.f = unflatten_f32_to_soa(&flat, nc);
-        self.gpu_dirty = false;
+        match state.read_populations(nc) {
+            Ok(f) => self.f = f,
+            Err(e) => self.gpu = GpuSlot::Unavailable(e),
+        }
     }
 
     // ── CPU step ──────────────────────────────────────────────────────────────
 
+    /// CPU reference step (f64): BGK collision with Guo forcing, then push
+    /// streaming with halfway bounce-back and the Ladd moving lid.
+    ///
+    /// This is the exact algorithm of the WGSL kernel.
     fn step_cpu(&mut self) {
         let nc = self.config.n_cells();
         let nx = self.config.nx;
         let ny = self.config.ny;
         let nz = self.config.nz;
-        let tau = self.config.tau;
-        let rho0 = self.config.rho0;
-        let omega = 1.0 / tau;
+        let omega = 1.0 / self.config.tau;
+        let force = [
+            self.config.force_x,
+            self.config.force_y,
+            self.config.force_z,
+        ];
+        let lid = [self.lid_vel_x, self.lid_vel_y, self.lid_vel_z];
+        let guo = 1.0 - 0.5 * omega;
 
-        // ── Collision (BGK) ──────────────────────────────────────────────────
-        for cell in 0..nc {
+        // ── Collision (BGK + Guo forcing) ────────────────────────────────────
+        // `cell_rho` keeps the local density for the moving-wall term.
+        let mut cell_rho = vec![0.0_f64; nc];
+        for (cell, rho_out) in cell_rho.iter_mut().enumerate() {
             if self.solid[cell] {
                 continue;
             }
 
-            // Compute macroscopic density and velocity
             let mut rho = 0.0_f64;
-            let mut ux = 0.0_f64;
-            let mut uy = 0.0_f64;
-            let mut uz = 0.0_f64;
+            let mut mom = [0.0_f64; 3];
             for i in 0..19 {
                 let fi = self.f[i][cell];
                 rho += fi;
-                ux += fi * D3Q19_EX[i] as f64;
-                uy += fi * D3Q19_EY[i] as f64;
-                uz += fi * D3Q19_EZ[i] as f64;
+                mom[0] += fi * D3Q19_EX[i] as f64;
+                mom[1] += fi * D3Q19_EY[i] as f64;
+                mom[2] += fi * D3Q19_EZ[i] as f64;
             }
-            // Guo forcing: shift velocity by F/2 before computing equilibrium.
-            // This is the standard Guo (2002) half-force correction; the physical
-            // velocity is u_phys = (Σ f_i e_i + F/2) / ρ.
-            ux = (ux + self.config.force_x * 0.5) / rho;
-            uy = (uy + self.config.force_y * 0.5) / rho;
-            uz = (uz + self.config.force_z * 0.5) / rho;
+            *rho_out = rho;
+            // Degenerate (empty) cells skip the collision and only stream.
+            if rho < 1e-10 {
+                continue;
+            }
+            // Guo (2002): equilibrium at u = (Σ fᵢ eᵢ + F/2) / ρ ...
+            let ux = (mom[0] + 0.5 * force[0]) / rho;
+            let uy = (mom[1] + 0.5 * force[1]) / rho;
+            let uz = (mom[2] + 0.5 * force[2]) / rho;
             let u2 = ux * ux + uy * uy + uz * uz;
 
-            // BGK collision — no additional explicit force term here; the velocity
-            // shift above is the sole forcing contribution.
             for i in 0..19 {
-                let eu =
-                    D3Q19_EX[i] as f64 * ux + D3Q19_EY[i] as f64 * uy + D3Q19_EZ[i] as f64 * uz;
+                let (ex, ey, ez) = (D3Q19_EX[i] as f64, D3Q19_EY[i] as f64, D3Q19_EZ[i] as f64);
+                let eu = ex * ux + ey * uy + ez * uz;
                 let feq = D3Q19_W[i] * rho * (1.0 + 3.0 * eu + 4.5 * eu * eu - 1.5 * u2);
-                self.f[i][cell] += omega * (feq - self.f[i][cell]);
+                // ... plus the source Sᵢ = (1 − ω/2) wᵢ [3(eᵢ − u) + 9(eᵢ·u) eᵢ]·F.
+                let e_minus_u_f =
+                    (ex - ux) * force[0] + (ey - uy) * force[1] + (ez - uz) * force[2];
+                let e_f = ex * force[0] + ey * force[1] + ez * force[2];
+                let source = guo * D3Q19_W[i] * (3.0 * e_minus_u_f + 9.0 * eu * e_f);
+                self.f[i][cell] += omega * (feq - self.f[i][cell]) + source;
             }
         }
 
-        // ── Streaming ────────────────────────────────────────────────────────
-        // Initialise the temporary buffer for fluid cells to zero, and for solid
-        // cells copy their current populations forward unchanged.  Solid cells
-        // do not participate in collision or streaming; keeping their populations
-        // stable preserves the global mass accounting used by the test harness.
+        // ── Streaming (push) with halfway bounce-back ────────────────────────
+        // Solid cells carry their populations through unchanged.  Every fluid
+        // slot of `f_tmp` is written exactly once below (streaming is a
+        // bijection per direction, and a bounce-back slot is only reachable
+        // from a solid cell, which never streams).
         for i in 0..19 {
             for cell in 0..nc {
                 self.f_tmp[i][cell] = if self.solid[cell] {
-                    // Solid cells keep their equilibrium populations unmodified.
                     self.f[i][cell]
                 } else {
                     0.0
@@ -528,94 +921,103 @@ impl LbmSimulation {
             }
         }
 
+        let (nx2, ny2, nz2) = (nx as i64, ny as i64, nz as i64);
         for z in 0..nz {
             for y in 0..ny {
                 for x in 0..nx {
                     let src = x + nx * (y + ny * z);
-                    // Solid source cells do not stream.  Their populations have
-                    // already been copied into f_tmp above; streaming them would
-                    // inject spurious mass into the fluid domain each step.
                     if self.solid[src] {
                         continue;
                     }
                     for i in 0..19 {
-                        // Destination cell after streaming
-                        let dx = D3Q19_EX[i];
-                        let dy = D3Q19_EY[i];
-                        let dz = D3Q19_EZ[i];
-                        let nx2 = nx as i32;
-                        let ny2 = ny as i32;
-                        let nz2 = nz as i32;
-                        let xd = ((x as i32 + dx).rem_euclid(nx2)) as usize;
-                        let yd = ((y as i32 + dy).rem_euclid(ny2)) as usize;
-                        let zd = ((z as i32 + dz).rem_euclid(nz2)) as usize;
+                        let xd = (x as i64 + D3Q19_EX[i] as i64).rem_euclid(nx2) as usize;
+                        let yd = (y as i64 + D3Q19_EY[i] as i64).rem_euclid(ny2) as usize;
+                        let zd = (z as i64 + D3Q19_EZ[i] as i64).rem_euclid(nz2) as usize;
                         let dst = xd + nx * (yd + ny * zd);
 
                         if self.solid[dst] {
-                            // Bounce-back: reflect distribution back to source cell
-                            // in the opposite direction.  The solid cell's own
-                            // population in f_tmp is unchanged (preserved above).
-                            self.f_tmp[D3Q19_OPP[i]][src] += self.f[i][src];
+                            let mut value = self.f[i][src];
+                            if yd + 1 == ny {
+                                // Ladd moving-wall bounce-back on the lid plane:
+                                // f_opp(x, t+1) = f*_i(x, t) − 6 wᵢ ρ (eᵢ·u_lid).
+                                let e_u = D3Q19_EX[i] as f64 * lid[0]
+                                    + D3Q19_EY[i] as f64 * lid[1]
+                                    + D3Q19_EZ[i] as f64 * lid[2];
+                                value -= 6.0 * D3Q19_W[i] * cell_rho[src] * e_u;
+                            }
+                            self.f_tmp[D3Q19_OPP[i]][src] = value;
                         } else {
-                            self.f_tmp[i][dst] += self.f[i][src];
+                            self.f_tmp[i][dst] = self.f[i][src];
                         }
                     }
                 }
             }
         }
 
-        // Swap f ↔ f_tmp
         std::mem::swap(&mut self.f, &mut self.f_tmp);
-
-        // ── Lid boundary condition (Zou-He velocity) ──────────────────────────
-        // Only apply when a non-zero lid velocity is set; applying a zero-velocity
-        // equilibrium BC unconditionally injects mass because the lid cells'
-        // post-streaming populations differ from the rested equilibrium.
-        let ux_lid = self.lid_vel_x;
-        let uy_lid = self.lid_vel_y;
-        let uz_lid = self.lid_vel_z;
-        if ux_lid != 0.0 || uy_lid != 0.0 || uz_lid != 0.0 {
-            let ny_m1 = ny - 1;
-            for z in 1..nz - 1 {
-                for x in 1..nx - 1 {
-                    let cell = x + nx * (ny_m1 + ny * z);
-                    // Simple approximation: set f at lid to equilibrium with ρ = ρ₀
-                    let rho = rho0;
-                    let u2 = ux_lid * ux_lid + uy_lid * uy_lid + uz_lid * uz_lid;
-                    for i in 0..19 {
-                        let eu = D3Q19_EX[i] as f64 * ux_lid
-                            + D3Q19_EY[i] as f64 * uy_lid
-                            + D3Q19_EZ[i] as f64 * uz_lid;
-                        self.f[i][cell] =
-                            D3Q19_W[i] * rho * (1.0 + 3.0 * eu + 4.5 * eu * eu - 1.5 * u2);
-                    }
-                }
-            }
-        }
     }
 
     // ── Macro quantities ──────────────────────────────────────────────────────
 
+    /// Density and physical velocity of the flat cell index `cell`.
+    ///
+    /// For fluid cells the velocity includes the Guo half-force correction
+    /// u = (Σ fᵢ eᵢ + F/2)/ρ; solid cells (which feel no body force) report
+    /// Σ fᵢ eᵢ / ρ.  Out-of-range indices yield zero density and velocity.
+    fn macro_at(&self, cell: usize) -> (f64, [f64; 3]) {
+        let mut rho = 0.0_f64;
+        let mut mom = [0.0_f64; 3];
+        for (i, dir) in self.f.iter().enumerate().take(19) {
+            let Some(&fi) = dir.get(cell) else {
+                return (0.0, [0.0; 3]);
+            };
+            rho += fi;
+            mom[0] += fi * D3Q19_EX[i] as f64;
+            mom[1] += fi * D3Q19_EY[i] as f64;
+            mom[2] += fi * D3Q19_EZ[i] as f64;
+        }
+        if rho <= 1e-10 {
+            return (rho, [0.0; 3]);
+        }
+        if !self.solid.get(cell).copied().unwrap_or(true) {
+            mom[0] += 0.5 * self.config.force_x;
+            mom[1] += 0.5 * self.config.force_y;
+            mom[2] += 0.5 * self.config.force_z;
+        }
+        (rho, [mom[0] / rho, mom[1] / rho, mom[2] / rho])
+    }
+
     /// Density and velocity at cell `(x, y, z)`.
+    ///
+    /// The velocity is the physical Guo-scheme velocity
+    /// `(Σ fᵢ eᵢ + F/2) / ρ` for fluid cells.  Coordinates outside the grid
+    /// yield zero density and velocity.
     pub fn cell_macro(&mut self, x: usize, y: usize, z: usize) -> (f64, [f64; 3]) {
         #[cfg(feature = "wgpu-backend")]
         self.sync_from_gpu();
-        let nc = x + self.config.nx * (y + self.config.ny * z);
-        let mut rho = 0.0_f64;
-        let mut u = [0.0_f64; 3];
-        for i in 0..19 {
-            let fi = self.f[i][nc];
-            rho += fi;
-            u[0] += fi * D3Q19_EX[i] as f64;
-            u[1] += fi * D3Q19_EY[i] as f64;
-            u[2] += fi * D3Q19_EZ[i] as f64;
+        if x >= self.config.nx || y >= self.config.ny || z >= self.config.nz {
+            return (0.0, [0.0; 3]);
         }
-        if rho > 1e-10 {
-            u[0] /= rho;
-            u[1] /= rho;
-            u[2] /= rho;
-        }
-        (rho, u)
+        self.macro_at(x + self.config.nx * (y + self.config.ny * z))
+    }
+
+    /// Per-cell density ρ = Σᵢ fᵢ (length `nx * ny * nz`).
+    pub fn density_field(&mut self) -> Vec<f64> {
+        #[cfg(feature = "wgpu-backend")]
+        self.sync_from_gpu();
+        (0..self.config.n_cells())
+            .map(|cell| self.macro_at(cell).0)
+            .collect()
+    }
+
+    /// Per-cell physical velocity (length `nx * ny * nz`), see
+    /// [`cell_macro`](Self::cell_macro).
+    pub fn velocity_field(&mut self) -> Vec<[f64; 3]> {
+        #[cfg(feature = "wgpu-backend")]
+        self.sync_from_gpu();
+        (0..self.config.n_cells())
+            .map(|cell| self.macro_at(cell).1)
+            .collect()
     }
 
     /// Mean velocity (ux, uy, uz) averaged over all fluid cells.
@@ -629,35 +1031,23 @@ impl LbmSimulation {
     pub fn mean_velocity(&mut self) -> (f64, f64, f64) {
         #[cfg(feature = "wgpu-backend")]
         self.sync_from_gpu();
-        let nc = self.config.n_cells();
-        let fluid: Vec<usize> = (0..nc).filter(|&i| !self.solid[i]).collect();
-        if fluid.is_empty() {
+        let mut sum = [0.0_f64; 3];
+        let mut count = 0_usize;
+        for cell in 0..self.config.n_cells() {
+            if self.solid[cell] {
+                continue;
+            }
+            let (_, u) = self.macro_at(cell);
+            sum[0] += u[0];
+            sum[1] += u[1];
+            sum[2] += u[2];
+            count += 1;
+        }
+        if count == 0 {
             return (0.0, 0.0, 0.0);
         }
-        let fx_half = self.config.force_x * 0.5;
-        let fy_half = self.config.force_y * 0.5;
-        let fz_half = self.config.force_z * 0.5;
-        let mut ux = 0.0_f64;
-        let mut uy = 0.0_f64;
-        let mut uz = 0.0_f64;
-        for &cell in &fluid {
-            let mut rho = 0.0;
-            let mut lu = [0.0_f64; 3];
-            for i in 0..19 {
-                let fi = self.f[i][cell];
-                rho += fi;
-                lu[0] += fi * D3Q19_EX[i] as f64;
-                lu[1] += fi * D3Q19_EY[i] as f64;
-                lu[2] += fi * D3Q19_EZ[i] as f64;
-            }
-            if rho > 1e-10 {
-                ux += (lu[0] + fx_half) / rho;
-                uy += (lu[1] + fy_half) / rho;
-                uz += (lu[2] + fz_half) / rho;
-            }
-        }
-        let n = fluid.len() as f64;
-        (ux / n, uy / n, uz / n)
+        let n = count as f64;
+        (sum[0] / n, sum[1] / n, sum[2] / n)
     }
 
     /// Mean density over all fluid cells.
@@ -675,53 +1065,36 @@ impl LbmSimulation {
         if count == 0 { 0.0 } else { sum / count as f64 }
     }
 
-    /// Maximum velocity magnitude across all fluid cells.
+    /// Maximum physical velocity magnitude across all fluid cells.
     ///
     /// If GPU steps have been taken, the CPU-side populations are synchronised
     /// from the GPU before computing the maximum.
     pub fn max_velocity_magnitude(&mut self) -> f64 {
         #[cfg(feature = "wgpu-backend")]
         self.sync_from_gpu();
-        let nc = self.config.n_cells();
-        let mut max_mag = 0.0_f64;
-        for cell in 0..nc {
-            if self.solid[cell] {
-                continue;
-            }
-            let mut rho = 0.0_f64;
-            let mut u = [0.0_f64; 3];
-            for i in 0..19 {
-                let fi = self.f[i][cell];
-                rho += fi;
-                u[0] += fi * D3Q19_EX[i] as f64;
-                u[1] += fi * D3Q19_EY[i] as f64;
-                u[2] += fi * D3Q19_EZ[i] as f64;
-            }
-            if rho > 1e-10 {
-                let mag =
-                    ((u[0] / rho).powi(2) + (u[1] / rho).powi(2) + (u[2] / rho).powi(2)).sqrt();
-                max_mag = max_mag.max(mag);
-            }
-        }
-        max_mag
+        (0..self.config.n_cells())
+            .filter(|&cell| !self.solid[cell])
+            .map(|cell| {
+                let (_, u) = self.macro_at(cell);
+                (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt()
+            })
+            .fold(0.0_f64, f64::max)
     }
 }
 
 // ── LbmGpuSolver ──────────────────────────────────────────────────────────────
 
-/// GPU-accelerated D3Q19 BGK LBM solver (requires `wgpu-backend` feature).
+/// GPU-accelerated D3Q19 BGK LBM solver with an `f32`-centric interface.
 ///
-/// Uses `WgpuBackendReal` to dispatch the `lbm_bgk_d3q19.wgsl` shader with
-/// ping-pong buffers.  Falls back gracefully when no GPU adapter is available.
-///
-/// # Buffer layout
-///
-/// `f_buf_a` and `f_buf_b` are each sized `19 × nx × ny × nz × sizeof(f32)`.
-/// The params buffer holds `[nx, ny, nz, omega_bits, 0u32]` (5 × 4 bytes).
-///
-/// `step()` alternates which buffer is read (`f_in`) vs written (`f_out`).
+/// A thin wrapper around [`LbmSimulation`]: [`new`](Self::new) initialises
+/// the GPU path eagerly (dispatching `lbm_bgk_d3q19.wgsl` with ping-pong
+/// buffers) and falls back to the CPU reference when no adapter is
+/// available; [`new_cpu`](Self::new_cpu) always uses the CPU reference.  Both
+/// paths simulate the same physics: the default channel geometry (bounce-back
+/// walls on the Y and Z faces, periodic in X), the optional moving lid on the
+/// top face and Guo body forcing.
 pub struct LbmGpuSolver {
-    /// Number of cells in X, Y, Z.
+    /// Number of cells in X.
     pub nx: u32,
     /// Number of cells in Y.
     pub ny: u32,
@@ -731,521 +1104,118 @@ pub struct LbmGpuSolver {
     pub omega: f32,
     /// Number of steps executed so far.
     pub step_count: u64,
-    /// Per-step state.
-    inner: LbmGpuSolverInner,
+    /// Underlying simulation (owns the GPU resources when active).
+    sim: LbmSimulation,
 }
-
-/// Internal GPU resources (kept separate so the outer struct can be `pub`
-/// while still gating the wgpu types behind the feature flag).
-enum LbmGpuSolverInner {
-    /// No GPU adapter available — CPU fallback.
-    Cpu {
-        /// CPU LBM simulation used as fallback.
-        sim: LbmSimulation,
-    },
-    /// Real GPU backend active.
-    #[cfg(feature = "wgpu-backend")]
-    Gpu {
-        backend: crate::compute::wgpu_backend::real::WgpuBackendReal,
-        params_buf: crate::compute::WgpuBufferHandle,
-        f_buf_a: crate::compute::WgpuBufferHandle,
-        f_buf_b: crate::compute::WgpuBufferHandle,
-        /// When `false` A is the input, when `true` B is the input.
-        current_b_is_input: bool,
-    },
-}
-
-/// WGSL source for the D3Q19 BGK kernel.
-#[cfg(feature = "wgpu-backend")]
-const LBM_BGK_D3Q19_WGSL: &str = include_str!("shaders/lbm_bgk_d3q19.wgsl");
 
 impl LbmGpuSolver {
-    /// Create a new solver.  Attempts to use a real GPU adapter; if none is
-    /// available, falls back to the CPU `LbmSimulation`.
-    ///
-    /// `omega = 1/tau` (e.g. 1.5 for τ = 2/3, giving ν = 1/18 in lattice units).
-    pub fn new(nx: u32, ny: u32, nz: u32, omega: f32) -> Self {
-        #[cfg(feature = "wgpu-backend")]
-        {
-            use crate::compute::wgpu_backend::real::WgpuBackendReal;
-            if let Ok(backend) = WgpuBackendReal::try_new() {
-                return Self::new_gpu(backend, nx, ny, nz, omega);
-            }
-        }
-        // CPU fallback
-        let cfg = LbmConfig {
+    /// Build the configuration shared by both constructors.
+    fn config(nx: u32, ny: u32, nz: u32, omega: f32) -> LbmConfig {
+        LbmConfig {
             nx: nx as usize,
             ny: ny as usize,
             nz: nz as usize,
-            tau: if omega > 0.0 { 1.0 / omega as f64 } else { 0.6 },
-            ..LbmConfig::default()
-        };
-        Self {
-            nx,
-            ny,
-            nz,
-            omega,
-            step_count: 0,
-            inner: LbmGpuSolverInner::Cpu {
-                sim: LbmSimulation::new(cfg),
+            tau: if omega > 0.0 {
+                1.0 / f64::from(omega)
+            } else {
+                0.6
             },
+            ..LbmConfig::default()
         }
     }
 
-    /// Create directly with a CPU fallback (useful for testing without GPU).
-    pub fn new_cpu(nx: u32, ny: u32, nz: u32, omega: f32) -> Self {
-        let cfg = LbmConfig {
-            nx: nx as usize,
-            ny: ny as usize,
-            nz: nz as usize,
-            tau: if omega > 0.0 { 1.0 / omega as f64 } else { 0.6 },
-            ..LbmConfig::default()
-        };
+    /// Create a new solver.  Attempts to use a real GPU adapter; if none is
+    /// available, falls back to the CPU reference (the reason is available
+    /// from [`gpu_error`](Self::gpu_error)).
+    ///
+    /// `omega = 1/tau` (e.g. 1.5 for τ = 2/3, giving ν = 1/18 in lattice units).
+    pub fn new(nx: u32, ny: u32, nz: u32, omega: f32) -> Self {
+        let mut sim = LbmSimulation::new(Self::config(nx, ny, nz, omega));
+        sim.ensure_gpu();
         Self {
             nx,
             ny,
             nz,
             omega,
             step_count: 0,
-            inner: LbmGpuSolverInner::Cpu {
-                sim: LbmSimulation::new(cfg),
-            },
+            sim,
+        }
+    }
+
+    /// Create directly with the CPU reference (useful for testing without GPU).
+    pub fn new_cpu(nx: u32, ny: u32, nz: u32, omega: f32) -> Self {
+        let mut sim = LbmSimulation::new(Self::config(nx, ny, nz, omega));
+        sim.disable_gpu();
+        Self {
+            nx,
+            ny,
+            nz,
+            omega,
+            step_count: 0,
+            sim,
         }
     }
 
     /// Returns `true` if a real GPU backend is active.
     pub fn is_gpu(&self) -> bool {
-        match &self.inner {
-            LbmGpuSolverInner::Cpu { .. } => false,
-            #[cfg(feature = "wgpu-backend")]
-            LbmGpuSolverInner::Gpu { .. } => true,
-        }
+        self.sim.has_gpu()
     }
 
-    /// Advance one BGK streaming+collision step.
-    pub fn step(&mut self) -> Result<(), crate::GpuError> {
-        match &mut self.inner {
-            LbmGpuSolverInner::Cpu { sim } => {
-                sim.step();
-                self.step_count += 1;
-                Ok(())
-            }
-            #[cfg(feature = "wgpu-backend")]
-            LbmGpuSolverInner::Gpu {
-                backend,
-                params_buf,
-                f_buf_a,
-                f_buf_b,
-                current_b_is_input,
-            } => {
-                let (input, output) = if *current_b_is_input {
-                    (*f_buf_b, *f_buf_a)
-                } else {
-                    (*f_buf_a, *f_buf_b)
-                };
-
-                let nx = self.nx;
-                let ny = self.ny;
-                let nz = self.nz;
-                let wg_x = nx.div_ceil(8);
-                let wg_y = ny.div_ceil(8);
-                let wg_z = nz.div_ceil(8);
-
-                backend
-                    .dispatch_wgsl(
-                        LBM_BGK_D3Q19_WGSL,
-                        "main",
-                        &[
-                            (
-                                *params_buf,
-                                wgpu::BufferBindingType::Storage { read_only: true },
-                            ),
-                            (input, wgpu::BufferBindingType::Storage { read_only: true }),
-                            (
-                                output,
-                                wgpu::BufferBindingType::Storage { read_only: false },
-                            ),
-                        ],
-                        [wg_x, wg_y, wg_z],
-                    )
-                    .map_err(|e| crate::GpuError::ShaderDispatch(e.to_string()))?;
-
-                // Swap ping-pong
-                *current_b_is_input = !*current_b_is_input;
-                self.step_count += 1;
-                Ok(())
-            }
-        }
+    /// Why the GPU path is unavailable, if it failed (see
+    /// [`LbmSimulation::gpu_error`]).
+    pub fn gpu_error(&self) -> Option<&GpuError> {
+        self.sim.gpu_error()
     }
 
-    /// Download per-cell density ρ = Σᵢ fᵢ from the current read buffer.
+    /// Set the lid (top face, y = ny − 1) velocity.
+    pub fn set_lid_velocity(&mut self, ux: f64, uy: f64, uz: f64) {
+        self.sim.set_lid_velocity(ux, uy, uz);
+    }
+
+    /// The underlying simulation.
+    pub fn simulation(&self) -> &LbmSimulation {
+        &self.sim
+    }
+
+    /// Mutable access to the underlying simulation (geometry, forcing, …).
+    pub fn simulation_mut(&mut self) -> &mut LbmSimulation {
+        &mut self.sim
+    }
+
+    /// Advance one BGK collision + streaming step.
     ///
-    /// Returns a `Vec<f32>` of length `nx * ny * nz`.
-    pub fn read_density(&self) -> Vec<f32> {
-        let nc = (self.nx * self.ny * self.nz) as usize;
-        match &self.inner {
-            LbmGpuSolverInner::Cpu { sim } => (0..nc)
-                .map(|cell| (0..19).map(|i| sim.f[i][cell] as f32).sum::<f32>())
-                .collect(),
-            #[cfg(feature = "wgpu-backend")]
-            LbmGpuSolverInner::Gpu {
-                backend,
-                f_buf_a,
-                f_buf_b,
-                current_b_is_input,
-                ..
-            } => {
-                // Read from the current *input* buffer (last written output)
-                let read_buf = if *current_b_is_input {
-                    *f_buf_b
-                } else {
-                    *f_buf_a
-                };
-                let raw = backend.read_buffer_f64(read_buf);
-                // raw has 19 * nc f32 values (cast to f64 then back)
-                let mut rho = vec![0.0_f32; nc];
-                for q in 0..19_usize {
-                    for (cell, rho_c) in rho.iter_mut().enumerate() {
-                        let raw_idx = q * nc + cell;
-                        if raw_idx < raw.len() {
-                            *rho_c += raw[raw_idx] as f32;
-                        }
-                    }
-                }
-                rho
-            }
-        }
-    }
-
-    /// Download per-cell velocity [ux, uy, uz] from the current read buffer.
+    /// # Errors
     ///
-    /// Returns a `Vec<[f32; 3]>` of length `nx * ny * nz`.
-    pub fn read_velocity(&self) -> Vec<[f32; 3]> {
-        let nc = (self.nx * self.ny * self.nz) as usize;
-        match &self.inner {
-            LbmGpuSolverInner::Cpu { sim } => (0..nc)
-                .map(|cell| {
-                    let rho: f64 = (0..19).map(|i| sim.f[i][cell]).sum();
-                    if rho > 1e-10 {
-                        let ux = (0..19)
-                            .map(|i| sim.f[i][cell] * D3Q19_EX[i] as f64)
-                            .sum::<f64>()
-                            / rho;
-                        let uy = (0..19)
-                            .map(|i| sim.f[i][cell] * D3Q19_EY[i] as f64)
-                            .sum::<f64>()
-                            / rho;
-                        let uz = (0..19)
-                            .map(|i| sim.f[i][cell] * D3Q19_EZ[i] as f64)
-                            .sum::<f64>()
-                            / rho;
-                        [ux as f32, uy as f32, uz as f32]
-                    } else {
-                        [0.0; 3]
-                    }
-                })
-                .collect(),
-            #[cfg(feature = "wgpu-backend")]
-            LbmGpuSolverInner::Gpu {
-                backend,
-                f_buf_a,
-                f_buf_b,
-                current_b_is_input,
-                ..
-            } => {
-                let read_buf = if *current_b_is_input {
-                    *f_buf_b
-                } else {
-                    *f_buf_a
-                };
-                let raw = backend.read_buffer_f64(read_buf);
-                let mut vel = vec![[0.0_f32; 3]; nc];
-                for q in 0..19_usize {
-                    for (cell, vel_c) in vel.iter_mut().enumerate() {
-                        let raw_idx = q * nc + cell;
-                        if raw_idx < raw.len() {
-                            let fval = raw[raw_idx] as f32;
-                            vel_c[0] += D3Q19_EX[q] as f32 * fval;
-                            vel_c[1] += D3Q19_EY[q] as f32 * fval;
-                            vel_c[2] += D3Q19_EZ[q] as f32 * fval;
-                        }
-                    }
-                }
-                // Normalise by density
-                let rho = self.read_density();
-                for cell in 0..nc {
-                    let r = rho[cell];
-                    if r > 1e-10 {
-                        vel[cell][0] /= r;
-                        vel[cell][1] /= r;
-                        vel[cell][2] /= r;
-                    }
-                }
-                vel
-            }
-        }
+    /// Returns [`GpuError::ReadBack`] when a GPU dispatch failed and the GPU
+    /// populations could not be recovered (see [`LbmSimulation::try_step`]).
+    /// A dispatch failure whose state can be recovered continues on the CPU
+    /// and is reported through [`gpu_error`](Self::gpu_error).
+    pub fn step(&mut self) -> Result<(), GpuError> {
+        self.sim.try_step()?;
+        self.step_count += 1;
+        Ok(())
     }
 
-    // ── GPU construction helper ───────────────────────────────────────────────
+    /// Per-cell density ρ = Σᵢ fᵢ (length `nx * ny * nz`), read back from the
+    /// GPU when it is active.
+    pub fn read_density(&mut self) -> Vec<f32> {
+        self.sim
+            .density_field()
+            .into_iter()
+            .map(|rho| rho as f32)
+            .collect()
+    }
 
-    #[cfg(feature = "wgpu-backend")]
-    fn new_gpu(
-        mut backend: crate::compute::wgpu_backend::real::WgpuBackendReal,
-        nx: u32,
-        ny: u32,
-        nz: u32,
-        omega: f32,
-    ) -> Self {
-        let nc = (nx * ny * nz) as usize;
-        // 19 populations × nc cells × 4 bytes (f32)
-        let f_bytes = (19 * nc * 4) as u64;
-        // Params: 5 × u32 = 20 bytes
-        let params_bytes: u64 = 20;
-
-        let params_buf = backend.create_buffer_storage(params_bytes);
-        let f_buf_a = backend.create_buffer_storage(f_bytes);
-        let f_buf_b = backend.create_buffer_storage(f_bytes);
-
-        // Write initial equilibrium state (all f_i = w_i * rho0 where rho0=1)
-        let rho0 = 1.0_f64;
-        let f_init: Vec<f64> = (0..19)
-            .flat_map(|q| (0..nc).map(move |_| D3Q19_W[q] * rho0))
-            .collect();
-        backend.write_buffer_f64(f_buf_a, &f_init);
-
-        // Write params: [nx, ny, nz, omega_bits, 0]
-        let omega_bits = omega.to_bits();
-        let params_data: [u32; 5] = [nx, ny, nz, omega_bits, 0];
-        let params_bytes_slice: &[u8] = bytemuck::cast_slice(&params_data);
-        backend.queue_write_buffer_raw(&params_buf, params_bytes_slice);
-
-        Self {
-            nx,
-            ny,
-            nz,
-            omega,
-            step_count: 0,
-            inner: LbmGpuSolverInner::Gpu {
-                backend,
-                params_buf,
-                f_buf_a,
-                f_buf_b,
-                current_b_is_input: false,
-            },
-        }
+    /// Per-cell velocity `[ux, uy, uz]` (length `nx * ny * nz`), read back
+    /// from the GPU when it is active.
+    pub fn read_velocity(&mut self) -> Vec<[f32; 3]> {
+        self.sim
+            .velocity_field()
+            .into_iter()
+            .map(|u| [u[0] as f32, u[1] as f32, u[2] as f32])
+            .collect()
     }
 }
-
-// ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_d3q19_weights_sum() {
-        let sum: f64 = D3Q19_W.iter().sum();
-        assert!(
-            (sum - 1.0).abs() < 1e-12,
-            "weights should sum to 1, got {}",
-            sum
-        );
-    }
-
-    #[test]
-    fn test_d3q19_opposite_index() {
-        for i in 0..19 {
-            let j = D3Q19_OPP[i];
-            assert_eq!(
-                D3Q19_EX[i], -D3Q19_EX[j],
-                "e_x[{}]={} should equal -e_x[{}]={}",
-                i, D3Q19_EX[i], j, D3Q19_EX[j]
-            );
-            assert_eq!(D3Q19_EY[i], -D3Q19_EY[j]);
-            assert_eq!(D3Q19_EZ[i], -D3Q19_EZ[j]);
-        }
-    }
-
-    #[test]
-    fn test_lbm_construction() {
-        let sim = LbmSimulation::new(LbmConfig {
-            nx: 4,
-            ny: 4,
-            nz: 4,
-            ..LbmConfig::default()
-        });
-        assert_eq!(sim.config.n_cells(), 64);
-        assert_eq!(sim.f.len(), 19);
-        assert_eq!(sim.f[0].len(), 64);
-    }
-
-    #[test]
-    fn test_lbm_mass_conservation() {
-        // Mass (total density) should be approximately conserved
-        let cfg = LbmConfig {
-            nx: 6,
-            ny: 6,
-            nz: 6,
-            tau: 0.6,
-            ..LbmConfig::default()
-        };
-        let mut sim = LbmSimulation::new(cfg);
-        let mass_before: f64 = (0..19).map(|i| sim.f[i].iter().sum::<f64>()).sum();
-        for _ in 0..10 {
-            sim.step();
-        }
-        // Call mean_density() to force GPU→CPU sync, then read f directly.
-        sim.mean_density(); // triggers sync_from_gpu if needed
-        let mass_after: f64 = (0..19).map(|i| sim.f[i].iter().sum::<f64>()).sum();
-        assert!(
-            (mass_before - mass_after).abs() / mass_before < 0.02,
-            "mass should be conserved: before={:.4} after={:.4}",
-            mass_before,
-            mass_after
-        );
-    }
-
-    #[test]
-    // Pre-existing CPU bug: `LbmSimulation::new` marks `y == ny-1` (the lid
-    // plane) as solid, but `step_cpu` writes the lid-velocity equilibrium into
-    // those same solid cells *after* streaming.  Solid cells never act as
-    // streaming sources, so the assignment is dead code and no velocity is ever
-    // injected into the fluid domain.  Fixing this requires either un-marking
-    // the lid plane as solid, moving the BC to `y = ny-2`, or implementing
-    // full Zou-He / Ladd moving-wall bounce-back — all out of scope for the
-    // GPU kernel activation work in v0.1.1.
-    #[ignore = "pre-existing CPU bug: lid BC writes to solid cells that never stream — needs Zou-He moving-wall or relocation to y=ny-2"]
-    fn test_lbm_lid_driven_velocity() {
-        let cfg = LbmConfig {
-            nx: 6,
-            ny: 6,
-            nz: 6,
-            tau: 0.55,
-            ..LbmConfig::default()
-        };
-        let mut sim = LbmSimulation::new(cfg);
-        sim.set_lid_velocity(0.05, 0.0, 0.0);
-        // Use step_cpu() directly: the GPU kernel uses periodic-only BCs and
-        // ignores the lid velocity, so routing through step() would produce
-        // zero velocity (making the assertion vacuously true). The CPU path
-        // applies the actual lid driving and bounce-back walls.
-        for _ in 0..50 {
-            sim.step_cpu();
-        }
-        // After driving, max velocity should be strictly positive
-        let max_v = sim.max_velocity_magnitude();
-        assert!(max_v > 0.0, "lid-driven max_v should be > 0, got {}", max_v);
-    }
-
-    #[test]
-    fn test_lbm_viscosity() {
-        let cfg = LbmConfig {
-            tau: 0.6,
-            ..LbmConfig::default()
-        };
-        let nu = cfg.viscosity();
-        // ν = (1/3)(τ − 0.5) = (1/3)(0.1) = 1/30 ≈ 0.0333
-        assert!((nu - 1.0 / 30.0).abs() < 1e-10, "nu={}", nu);
-    }
-
-    #[test]
-    fn test_lbm_body_force_accelerates_flow() {
-        let cfg = LbmConfig {
-            nx: 4,
-            ny: 4,
-            nz: 4,
-            tau: 0.55,
-            force_x: 1e-5, // small positive body force in X
-            ..LbmConfig::default()
-        };
-        let mut sim = LbmSimulation::new(cfg);
-        // Use step_cpu() directly: the GPU kernel uses periodic-only BCs and
-        // ignores the Guo body force, so routing through step() would produce
-        // zero mean velocity (making ux >= 0 vacuously true). The CPU path
-        // applies the Guo body-force correction correctly.
-        for _ in 0..100 {
-            sim.step_cpu();
-        }
-        let (ux, _, _) = sim.mean_velocity();
-        // Body force in +X should produce strictly positive mean flow in +X
-        assert!(
-            ux > 0.0,
-            "body force in +X should produce ux > 0, got {}",
-            ux
-        );
-    }
-
-    // ── LbmGpuSolver smoke tests ─────────────────────────────────────────────
-
-    #[test]
-    fn test_lbm_gpu_solver_construction() {
-        let solver = LbmGpuSolver::new_cpu(8, 8, 8, 1.5);
-        assert_eq!(solver.nx, 8);
-        assert_eq!(solver.ny, 8);
-        assert_eq!(solver.nz, 8);
-        assert!((solver.omega - 1.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_lbm_gpu_solver_density_init() {
-        let solver = LbmGpuSolver::new_cpu(4, 4, 4, 1.5);
-        let rho = solver.read_density();
-        assert_eq!(rho.len(), 64);
-        // Initial density should be ~1.0 everywhere (equilibrium at rest)
-        for &r in &rho {
-            assert!((r - 1.0).abs() < 1e-4, "rho={r}");
-        }
-    }
-
-    #[test]
-    fn test_lbm_gpu_solver_step_conserves_mass_cpu() {
-        let mut solver = LbmGpuSolver::new_cpu(8, 8, 8, 1.5);
-        let rho_before: f32 = solver.read_density().iter().sum();
-
-        for _ in 0..10 {
-            solver.step().expect("step failed");
-        }
-
-        let rho_after: f32 = solver.read_density().iter().sum();
-        // Mass should be conserved within 1%
-        let rel_err = (rho_before - rho_after).abs() / rho_before;
-        assert!(
-            rel_err < 0.01,
-            "mass not conserved: before={rho_before:.4} after={rho_after:.4} rel_err={rel_err:.6}"
-        );
-    }
-
-    /// Lid-driven cavity smoke test (GPU path if available, CPU fallback otherwise).
-    ///
-    /// 16×16×16 cavity, lid velocity u_x=0.1, ω=1.5.
-    /// Run 100 steps, verify density conservation: sum(rho) ≈ N * 1.0 within 1%.
-    #[test]
-    fn test_lbm_gpu_lid_driven_cavity() {
-        let nx = 16_u32;
-        let ny = 16_u32;
-        let nz = 16_u32;
-        let omega = 1.5_f32;
-
-        let mut solver = LbmGpuSolver::new(nx, ny, nz, omega);
-
-        // On the CPU path, prime the lid condition via the inner sim
-        if let LbmGpuSolverInner::Cpu { ref mut sim } = solver.inner {
-            sim.set_lid_velocity(0.1, 0.0, 0.0);
-        }
-
-        for _ in 0..100 {
-            solver.step().expect("LBM GPU step failed");
-        }
-
-        let rho = solver.read_density();
-        let total_rho: f32 = rho.iter().sum();
-        let n = (nx * ny * nz) as f32;
-        let expected = n; // initial rho=1 so total should be N
-        let rel_err = (total_rho - expected).abs() / expected;
-
-        assert!(
-            rel_err < 0.01,
-            "density not conserved: sum(rho)={total_rho:.4} expected={expected:.4} rel_err={rel_err:.6}"
-        );
-    }
-}
+mod tests;

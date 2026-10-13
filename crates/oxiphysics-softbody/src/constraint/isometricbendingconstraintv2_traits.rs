@@ -53,6 +53,12 @@ impl SoftConstraint for IsometricBendingConstraintV2 {
                 }
             }
         }
+        // The constrained quantity is C = stiffness * c, so its gradient is the
+        // stiffness-scaled gradient of c (a Newton step on C is then independent of
+        // the stiffness scale, which only enters through the compliance).
+        for grad_k in grads.iter_mut() {
+            *grad_k *= self.stiffness;
+        }
         let w_sum: Real = (0..4).map(|k| ws[k] * grads[k].norm_squared()).sum();
         if w_sum < 1e-14 {
             return;
@@ -64,5 +70,9 @@ impl SoftConstraint for IsometricBendingConstraintV2 {
         for k in 0..4 {
             particles[self.indices[k]].position += grads[k] * (delta_lambda * ws[k]);
         }
+    }
+
+    fn reset_lambda(&mut self) {
+        Self::reset_lambda(self);
     }
 }

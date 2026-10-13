@@ -895,13 +895,21 @@ mod tests {
         use crate::engine::WasmPhysicsEngine;
 
         let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-        let b0 = engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
-        let b1 = engine.add_dynamic_body(1.0, 1.5, 0.0, 0.0);
-        engine.add_sphere_collider(b0, 1.0);
-        engine.add_sphere_collider(b1, 1.0);
+        let b0 = engine
+            .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+            .expect("add dynamic body");
+        let b1 = engine
+            .add_dynamic_body(1.0, 1.5, 0.0, 0.0)
+            .expect("add dynamic body");
+        engine
+            .add_sphere_collider(b0, 1.0)
+            .expect("add sphere collider");
+        engine
+            .add_sphere_collider(b1, 1.0)
+            .expect("add sphere collider");
 
         let mut event_engine = PhysicsEventEngine::new(64);
-        engine.step(1.0 / 60.0);
+        engine.step(1.0 / 60.0).expect("step");
         event_engine.update(&engine, engine.time());
 
         if engine.get_contact_count() > 0 {
@@ -918,21 +926,29 @@ mod tests {
     #[test]
     fn test_physics_event_engine_collision_end() {
         let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-        let b0 = engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
-        let b1 = engine.add_dynamic_body(1.0, 1.5, 0.0, 0.0);
-        engine.add_sphere_collider(b0, 1.0);
-        engine.add_sphere_collider(b1, 1.0);
+        let b0 = engine
+            .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+            .expect("add dynamic body");
+        let b1 = engine
+            .add_dynamic_body(1.0, 1.5, 0.0, 0.0)
+            .expect("add dynamic body");
+        engine
+            .add_sphere_collider(b0, 1.0)
+            .expect("add sphere collider");
+        engine
+            .add_sphere_collider(b1, 1.0)
+            .expect("add sphere collider");
 
         let mut event_engine = PhysicsEventEngine::new(64);
 
         // First step — bodies overlap → CollisionStart
-        engine.step(1.0 / 60.0);
+        engine.step(1.0 / 60.0).expect("step");
         event_engine.update(&engine, engine.time());
         let _ = event_engine.drain_snapshot(engine.time());
 
         // Move b1 far away
         engine.set_position(b1, 100.0, 0.0, 0.0).unwrap();
-        engine.step(1.0 / 60.0);
+        engine.step(1.0 / 60.0).expect("step");
         event_engine.update(&engine, engine.time());
         let snap = event_engine.drain_snapshot(engine.time());
 

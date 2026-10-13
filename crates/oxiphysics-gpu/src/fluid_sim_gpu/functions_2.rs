@@ -187,7 +187,17 @@ mod tests {
         let ke0 = sim.kinetic_energy();
         sim.step();
         let ke1 = sim.kinetic_energy();
-        assert!(ke1 >= ke0);
+        // A block in the middle of the box is in free fall: every particle
+        // gains exactly g*dt, so KE = N * 0.5 * (g dt)^2 (unit mass).
+        let n = sim.particles.len() as f64;
+        let v = 9.81 * sim.config.dt;
+        let expected = n * 0.5 * v * v;
+        assert_eq!(ke0, 0.0);
+        assert!(ke1 > ke0, "kinetic energy must grow: {ke0} -> {ke1}");
+        assert!(
+            (ke1 - expected).abs() < 1e-9 * expected,
+            "KE {ke1} vs free-fall value {expected}"
+        );
     }
     #[test]
     fn test_advect_scalar_uniform_field() {

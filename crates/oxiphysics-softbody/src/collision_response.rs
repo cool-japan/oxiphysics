@@ -13,6 +13,8 @@
 //! - Friction response
 //! - Collision group bitmask filtering
 
+use oxiphysics_core::collision::{AabbRaw, Bvh, BvhLeaf};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -574,64 +576,112 @@ impl CollisionResponse {
 
 /// Cloth self-collision: particle vs. triangle within the same mesh.
 ///
-/// Checks each particle against every non-adjacent triangle and returns
-/// contacts that penetrate within the given thickness.
+/// Checks each particle against the triangles of the mesh that it is not a
+/// corner of and returns a contact for every pair closer than the cloth
+/// thickness.  A triangle is *adjacent* to a particle when it contains that
+/// particle as a corner; adjacent pairs never produce contacts.
+///
+/// [`SelfCollision::detect`] builds a bounding-volume hierarchy over the
+/// triangles (each box inflated by the thickness) and only runs the exact
+/// point-triangle distance test on the triangles whose box contains the
+/// particle, so the cost is roughly `O((P + T) log T)` instead of `O(P * T)`.
 #[derive(Debug, Clone)]
 pub struct SelfCollision {
-    /// Per-particle adjacency: set of triangle indices adjacent to each particle.
-    adjacency: Vec<Vec<usize>>,
     /// Cloth thickness (two-sided guard band) \[m\].
     pub thickness: f64,
 }
 
 impl SelfCollision {
-    /// Creates a new self-collision detector.
-    ///
-    /// * `num_particles` – number of cloth particles.
-    /// * `triangles` – mesh connectivity (indices into the particle array).
-    /// * `thickness` – collision guard band \[m\].
-    pub fn new(num_particles: usize, triangles: &[[usize; 3]], thickness: f64) -> Self {
-        let mut adjacency = vec![Vec::new(); num_particles];
-        for (ti, tri) in triangles.iter().enumerate() {
-            for &vi in tri {
-                adjacency[vi].push(ti);
-            }
-        }
-        Self {
-            adjacency,
-            thickness,
-        }
+    /// Creates a self-collision detector with the given cloth thickness \[m\].
+    pub fn with_thickness(thickness: f64) -> Self {
+        Self { thickness }
     }
 
-    /// Returns `true` if triangle `tri_idx` contains vertex `particle_idx`.
-    fn is_adjacent(&self, particle_idx: usize, tri_idx: usize) -> bool {
-        self.adjacency
-            .get(particle_idx)
-            .map(|adj| adj.contains(&tri_idx))
-            .unwrap_or(false)
+    /// Creates a new self-collision detector.
+    ///
+    /// The mesh arguments are ignored: adjacency is derived from the triangle
+    /// list that is passed to [`SelfCollision::detect`].
+    #[deprecated(
+        since = "0.1.3",
+        note = "adjacency is derived from the triangles passed to `detect`; use `SelfCollision::with_thickness`"
+    )]
+    pub fn new(_num_particles: usize, _triangles: &[[usize; 3]], thickness: f64) -> Self {
+        Self::with_thickness(thickness)
+    }
+
+    /// Positions of the three corners of `tri`, or `None` when a corner index
+    /// is out of range or a corner position is not finite.
+    fn triangle_corners(positions: &[[f64; 3]], tri: &[usize; 3]) -> Option<[[f64; 3]; 3]> {
+        let corners = [
+            *positions.get(tri[0])?,
+            *positions.get(tri[1])?,
+            *positions.get(tri[2])?,
+        ];
+        corners
+            .iter()
+            .flatten()
+            .all(|coordinate| coordinate.is_finite())
+            .then_some(corners)
     }
 
     /// Detects self-collision contacts.
     ///
     /// * `positions` – current particle positions.
-    /// * `triangles` – mesh connectivity.
+    /// * `triangles` – mesh connectivity (indices into `positions`).
     ///
-    /// Returns a list of `SoftBodyContact`s where the particle has penetrated
-    /// a non-adjacent triangle.
+    /// Returns a `SoftBodyContact` for every particle that is closer than
+    /// [`SelfCollision::thickness`] to a triangle it is not a corner of.  The
+    /// contacts are ordered by particle index, then by triangle index.
+    /// Triangles that reference a particle outside `positions`, or whose
+    /// corners are not finite, are ignored; a non-positive or non-finite
+    /// thickness yields no contacts.
     pub fn detect(&self, positions: &[[f64; 3]], triangles: &[[usize; 3]]) -> Vec<SoftBodyContact> {
         let mut contacts = Vec::new();
+        let thickness = self.thickness;
+        if !(thickness.is_finite() && thickness > 0.0) {
+            return contacts;
+        }
+        let mut leaves = Vec::with_capacity(triangles.len());
+        for (ti, tri) in triangles.iter().enumerate() {
+            let Some([a, b, c]) = Self::triangle_corners(positions, tri) else {
+                continue;
+            };
+            let mut min = a;
+            let mut max = a;
+            for corner in [b, c] {
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(corner[axis]);
+                    max[axis] = max[axis].max(corner[axis]);
+                }
+            }
+            for axis in 0..3 {
+                min[axis] -= thickness;
+                max[axis] += thickness;
+            }
+            leaves.push(BvhLeaf {
+                id: ti as u64,
+                aabb: AabbRaw::new(min, max),
+            });
+        }
+        let bvh = Bvh::build(leaves);
+        let thickness_sq = thickness * thickness;
         for (pi, &pos) in positions.iter().enumerate() {
-            for (ti, tri) in triangles.iter().enumerate() {
-                if self.is_adjacent(pi, ti) {
+            let mut hits = bvh.query(&AabbRaw::new(pos, pos));
+            hits.sort_unstable();
+            for id in hits {
+                let ti = id as usize;
+                let Some(tri) = triangles.get(ti) else {
+                    continue;
+                };
+                if tri.contains(&pi) {
                     continue;
                 }
-                let a = positions[tri[0]];
-                let b = positions[tri[1]];
-                let c = positions[tri[2]];
+                let Some([a, b, c]) = Self::triangle_corners(positions, tri) else {
+                    continue;
+                };
                 let result = PointTriangleContact::compute(pos, a, b, c);
-                let dist = result.dist_sq.sqrt();
-                if dist < self.thickness {
-                    let depth = self.thickness - dist;
+                if result.dist_sq < thickness_sq {
+                    let depth = thickness - result.dist_sq.sqrt();
                     contacts.push(SoftBodyContact::new(
                         result.closest_point,
                         result.normal,
@@ -1227,43 +1277,218 @@ mod tests {
 
     // ── SelfCollision ──
 
+    /// Positions and triangles of an `n x n` cloth grid in the XZ plane with the
+    /// given vertex spacing; vertex `(i, j)` has index `j * n + i`.
+    fn grid_cloth(n: usize, spacing: f64) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+        let mut positions = Vec::with_capacity(n * n);
+        for j in 0..n {
+            for i in 0..n {
+                positions.push([i as f64 * spacing, 0.0, j as f64 * spacing]);
+            }
+        }
+        let mut triangles = Vec::new();
+        for j in 0..(n - 1) {
+            for i in 0..(n - 1) {
+                let a = j * n + i;
+                let b = a + 1;
+                let c = a + n;
+                let d = c + 1;
+                triangles.push([a, b, c]);
+                triangles.push([b, d, c]);
+            }
+        }
+        (positions, triangles)
+    }
+
+    /// The O(P * T) reference that `SelfCollision::detect` replaced.
+    fn brute_force_self_contacts(
+        positions: &[[f64; 3]],
+        triangles: &[[usize; 3]],
+        thickness: f64,
+    ) -> Vec<SoftBodyContact> {
+        let mut contacts = Vec::new();
+        for (pi, &pos) in positions.iter().enumerate() {
+            for (ti, tri) in triangles.iter().enumerate() {
+                if tri.contains(&pi) {
+                    continue;
+                }
+                let result = PointTriangleContact::compute(
+                    pos,
+                    positions[tri[0]],
+                    positions[tri[1]],
+                    positions[tri[2]],
+                );
+                let dist = result.dist_sq.sqrt();
+                if dist < thickness {
+                    contacts.push(SoftBodyContact::new(
+                        result.closest_point,
+                        result.normal,
+                        thickness - dist,
+                        pi,
+                        ti,
+                    ));
+                }
+            }
+        }
+        contacts
+    }
+
     #[test]
     fn test_self_collision_adjacent_skipped() {
-        // 3-particle strip: two triangles sharing edge (1,2).
+        // Two triangles sharing the edge (1, 2).  With a thickness larger than
+        // the whole strip every non-adjacent particle/triangle pair collides,
+        // so the contact list is exactly the set of non-adjacent pairs.
         let triangles = [[0, 1, 2_usize], [1, 3, 2]];
-        let sc = SelfCollision::new(4, &triangles, 0.1);
-        // Particle 0 is adjacent to triangle 0 → should not detect self-collision.
         let positions = [
             [0.0_f64, 0.0, 0.0],
             [1.0, 0.0, 0.0],
             [0.5, 1.0, 0.0],
             [1.5, 1.0, 0.0],
         ];
-        // Put particle 0 very close to triangle 1 but NOT adjacent.
+        let sc = SelfCollision::with_thickness(5.0);
         let contacts = sc.detect(&positions, &triangles);
-        // We only care that adjacent triangle 0 is NOT in contacts for particle 0.
-        for c in &contacts {
-            if c.particle_index == 0 {
-                assert_ne!(c.triangle_index, 0, "adjacent triangle must be skipped");
+        let pairs: Vec<(usize, usize)> = contacts
+            .iter()
+            .map(|c| (c.particle_index, c.triangle_index))
+            .collect();
+        // Particle 0 is only a corner of triangle 0, particle 3 only of triangle 1;
+        // particles 1 and 2 are corners of both triangles.
+        assert_eq!(pairs, vec![(0, 1), (3, 0)]);
+    }
+
+    #[test]
+    fn test_self_collision_detects_particle_above_triangle() {
+        let triangles = [[0, 1, 2_usize]];
+        let positions = [
+            [0.0_f64, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            // Particle 3 hovers 0.06 above the triangle interior.
+            [0.25, 0.25, 0.06],
+        ];
+        let sc = SelfCollision::with_thickness(0.1);
+        let contacts = sc.detect(&positions, &triangles);
+        assert_eq!(contacts.len(), 1);
+        let contact = &contacts[0];
+        assert_eq!(contact.particle_index, 3);
+        assert_eq!(contact.triangle_index, 0);
+        assert!((contact.penetration_depth - 0.04).abs() < 1e-12);
+        assert!((contact.contact_point[0] - 0.25).abs() < 1e-12);
+        assert!((contact.contact_point[1] - 0.25).abs() < 1e-12);
+        assert!(contact.contact_point[2].abs() < 1e-12);
+
+        // Outside the guard band there is no contact.
+        let far = SelfCollision::with_thickness(0.05);
+        assert!(far.detect(&positions, &triangles).is_empty());
+    }
+
+    #[test]
+    fn test_self_collision_matches_brute_force_on_folded_cloth() {
+        // A 20 x 20 cloth folded in half: the second half is mirrored onto the
+        // first at a height of 0.04, closer than the 0.08 thickness.
+        let n = 20;
+        let spacing = 0.1;
+        let (mut positions, triangles) = grid_cloth(n, spacing);
+        let fold_x = (n - 1) as f64 * spacing;
+        for j in 0..n {
+            for i in (n / 2)..n {
+                let p = &mut positions[j * n + i];
+                p[0] = fold_x - p[0];
+                p[1] = 0.04;
             }
+        }
+        let thickness = 0.08;
+        let expected = brute_force_self_contacts(&positions, &triangles, thickness);
+        assert!(
+            expected.len() > 200,
+            "the folded cloth must produce many contacts, got {}",
+            expected.len()
+        );
+        let found = SelfCollision::with_thickness(thickness).detect(&positions, &triangles);
+        assert_eq!(found.len(), expected.len());
+        for (got, want) in found.iter().zip(expected.iter()) {
+            assert_eq!(got.particle_index, want.particle_index);
+            assert_eq!(got.triangle_index, want.triangle_index);
+            assert_eq!(got.contact_point, want.contact_point);
+            assert_eq!(got.normal, want.normal);
+            assert_eq!(got.penetration_depth, want.penetration_depth);
         }
     }
 
     #[test]
-    fn test_self_collision_detect_penetration() {
-        // Simple cloth: 4 particles, 2 triangles.
-        let triangles = [[0, 1, 2_usize], [1, 3, 2]];
-        let mut positions = [
+    fn test_self_collision_matches_brute_force_on_crumpled_cloth() {
+        // A deterministic jitter in all three axes crumples a 16 x 16 sheet, so
+        // the closest feature of a particle is a triangle's face, edge or corner
+        // in turn, and the particles are scattered over many BVH nodes.
+        let n = 16;
+        let (mut positions, triangles) = grid_cloth(n, 0.1);
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next_offset = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 11) as f64 / (1_u64 << 53) as f64 - 0.5
+        };
+        for position in positions.iter_mut() {
+            for coordinate in position.iter_mut() {
+                *coordinate += 0.12 * next_offset();
+            }
+        }
+        let thickness = 0.06;
+        let expected = brute_force_self_contacts(&positions, &triangles, thickness);
+        assert!(
+            expected.len() > 100,
+            "the crumpled cloth must produce many contacts, got {}",
+            expected.len()
+        );
+        let found = SelfCollision::with_thickness(thickness).detect(&positions, &triangles);
+        assert_eq!(found.len(), expected.len());
+        for (got, want) in found.iter().zip(expected.iter()) {
+            assert_eq!(got.particle_index, want.particle_index);
+            assert_eq!(got.triangle_index, want.triangle_index);
+            assert_eq!(got.contact_point, want.contact_point);
+            assert_eq!(got.normal, want.normal);
+            assert_eq!(got.penetration_depth, want.penetration_depth);
+        }
+    }
+
+    #[test]
+    fn test_self_collision_flat_cloth_has_no_contacts() {
+        let (positions, triangles) = grid_cloth(12, 0.1);
+        let sc = SelfCollision::with_thickness(0.03);
+        assert!(sc.detect(&positions, &triangles).is_empty());
+        assert!(brute_force_self_contacts(&positions, &triangles, 0.03).is_empty());
+    }
+
+    #[test]
+    fn test_self_collision_skips_invalid_triangles_and_thickness() {
+        let positions = [
             [0.0_f64, 0.0, 0.0],
             [1.0, 0.0, 0.0],
-            [0.5, 1.0, 0.0],
-            [1.5, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            // Particle 3 hovers over triangle 0.
+            [0.25, 0.25, 0.05],
+            // Particle 4 is not finite.
+            [f64::NAN, 0.0, 0.0],
         ];
-        // Place a 5th particle (index 4) very close to triangle 0, not adjacent.
-        let sc = SelfCollision::new(5, &triangles, 0.2);
-        positions[0][2] = 0.0; // existing particle fine
-        // Simulate by detecting; just check it doesn't panic and returns a Vec.
-        let contacts = sc.detect(&positions, &triangles);
-        let _ = contacts; // just ensure it runs
+        // Triangle 1 references a particle that does not exist and triangle 2 has
+        // a non-finite corner: both are ignored without panicking.
+        let triangles = [[0, 1, 2_usize], [0, 1, 99], [0, 1, 4]];
+        let sc = SelfCollision::with_thickness(0.1);
+        let pairs: Vec<(usize, usize)> = sc
+            .detect(&positions, &triangles)
+            .iter()
+            .map(|c| (c.particle_index, c.triangle_index))
+            .collect();
+        assert_eq!(pairs, vec![(3, 0)]);
+        for bad in [0.0, -0.1, f64::NAN, f64::INFINITY] {
+            assert!(
+                SelfCollision::with_thickness(bad)
+                    .detect(&positions, &triangles)
+                    .is_empty(),
+                "thickness {bad} must yield no contacts"
+            );
+        }
+        assert!(sc.detect(&[], &[]).is_empty());
     }
 }

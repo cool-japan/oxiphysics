@@ -3,6 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use crate::coupling::types::*;
+use crate::kernel::{CubicSplineKernel, SphKernel};
 
 /// Smooth transition weight function for the handshake region.
 ///
@@ -148,40 +149,32 @@ pub fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
         a[0] * b[1] - a[1] * b[0],
     ]
 }
-/// Simple cubic spline kernel (truncated at `2h`), normalised in 3-D.
+/// Cubic spline kernel (M4, support radius `2h`), normalised in 3-D.
 ///
+/// ```text
 /// W(r, h) = σ * { 1 - 1.5q² + 0.75q³,  0 ≤ q < 1
 ///               { 0.25(2-q)³,            1 ≤ q < 2
 ///               { 0,                     q ≥ 2 }
-/// where q = r / h and σ = 8 / (π h³).
+/// ```
+///
+/// where `q = r / h` and `σ = 1 / (π h³)`, so that `∫ W dV = 1`.  This is a
+/// thin wrapper around [`CubicSplineKernel`], the crate's single reference
+/// implementation of the kernel; it returns `0` for a non-positive `h`.
 pub fn cubic_kernel(r: f64, h: f64) -> f64 {
     if h <= 0.0 {
         return 0.0;
     }
-    let sigma = 8.0 / (std::f64::consts::PI * h * h * h);
-    let q = r / h;
-    if q >= 2.0 {
-        0.0
-    } else if q >= 1.0 {
-        sigma * 0.25 * (2.0 - q).powi(3)
-    } else {
-        sigma * (1.0 - 1.5 * q * q + 0.75 * q * q * q)
-    }
+    CubicSplineKernel.w(r, h)
 }
-/// Cubic spline kernel gradient (scalar dW/dr).
+/// Cubic spline kernel gradient (scalar dW/dr, non-positive).
+///
+/// Exact radial derivative of [`cubic_kernel`]; it vanishes at the origin
+/// (`r < 1e-14`), outside the support (`r ≥ 2h`) and for a non-positive `h`.
 pub fn cubic_kernel_grad(r: f64, h: f64) -> f64 {
     if h <= 0.0 || r < 1e-14 {
         return 0.0;
     }
-    let sigma = 8.0 / (std::f64::consts::PI * h * h * h);
-    let q = r / h;
-    if q >= 2.0 {
-        0.0
-    } else if q >= 1.0 {
-        sigma * (-0.75 * (2.0 - q).powi(2)) / h
-    } else {
-        sigma * (-3.0 * q + 2.25 * q * q) / h
-    }
+    CubicSplineKernel.grad_w(r, h)
 }
 /// Apply forces from SPH particles onto a rigid body (Newton's second law).
 ///
@@ -1533,5 +1526,178 @@ mod tests_coupling_extended {
         let vol = dem.volume();
         let expected_fz = -1000.0 * g[2] * vol;
         assert!((f[2] - expected_fz).abs() < 1e-10, "Only buoyancy, no drag");
+    }
+}
+#[cfg(test)]
+mod tests_kernel_normalisation {
+    use super::*;
+    use std::f64::consts::PI;
+
+    /// Midpoint-rule value of `∫ f(r) 4π r² dr` over the support `[0, 2h]`.
+    fn radial_volume_integral(h: f64, f: impl Fn(f64) -> f64) -> f64 {
+        let n = 40_000;
+        let dr = 2.0 * h / n as f64;
+        (0..n)
+            .map(|i| {
+                let r = (i as f64 + 0.5) * dr;
+                f(r) * 4.0 * PI * r * r * dr
+            })
+            .sum()
+    }
+
+    /// Cubic lattice of `n`³ points with spacing `dx`, centred on the origin.
+    fn centred_lattice(n: usize, dx: f64) -> Vec<[f64; 3]> {
+        let centre = (n as f64 - 1.0) * 0.5;
+        let mut points = Vec::with_capacity(n * n * n);
+        for i in 0..n {
+            for j in 0..n {
+                for k in 0..n {
+                    points.push([
+                        (i as f64 - centre) * dx,
+                        (j as f64 - centre) * dx,
+                        (k as f64 - centre) * dx,
+                    ]);
+                }
+            }
+        }
+        points
+    }
+
+    #[test]
+    fn test_cubic_kernel_is_unit_normalised() {
+        // The former 8/(π h³) constant made this integral 8.
+        for &h in &[1.0, 0.37, 2.5] {
+            let integral = radial_volume_integral(h, |r| cubic_kernel(r, h));
+            assert!(
+                (integral - 1.0).abs() < 1.0e-6,
+                "h = {h}: ∫W dV = {integral}, expected 1"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cubic_kernel_reference_values() {
+        let h = 0.4;
+        let sigma = 1.0 / (PI * h * h * h);
+        assert!((cubic_kernel(0.0, h) - sigma).abs() < 1.0e-12 * sigma);
+        // W(h) = σ/4 and W(1.5 h) = σ (0.5)³/4.
+        assert!((cubic_kernel(h, h) - 0.25 * sigma).abs() < 1.0e-12 * sigma);
+        assert!((cubic_kernel(1.5 * h, h) - sigma * 0.125 * 0.25).abs() < 1.0e-12 * sigma);
+        assert_eq!(cubic_kernel(2.0 * h, h), 0.0);
+        assert_eq!(cubic_kernel(3.0 * h, h), 0.0);
+        assert_eq!(cubic_kernel(0.1, 0.0), 0.0);
+        assert_eq!(cubic_kernel(0.1, -1.0), 0.0);
+    }
+
+    #[test]
+    fn test_cubic_kernel_grad_matches_central_difference() {
+        for &h in &[1.0, 0.37] {
+            for i in 1..40 {
+                let r = i as f64 * 0.05 * h;
+                let eps = 1.0e-6 * h;
+                let numeric = (cubic_kernel(r + eps, h) - cubic_kernel(r - eps, h)) / (2.0 * eps);
+                let analytic = cubic_kernel_grad(r, h);
+                assert!(
+                    (analytic - numeric).abs() <= 1.0e-6 * numeric.abs().max(1.0e-9),
+                    "h = {h}, r = {r}: analytic = {analytic}, numeric = {numeric}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_cubic_kernel_grad_satisfies_first_moment_identity() {
+        // ∫ r · ∇W dV = −3 ∫ W dV = −3, which fixes the gradient normalisation.
+        for &h in &[1.0, 0.37] {
+            let moment = radial_volume_integral(h, |r| r * cubic_kernel_grad(r, h));
+            assert!(
+                (moment + 3.0).abs() < 1.0e-5,
+                "h = {h}: ∫ r·∇W dV = {moment}, expected −3"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cubic_kernel_grad_vanishes_at_origin_outside_support_and_for_bad_h() {
+        let h = 0.5;
+        assert_eq!(cubic_kernel_grad(0.0, h), 0.0);
+        assert_eq!(cubic_kernel_grad(2.0 * h, h), 0.0);
+        assert_eq!(cubic_kernel_grad(5.0 * h, h), 0.0);
+        assert_eq!(cubic_kernel_grad(0.1, 0.0), 0.0);
+        for i in 1..40 {
+            assert!(cubic_kernel_grad(i as f64 * 0.025, h) < 0.0);
+        }
+    }
+
+    #[test]
+    fn test_pressure_force_vanishes_for_uniform_pressure_on_symmetric_lattice() {
+        let dx = 0.1;
+        let h = 1.3 * dx;
+        let rho = 1000.0;
+        let positions = centred_lattice(7, dx);
+        let n = positions.len();
+        let masses = vec![rho * dx * dx * dx; n];
+        let densities = vec![rho; n];
+        let pressures = vec![2.5e4; n];
+        let fsi = FluidStructureInteraction::new(rho, 9.81, 0.5, 0.5);
+        let force = fsi.pressure_force([0.0; 3], &positions, &pressures, &masses, &densities, h);
+        // A uniform pressure field has no gradient: the pair contributions of
+        // mirror-symmetric particles cancel exactly.
+        assert!(
+            norm3(force) < 1.0e-6,
+            "net force {force:?} for uniform pressure"
+        );
+    }
+
+    #[test]
+    fn test_pressure_force_recovers_linear_pressure_gradient() {
+        // p(x) = p0 + g x: the SPH gradient estimate F = −Σ V p ∇W must equal
+        // −∇p = (−g, 0, 0).  With the former 8× kernel gradient it came out as
+        // −8 g.
+        let dx = 0.1;
+        let h = 1.3 * dx;
+        let rho = 1000.0;
+        let slope = 5.0e3;
+        let positions = centred_lattice(7, dx);
+        let n = positions.len();
+        let masses = vec![rho * dx * dx * dx; n];
+        let densities = vec![rho; n];
+        let pressures: Vec<f64> = positions.iter().map(|p| 1.0e5 + slope * p[0]).collect();
+        let fsi = FluidStructureInteraction::new(rho, 9.81, 0.5, 0.5);
+        let force = fsi.pressure_force([0.0; 3], &positions, &pressures, &masses, &densities, h);
+        assert!(
+            (force[0] + slope).abs() < 0.02 * slope,
+            "F_x = {}, expected {}",
+            force[0],
+            -slope
+        );
+        assert!(force[1].abs() < 1.0e-6 * slope && force[2].abs() < 1.0e-6 * slope);
+    }
+
+    #[test]
+    fn test_sph_fem_weights_form_a_partition_of_unity() {
+        // Σ_p W(|x_n − x_p|, h) m_p/ρ_p is the SPH interpolation of the
+        // constant field 1 and must be ≈ 1 for an interior node of a regular
+        // lattice (it was ≈ 8 with the over-normalised kernel).
+        let dx = 0.1;
+        let h = 1.3 * dx;
+        let rho = 1000.0;
+        let sph_pos = centred_lattice(7, dx);
+        let n = sph_pos.len();
+        let masses = vec![rho * dx * dx * dx; n];
+        let densities = vec![rho; n];
+        let fem_pos = vec![[0.0_f64; 3], [0.5 * dx, 0.5 * dx, 0.5 * dx]];
+        let weights = build_sph_fem_weights(&fem_pos, &sph_pos, &masses, &densities, h);
+        for node in 0..fem_pos.len() {
+            let sum: f64 = weights
+                .iter()
+                .filter(|w| w.fem_idx == node)
+                .map(|w| w.weight)
+                .sum();
+            assert!(
+                (sum - 1.0).abs() < 0.02,
+                "node {node}: Σ weights = {sum}, expected 1"
+            );
+        }
     }
 }

@@ -338,34 +338,41 @@ impl NormalEstimation {
         }
         cov
     }
-    /// Returns the eigenvector corresponding to the smallest eigenvalue of a
-    /// symmetric 3×3 matrix using shifted power iteration.
+    /// Returns the unit eigenvector belonging to the smallest eigenvalue of a
+    /// symmetric 3×3 matrix.
+    ///
+    /// The matrix is diagonalised with Jacobi rotations, which converge for every
+    /// symmetric matrix whatever its eigenvalue spread, so the result is correct
+    /// for axis-aligned as well as for planar or linear neighbourhoods. The matrix
+    /// is first scaled to unit magnitude, which leaves the eigenvectors unchanged
+    /// but makes the convergence test independent of the units of the point cloud.
+    ///
+    /// The sign of the returned vector is arbitrary. A zero or non-finite matrix
+    /// has no preferred direction; the unit z axis is returned for it.
     pub fn smallest_eigenvector_3x3_sym(m: &[[f64; 3]; 3]) -> [f64; 3] {
-        let mut v = [1.0f64, 1.0, 1.0];
-        for _ in 0..20 {
-            v = mat_vec_3(m, v);
-            let len = length(v);
-            if len < 1e-15 {
-                break;
-            }
-            v = scale(v, 1.0 / len);
+        if !m.iter().flatten().all(|entry| entry.is_finite()) {
+            return [0.0, 0.0, 1.0];
         }
-        let lambda_max = dot(mat_vec_3(m, v), v);
-        let shifted = [
-            [lambda_max - m[0][0], -m[0][1], -m[0][2]],
-            [-m[1][0], lambda_max - m[1][1], -m[1][2]],
-            [-m[2][0], -m[2][1], lambda_max - m[2][2]],
-        ];
-        let mut u = [1.0f64, 0.0, 0.0];
-        for _ in 0..50 {
-            u = mat_vec_3(&shifted, u);
-            let len = length(u);
-            if len < 1e-15 {
-                break;
-            }
-            u = scale(u, 1.0 / len);
+        let magnitude = m
+            .iter()
+            .flatten()
+            .fold(0.0_f64, |largest, entry| largest.max(entry.abs()));
+        if magnitude <= 0.0 {
+            return [0.0, 0.0, 1.0];
         }
-        normalize(u)
+        let scaled = m.map(|row| row.map(|entry| entry / magnitude));
+        let (vectors, values) = jacobi_eigen_3x3(scaled);
+        let mut smallest = 0;
+        for (k, value) in values.iter().enumerate().skip(1) {
+            if *value < values[smallest] {
+                smallest = k;
+            }
+        }
+        normalize([
+            vectors[0][smallest],
+            vectors[1][smallest],
+            vectors[2][smallest],
+        ])
     }
 }
 /// Result of a RANSAC plane fitting.

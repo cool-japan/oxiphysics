@@ -7,7 +7,10 @@
 //! - [`PlasmaSpecies`]: Parameters for a plasma species (ions or electrons).
 //! - [`ElectricField`]: 2-D electric field on a grid with Lorentz force computation.
 //! - [`MagneticField`]: Uniform out-of-plane magnetic field with cyclotron and Larmor formulae.
-//! - [`PlasmaLbm`]: Two-fluid (ion + electron) LBM simulation driver.
+//! - [`PlasmaLbm`]: Two-fluid (ion + electron) driver with a spectral Poisson solve,
+//!   a Boris push and an upwind finite-volume continuity update.
+//! - [`poisson_electric_field_periodic`]: Electrostatic field of a periodic charge density.
+//! - [`boris_push_2d`]: Boris integration of the Lorentz force.
 //! - [`DebyeShielding`]: Debye–Hückel screened Coulomb potential.
 //! - [`plasma_frequency`]: Plasma (Langmuir) frequency.
 //! - [`debye_length`]: Debye screening length.
@@ -23,6 +26,7 @@
 //! - Chen, F. F. (1984). *Introduction to Plasma Physics and Controlled Fusion*.
 //! - Birdsall, C. K. & Langdon, A. B. (1991). *Plasma Physics via Computer Simulation*.
 
+use crate::{Error, Result};
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -308,13 +312,242 @@ impl MagneticField {
 // PlasmaLbm
 // ---------------------------------------------------------------------------
 
-/// Two-fluid LBM plasma solver (ions + electrons) on a 2-D grid.
+/// Largest Courant number (sum over both directions, counting the in- and
+/// outflow face of a cell) for which one upwind sub-step of the continuity
+/// equation is taken; larger time steps are sub-cycled.
+const CONTINUITY_CFL: f64 = 0.9;
+
+/// Largest number of continuity sub-steps taken for one plasma step.
+const MAX_CONTINUITY_SUBSTEPS: usize = 10_000;
+
+/// Fallback grid spacing (m) when no electron Debye length is available.
+const FALLBACK_GRID_SPACING: f64 = 1.0e-6;
+
+/// Wavenumbers of FFT bin `index` on an `n`-point periodic axis with grid
+/// spacing `dx`: `(k, k_derivative)`.
 ///
-/// Uses a simple BGK-like relaxation step to advance density and velocity
-/// fields for both species under mutual electric-force coupling.
+/// `k` is the plain wavenumber `2 pi m / (n dx)` with `m` the signed mode
+/// number.  `k_derivative` is the wavenumber to use when differentiating a
+/// real field: it is zero for the Nyquist mode of an even-length axis, whose
+/// derivative is not representable by a real field.
+fn fft_wavenumbers(index: usize, n: usize, dx: f64) -> (f64, f64) {
+    let signed = if index <= n / 2 {
+        index as f64
+    } else {
+        index as f64 - n as f64
+    };
+    let k = 2.0 * PI * signed / (n as f64 * dx);
+    let k_derivative = if n % 2 == 0 && index == n / 2 { 0.0 } else { k };
+    (k, k_derivative)
+}
+
+/// Electrostatic field `E = -∇φ` of a charge density on a periodic grid.
 ///
-/// This is a reduced two-moment model; full LBM distribution functions are
-/// not carried here — the module is designed for fast macroscopic estimates.
+/// Solves Gauss's law `∇²φ = -ρ_c / ε₀` spectrally: the charge density is
+/// transformed with a 2-D FFT, divided by `ε₀ k²` (the `k = 0` mode is dropped,
+/// i.e. the net charge is assumed to vanish or to be compensated by a uniform
+/// background), differentiated in Fourier space and transformed back.  The
+/// result is exact for every Fourier mode that fits on the grid.
+///
+/// `charge_density` is stored in row-major order (index `iy * nx + ix`) in
+/// C m⁻³, `dx` is the grid spacing (m) in both directions.  Returns
+/// `(E_x, E_y)` in V m⁻¹.
+///
+/// # Errors
+/// Empty grids, a length mismatch, a non-positive or non-finite `dx`, or
+/// non-finite charge values.
+pub fn poisson_electric_field_periodic(
+    charge_density: &[f64],
+    nx: usize,
+    ny: usize,
+    dx: f64,
+) -> Result<(Vec<f64>, Vec<f64>)> {
+    Error::check_grid(nx, ny)?;
+    let n = nx * ny;
+    if charge_density.len() != n {
+        return Err(Error::ComponentCountMismatch {
+            expected: n,
+            found: charge_density.len(),
+            field: "charge_density".to_string(),
+        });
+    }
+    if !(dx.is_finite() && dx > 0.0) {
+        return Err(Error::ParameterOutOfBounds {
+            name: "dx".to_string(),
+            value: dx,
+            min: f64::MIN_POSITIVE,
+            max: f64::MAX,
+        });
+    }
+    for (index, &q) in charge_density.iter().enumerate() {
+        Error::check_finite(q, "charge_density", index)?;
+    }
+
+    let zeros = vec![0.0_f64; n];
+    // Row-major (iy, ix): `ny` rows of `nx` columns.
+    let (rho_re, rho_im) = oxifft::fft2d_split::<f64>(charge_density, &zeros, ny, nx);
+
+    let mut ex_re = vec![0.0_f64; n];
+    let mut ex_im = vec![0.0_f64; n];
+    let mut ey_re = vec![0.0_f64; n];
+    let mut ey_im = vec![0.0_f64; n];
+    for iy in 0..ny {
+        let (ky, ky_d) = fft_wavenumbers(iy, ny, dx);
+        for ix in 0..nx {
+            let (kx, kx_d) = fft_wavenumbers(ix, nx, dx);
+            let k2 = kx * kx + ky * ky;
+            if k2 == 0.0 {
+                continue;
+            }
+            let idx = iy * nx + ix;
+            // φ̂ = ρ̂ / (ε₀ k²)
+            let scale = 1.0 / (EPSILON_0 * k2);
+            let phi_re = rho_re[idx] * scale;
+            let phi_im = rho_im[idx] * scale;
+            // Ê = -i k φ̂
+            ex_re[idx] = kx_d * phi_im;
+            ex_im[idx] = -kx_d * phi_re;
+            ey_re[idx] = ky_d * phi_im;
+            ey_im[idx] = -ky_d * phi_re;
+        }
+    }
+    let (ex, _) = oxifft::ifft2d_split::<f64>(&ex_re, &ex_im, ny, nx);
+    let (ey, _) = oxifft::ifft2d_split::<f64>(&ey_re, &ey_im, ny, nx);
+    Ok((ex, ey))
+}
+
+/// Boris push of an in-plane velocity in an electric field `e` and a uniform
+/// out-of-plane magnetic field `B = (0, 0, bz)`.
+///
+/// Integrates `m dv/dt = q (E + v × B)` over `dt` with the Boris scheme: half an
+/// electric kick, an exact rotation about `B` by the angle `2 atan(q B dt / 2m)`
+/// and a second half kick.  Without an electric field the speed `|v|` is
+/// conserved to rounding error for any `dt` (an explicit Euler step multiplies
+/// it by `sqrt(1 + (ω_c dt)²)` every step), and a particle in crossed fields
+/// keeps its `E × B / B²` drift exactly.
+///
+/// # Arguments
+/// * `v`      – velocity `[vx, vy]` (m s⁻¹)
+/// * `e`      – electric field `[Ex, Ey]` (V m⁻¹)
+/// * `bz`     – magnetic flux density B_z (T)
+/// * `charge` – particle charge (C)
+/// * `mass`   – particle mass (kg)
+/// * `dt`     – time step (s)
+pub fn boris_push_2d(
+    v: [f64; 2],
+    e: [f64; 2],
+    bz: f64,
+    charge: f64,
+    mass: f64,
+    dt: f64,
+) -> [f64; 2] {
+    let q_over_m = charge / mass;
+    let kick = [q_over_m * e[0] * 0.5 * dt, q_over_m * e[1] * 0.5 * dt];
+    // First half electric kick.
+    let v_minus = [v[0] + kick[0], v[1] + kick[1]];
+    // Magnetic rotation about z: v' = v⁻ + v⁻ × t,  v⁺ = v⁻ + v' × s.
+    let t = q_over_m * bz * 0.5 * dt;
+    let s = 2.0 * t / (1.0 + t * t);
+    let v_prime = [v_minus[0] + v_minus[1] * t, v_minus[1] - v_minus[0] * t];
+    let v_plus = [v_minus[0] + v_prime[1] * s, v_minus[1] - v_prime[0] * s];
+    // Second half electric kick.
+    [v_plus[0] + kick[0], v_plus[1] + kick[1]]
+}
+
+/// Advance a density field by `dt` with the conservative first-order upwind
+/// finite-volume discretisation of `∂n/∂t + ∇·(n v) = 0` on a periodic grid.
+///
+/// The face velocity is the average of the two adjacent cell velocities and the
+/// density is taken from the upwind cell.  The scheme conserves the total
+/// particle number exactly and keeps the density non-negative; time steps
+/// that violate the CFL condition are split into sub-steps.
+fn advance_density_upwind(
+    density: &mut [f64],
+    vx: &[f64],
+    vy: &[f64],
+    nx: usize,
+    ny: usize,
+    dx: f64,
+    dt: f64,
+) -> Result<()> {
+    let n = nx * ny;
+    let east = |ix: usize| (ix + 1) % nx;
+    let north = |iy: usize| (iy + 1) % ny;
+
+    let mut max_face_x = 0.0_f64;
+    let mut max_face_y = 0.0_f64;
+    for iy in 0..ny {
+        for ix in 0..nx {
+            let k = iy * nx + ix;
+            max_face_x = max_face_x.max((0.5 * (vx[k] + vx[iy * nx + east(ix)])).abs());
+            max_face_y = max_face_y.max((0.5 * (vy[k] + vy[north(iy) * nx + ix])).abs());
+        }
+    }
+    // Positivity needs dt * (sum of the outgoing face speeds) / dx <= 1 and a
+    // cell can lose through both faces of each direction.
+    let courant = 2.0 * dt * (max_face_x + max_face_y) / dx;
+    let n_sub_f = (courant / CONTINUITY_CFL).ceil().max(1.0);
+    if !n_sub_f.is_finite() || n_sub_f > MAX_CONTINUITY_SUBSTEPS as f64 {
+        return Err(Error::TimeStepTooLarge {
+            dt,
+            dt_max: dt * CONTINUITY_CFL * MAX_CONTINUITY_SUBSTEPS as f64 / courant,
+        });
+    }
+    let n_sub = n_sub_f as usize;
+    let h = dt / n_sub_f;
+
+    let mut flux_x = vec![0.0_f64; n];
+    let mut flux_y = vec![0.0_f64; n];
+    for _ in 0..n_sub {
+        // Flux through the east / north face of every cell.
+        for iy in 0..ny {
+            for ix in 0..nx {
+                let k = iy * nx + ix;
+                let ke = iy * nx + east(ix);
+                let kn = north(iy) * nx + ix;
+                let ux = 0.5 * (vx[k] + vx[ke]);
+                flux_x[k] = ux * if ux >= 0.0 { density[k] } else { density[ke] };
+                let uy = 0.5 * (vy[k] + vy[kn]);
+                flux_y[k] = uy * if uy >= 0.0 { density[k] } else { density[kn] };
+            }
+        }
+        for iy in 0..ny {
+            for ix in 0..nx {
+                let k = iy * nx + ix;
+                let kw = iy * nx + (ix + nx - 1) % nx;
+                let ks = ((iy + ny - 1) % ny) * nx + ix;
+                density[k] -= h / dx * (flux_x[k] - flux_x[kw] + flux_y[k] - flux_y[ks]);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Two-fluid plasma solver (ions + electrons) on a periodic 2-D grid.
+///
+/// Each species carries a number density and an in-plane velocity field; the
+/// grid has the uniform spacing [`PlasmaLbm::dx`].  One step of
+/// [`PlasmaLbm::step`] / [`PlasmaLbm::try_step`]
+///
+/// 1. solves Gauss's law `∇²φ = -ρ_c/ε₀` spectrally for the self-consistent
+///    electrostatic field `E = -∇φ` of the charge density
+///    `ρ_c = q_i n_i + q_e n_e` ([`poisson_electric_field_periodic`]),
+/// 2. accelerates both species with the Lorentz force `q (E + v × B)` using the
+///    Boris scheme ([`boris_push_2d`]), which rotates the velocity about the
+///    uniform out-of-plane field exactly instead of letting `|v|` grow,
+/// 3. advances the number densities with the continuity equation
+///    `∂n/∂t + ∇·(n v) = 0` (conservative first-order upwind finite volumes,
+///    sub-cycled to respect the CFL condition).
+///
+/// Updating the velocity before the densities makes the coupled
+/// density-velocity oscillation (the Langmuir wave) stable and, for
+/// `ω_p dt ≲ 0.2`, accurate to second order in `dt`.
+///
+/// This is a cold, collisionless, reduced two-moment model: pressure,
+/// collision and viscous terms are not included, and no LBM distribution
+/// functions are carried — the module is designed for fast macroscopic
+/// estimates.  The net charge of the periodic domain should vanish (the
+/// uniform part of the charge density does not produce a field).
 #[derive(Debug, Clone)]
 pub struct PlasmaLbm {
     /// Ion density/velocity field.
@@ -325,6 +558,8 @@ pub struct PlasmaLbm {
     pub nx: usize,
     /// Grid size in y.
     pub ny: usize,
+    /// Grid spacing in x and y (m).
+    pub dx: f64,
     /// Self-consistent electric field (updated each step).
     pub electric_field: ElectricField,
     /// Uniform background magnetic field.
@@ -372,10 +607,47 @@ impl PlasmaFluid {
     pub fn mean_density(&self) -> f64 {
         self.density.iter().sum::<f64>() / self.density.len() as f64
     }
+
+    /// Check that the field arrays match the grid and the species can be
+    /// integrated (positive finite mass, finite charge and fields).
+    fn validate(&self, nx: usize, ny: usize, name: &str) -> Result<()> {
+        let n = nx * ny;
+        for (field, values) in [
+            ("density", &self.density),
+            ("vx", &self.vx),
+            ("vy", &self.vy),
+        ] {
+            if values.len() != n {
+                return Err(Error::ComponentCountMismatch {
+                    expected: n,
+                    found: values.len(),
+                    field: format!("{name}.{field}"),
+                });
+            }
+            for (index, &value) in values.iter().enumerate() {
+                Error::check_finite(value, &format!("{name}.{field}"), index)?;
+            }
+        }
+        let mass = self.species.mass();
+        if !(mass.is_finite() && mass > 0.0) {
+            return Err(Error::ParameterOutOfBounds {
+                name: format!("{name}.mass"),
+                value: mass,
+                min: f64::MIN_POSITIVE,
+                max: f64::MAX,
+            });
+        }
+        Error::check_finite(self.species.charge(), &format!("{name}.charge"), 0)
+    }
 }
 
 impl PlasmaLbm {
     /// Create a new [`PlasmaLbm`] simulation.
+    ///
+    /// The grid spacing [`PlasmaLbm::dx`] defaults to the electron Debye length
+    /// of the initial electron density and temperature (1 µm if that is
+    /// undefined), so the default grid resolves charge separation; use
+    /// [`PlasmaLbm::with_grid_spacing`] to choose another one.
     ///
     /// # Arguments
     /// * `nx`, `ny`   – grid dimensions
@@ -393,58 +665,117 @@ impl PlasmaLbm {
         elec_species: PlasmaSpecies,
         bz: f64,
     ) -> Self {
+        let debye = debye_length(n_elec, elec_species.temperature, ELEM_CHARGE);
+        let dx = if debye.is_finite() && debye > 0.0 {
+            debye
+        } else {
+            FALLBACK_GRID_SPACING
+        };
         Self {
             ions: PlasmaFluid::new(nx, ny, n_ion, ion_species),
             electrons: PlasmaFluid::new(nx, ny, n_elec, elec_species),
             nx,
             ny,
+            dx,
             electric_field: ElectricField::new(nx, ny),
             magnetic_field: MagneticField::new(bz),
         }
     }
 
+    /// Set the grid spacing (m) in x and y.
+    pub fn with_grid_spacing(mut self, dx: f64) -> Self {
+        self.dx = dx;
+        self
+    }
+
+    /// Charge density `ρ_c = q_i n_i + q_e n_e` (C m⁻³) of the current state.
+    pub fn charge_density(&self) -> Vec<f64> {
+        let q_ion = self.ions.species.charge();
+        let q_elec = self.electrons.species.charge();
+        self.ions
+            .density
+            .iter()
+            .zip(self.electrons.density.iter())
+            .map(|(&ni, &ne)| q_ion * ni + q_elec * ne)
+            .collect()
+    }
+
     /// Advance the plasma state by one time step `dt` (s).
     ///
-    /// The step:
-    /// 1. Recomputes the charge-separation electric field from ρ = e(n_i − n_e).
-    /// 2. Accelerates each fluid cell with the Lorentz force.
-    /// 3. Applies a simple first-order continuity update (advection ignored).
+    /// See [`PlasmaLbm::try_step`] for the algorithm.  If the inputs are
+    /// invalid (non-positive or non-finite `dt` or `dx`, inconsistent field
+    /// sizes, non-finite fields, a time step too large for the sub-cycling
+    /// limit) the state is left unchanged; use [`PlasmaLbm::try_step`] to learn
+    /// why.
     pub fn step(&mut self, dt: f64) {
-        let n = self.nx * self.ny;
-        // Update electric field from charge separation (simplified Gauss / Poisson).
-        for k in 0..n {
-            let ni = self.ions.density[k];
-            let ne = self.electrons.density[k];
-            let rho = ELEM_CHARGE * (ni - ne); // charge density
-            // E ~ rho / epsilon_0 * dx  (rough estimate, not a real Poisson solve)
-            let e_mag = rho / EPSILON_0;
-            self.electric_field.ex[k] = e_mag;
-            self.electric_field.ey[k] = 0.0;
+        let _ = self.try_step(dt);
+    }
+
+    /// Advance the plasma state by one time step `dt` (s), reporting invalid
+    /// input.
+    ///
+    /// The step:
+    /// 1. Solves the Poisson equation for the electrostatic field of the charge
+    ///    density `ρ_c = q_i n_i + q_e n_e` on the periodic grid and stores it in
+    ///    [`PlasmaLbm::electric_field`].
+    /// 2. Accelerates each species with the Lorentz force `q (E + v × B)` (Boris
+    ///    scheme).
+    /// 3. Advances both densities with the continuity equation using the
+    ///    updated velocities (upwind finite volumes, total particle number
+    ///    conserved).
+    ///
+    /// # Errors
+    /// Returns an error — and leaves the state untouched — if `dt` or `dx` is
+    /// not positive and finite, the grid is empty, the field arrays do not match
+    /// the grid or contain non-finite values, a species has a non-positive mass,
+    /// or the continuity step would need more than 10 000 CFL sub-steps.
+    pub fn try_step(&mut self, dt: f64) -> Result<()> {
+        Error::check_grid(self.nx, self.ny)?;
+        if !(dt.is_finite() && dt > 0.0) {
+            return Err(Error::ParameterOutOfBounds {
+                name: "dt".to_string(),
+                value: dt,
+                min: f64::MIN_POSITIVE,
+                max: f64::MAX,
+            });
+        }
+        self.ions.validate(self.nx, self.ny, "ions")?;
+        self.electrons.validate(self.nx, self.ny, "electrons")?;
+
+        // 1. Self-consistent electrostatic field.
+        let charge = self.charge_density();
+        let (ex, ey) = poisson_electric_field_periodic(&charge, self.nx, self.ny, self.dx)?;
+
+        // Work on copies so that a failing continuity step leaves no trace.
+        let mut ions = self.ions.clone();
+        let mut electrons = self.electrons.clone();
+        let bz = self.magnetic_field.bz;
+        for fluid in [&mut ions, &mut electrons] {
+            let q = fluid.species.charge();
+            let m = fluid.species.mass();
+            // 2. Boris push of every cell.
+            for k in 0..ex.len() {
+                let v = boris_push_2d([fluid.vx[k], fluid.vy[k]], [ex[k], ey[k]], bz, q, m, dt);
+                fluid.vx[k] = v[0];
+                fluid.vy[k] = v[1];
+            }
+            // 3. Continuity with the updated velocities.
+            advance_density_upwind(
+                &mut fluid.density,
+                &fluid.vx,
+                &fluid.vy,
+                self.nx,
+                self.ny,
+                self.dx,
+                dt,
+            )?;
         }
 
-        // Accelerate ion fluid.
-        let q_ion = self.ions.species.charge();
-        let m_ion = self.ions.species.mass();
-        for k in 0..n {
-            let ex = self.electric_field.ex[k];
-            let bz = self.magnetic_field.bz;
-            let ax = (q_ion * ex + q_ion * self.ions.vy[k] * bz) / m_ion;
-            let ay = (-q_ion * self.ions.vx[k] * bz) / m_ion;
-            self.ions.vx[k] += ax * dt;
-            self.ions.vy[k] += ay * dt;
-        }
-
-        // Accelerate electron fluid.
-        let q_elec = self.electrons.species.charge();
-        let m_elec = self.electrons.species.mass();
-        for k in 0..n {
-            let ex = self.electric_field.ex[k];
-            let bz = self.magnetic_field.bz;
-            let ax = (q_elec * ex + q_elec * self.electrons.vy[k] * bz) / m_elec;
-            let ay = (-q_elec * self.electrons.vx[k] * bz) / m_elec;
-            self.electrons.vx[k] += ax * dt;
-            self.electrons.vy[k] += ay * dt;
-        }
+        self.ions = ions;
+        self.electrons = electrons;
+        self.electric_field.ex = ex;
+        self.electric_field.ey = ey;
+        Ok(())
     }
 }
 
@@ -508,6 +839,9 @@ impl DebyeShielding {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod field_tests;
 
 #[cfg(test)]
 mod tests {

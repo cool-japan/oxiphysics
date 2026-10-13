@@ -6,8 +6,66 @@
 //! Provides single-particle effects, fire and smoke emitters, explosion bursts,
 //! a pool-based particle manager, billboard quad generation, and back-to-front
 //! sorting for correct alpha blending.
+//!
+//! The emitters draw their randomness from the thread-local generator by
+//! default.  Every random entry point also has a `*_with_rng` variant taking
+//! any [`rand::Rng`], so seeding e.g. a `StdRng` makes the output reproducible.
 
 use rand::RngExt;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sampling helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Draw a uniform sample from the interval spanned by `a` and `b` (in either
+/// order) without ever panicking.
+///
+/// `rand` rejects empty or non-finite ranges, which is what a zero spread, a
+/// zero rise speed or a tiny explosion radius would otherwise produce.  Here a
+/// degenerate interval (`a == b`) yields that single value, an interval whose
+/// span overflows `f32` yields its midpoint, and non-finite bounds yield `0.0`.
+fn sample_between<R: rand::Rng + ?Sized>(rng: &mut R, a: f32, b: f32) -> f32 {
+    if !a.is_finite() || !b.is_finite() {
+        return 0.0;
+    }
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    if hi > lo && (hi - lo).is_finite() {
+        rng.random_range(lo..hi)
+    } else {
+        0.5 * lo + 0.5 * hi
+    }
+}
+
+/// Largest number of particles a single emitter call produces.
+///
+/// It only guards against runaway allocations from absurd `rate * dt`
+/// products (a stalled clock, a huge rate); real frames stay far below it.
+pub const MAX_PARTICLES_PER_EMIT: usize = 1 << 20;
+
+/// Advance a fractional emission `accumulator` by `rate * dt` and return how
+/// many whole particles are due.
+///
+/// `rate` (particles per second) and `dt` (seconds) are treated as zero when
+/// negative or NaN, so a bad frame time can neither emit a negative count nor
+/// rewind the accumulator.  The fractional remainder stays in `accumulator`:
+/// that carry is what lets a low rate (5 particles/s at 60 Hz is only 0.083
+/// particles per frame) emit at all.  A non-finite total clears the accumulator
+/// and emits nothing; a total of [`MAX_PARTICLES_PER_EMIT`] or more emits that
+/// many and discards the excess.
+fn take_whole_particles(accumulator: &mut f32, rate: f32, dt: f32) -> usize {
+    let total = *accumulator + rate.max(0.0) * dt.max(0.0);
+    if !total.is_finite() {
+        *accumulator = 0.0;
+        return 0;
+    }
+    let whole = total.floor();
+    if whole >= MAX_PARTICLES_PER_EMIT as f32 {
+        *accumulator = 0.0;
+        return MAX_PARTICLES_PER_EMIT;
+    }
+    *accumulator = total - whole;
+    whole as usize
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ParticleEffect
@@ -99,6 +157,9 @@ pub struct FireEmitter {
     pub color_hot: [f32; 4],
     /// RGBA color for the coolest part of the flame (tips/edges).
     pub color_cool: [f32; 4],
+    /// Fraction of a particle carried over between [`emit`](Self::emit) calls
+    /// (always in `[0, 1)` after a call).
+    pub emit_accumulator: f32,
 }
 
 impl FireEmitter {
@@ -112,16 +173,32 @@ impl FireEmitter {
             intensity,
             color_hot: [1.0, 0.8, 0.1, 1.0],
             color_cool: [0.6, 0.05, 0.0, 0.0],
+            emit_accumulator: 0.0,
         }
     }
 
-    /// Emit particles for a time step `dt`.
+    /// Emit particles for a time step `dt` using the thread-local generator.
     ///
-    /// The number of particles emitted is `floor(rate * dt)` (minimum 0).
-    pub fn emit(&self, dt: f32) -> Vec<ParticleEffect> {
-        use rand::RngExt;
+    /// See [`emit_with_rng`](Self::emit_with_rng) for the emission count rule.
+    pub fn emit(&mut self, dt: f32) -> Vec<ParticleEffect> {
         let mut rng = rand::rng();
-        let count = (self.rate * dt).floor() as usize;
+        self.emit_with_rng(dt, &mut rng)
+    }
+
+    /// Emit particles for a time step `dt`, drawing randomness from `rng`.
+    ///
+    /// `rate * dt` is added to [`emit_accumulator`](Self::emit_accumulator) and
+    /// the whole part is emitted, so the long-run emission rate equals `rate`
+    /// at any frame rate (at 60 Hz a rate of 20/s emits one particle every
+    /// third frame, rather than none).  A negative or NaN `rate` or `dt`
+    /// emits nothing, and one call never emits more than
+    /// [`MAX_PARTICLES_PER_EMIT`] particles.
+    pub fn emit_with_rng<R: rand::Rng + ?Sized>(
+        &mut self,
+        dt: f32,
+        rng: &mut R,
+    ) -> Vec<ParticleEffect> {
+        let count = take_whole_particles(&mut self.emit_accumulator, self.rate, dt);
         let mut particles = Vec::with_capacity(count);
         for _ in 0..count {
             let vx: f32 = rng.random_range(-0.5_f32..0.5_f32) * self.intensity;
@@ -169,6 +246,9 @@ pub struct SmokeEmitter {
     pub spread: f32,
     /// Upward drift speed.
     pub rise_speed: f32,
+    /// Fraction of a particle carried over between [`emit`](Self::emit) calls
+    /// (always in `[0, 1)` after a call).
+    pub emit_accumulator: f32,
 }
 
 impl SmokeEmitter {
@@ -179,18 +259,36 @@ impl SmokeEmitter {
             rate: 5.0,
             spread,
             rise_speed: 0.3,
+            emit_accumulator: 0.0,
         }
     }
 
-    /// Emit smoke particles for a time step `dt`.
-    pub fn emit(&self, dt: f32) -> Vec<ParticleEffect> {
+    /// Emit smoke particles for a time step `dt` using the thread-local
+    /// generator.
+    ///
+    /// See [`emit_with_rng`](Self::emit_with_rng) for the emission count rule.
+    pub fn emit(&mut self, dt: f32) -> Vec<ParticleEffect> {
         let mut rng = rand::rng();
-        let count = (self.rate * dt).floor().max(0.0) as usize;
+        self.emit_with_rng(dt, &mut rng)
+    }
+
+    /// Emit smoke particles for a time step `dt`, drawing randomness from `rng`.
+    ///
+    /// `rate * dt` is added to [`emit_accumulator`](Self::emit_accumulator) and
+    /// the whole part is emitted, so the long-run emission rate equals `rate`
+    /// at any frame rate.  A zero `spread` or `rise_speed` is valid and yields
+    /// particles without horizontal or vertical drift respectively.
+    pub fn emit_with_rng<R: rand::Rng + ?Sized>(
+        &mut self,
+        dt: f32,
+        rng: &mut R,
+    ) -> Vec<ParticleEffect> {
+        let count = take_whole_particles(&mut self.emit_accumulator, self.rate, dt);
         let mut particles = Vec::with_capacity(count);
         for _ in 0..count {
-            let vx: f32 = rng.random_range(-self.spread..self.spread);
-            let vy: f32 = rng.random_range(self.rise_speed * 0.5..self.rise_speed * 1.5);
-            let vz: f32 = rng.random_range(-self.spread..self.spread);
+            let vx: f32 = sample_between(rng, -self.spread, self.spread);
+            let vy: f32 = sample_between(rng, self.rise_speed * 0.5, self.rise_speed * 1.5);
+            let vz: f32 = sample_between(rng, -self.spread, self.spread);
             let lifetime = rng.random_range(2.0_f64..4.0_f64);
             let size = rng.random_range(0.1_f32..0.4_f32);
             let grey: f32 = rng.random_range(0.5_f32..0.8_f32);
@@ -231,21 +329,45 @@ impl ExplosionEffect {
         }
     }
 
-    /// Spawn all particles for this explosion burst.
+    /// Spawn all particles for this explosion burst using the thread-local
+    /// generator.
     ///
-    /// Particles are launched radially outward with random velocity magnitudes.
+    /// See [`spawn_particles_with_rng`](Self::spawn_particles_with_rng).
     pub fn spawn_particles(&self) -> Vec<ParticleEffect> {
-        use std::f32::consts::PI as PIf;
         let mut rng = rand::rng();
+        self.spawn_particles_with_rng(&mut rng)
+    }
+
+    /// Spawn all particles for this explosion burst, drawing randomness from
+    /// `rng`.
+    ///
+    /// Particles are launched radially outward in directions distributed
+    /// uniformly over the sphere (`cos(theta)` and the azimuth are sampled
+    /// uniformly) with speeds in `[0.5, radius)`.  A `radius` of at most `0.5`
+    /// leaves no such interval, so every particle then moves at `radius`
+    /// (clamped to be non-negative).
+    pub fn spawn_particles_with_rng<R: rand::Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+    ) -> Vec<ParticleEffect> {
+        use std::f32::consts::PI as PIf;
+        let max_speed = if self.radius.is_finite() {
+            self.radius.max(0.0)
+        } else {
+            0.0
+        };
+        let min_speed = 0.5_f32.min(max_speed);
         let mut particles = Vec::with_capacity(self.n_particles);
         for _ in 0..self.n_particles {
-            // Random direction on unit sphere
-            let theta: f32 = rng.random_range(0.0_f32..PIf);
-            let phi: f32 = rng.random_range(0.0_f32..(2.0 * PIf));
-            let speed: f32 = rng.random_range(0.5_f32..self.radius);
-            let vx = speed * theta.sin() * phi.cos();
-            let vy = speed * theta.sin() * phi.sin();
-            let vz = speed * theta.cos();
+            // Uniform direction on the unit sphere: cos(theta) is uniform in
+            // [-1, 1), the azimuth uniform in [0, 2 pi).
+            let cos_theta = sample_between(rng, -1.0, 1.0);
+            let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
+            let phi = sample_between(rng, 0.0, 2.0 * PIf);
+            let speed = sample_between(rng, min_speed, max_speed);
+            let vx = speed * sin_theta * phi.cos();
+            let vy = speed * sin_theta * phi.sin();
+            let vz = speed * cos_theta;
             let lifetime = rng.random_range(0.3_f64..1.0_f64);
             let size = rng.random_range(0.02_f32..0.1_f32);
             let r: f32 = rng.random_range(0.8_f32..1.0_f32);
@@ -360,6 +482,8 @@ pub fn particle_sort_back_to_front(particles: &mut [ParticleEffect], camera_pos:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     // ── ParticleEffect ────────────────────────────────────────────────────────
 
@@ -437,7 +561,7 @@ mod tests {
 
     #[test]
     fn test_fire_emitter_emit_large_dt() {
-        let emitter = FireEmitter::new([0.0; 3], 1.0);
+        let mut emitter = FireEmitter::new([0.0; 3], 1.0);
         let particles = emitter.emit(1.0);
         assert!(
             !particles.is_empty(),
@@ -447,7 +571,7 @@ mod tests {
 
     #[test]
     fn test_fire_emitter_emit_zero_dt() {
-        let emitter = FireEmitter::new([0.0; 3], 1.0);
+        let mut emitter = FireEmitter::new([0.0; 3], 1.0);
         let particles = emitter.emit(0.0);
         assert!(particles.is_empty(), "Zero dt should emit no particles");
     }
@@ -478,7 +602,7 @@ mod tests {
 
     #[test]
     fn test_fire_emitter_particles_alive() {
-        let emitter = FireEmitter::new([0.0; 3], 2.0);
+        let mut emitter = FireEmitter::new([0.0; 3], 2.0);
         let particles = emitter.emit(2.0);
         assert!(!particles.is_empty());
         for p in &particles {
@@ -486,18 +610,164 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_fire_emitter_emits_at_real_frame_rate() {
+        // 20 particles/s at 60 Hz is only 0.33 particles per frame; the
+        // remainder must be carried so that one second yields ~20 particles.
+        let mut emitter = FireEmitter::new([0.0; 3], 1.0);
+        let mut total = 0;
+        for _ in 0..60 {
+            total += emitter.emit(1.0 / 60.0).len();
+        }
+        assert!(
+            (19..=21).contains(&total),
+            "60 frames of 1/60 s at 20/s must emit 19..=21 particles, got {total}"
+        );
+    }
+
+    #[test]
+    fn test_fire_emitter_carries_fractional_remainder() {
+        // 2 particles/s with dt = 0.25 s (exact in binary) adds 0.5 per call.
+        let mut emitter = FireEmitter::new([0.0; 3], 1.0);
+        emitter.rate = 2.0;
+        let counts: Vec<usize> = (0..4).map(|_| emitter.emit(0.25).len()).collect();
+        assert_eq!(counts, vec![0, 1, 0, 1]);
+        assert!(emitter.emit_accumulator.abs() < 1e-6);
+
+        // 20/s with a 0.125 s step: 2.5 particles -> 2 now, 0.5 carried over;
+        // a further 0.0625 s adds 1.25 -> 1 more, 0.75 carried over.
+        let mut emitter = FireEmitter::new([0.0; 3], 1.0);
+        assert_eq!(emitter.emit(0.125).len(), 2);
+        assert!((emitter.emit_accumulator - 0.5).abs() < 1e-6);
+        assert_eq!(emitter.emit(0.0625).len(), 1);
+        assert!((emitter.emit_accumulator - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_fire_emitter_ignores_negative_and_nan_dt() {
+        let mut emitter = FireEmitter::new([0.0; 3], 1.0);
+        assert!(emitter.emit(-1.0).is_empty());
+        assert!(emitter.emit(f32::NAN).is_empty());
+        assert_eq!(emitter.emit_accumulator, 0.0);
+        // A negative rate also emits nothing.
+        emitter.rate = -5.0;
+        assert!(emitter.emit(10.0).is_empty());
+        // An infinite step clears the accumulator instead of flooding.
+        emitter.rate = 20.0;
+        assert!(emitter.emit(f32::INFINITY).is_empty());
+        assert_eq!(emitter.emit_accumulator, 0.0);
+    }
+
+    #[test]
+    fn test_take_whole_particles_caps_runaway_counts() {
+        // A finite but absurd product must not request an impossible allocation.
+        let mut acc = 0.25_f32;
+        assert_eq!(
+            take_whole_particles(&mut acc, 1.0e30, 1.0),
+            MAX_PARTICLES_PER_EMIT
+        );
+        assert_eq!(acc, 0.0, "the excess is discarded, not carried over");
+        // Realistic counts are untouched.
+        let mut acc = 0.0_f32;
+        assert_eq!(take_whole_particles(&mut acc, 1000.0, 2.5), 2500);
+        assert_eq!(acc, 0.0);
+    }
+
+    #[test]
+    fn test_fire_emitter_with_rng_is_reproducible() {
+        let mut a = FireEmitter::new([1.0, 2.0, 3.0], 1.5);
+        let mut b = a.clone();
+        let mut rng_a = StdRng::seed_from_u64(7);
+        let mut rng_b = StdRng::seed_from_u64(7);
+        let pa = a.emit_with_rng(1.0, &mut rng_a);
+        let pb = b.emit_with_rng(1.0, &mut rng_b);
+        assert_eq!(pa.len(), 30);
+        assert_eq!(pa.len(), pb.len());
+        for (x, y) in pa.iter().zip(pb.iter()) {
+            assert_eq!(x.vel, y.vel);
+            assert_eq!(x.size, y.size);
+            assert_eq!(x.lifetime, y.lifetime);
+        }
+    }
+
     // ── SmokeEmitter ──────────────────────────────────────────────────────────
 
     #[test]
+    fn test_smoke_emitter_emits_at_real_frame_rate() {
+        // 5 particles/s at 60 Hz is 0.083 per frame and used to emit nothing.
+        let mut emitter = SmokeEmitter::new([0.0; 3], 0.5);
+        let mut total = 0;
+        for _ in 0..60 {
+            total += emitter.emit(1.0 / 60.0).len();
+        }
+        assert!(
+            (4..=6).contains(&total),
+            "60 frames of 1/60 s at 5/s must emit 4..=6 particles, got {total}"
+        );
+    }
+
+    #[test]
+    fn test_smoke_emitter_zero_spread_and_rise_speed_do_not_panic() {
+        let mut emitter = SmokeEmitter::new([0.0; 3], 0.0);
+        let particles = emitter.emit(2.0);
+        assert_eq!(particles.len(), 10);
+        for p in &particles {
+            assert_eq!(p.vel[0], 0.0, "zero spread gives no horizontal drift");
+            assert_eq!(p.vel[2], 0.0, "zero spread gives no horizontal drift");
+            assert!(p.vel[1] > 0.0, "default rise speed still lifts the smoke");
+        }
+        emitter.rise_speed = 0.0;
+        let particles = emitter.emit(2.0);
+        assert_eq!(particles.len(), 10);
+        for p in &particles {
+            assert_eq!(p.vel[1], 0.0, "zero rise speed gives no vertical drift");
+        }
+    }
+
+    #[test]
+    fn test_smoke_emitter_negative_and_nan_parameters_do_not_panic() {
+        let mut emitter = SmokeEmitter::new([0.0; 3], -0.5);
+        emitter.rise_speed = -1.0;
+        let particles = emitter.emit(2.0);
+        assert_eq!(particles.len(), 10);
+        for p in &particles {
+            assert!(p.vel[0].abs() <= 0.5 && p.vel[2].abs() <= 0.5);
+            assert!(
+                (-1.5..=-0.5).contains(&p.vel[1]),
+                "negative rise speed sinks the smoke: {}",
+                p.vel[1]
+            );
+        }
+        emitter.spread = f32::NAN;
+        emitter.rise_speed = f32::NAN;
+        for p in emitter.emit(2.0) {
+            assert!(p.vel.iter().all(|v| v.is_finite()));
+        }
+    }
+
+    #[test]
+    fn test_smoke_emitter_with_rng_is_reproducible() {
+        let mut a = SmokeEmitter::new([0.0; 3], 0.5);
+        let mut b = a.clone();
+        let pa = a.emit_with_rng(2.0, &mut StdRng::seed_from_u64(99));
+        let pb = b.emit_with_rng(2.0, &mut StdRng::seed_from_u64(99));
+        assert_eq!(pa.len(), 10);
+        assert_eq!(
+            pa.iter().map(|p| p.vel).collect::<Vec<_>>(),
+            pb.iter().map(|p| p.vel).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn test_smoke_emitter_large_dt() {
-        let emitter = SmokeEmitter::new([0.0; 3], 0.5);
+        let mut emitter = SmokeEmitter::new([0.0; 3], 0.5);
         let particles = emitter.emit(2.0);
         assert!(!particles.is_empty(), "Smoke should emit for large dt");
     }
 
     #[test]
     fn test_smoke_emitter_zero_dt() {
-        let emitter = SmokeEmitter::new([0.0; 3], 0.5);
+        let mut emitter = SmokeEmitter::new([0.0; 3], 0.5);
         let particles = emitter.emit(0.0);
         assert!(particles.is_empty());
     }
@@ -536,6 +806,100 @@ mod tests {
             assert!((p.pos[0] - center[0]).abs() < 1e-6);
             assert!((p.pos[1] - center[1]).abs() < 1e-6);
             assert!((p.pos[2] - center[2]).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_explosion_small_radius_does_not_panic() {
+        // radius 0.3 < 0.5 used to produce the empty range 0.5..0.3.
+        let expl = ExplosionEffect::new([0.0; 3], 0.3, 25);
+        let particles = expl.spawn_particles();
+        assert_eq!(particles.len(), 25);
+        for p in &particles {
+            let speed = (p.vel[0].powi(2) + p.vel[1].powi(2) + p.vel[2].powi(2)).sqrt();
+            assert!(
+                (speed - 0.3).abs() < 1e-5,
+                "speed must fall back to the radius, got {speed}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_explosion_degenerate_radii_do_not_panic() {
+        for radius in [0.0_f32, 0.5, -3.0, f32::NAN, f32::INFINITY] {
+            let expl = ExplosionEffect::new([0.0; 3], radius, 8);
+            let particles = expl.spawn_particles();
+            assert_eq!(particles.len(), 8);
+            for p in &particles {
+                assert!(p.vel.iter().all(|v| v.is_finite()), "radius {radius}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_explosion_speed_within_radius() {
+        let expl = ExplosionEffect::new([0.0; 3], 5.0, 500);
+        let particles = expl.spawn_particles_with_rng(&mut StdRng::seed_from_u64(3));
+        for p in &particles {
+            let speed = (p.vel[0].powi(2) + p.vel[1].powi(2) + p.vel[2].powi(2)).sqrt();
+            assert!(
+                (0.5 - 1e-4..=5.0 + 1e-4).contains(&speed),
+                "speed {speed} outside [0.5, 5)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_explosion_directions_are_uniform_on_sphere() {
+        // For directions uniform on the sphere cos(theta) is uniform on
+        // [-1, 1): E[cos] = 0 and E[cos^2] = 1/3.  Sampling theta uniformly
+        // instead would give E[cos^2] = 1/2 (clustering at the poles).
+        let expl = ExplosionEffect::new([0.0; 3], 5.0, 20_000);
+        let particles = expl.spawn_particles_with_rng(&mut StdRng::seed_from_u64(11));
+        let mut mean_cos = 0.0_f64;
+        let mut mean_cos2 = 0.0_f64;
+        for p in &particles {
+            let speed = (p.vel[0].powi(2) + p.vel[1].powi(2) + p.vel[2].powi(2)).sqrt();
+            let cos_theta = f64::from(p.vel[2] / speed);
+            mean_cos += cos_theta;
+            mean_cos2 += cos_theta * cos_theta;
+        }
+        let n = particles.len() as f64;
+        mean_cos /= n;
+        mean_cos2 /= n;
+        assert!(mean_cos.abs() < 0.03, "mean cos(theta) = {mean_cos}");
+        assert!(
+            (mean_cos2 - 1.0 / 3.0).abs() < 0.02,
+            "mean cos^2(theta) = {mean_cos2}, expected 1/3"
+        );
+    }
+
+    #[test]
+    fn test_explosion_with_rng_is_reproducible() {
+        let expl = ExplosionEffect::new([1.0, 0.0, -1.0], 4.0, 40);
+        let a = expl.spawn_particles_with_rng(&mut StdRng::seed_from_u64(5));
+        let b = expl.spawn_particles_with_rng(&mut StdRng::seed_from_u64(5));
+        let c = expl.spawn_particles_with_rng(&mut StdRng::seed_from_u64(6));
+        let vels = |ps: &[ParticleEffect]| ps.iter().map(|p| p.vel).collect::<Vec<_>>();
+        assert_eq!(vels(&a), vels(&b));
+        assert_ne!(vels(&a), vels(&c));
+    }
+
+    // ── sample_between ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_sample_between_handles_degenerate_intervals() {
+        let mut rng = StdRng::seed_from_u64(1);
+        assert_eq!(sample_between(&mut rng, 2.0, 2.0), 2.0);
+        assert_eq!(sample_between(&mut rng, 0.0, 0.0), 0.0);
+        // Non-finite bounds and an overflowing span never panic.
+        assert_eq!(sample_between(&mut rng, f32::NAN, 1.0), 0.0);
+        assert_eq!(sample_between(&mut rng, 0.0, f32::INFINITY), 0.0);
+        assert_eq!(sample_between(&mut rng, -3.0e38, 3.0e38), 0.0);
+        // Reversed bounds sample the same interval.
+        for _ in 0..200 {
+            let v = sample_between(&mut rng, 5.0, 2.0);
+            assert!((2.0..=5.0).contains(&v), "{v}");
         }
     }
 

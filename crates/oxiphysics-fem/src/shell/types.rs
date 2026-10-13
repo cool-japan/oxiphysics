@@ -311,9 +311,70 @@ impl ShellElement {
         f_corr
     }
 }
-/// 4-node rectangular plate element (Kirchhoff, simplified diagonal stiffness).
+/// Exponents `(p, q)` of the twelve monomials `ξᵖ ηᵠ` of the ACM displacement
+/// field `w(ξ, η) = Σₖ αₖ ξ^pₖ η^qₖ`, in the order
+/// `1, ξ, η, ξ², ξη, η², ξ³, ξ²η, ξη², η³, ξ³η, ξη³` (complete cubic plus the
+/// two quartic terms that make the field bi-cubic on the edges).
+const ACM_EXPONENTS: [(u32, u32); 12] = [
+    (0, 0),
+    (1, 0),
+    (0, 1),
+    (2, 0),
+    (1, 1),
+    (0, 2),
+    (3, 0),
+    (2, 1),
+    (1, 2),
+    (0, 3),
+    (3, 1),
+    (1, 3),
+];
+/// `8 · C₀⁻¹`, where `C₀` maps the monomial coefficients `α` to the *scaled*
+/// nodal DOFs `d̃ = (w, ∂w/∂η, −∂w/∂ξ)` at the four corners `(±1, ±1)` taken in
+/// the element's node order.  Entry `[k][j]` is eight times the coefficient of
+/// monomial `k` in the shape function of DOF `j` (node `j / 3`, kind `j % 3`).
+/// All entries of `C₀⁻¹` are integer multiples of 1/8.
+const ACM_COEFFICIENTS_TIMES_8: [[i8; 12]; 12] = [
+    [2, 1, -1, 2, 1, 1, 2, -1, 1, 2, -1, -1],
+    [-3, -1, 1, 3, 1, 1, 3, -1, 1, -3, 1, 1],
+    [-3, -1, 1, -3, -1, -1, 3, -1, 1, 3, -1, -1],
+    [0, 0, 1, 0, 0, -1, 0, 0, -1, 0, 0, 1],
+    [4, 1, -1, -4, -1, -1, 4, -1, 1, -4, 1, 1],
+    [0, -1, 0, 0, -1, 0, 0, 1, 0, 0, 1, 0],
+    [1, 0, -1, -1, 0, -1, -1, 0, -1, 1, 0, -1],
+    [0, 0, -1, 0, 0, 1, 0, 0, -1, 0, 0, 1],
+    [0, 1, 0, 0, -1, 0, 0, 1, 0, 0, -1, 0],
+    [1, 1, 0, 1, 1, 0, -1, 1, 0, -1, 1, 0],
+    [-1, 0, 1, 1, 0, 1, -1, 0, -1, 1, 0, -1],
+    [-1, -1, 0, 1, 1, 0, -1, 1, 0, 1, -1, 0],
+];
+/// `∫∫ ξᵖ ηᵠ dξ dη` over the reference square `[-1, 1]²`.
+fn reference_square_moment(p: u32, q: u32) -> f64 {
+    let axis = |exponent: u32| {
+        if exponent.is_multiple_of(2) {
+            2.0 / (exponent as f64 + 1.0)
+        } else {
+            0.0
+        }
+    };
+    axis(p) * axis(q)
+}
+/// 4-node rectangular Kirchhoff plate element: the 12-DOF
+/// Adini–Clough–Melosh (ACM) rectangle.
 ///
-/// DOF per node: (w, θx, θy) → 12 DOF total.
+/// The transverse deflection is the 12-term polynomial
+/// `w = α₁ + α₂ x + α₃ y + α₄ x² + α₅ xy + α₆ y² + α₇ x³ + α₈ x²y + α₉ xy² +
+/// α₁₀ y³ + α₁₁ x³y + α₁₂ xy³`, determined by three DOFs per corner node,
+///
+/// `(w, θx, θy) = (w, ∂w/∂y, −∂w/∂x)`
+///
+/// i.e. the deflection and the right-handed rotations about the x- and y-axes.
+/// The element is centred at the origin with half-lengths `a` (x) and `b` (y);
+/// its nodes run counter-clockwise from `(−a, −b)`.  The field is
+/// non-conforming (the normal slope is not continuous across element edges)
+/// but passes the patch test and converges at rate `O(h²)`.
+///
+/// `a` and `b` must be positive and finite.
 pub struct RectPlateElement {
     /// Plate material parameters.
     pub params: PlateParams,
@@ -335,45 +396,149 @@ impl RectPlateElement {
             node_positions,
         }
     }
-    /// Approximate 12×12 stiffness matrix using classical plate theory (diagonal blocks).
+    /// The matrix `S = C₀⁻¹ · T` that maps the physical nodal DOFs
+    /// `(w, θx, θy)` to the monomial coefficients `α` of the deflection in the
+    /// scaled coordinates `ξ = x / a`, `η = y / b`.
     ///
-    /// Uses D·(1/a²+1/b²) scaling for bending DOFs – a closed-form diagonal approximation.
-    pub fn stiffness_matrix_12x12(&self) -> Vec<Vec<f64>> {
-        let d = self.params.flexural_rigidity();
-        let a = self.a;
-        let b = self.b;
-        let a2 = a * a;
-        let b2 = b * b;
-        let kw = d * (2.0 * b / (a2 * a) + 2.0 * a / (b2 * b));
-        let ktx = d * (2.0 * b / a);
-        let kty = d * (2.0 * a / b);
-        let mut k = vec![vec![0.0f64; 12]; 12];
-        for node in 0..4 {
-            let base = node * 3;
-            k[base][base] = kw;
-            k[base + 1][base + 1] = ktx;
-            k[base + 2][base + 2] = kty;
+    /// `T = diag(1, b, a)` per node converts `θx = ∂w/∂y` and `θy = −∂w/∂x`
+    /// into the scaled rotations `b θx = ∂w/∂η` and `a θy = −∂w/∂ξ`.
+    fn coefficient_map(&self) -> [[f64; 12]; 12] {
+        let mut s = [[0.0_f64; 12]; 12];
+        for (k, row) in s.iter_mut().enumerate() {
+            for (j, entry) in row.iter_mut().enumerate() {
+                let scale = match j % 3 {
+                    0 => 1.0,
+                    1 => self.b,
+                    _ => self.a,
+                };
+                *entry = f64::from(ACM_COEFFICIENTS_TIMES_8[k][j]) / 8.0 * scale;
+            }
         }
-        k
+        s
     }
-    /// Consistent 12×12 mass matrix: M = ρ·h·∫N_I·N_J dA (diagonal lumping approximation).
+    /// `Sᵀ · G · S` for a 12×12 matrix `G` given on the monomial basis.
+    fn congruence(&self, g: &[[f64; 12]; 12]) -> Vec<Vec<f64>> {
+        let s = self.coefficient_map();
+        let mut gs = [[0.0_f64; 12]; 12];
+        for (k1, gs_row) in gs.iter_mut().enumerate() {
+            for (j, entry) in gs_row.iter_mut().enumerate() {
+                *entry = (0..12).map(|k2| g[k1][k2] * s[k2][j]).sum();
+            }
+        }
+        (0..12)
+            .map(|i| {
+                (0..12)
+                    .map(|j| (0..12).map(|k| s[k][i] * gs[k][j]).sum())
+                    .collect()
+            })
+            .collect()
+    }
+    /// Term of curvature component `component` (`0`: `∂²w/∂x²`, `1`:
+    /// `∂²w/∂y²`, `2`: `2 ∂²w/∂x∂y`) of monomial `k`, as
+    /// `(coefficient, ξ-exponent, η-exponent)`; `None` if the term vanishes.
+    fn curvature_term(&self, k: usize, component: usize) -> Option<(f64, u32, u32)> {
+        let (p, q) = ACM_EXPONENTS[k];
+        let (pf, qf) = (p as f64, q as f64);
+        match component {
+            0 if p >= 2 => Some((pf * (pf - 1.0) / (self.a * self.a), p - 2, q)),
+            1 if q >= 2 => Some((qf * (qf - 1.0) / (self.b * self.b), p, q - 2)),
+            2 if p >= 1 && q >= 1 => Some((2.0 * pf * qf / (self.a * self.b), p - 1, q - 1)),
+            _ => None,
+        }
+    }
+    /// The 12 shape functions `N_j(x, y)` at the point `(x, y)` of the element
+    /// (coordinates relative to the element centre), in DOF order
+    /// `(w₁, θx₁, θy₁, …, w₄, θx₄, θy₄)`.
     ///
-    /// Each translational DOF gets ρ·h·A/4; rotational DOFs get ρ·h·A/4·(a²+b²)/12.
+    /// The deflection is `w(x, y) = Σⱼ N_j(x, y) d_j`.  `N_j` is one at its
+    /// own DOF and zero at all others (value, `∂/∂y` and `−∂/∂x` at the
+    /// corners), and the set reproduces every polynomial of the ACM space
+    /// exactly.
+    pub fn shape_functions(&self, x: f64, y: f64) -> [f64; 12] {
+        let (xi, eta) = (x / self.a, y / self.b);
+        let s = self.coefficient_map();
+        let mut n = [0.0_f64; 12];
+        for (k, &(p, q)) in ACM_EXPONENTS.iter().enumerate() {
+            let monomial = xi.powi(p as i32) * eta.powi(q as i32);
+            for (n_j, s_kj) in n.iter_mut().zip(s[k].iter()) {
+                *n_j += monomial * s_kj;
+            }
+        }
+        n
+    }
+    /// 12×12 bending stiffness matrix `Kₑ = ∫ Bᵀ D_b B dA` of the ACM element.
+    ///
+    /// With the curvature vector `κ = (∂²w/∂x², ∂²w/∂y², 2 ∂²w/∂x∂y)` and the
+    /// plate constitutive matrix `D_b = D · [[1, ν, 0], [ν, 1, 0], [0, 0,
+    /// (1 − ν)/2]]`, the matrix is `Sᵀ (∫ Qᵀ D_b Q dA) S`, where `Q` is the
+    /// curvature operator on the 12 monomials.  All integrals are of
+    /// polynomials and are evaluated exactly.
+    ///
+    /// The matrix is symmetric, positive semi-definite and has exactly three
+    /// zero eigenvalues, the rigid-body modes `w = c₀ + c₁ x + c₂ y`.
+    pub fn stiffness_matrix_12x12(&self) -> Vec<Vec<f64>> {
+        let d_b = self.params.bending_stiffness_matrix();
+        let mut g = [[0.0_f64; 12]; 12];
+        for (k1, g_row) in g.iter_mut().enumerate() {
+            for (k2, entry) in g_row.iter_mut().enumerate() {
+                let mut energy = 0.0;
+                for (c1, d_row) in d_b.iter().enumerate() {
+                    let Some((coef1, p1, q1)) = self.curvature_term(k1, c1) else {
+                        continue;
+                    };
+                    for (c2, &d_value) in d_row.iter().enumerate() {
+                        if d_value == 0.0 {
+                            continue;
+                        }
+                        let Some((coef2, p2, q2)) = self.curvature_term(k2, c2) else {
+                            continue;
+                        };
+                        energy +=
+                            d_value * coef1 * coef2 * reference_square_moment(p1 + p2, q1 + q2);
+                    }
+                }
+                *entry = energy * self.a * self.b;
+            }
+        }
+        self.congruence(&g)
+    }
+    /// Consistent 12×12 mass matrix `M = ρ h ∫ Nᵀ N dA` of the ACM element
+    /// (translational inertia of the deflection field; rotary inertia of the
+    /// cross-section is not included, as usual for a thin plate).
+    ///
+    /// The matrix is symmetric and positive definite; for the rigid
+    /// translation `w = 1` it reproduces the element mass `ρ h (2a)(2b)`.
     pub fn consistent_mass_matrix(&self, rho: f64) -> Vec<Vec<f64>> {
         let h = self.params.thickness;
-        let a = self.a;
-        let b = self.b;
-        let area = (2.0 * a) * (2.0 * b);
-        let mw = rho * h * area / 4.0;
-        let mr = rho * h * area / 4.0 * (a * a + b * b) / 12.0;
-        let mut m = vec![vec![0.0f64; 12]; 12];
-        for node in 0..4 {
-            let base = node * 3;
-            m[base][base] = mw;
-            m[base + 1][base + 1] = mr;
-            m[base + 2][base + 2] = mr;
+        let mut g = [[0.0_f64; 12]; 12];
+        for (k1, g_row) in g.iter_mut().enumerate() {
+            for (k2, entry) in g_row.iter_mut().enumerate() {
+                let (p1, q1) = ACM_EXPONENTS[k1];
+                let (p2, q2) = ACM_EXPONENTS[k2];
+                *entry = rho * h * self.a * self.b * reference_square_moment(p1 + p2, q1 + q2);
+            }
         }
-        m
+        self.congruence(&g)
+    }
+    /// Consistent nodal load vector `fᵢ = ∫ Nᵢ q dA` for a uniform transverse
+    /// pressure `q`, in DOF order `(w₁, θx₁, θy₁, …)`.
+    ///
+    /// The `w` entries sum to the resultant `q (2a)(2b)`.
+    pub fn uniform_pressure_load(&self, q: f64) -> Vec<f64> {
+        let s = self.coefficient_map();
+        (0..12)
+            .map(|j| {
+                (0..12)
+                    .map(|k| {
+                        let (p, r) = ACM_EXPONENTS[k];
+                        s[k][j] * reference_square_moment(p, r)
+                    })
+                    .sum::<f64>()
+                    * q
+                    * self.a
+                    * self.b
+            })
+            .collect()
     }
 }
 /// Flat 3-node triangular shell element combining:

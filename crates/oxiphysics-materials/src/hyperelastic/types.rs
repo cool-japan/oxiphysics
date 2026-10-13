@@ -608,9 +608,14 @@ impl J2Plasticity {
                     + delta_ep_voigt[5].powi(2));
         (2.0 / 3.0 * sum).sqrt()
     }
-    /// Perform a full plane-stress return mapping (σ_zz = 0 enforced iteratively).
+    /// Plane-stress return mapping with σ_zz = 0 enforced exactly.
     ///
-    /// Returns updated (σ_xx, σ_yy, σ_xy) and Δε̄_p.
+    /// Infallible wrapper around
+    /// [`J2Plasticity::try_return_mapping_plane_stress`]: it returns the updated
+    /// in-plane stress `[σ_xx, σ_yy, σ_xy]` and the equivalent plastic strain
+    /// increment Δε̄_p.  For non-physical material parameters or non-finite
+    /// input (the cases in which the `try_` variant returns an error) every
+    /// returned component is `NaN`.
     pub fn return_mapping_plane_stress(
         &self,
         trial_sxx: f64,
@@ -618,27 +623,213 @@ impl J2Plasticity {
         trial_sxy: f64,
         ep_bar: f64,
     ) -> ([f64; 3], f64) {
-        let trial_stress_full = [trial_sxx, trial_syy, 0.0, trial_sxy, 0.0, 0.0];
-        let vm = Self::von_mises_stress(&trial_stress_full);
-        let sigma_y = self.current_yield_stress(ep_bar);
-        if vm <= sigma_y {
-            return ([trial_sxx, trial_syy, trial_sxy], 0.0);
-        }
-        let g = self.shear_modulus();
-        let delta_gamma = (vm - sigma_y) / (3.0 * g + self.hardening_modulus);
-        let scale = 1.0 - 3.0 * g * delta_gamma / vm;
-        let mean = (trial_sxx + trial_syy) / 3.0;
-        let dev_xx = trial_sxx - mean;
-        let dev_yy = trial_syy - mean;
-        (
-            [
-                mean + dev_xx * scale,
-                mean + dev_yy * scale,
-                trial_sxy * scale,
-            ],
-            delta_gamma,
-        )
+        self.try_return_mapping_plane_stress(trial_sxx, trial_syy, trial_sxy, ep_bar)
+            .unwrap_or(([f64::NAN; 3], f64::NAN))
     }
+    /// Plane-stress return mapping (closest-point projection) with linear
+    /// isotropic hardening, following Simo & Hughes, *Computational
+    /// Inelasticity* (1998), Box 3.3.
+    ///
+    /// The trial in-plane stress `(σ_xx, σ_yy, σ_xy)` has σ_zz = 0.  If it lies
+    /// inside the hardened von Mises surface it is returned unchanged.
+    /// Otherwise the plane-stress backward-Euler update
+    /// σ = (I + Δγ C P)⁻¹ σ_trial, with the plane-stress elasticity matrix C and
+    /// the projection P = ⅓ \[\[2, −1, 0\], \[−1, 2, 0\], \[0, 0, 6\]\], is evaluated in
+    /// closed form for a given plastic multiplier Δγ: with
+    /// a₁ = (σ_xx + σ_yy)/√2, a₂ = (σ_yy − σ_xx)/√2, a₃ = σ_xy,
+    /// d₁ = 1 + EΔγ/(3(1 − ν)) and d₂ = 1 + 2GΔγ the updated stress is
+    /// σ_xx = (a₁/d₁ − a₂/d₂)/√2, σ_yy = (a₁/d₁ + a₂/d₂)/√2, σ_xy = a₃/d₂.
+    /// Δγ is the root of the consistency condition
+    /// ½ φ² − ⅓ σ_y(ε̄_p + Δγ √(2/3) φ)² = 0 with
+    /// φ² = (a₁/d₁)²/3 + (a₂/d₂)² + 2 (a₃/d₂)², solved by a safeguarded Newton
+    /// iteration (bisection fallback inside a bracket, tolerance 10⁻¹³ relative,
+    /// at most 200 iterations).  The returned state therefore satisfies both
+    /// σ_zz = 0 and the von Mises yield condition σ_vm = σ_y(ε̄_p + Δε̄_p) to
+    /// the solver tolerance.
+    ///
+    /// Returns the updated `[σ_xx, σ_yy, σ_xy]` and the equivalent plastic
+    /// strain increment Δε̄_p = Δγ √(2/3) φ.
+    ///
+    /// # Errors
+    /// * [`crate::Error::ParameterOutOfRange`] for E ≤ 0, ν outside (−1, 1) or a
+    ///   non-positive current yield stress.
+    /// * [`crate::Error::InadmissibleState`] for non-finite stress or ε̄_p.
+    /// * [`crate::Error::NumericalDivergence`] if the consistency condition has
+    ///   no root (for example strongly negative hardening) or the iteration
+    ///   does not converge.
+    pub fn try_return_mapping_plane_stress(
+        &self,
+        trial_sxx: f64,
+        trial_syy: f64,
+        trial_sxy: f64,
+        ep_bar: f64,
+    ) -> crate::error::Result<([f64; 3], f64)> {
+        use crate::error::Error;
+        use std::f64::consts::FRAC_1_SQRT_2;
+        const SOLVER: &str = "J2 plane-stress return mapping";
+        const MAX_BRACKET_DOUBLINGS: usize = 1_000;
+        const MAX_ITERATIONS: usize = 200;
+        const RESIDUAL_TOLERANCE: f64 = 1.0e-13;
+        let young = self.young_modulus;
+        let nu = self.poisson_ratio;
+        if !(young.is_finite() && young > 0.0) {
+            return Err(Error::ParameterOutOfRange {
+                param: "young_modulus",
+                value: young,
+                min: 0.0,
+                max: f64::INFINITY,
+            });
+        }
+        if !(nu.is_finite() && nu > -1.0 && nu < 1.0) {
+            return Err(Error::ParameterOutOfRange {
+                param: "poisson_ratio",
+                value: nu,
+                min: -1.0,
+                max: 1.0,
+            });
+        }
+        if !(trial_sxx.is_finite()
+            && trial_syy.is_finite()
+            && trial_sxy.is_finite()
+            && ep_bar.is_finite())
+        {
+            return Err(Error::InadmissibleState(
+                "non-finite trial stress or equivalent plastic strain".to_string(),
+            ));
+        }
+        let sigma_y0 = self.current_yield_stress(ep_bar);
+        if !(sigma_y0.is_finite() && sigma_y0 > 0.0) {
+            return Err(Error::ParameterOutOfRange {
+                param: "current_yield_stress",
+                value: sigma_y0,
+                min: 0.0,
+                max: f64::INFINITY,
+            });
+        }
+        let vm_trial = Self::von_mises_stress(&[trial_sxx, trial_syy, 0.0, trial_sxy, 0.0, 0.0]);
+        if vm_trial <= sigma_y0 {
+            return Ok(([trial_sxx, trial_syy, trial_sxy], 0.0));
+        }
+        // Principal directions of the plane-stress elasticity-projection product.
+        let rotated = [
+            (trial_sxx + trial_syy) * FRAC_1_SQRT_2,
+            (trial_syy - trial_sxx) * FRAC_1_SQRT_2,
+            trial_sxy,
+        ];
+        let eigen = [young / (3.0 * (1.0 - nu)), young / (1.0 + nu)];
+        // Starting scale from the three-dimensional radial return: Δε̄_p ≈ (σ_vm − σ_y)/(3G + H)
+        // and Δγ = 3 Δε̄_p / (2 σ_vm).
+        let denominator = 3.0 * self.shear_modulus() + self.hardening_modulus.max(0.0);
+        let guess = 1.5 * (vm_trial - sigma_y0) / (denominator * vm_trial);
+        // Bracket the root: residual(lo) > 0 >= residual(hi).
+        let mut lo = 0.0_f64;
+        let mut hi = guess;
+        let mut residual_hi = self.plane_stress_residual(&rotated, &eigen, ep_bar, hi);
+        let mut doublings = 0;
+        while residual_hi.value > 0.0 {
+            lo = hi;
+            hi *= 2.0;
+            doublings += 1;
+            if doublings > MAX_BRACKET_DOUBLINGS || !hi.is_finite() {
+                return Err(Error::NumericalDivergence {
+                    solver: SOLVER,
+                    iterations: doublings,
+                    residual: residual_hi.value / residual_hi.scale,
+                });
+            }
+            residual_hi = self.plane_stress_residual(&rotated, &eigen, ep_bar, hi);
+        }
+        // Safeguarded Newton iteration started from the left end of the bracket.
+        let mut x = lo;
+        let mut state = self.plane_stress_residual(&rotated, &eigen, ep_bar, x);
+        let mut converged = false;
+        for _ in 0..MAX_ITERATIONS {
+            if state.value.abs() <= RESIDUAL_TOLERANCE * state.scale {
+                converged = true;
+                break;
+            }
+            if state.value > 0.0 {
+                lo = x;
+            } else {
+                hi = x;
+            }
+            if hi - lo <= 4.0 * f64::EPSILON * hi {
+                x = 0.5 * (lo + hi);
+                converged = true;
+                break;
+            }
+            let newton = x - state.value / state.slope;
+            x = if newton.is_finite() && newton > lo && newton < hi {
+                newton
+            } else {
+                0.5 * (lo + hi)
+            };
+            state = self.plane_stress_residual(&rotated, &eigen, ep_bar, x);
+        }
+        if !converged {
+            return Err(Error::NumericalDivergence {
+                solver: SOLVER,
+                iterations: MAX_ITERATIONS,
+                residual: state.value.abs() / state.scale,
+            });
+        }
+        let d1 = 1.0 + eigen[0] * x;
+        let d2 = 1.0 + eigen[1] * x;
+        let u1 = rotated[0] / d1;
+        let u2 = rotated[1] / d2;
+        let u3 = rotated[2] / d2;
+        let sigma_xx = (u1 - u2) * FRAC_1_SQRT_2;
+        let sigma_yy = (u1 + u2) * FRAC_1_SQRT_2;
+        let phi = (u1 * u1 / 3.0 + u2 * u2 + 2.0 * u3 * u3).sqrt();
+        let delta_ep_bar = x * (2.0_f64 / 3.0).sqrt() * phi;
+        Ok(([sigma_xx, sigma_yy, u3], delta_ep_bar))
+    }
+    /// Consistency residual g(Δγ) = ½ φ² − ⅓ σ_y² of the plane-stress return
+    /// mapping, its derivative with respect to Δγ and a magnitude scale, at the
+    /// plastic multiplier `dgamma`.
+    ///
+    /// `rotated` holds (a₁, a₂, a₃) and `eigen` the two eigenvalues
+    /// (E/(3(1 − ν)), 2G) of the elasticity-projection product.
+    fn plane_stress_residual(
+        &self,
+        rotated: &[f64; 3],
+        eigen: &[f64; 2],
+        ep_bar: f64,
+        dgamma: f64,
+    ) -> PlaneStressResidual {
+        let sqrt_two_thirds = (2.0_f64 / 3.0).sqrt();
+        let d1 = 1.0 + eigen[0] * dgamma;
+        let d2 = 1.0 + eigen[1] * dgamma;
+        let u1 = rotated[0] / d1;
+        let u2 = rotated[1] / d2;
+        let u3 = rotated[2] / d2;
+        let w_dilatational = u1 * u1 / 3.0;
+        let w_shear = u2 * u2 + 2.0 * u3 * u3;
+        let phi_sq = w_dilatational + w_shear;
+        let d_phi_sq = -2.0 * (w_dilatational * eigen[0] / d1 + w_shear * eigen[1] / d2);
+        let phi = phi_sq.sqrt();
+        let ep_bar_new = ep_bar + dgamma * sqrt_two_thirds * phi;
+        let sigma_y = self.current_yield_stress(ep_bar_new);
+        let d_ep_bar = if phi > 0.0 {
+            sqrt_two_thirds * (phi + dgamma * d_phi_sq / (2.0 * phi))
+        } else {
+            0.0
+        };
+        PlaneStressResidual {
+            value: 0.5 * phi_sq - sigma_y * sigma_y / 3.0,
+            slope: 0.5 * d_phi_sq - 2.0 / 3.0 * sigma_y * self.hardening_modulus * d_ep_bar,
+            scale: 0.5 * phi_sq + sigma_y * sigma_y / 3.0,
+        }
+    }
+}
+/// Value, slope and magnitude scale of the plane-stress consistency residual.
+struct PlaneStressResidual {
+    /// g(Δγ) = ½ φ² − ⅓ σ_y².
+    value: f64,
+    /// dg/dΔγ.
+    slope: f64,
+    /// ½ φ² + ⅓ σ_y², the magnitude against which g is judged converged.
+    scale: f64,
 }
 /// Arruda-Boyce (8-chain) hyperelastic model for rubber.
 ///

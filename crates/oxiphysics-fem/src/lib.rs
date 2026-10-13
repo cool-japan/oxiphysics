@@ -60,7 +60,11 @@
 //!
 //! // Gravity body force downward
 //! let body_force = Vec3::new(0.0, -1000.0, 0.0);
-//! let result = LinearStaticAnalysis::new().solve(&mesh, &mat, &bcs, &[], &body_force);
+//! // `try_solve` validates the problem and reports a CG solve that did not converge
+//! // (e.g. an unconstrained structure) as an error instead of returning garbage.
+//! let result = LinearStaticAnalysis::new()
+//!     .try_solve(&mesh, &mat, &bcs, &[], &body_force)
+//!     .expect("well-posed problem");
 //! assert_eq!(result.displacements.len(), mesh.num_nodes());
 //! // All displacements should be finite
 //! for d in &result.displacements {

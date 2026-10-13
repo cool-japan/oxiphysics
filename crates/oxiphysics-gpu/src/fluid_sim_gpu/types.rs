@@ -13,7 +13,9 @@ pub struct FluidSimulation {
     pub config: FluidSimConfig,
     /// MAC grid.
     pub grid: MacGrid,
-    /// Previous grid (for FLIP delta).
+    /// Grid velocities right after the particle-to-grid transfer (before body
+    /// forces, boundary conditions and the pressure projection): the reference
+    /// for the FLIP velocity delta `grid - grid_prev`.
     pub grid_prev: MacGrid,
     /// FLIP particles.
     pub particles: Vec<FlipParticle>,
@@ -67,37 +69,39 @@ impl FluidSimulation {
         }
     }
     /// Advance the simulation by one time step.
+    ///
+    /// 1. mark the fluid cells from the particle positions and splat the
+    ///    particle velocities onto the MAC grid (P2G);
+    /// 2. save the splatted velocities as the FLIP reference
+    ///    [`grid_prev`](Self::grid_prev);
+    /// 3. add the gravity acceleration on all three axes and enforce
+    ///    no-penetration at the domain walls and solid cells;
+    /// 4. solve the pressure Poisson equation (air cells are `p = 0`) and
+    ///    project the velocity field;
+    /// 5. apply vorticity confinement;
+    /// 6. blend the PIC and FLIP velocities back onto the particles on all
+    ///    three axes and advect them by `dt` (G2P).
     pub fn step(&mut self) {
         let dt = self.config.dt;
-        let [nx, ny, nz] = self.config.grid_size;
+        self.grid.mark_fluid_cells(&self.particles);
         p2g_transfer(&self.particles, &mut self.grid);
-        for k in 0..nz {
-            for j in 0..ny {
-                for i in 0..=nx {
-                    let u = self.grid.get_u(i.min(nx), j, k);
-                    self.grid
-                        .set_u(i.min(nx), j, k, u + dt * self.config.gravity[0]);
-                }
-                for i in 0..nx {
-                    let v = self.grid.get_v(i, j.min(ny), k);
-                    self.grid
-                        .set_v(i, j.min(ny), k, v + dt * self.config.gravity[1]);
-                }
-            }
+        if !self.grid_prev.copy_velocities_from(&self.grid) {
+            self.grid_prev = self.grid.clone();
         }
+        self.grid.add_body_acceleration(self.config.gravity, dt);
+        self.grid.enforce_solid_boundaries();
         self.grid
             .jacobi_pressure_solve(self.config.density, dt, self.config.pressure_iters);
         self.grid.pressure_project(self.config.density, dt);
         let vorticity = compute_vorticity(&self.grid);
         vorticity_confinement(&mut self.grid, &vorticity, self.config.vorticity_eps, dt);
-        let grid_copy = self.grid.clone();
         g2p_transfer(
             &mut self.particles,
             &self.grid,
-            &grid_copy,
+            &self.grid_prev,
             self.config.flip_ratio,
+            dt,
         );
-        self.grid_prev = self.grid.clone();
         self.time += dt;
         self.step_count += 1;
     }
@@ -536,6 +540,21 @@ pub struct GpuSubDomain {
     /// Particle indices assigned to this device.
     pub particle_indices: Vec<usize>,
 }
+/// Cell flag: air, a free-surface Dirichlet cell (`p = 0`).
+pub const CELL_AIR: u8 = 0;
+/// Cell flag: fluid, a cell whose pressure is solved for.
+pub const CELL_FLUID: u8 = 1;
+/// Cell flag: solid, a Neumann (no-flux) cell.
+pub const CELL_SOLID: u8 = 2;
+/// Offsets of the six face neighbours of a cell.
+const NEIGHBOR_OFFSETS: [(isize, isize, isize); 6] = [
+    (1, 0, 0),
+    (-1, 0, 0),
+    (0, 1, 0),
+    (0, -1, 0),
+    (0, 0, 1),
+    (0, 0, -1),
+];
 /// Marker-and-Cell (MAC) staggered grid for incompressible fluid.
 ///
 /// u-velocity is stored at cell face centers on the X axis (i+½, j, k).
@@ -608,6 +627,132 @@ impl MacGrid {
     pub fn set_w(&mut self, i: usize, j: usize, k: usize, val: f64) {
         self.w[(k) * self.nx * self.ny + j * self.nx + i] = val;
     }
+    /// Flag of cell `(i, j, k)`; cells outside the grid count as solid, so the
+    /// domain walls are no-flux (Neumann) boundaries.
+    fn flag_at(&self, i: isize, j: isize, k: isize) -> u8 {
+        if i < 0
+            || j < 0
+            || k < 0
+            || i >= self.nx as isize
+            || j >= self.ny as isize
+            || k >= self.nz as isize
+        {
+            return CELL_SOLID;
+        }
+        self.flags
+            .get(self.cell_idx(i as usize, j as usize, k as usize))
+            .copied()
+            .unwrap_or(CELL_SOLID)
+    }
+    /// Mark the fluid cells from the particle positions.
+    ///
+    /// Every non-solid cell is reset to [`CELL_AIR`]; each cell containing at
+    /// least one particle (`floor(position / dx)`, clamped to the grid)
+    /// becomes [`CELL_FLUID`].  Pressure outside the fluid is zeroed, so the
+    /// free surface is a clean Dirichlet condition `p = 0` for the Jacobi
+    /// solve.  Solid cells keep their flag.
+    pub fn mark_fluid_cells(&mut self, particles: &[FlipParticle]) {
+        for flag in self.flags.iter_mut() {
+            if *flag != CELL_SOLID {
+                *flag = CELL_AIR;
+            }
+        }
+        if self.nx == 0 || self.ny == 0 || self.nz == 0 {
+            return;
+        }
+        let inv_dx = 1.0 / self.dx;
+        let cell_of = |x: f64, n: usize| -> usize {
+            // NaN positions saturate to cell 0.
+            ((x * inv_dx).floor() as isize).clamp(0, n as isize - 1) as usize
+        };
+        for p in particles {
+            let idx = self.cell_idx(
+                cell_of(p.position[0], self.nx),
+                cell_of(p.position[1], self.ny),
+                cell_of(p.position[2], self.nz),
+            );
+            if let Some(flag) = self.flags.get_mut(idx)
+                && *flag != CELL_SOLID
+            {
+                *flag = CELL_FLUID;
+            }
+        }
+        for (pressure, &flag) in self.p.iter_mut().zip(self.flags.iter()) {
+            if flag != CELL_FLUID {
+                *pressure = 0.0;
+            }
+        }
+    }
+    /// Copy the face velocities (`u`, `v`, `w`) of `other`.
+    ///
+    /// Returns `false` and leaves `self` untouched when the grids differ in
+    /// size.
+    pub fn copy_velocities_from(&mut self, other: &MacGrid) -> bool {
+        if self.u.len() != other.u.len()
+            || self.v.len() != other.v.len()
+            || self.w.len() != other.w.len()
+        {
+            return false;
+        }
+        self.u.copy_from_slice(&other.u);
+        self.v.copy_from_slice(&other.v);
+        self.w.copy_from_slice(&other.w);
+        true
+    }
+    /// Add the body acceleration `acceleration * dt` to every face velocity
+    /// (u, v and w alike).
+    pub fn add_body_acceleration(&mut self, acceleration: [f64; 3], dt: f64) {
+        for u in self.u.iter_mut() {
+            *u += acceleration[0] * dt;
+        }
+        for v in self.v.iter_mut() {
+            *v += acceleration[1] * dt;
+        }
+        for w in self.w.iter_mut() {
+            *w += acceleration[2] * dt;
+        }
+    }
+    /// Enforce no-penetration: the normal velocity is zero on the six domain
+    /// faces and on every face adjacent to a solid cell.
+    pub fn enforce_solid_boundaries(&mut self) {
+        let (nx, ny, nz) = (self.nx, self.ny, self.nz);
+        for k in 0..nz {
+            for j in 0..ny {
+                for i in 0..=nx {
+                    let (ii, jj, kk) = (i as isize, j as isize, k as isize);
+                    if self.flag_at(ii - 1, jj, kk) == CELL_SOLID
+                        || self.flag_at(ii, jj, kk) == CELL_SOLID
+                    {
+                        self.set_u(i, j, k, 0.0);
+                    }
+                }
+            }
+        }
+        for k in 0..nz {
+            for j in 0..=ny {
+                for i in 0..nx {
+                    let (ii, jj, kk) = (i as isize, j as isize, k as isize);
+                    if self.flag_at(ii, jj - 1, kk) == CELL_SOLID
+                        || self.flag_at(ii, jj, kk) == CELL_SOLID
+                    {
+                        self.set_v(i, j, k, 0.0);
+                    }
+                }
+            }
+        }
+        for k in 0..=nz {
+            for j in 0..ny {
+                for i in 0..nx {
+                    let (ii, jj, kk) = (i as isize, j as isize, k as isize);
+                    if self.flag_at(ii, jj, kk - 1) == CELL_SOLID
+                        || self.flag_at(ii, jj, kk) == CELL_SOLID
+                    {
+                        self.set_w(i, j, k, 0.0);
+                    }
+                }
+            }
+        }
+    }
     /// Compute velocity divergence at each cell.
     pub fn compute_divergence(&mut self) {
         let inv_dx = 1.0 / self.dx;
@@ -625,49 +770,47 @@ impl MacGrid {
     }
     /// Jacobi pressure solve: solve ∇²p = ρ/dt * ∇·u.
     ///
-    /// Runs `iterations` Jacobi sweeps.
+    /// Runs `iterations` Jacobi sweeps over the fluid cells ([`CELL_FLUID`]).
+    /// Air cells are Dirichlet (`p = 0`; pressure outside the fluid is zeroed
+    /// before the first sweep and counts as a neighbour with zero pressure),
+    /// solid cells and the domain walls are Neumann (the neighbour is dropped
+    /// from the stencil).
     pub fn jacobi_pressure_solve(&mut self, rho: f64, dt: f64, iterations: usize) {
         self.compute_divergence();
         let scale = rho * self.dx * self.dx / dt;
         let nx = self.nx;
         let ny = self.ny;
         let nz = self.nz;
+        for (pressure, &flag) in self.p.iter_mut().zip(self.flags.iter()) {
+            if flag != CELL_FLUID {
+                *pressure = 0.0;
+            }
+        }
         let mut p_new = self.p.clone();
         for _ in 0..iterations {
             for k in 0..nz {
                 for j in 0..ny {
                     for i in 0..nx {
-                        let idx = self.cell_idx(i, j, k);
-                        if self.flags[idx] != 1 {
+                        let (ii, jj, kk) = (i as isize, j as isize, k as isize);
+                        if self.flag_at(ii, jj, kk) != CELL_FLUID {
                             continue;
                         }
                         let mut neighbor_sum = 0.0;
                         let mut n_count = 0u32;
-                        if i + 1 < nx {
-                            neighbor_sum += self.p[self.cell_idx(i + 1, j, k)];
-                            n_count += 1;
-                        }
-                        if i > 0 {
-                            neighbor_sum += self.p[self.cell_idx(i - 1, j, k)];
-                            n_count += 1;
-                        }
-                        if j + 1 < ny {
-                            neighbor_sum += self.p[self.cell_idx(i, j + 1, k)];
-                            n_count += 1;
-                        }
-                        if j > 0 {
-                            neighbor_sum += self.p[self.cell_idx(i, j - 1, k)];
-                            n_count += 1;
-                        }
-                        if k + 1 < nz {
-                            neighbor_sum += self.p[self.cell_idx(i, j, k + 1)];
-                            n_count += 1;
-                        }
-                        if k > 0 {
-                            neighbor_sum += self.p[self.cell_idx(i, j, k - 1)];
-                            n_count += 1;
+                        for (di, dj, dk) in NEIGHBOR_OFFSETS {
+                            let (ni, nj, nk) = (ii + di, jj + dj, kk + dk);
+                            match self.flag_at(ni, nj, nk) {
+                                CELL_SOLID => {}
+                                CELL_FLUID => {
+                                    neighbor_sum += self.p
+                                        [self.cell_idx(ni as usize, nj as usize, nk as usize)];
+                                    n_count += 1;
+                                }
+                                _ => n_count += 1,
+                            }
                         }
                         if n_count > 0 {
+                            let idx = self.cell_idx(i, j, k);
                             p_new[idx] = (neighbor_sum - scale * self.div[idx]) / n_count as f64;
                         }
                     }
@@ -677,6 +820,9 @@ impl MacGrid {
         }
     }
     /// Apply pressure gradient to velocities (project step).
+    ///
+    /// Faces adjacent to a solid cell are left untouched (their normal
+    /// velocity is imposed by [`enforce_solid_boundaries`](Self::enforce_solid_boundaries)).
     pub fn pressure_project(&mut self, rho: f64, dt: f64) {
         let scale = dt / (rho * self.dx);
         let nx = self.nx;
@@ -685,6 +831,12 @@ impl MacGrid {
         for k in 0..nz {
             for j in 0..ny {
                 for i in 1..nx {
+                    let (ii, jj, kk) = (i as isize, j as isize, k as isize);
+                    if self.flag_at(ii - 1, jj, kk) == CELL_SOLID
+                        || self.flag_at(ii, jj, kk) == CELL_SOLID
+                    {
+                        continue;
+                    }
                     let p_r = self.p[self.cell_idx(i, j, k)];
                     let p_l = self.p[self.cell_idx(i - 1, j, k)];
                     let u_old = self.get_u(i, j, k);
@@ -695,6 +847,12 @@ impl MacGrid {
         for k in 0..nz {
             for j in 1..ny {
                 for i in 0..nx {
+                    let (ii, jj, kk) = (i as isize, j as isize, k as isize);
+                    if self.flag_at(ii, jj - 1, kk) == CELL_SOLID
+                        || self.flag_at(ii, jj, kk) == CELL_SOLID
+                    {
+                        continue;
+                    }
                     let p_t = self.p[self.cell_idx(i, j, k)];
                     let p_b = self.p[self.cell_idx(i, j - 1, k)];
                     let v_old = self.get_v(i, j, k);
@@ -705,6 +863,12 @@ impl MacGrid {
         for k in 1..nz {
             for j in 0..ny {
                 for i in 0..nx {
+                    let (ii, jj, kk) = (i as isize, j as isize, k as isize);
+                    if self.flag_at(ii, jj, kk - 1) == CELL_SOLID
+                        || self.flag_at(ii, jj, kk) == CELL_SOLID
+                    {
+                        continue;
+                    }
                     let p_f = self.p[self.cell_idx(i, j, k)];
                     let p_bk = self.p[self.cell_idx(i, j, k - 1)];
                     let w_old = self.get_w(i, j, k);
@@ -714,36 +878,66 @@ impl MacGrid {
         }
     }
     /// Trilinear interpolation of u-velocity at world position (x, y, z).
+    ///
+    /// `u(i, j, k)` lives at `(i dx, (j + ½) dx, (k + ½) dx)`.
     pub fn interp_u(&self, x: f64, y: f64, z: f64) -> f64 {
         let inv_dx = 1.0 / self.dx;
-        let ix = (x * inv_dx).floor() as isize;
-        let jy = (y * inv_dx - 0.5).floor() as isize;
-        let kz = (z * inv_dx - 0.5).floor() as isize;
-        let fx = x * inv_dx - ix as f64;
-        let fy = y * inv_dx - 0.5 - jy as f64;
-        let fz = z * inv_dx - 0.5 - kz as f64;
-        let nx = self.nx as isize;
-        let ny = self.ny as isize;
-        let nz = self.nz as isize;
-        let clamp_i = |v: isize| v.clamp(0, nx) as usize;
-        let clamp_j = |v: isize| v.clamp(0, ny - 1) as usize;
-        let clamp_k = |v: isize| v.clamp(0, nz - 1) as usize;
-        let u000 = self.get_u(clamp_i(ix), clamp_j(jy), clamp_k(kz));
-        let u100 = self.get_u(clamp_i(ix + 1), clamp_j(jy), clamp_k(kz));
-        let u010 = self.get_u(clamp_i(ix), clamp_j(jy + 1), clamp_k(kz));
-        let u110 = self.get_u(clamp_i(ix + 1), clamp_j(jy + 1), clamp_k(kz));
-        let u001 = self.get_u(clamp_i(ix), clamp_j(jy), clamp_k(kz + 1));
-        let u101 = self.get_u(clamp_i(ix + 1), clamp_j(jy), clamp_k(kz + 1));
-        let u011 = self.get_u(clamp_i(ix), clamp_j(jy + 1), clamp_k(kz + 1));
-        let u111 = self.get_u(clamp_i(ix + 1), clamp_j(jy + 1), clamp_k(kz + 1));
+        Self::trilerp(
+            &self.u,
+            [self.nx + 1, self.ny, self.nz],
+            [x * inv_dx, y * inv_dx - 0.5, z * inv_dx - 0.5],
+        )
+    }
+    /// Trilinear interpolation of v-velocity at world position (x, y, z).
+    ///
+    /// `v(i, j, k)` lives at `((i + ½) dx, j dx, (k + ½) dx)`.
+    pub fn interp_v(&self, x: f64, y: f64, z: f64) -> f64 {
+        let inv_dx = 1.0 / self.dx;
+        Self::trilerp(
+            &self.v,
+            [self.nx, self.ny + 1, self.nz],
+            [x * inv_dx - 0.5, y * inv_dx, z * inv_dx - 0.5],
+        )
+    }
+    /// Trilinear interpolation of w-velocity at world position (x, y, z).
+    ///
+    /// `w(i, j, k)` lives at `((i + ½) dx, (j + ½) dx, k dx)`.
+    pub fn interp_w(&self, x: f64, y: f64, z: f64) -> f64 {
+        let inv_dx = 1.0 / self.dx;
+        Self::trilerp(
+            &self.w,
+            [self.nx, self.ny, self.nz + 1],
+            [x * inv_dx - 0.5, y * inv_dx - 0.5, z * inv_dx],
+        )
+    }
+    /// Trilinear interpolation of a staggered component.
+    ///
+    /// `data` holds `dims[0] * dims[1] * dims[2]` samples (x fastest) and
+    /// `pos` is the query point in sample-index units.  Indices are clamped to
+    /// the sample range (constant extrapolation).
+    fn trilerp(data: &[f64], dims: [usize; 3], pos: [f64; 3]) -> f64 {
+        if dims.contains(&0) {
+            return 0.0;
+        }
+        let floor = pos.map(f64::floor);
+        let frac = [pos[0] - floor[0], pos[1] - floor[1], pos[2] - floor[2]];
+        let base = floor.map(|b| b as isize);
+        let sample = |di: isize, dj: isize, dk: isize| -> f64 {
+            let i = (base[0] + di).clamp(0, dims[0] as isize - 1) as usize;
+            let j = (base[1] + dj).clamp(0, dims[1] as isize - 1) as usize;
+            let k = (base[2] + dk).clamp(0, dims[2] as isize - 1) as usize;
+            data.get((k * dims[1] + j) * dims[0] + i)
+                .copied()
+                .unwrap_or(0.0)
+        };
         let lerp = |a: f64, b: f64, t: f64| a + t * (b - a);
-        let u_x0 = lerp(u000, u100, fx);
-        let u_x1 = lerp(u010, u110, fx);
-        let u_x2 = lerp(u001, u101, fx);
-        let u_x3 = lerp(u011, u111, fx);
-        let u_y0 = lerp(u_x0, u_x1, fy);
-        let u_y1 = lerp(u_x2, u_x3, fy);
-        lerp(u_y0, u_y1, fz)
+        let x00 = lerp(sample(0, 0, 0), sample(1, 0, 0), frac[0]);
+        let x10 = lerp(sample(0, 1, 0), sample(1, 1, 0), frac[0]);
+        let x01 = lerp(sample(0, 0, 1), sample(1, 0, 1), frac[0]);
+        let x11 = lerp(sample(0, 1, 1), sample(1, 1, 1), frac[0]);
+        let y0 = lerp(x00, x10, frac[1]);
+        let y1 = lerp(x01, x11, frac[1]);
+        lerp(y0, y1, frac[2])
     }
 }
 /// SPH simulation configuration.

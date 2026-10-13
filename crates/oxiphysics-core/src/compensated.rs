@@ -153,8 +153,10 @@ impl DeterministicReducer {
     /// 2. Each chunk writes to a pre-assigned slot in `partials`.
     /// 3. The final reduction reads slots in index order.
     ///
-    /// Poisoned mutex guards are recovered via `unwrap_or_else(|e| e.into_inner())`
-    /// so that a panicking worker thread does not propagate into the caller.
+    /// Poisoned mutex guards are recovered via `unwrap_or_else(|e| e.into_inner())`.
+    /// The chunks are summed concurrently by the workers of a [`WorkStealingPool`]; a
+    /// panic inside a chunk is re-raised on the calling thread by the pool's `join`
+    /// instead of silently leaving a zero partial sum behind.
     pub fn par_sum(&self, xs: &[f64], n_threads: usize) -> f64 {
         if xs.is_empty() {
             return 0.0;
@@ -185,7 +187,7 @@ impl DeterministicReducer {
             });
         }
 
-        // Consume the pool: drains the queue on the calling thread, then joins workers.
+        // Consume the pool: the workers finish all queued chunks, then they are joined.
         pool.join();
 
         // Collect partials in deterministic index order.

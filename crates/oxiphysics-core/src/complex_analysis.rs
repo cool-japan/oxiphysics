@@ -275,44 +275,88 @@ pub fn cauchy_integral(f: impl Fn(Complex) -> Complex, contour: &[Complex]) -> C
     result
 }
 
+/// Default radius of the circle used by [`residue`].
+///
+/// Small enough to enclose only the pole of interest for typical functions,
+/// large enough that the cancellation in the principal part (terms of size
+/// `r^{1-m}` for an order-`m` pole) stays far below the 1e-8 level.
+const RESIDUE_DEFAULT_RADIUS: f64 = 1e-3;
+
+/// Minimum number of quadrature nodes on the residue circle.
+const RESIDUE_MIN_POINTS: usize = 512;
+
 /// Compute the residue of `f` at a (simple or higher-order) pole.
 ///
-/// For a pole of order `order` at `pole`, the residue is estimated
-/// numerically by computing the Laurent coefficient via a small circle
-/// contour of radius ε.  For a simple pole this equals
-/// lim_{z→pole} (z − pole) · f(z).
+/// The residue is the Laurent coefficient `a_{-1}` of `f` about `pole`, i.e.
+///
+/// ```text
+/// Res_{z=p} f = (1 / 2πi) ∮_{|z-p|=r} f(z) dz
+/// ```
+///
+/// for **any** pole order, as long as the circle encloses no other
+/// singularity.  The contour integral is evaluated with the periodic
+/// trapezoid rule on the circle parametrisation `z = p + r·e^{iθ}`, which is
+/// spectrally accurate for analytic periodic integrands (the quadrature error
+/// decays geometrically in the node count `N`, like `(r/R)^N` where `R` is the
+/// distance to the nearest other singularity), so the result is accurate to
+/// near machine precision for the default radius `r = 10⁻³`.
+///
+/// Use [`residue_with_radius`] when another singularity lies closer to the
+/// pole than the default radius.
 ///
 /// # Arguments
 /// * `f`     - meromorphic function
 /// * `pole`  - location of the pole
-/// * `order` - order of the pole (≥ 1)
+/// * `order` - order of the pole (≥ 1).  It is used to size the quadrature
+///   (the rule needs at least `order` nodes to annihilate the aliasing of the
+///   principal part); `order == 0` means `f` is regular at `pole`, so the
+///   residue is exactly zero.
 ///
 /// # Returns
 /// Numerical approximation of the residue.
 pub fn residue(f: impl Fn(Complex) -> Complex, pole: Complex, order: usize) -> Complex {
-    let eps = 1e-5_f64;
-    let n_points = 512_usize;
-    // ∮_{|z-p|=ε} f(z) / (z-p)^(1-order) dz / (2πi)  ← standard formula
-    // For a pole of order m: Res = 1/(m-1)! · d^(m-1)/dz^(m-1) [(z-p)^m f(z)] at z=p
-    // We use the numerical contour formula:
-    //   Res = 1/(2πi) ∮ f(z) (z-p)^(order-1) dz
-    // which equals 1/(2πi) ∮ g(z) dz  where g(z) = f(z)·(z-p)^(order-1)
-    let contour: Vec<Complex> = (0..n_points)
-        .map(|k| {
-            let theta = 2.0 * PI * (k as f64) / (n_points as f64);
-            pole + Complex::new(eps * theta.cos(), eps * theta.sin())
-        })
-        .collect();
-    let integral = cauchy_integral(
-        |z| {
-            let zp = z - pole;
-            let factor = zp.pow((order as f64) - 1.0);
-            f(z) * factor
-        },
-        &contour,
-    );
-    // divide by 2πi
-    integral / Complex::new(0.0, 2.0 * PI)
+    residue_with_radius(f, pole, order, RESIDUE_DEFAULT_RADIUS)
+}
+
+/// Compute the residue of `f` at `pole` using a circle of the given `radius`.
+///
+/// Identical to [`residue`] but lets the caller choose the integration
+/// radius, which must be smaller than the distance from `pole` to any other
+/// singularity of `f`.  Very small radii amplify cancellation for high-order
+/// poles (the integrand grows like `r^{1-order}`), so prefer the largest
+/// radius that still isolates the pole.
+///
+/// # Arguments
+/// * `f`      - meromorphic function
+/// * `pole`   - location of the pole
+/// * `order`  - order of the pole (see [`residue`])
+/// * `radius` - radius of the integration circle; must be finite and positive
+///
+/// # Returns
+/// The residue, or a `NaN`-valued complex number if `radius` is not a finite
+/// positive number (consistent with [`Complex::inv`] on invalid input).
+pub fn residue_with_radius(
+    f: impl Fn(Complex) -> Complex,
+    pole: Complex,
+    order: usize,
+    radius: f64,
+) -> Complex {
+    if order == 0 {
+        return Complex::zero();
+    }
+    if !radius.is_finite() || radius <= 0.0 {
+        return Complex::new(f64::NAN, f64::NAN);
+    }
+    let n_points = RESIDUE_MIN_POINTS.max(4 * order);
+    let mut sum = Complex::zero();
+    for k in 0..n_points {
+        let theta = 2.0 * PI * (k as f64) / (n_points as f64);
+        // Node offset z_k - p = r·e^{iθ_k}; dz = i·(z_k - p)·dθ, so
+        // (1/2πi) ∮ f dz ≈ (1/N) Σ f(z_k)·(z_k - p).
+        let offset = Complex::new(radius * theta.cos(), radius * theta.sin());
+        sum = sum + f(pole + offset) * offset;
+    }
+    sum / (n_points as f64)
 }
 
 // ---------------------------------------------------------------------------
@@ -535,7 +579,12 @@ pub fn elliptic_k(k: f64) -> f64 {
 
 /// Complete elliptic integral of the second kind E(k).
 ///
-/// Computed via a variant of the AGM iteration.
+/// Computed via a variant of the AGM iteration:
+///
+/// E(k) = K(k) · (1 − Σ_{n≥0} 2^{n−1} c_n²),
+///
+/// where `a_0 = 1`, `b_0 = √(1 − k²)`, `c_0 = k` and
+/// `c_{n+1} = (a_n − b_n) / 2` accompany the AGM sequence of K(k).
 ///
 /// E(k) = ∫_0^{π/2} √(1 − k²·sin²θ) dθ
 ///
@@ -549,16 +598,19 @@ pub fn elliptic_e(k: f64) -> f64 {
     let mut a = 1.0_f64;
     let mut b = (1.0 - k * k).sqrt();
     let mut c = k;
-    let mut two_n = 1.0_f64;
-    let mut sum = 1.0 - 0.5 * c * c;
+    // Weight 2^{n-1} of the n-th term; the loop doubles it before use, so the
+    // first correction (n = 1) carries weight 2^0 = 1.
+    let mut weight = 0.5_f64;
+    // n = 0 term: 2^{-1} c_0².
+    let mut sum = 1.0 - weight * c * c;
     for _ in 0..50 {
         let a_new = (a + b) / 2.0;
         let b_new = (a * b).sqrt();
         c = (a - b) / 2.0;
         a = a_new;
         b = b_new;
-        two_n *= 2.0;
-        sum -= two_n * c * c;
+        weight *= 2.0;
+        sum -= weight * c * c;
         if c.abs() < 1e-15 {
             break;
         }
@@ -954,6 +1006,117 @@ mod tests {
         assert!(r.im.abs() < 1e-4);
     }
 
+    #[test]
+    fn test_residue_simple_pole_is_spectrally_accurate() {
+        // The circle trapezoid rule is exact for 1/z up to rounding, unlike a
+        // chord (polygon) rule whose error is O(1/N²) ≈ 2.5e-5 at N = 512.
+        let r = residue(|z| z.inv(), Complex::zero(), 1);
+        assert!((r.re - 1.0).abs() < 1e-10, "re = {}", r.re);
+        assert!(r.im.abs() < 1e-10, "im = {}", r.im);
+    }
+
+    #[test]
+    fn test_residue_double_pole_returns_a_minus_one() {
+        // f = 1/z² + 3/z has Res = 3; the leading Laurent coefficient a_{-2}
+        // (which the old implementation returned) is 1.
+        let r = residue(|z| z.inv() * z.inv() + z.inv() * 3.0, Complex::zero(), 2);
+        assert!((r.re - 3.0).abs() < 1e-8, "re = {}", r.re);
+        assert!(r.im.abs() < 1e-8, "im = {}", r.im);
+    }
+
+    #[test]
+    fn test_residue_triple_pole_exponential() {
+        // e^z / z³ = 1/z³ + 1/z² + 1/(2z) + ...  ⇒  Res = 1/2.
+        let r = residue(|z| z.exp() / (z * z * z), Complex::zero(), 3);
+        assert!((r.re - 0.5).abs() < 1e-8, "re = {}", r.re);
+        assert!(r.im.abs() < 1e-8, "im = {}", r.im);
+    }
+
+    #[test]
+    fn test_residue_simple_poles_off_origin() {
+        // f = 1/(z(z−1)): Res_{z=1} = +1, Res_{z=0} = −1.
+        let f = |z: Complex| (z * (z - Complex::one())).inv();
+        let at_one = residue(f, Complex::one(), 1);
+        let at_zero = residue(f, Complex::zero(), 1);
+        assert!((at_one.re - 1.0).abs() < 1e-8, "re = {}", at_one.re);
+        assert!(at_one.im.abs() < 1e-8, "im = {}", at_one.im);
+        assert!((at_zero.re + 1.0).abs() < 1e-8, "re = {}", at_zero.re);
+        assert!(at_zero.im.abs() < 1e-8, "im = {}", at_zero.im);
+    }
+
+    #[test]
+    fn test_residue_inverse_sine_squared_vanishes() {
+        // 1/sin²(z) = 1/z² + 1/3 + z²/15 + ...: a_{-2} = 1 but Res = 0.
+        let r = residue(|z| (z.sin() * z.sin()).inv(), Complex::zero(), 2);
+        assert!(r.abs() < 1e-8, "|Res| = {}", r.abs());
+    }
+
+    #[test]
+    fn test_residue_cotangent_at_pi() {
+        // cot(z) has simple poles with residue 1 at every multiple of π.
+        let r = residue(|z| z.cos() / z.sin(), Complex::from_real(PI), 1);
+        assert!((r.re - 1.0).abs() < 1e-8, "re = {}", r.re);
+        assert!(r.im.abs() < 1e-8, "im = {}", r.im);
+    }
+
+    #[test]
+    fn test_residue_at_complex_pole_location() {
+        // f = 2/(z−p)² + (5 − 3i)/(z−p) at p = 1+2i  ⇒  Res = 5 − 3i.
+        let p = Complex::new(1.0, 2.0);
+        let f = move |z: Complex| {
+            let d = z - p;
+            (d * d).inv() * 2.0 + d.inv() * Complex::new(5.0, -3.0)
+        };
+        let r = residue(f, p, 2);
+        assert!((r.re - 5.0).abs() < 1e-8, "re = {}", r.re);
+        assert!((r.im + 3.0).abs() < 1e-8, "im = {}", r.im);
+    }
+
+    #[test]
+    fn test_residue_independent_of_declared_order_upper_bound() {
+        // Res_{z=0} (1/z² + 3/z) is a property of f, not of the declared order.
+        let f = |z: Complex| z.inv() * z.inv() + z.inv() * 3.0;
+        let tight = residue(f, Complex::zero(), 2);
+        let loose = residue(f, Complex::zero(), 6);
+        assert!(tight.approx_eq(loose, 1e-8), "{tight} vs {loose}");
+        assert!((loose.re - 3.0).abs() < 1e-8);
+    }
+
+    #[test]
+    fn test_residue_order_zero_is_zero() {
+        // A "pole of order 0" is a regular point: the residue vanishes.
+        let r = residue(|z| z.exp(), Complex::zero(), 0);
+        assert_eq!(r, Complex::zero());
+    }
+
+    #[test]
+    fn test_residue_with_radius_isolates_close_poles() {
+        // f = 1/(z (z − 4e-4)): Res_{z=0} = −2500, Res_{z=4e-4} = +2500.
+        // The default radius (1e-3) encloses both poles, so only their sum (0)
+        // is seen; a radius below the pole separation isolates z = 0.
+        let f = |z: Complex| (z * (z - Complex::from_real(4e-4))).inv();
+        let both = residue(f, Complex::zero(), 1);
+        assert!(
+            both.abs() < 1e-6,
+            "enclosing both poles sums to 0, got {both}"
+        );
+        let isolated = residue_with_radius(f, Complex::zero(), 1, 1e-4);
+        assert!((isolated.re + 2500.0).abs() < 1e-6, "re = {}", isolated.re);
+        assert!(isolated.im.abs() < 1e-6, "im = {}", isolated.im);
+    }
+
+    #[test]
+    fn test_residue_with_radius_rejects_invalid_radius() {
+        let f = |z: Complex| z.inv();
+        for radius in [0.0, -1e-3, f64::NAN, f64::INFINITY] {
+            let r = residue_with_radius(f, Complex::zero(), 1, radius);
+            assert!(
+                r.re.is_nan() && r.im.is_nan(),
+                "radius {radius} must give a NaN residue, got {r}"
+            );
+        }
+    }
+
     // --- Conformal maps ---
 
     #[test]
@@ -1080,6 +1243,62 @@ mod tests {
         // For any k, E(k) ≤ K(k)
         let k = 0.7;
         assert!(elliptic_e(k) <= elliptic_k(k) + 1e-10);
+    }
+
+    #[test]
+    fn test_elliptic_e_reference_values() {
+        // Reference values (mpmath / SciPy `ellipe(k²)`), 1e-12 absolute.
+        let cases = [
+            (0.5, 1.4674622093394272),
+            (std::f64::consts::FRAC_1_SQRT_2, 1.3506438810476755),
+            (0.9, 1.1716970527816142),
+            (0.99, 1.0284758090288042),
+        ];
+        for (k, expected) in cases {
+            let e = elliptic_e(k);
+            assert!(
+                (e - expected).abs() < 1e-12,
+                "E({k}) = {e}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_elliptic_e_legendre_relation() {
+        // Legendre's relation E·K' + E'·K − K·K' = π/2.  At k = k' = 1/√2 it
+        // reduces to 2·E·K − K² = π/2, independent of tabulated constants.
+        let k = std::f64::consts::FRAC_1_SQRT_2;
+        let kk = elliptic_k(k);
+        let ee = elliptic_e(k);
+        let lhs = 2.0 * ee * kk - kk * kk;
+        assert!((lhs - PI / 2.0).abs() < 1e-12, "Legendre residual {lhs}");
+    }
+
+    #[test]
+    fn test_elliptic_e_legendre_relation_generic_modulus() {
+        // Same identity for k ≠ k': E(k)·K(k') + E(k')·K(k) − K(k)·K(k') = π/2.
+        for &k in &[0.2_f64, 0.6, 0.85] {
+            let kp = (1.0 - k * k).sqrt();
+            let lhs = elliptic_e(k) * elliptic_k(kp) + elliptic_e(kp) * elliptic_k(k)
+                - elliptic_k(k) * elliptic_k(kp);
+            assert!(
+                (lhs - PI / 2.0).abs() < 1e-11,
+                "Legendre residual {lhs} at k = {k}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_elliptic_e_monotone_decreasing_in_modulus() {
+        // E(k) decreases from π/2 at k = 0 to 1 as k → 1.
+        let mut prev = elliptic_e(0.0);
+        for i in 1..=19 {
+            let k = f64::from(i) * 0.05;
+            let e = elliptic_e(k);
+            assert!(e < prev, "E must decrease: E({k}) = {e}, previous {prev}");
+            assert!(e > 1.0, "E(k) > 1 for k < 1, got {e} at k = {k}");
+            prev = e;
+        }
     }
 
     // --- Bessel functions ---

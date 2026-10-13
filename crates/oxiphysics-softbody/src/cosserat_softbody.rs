@@ -60,6 +60,15 @@ fn scale3(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
 }
 
+/// Cross product a × b.
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
 /// 3×3 identity matrix stored column-major as \[f64; 9\].
 fn mat3_identity() -> [f64; 9] {
     [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
@@ -233,6 +242,13 @@ pub struct CosseratRodProperties {
     pub ga2: f64,
     /// Linear mass density \[kg/m\].
     pub rho_a: f64,
+    /// Rotary inertia of the cross-section about d₁ per unit length, ρ·I₁ \[kg·m\].
+    pub rho_i1: f64,
+    /// Rotary inertia of the cross-section about d₂ per unit length, ρ·I₂ \[kg·m\].
+    pub rho_i2: f64,
+    /// Polar rotary inertia about the tangent d₃ per unit length, ρ·J \[kg·m\]
+    /// with the polar moment of area J = I₁ + I₂.
+    pub rho_j: f64,
 }
 
 impl CosseratRodProperties {
@@ -256,6 +272,9 @@ impl CosseratRodProperties {
             ga1: shear_modulus * area,
             ga2: shear_modulus * area,
             rho_a: density * area,
+            rho_i1: density * i_bending,
+            rho_i2: density * i_bending,
+            rho_j: density * j_polar,
         }
     }
 
@@ -296,6 +315,9 @@ impl CosseratRodProperties {
             ga1: shear_modulus * area,
             ga2: shear_modulus * area,
             rho_a: density * area,
+            rho_i1: density * i1,
+            rho_i2: density * i2,
+            rho_j: density * (i1 + i2),
         }
     }
 }
@@ -533,57 +555,114 @@ impl DiscreteCosseratRod {
         }
     }
 
+    /// Elastic restoring moments the joints exert on every node, in the global
+    /// frame.
+    ///
+    /// The Darboux vector `κ = axial(Rₐᵀ R_b) / ds` of segment `i` is the rotation
+    /// that takes frame `i` to frame `i + 1`, expressed in frame `i`.  The joint
+    /// moment `M = R_i · EI (κ − κ₀)` therefore turns node `i` *towards* node
+    /// `i + 1` (`+M`) and node `i + 1` back towards node `i` (`−M`): action and
+    /// reaction, so the moments of all nodes sum to zero and a curvature mismatch
+    /// relaxes instead of producing a net torque.
+    pub fn elastic_moments(&self) -> Vec<[f64; 3]> {
+        let mut moments = vec![[0.0_f64; 3]; self.nodes.len()];
+        for i in 0..self.num_segments() {
+            let moment_local =
+                internal_moment(&self.props, self.darboux(i), self.intrinsic_kappa[i]);
+            let moment_global =
+                mat3_mul_vec(self.nodes[i].frame.to_rotation_matrix(), moment_local);
+            moments[i] = add3(moments[i], moment_global);
+            moments[i + 1] = sub3(moments[i + 1], moment_global);
+        }
+        moments
+    }
+
+    /// Elastic stretch forces on every node (Simo–Reissner axial law along the
+    /// centreline): a stretched segment draws its end nodes together.
+    pub fn elastic_forces(&self) -> Vec<[f64; 3]> {
+        let mut forces = vec![[0.0_f64; 3]; self.nodes.len()];
+        for i in 0..self.num_segments() {
+            let ds = self.rest_lengths[i];
+            let dr = sub3(self.nodes[i + 1].position, self.nodes[i].position);
+            let dr_norm = norm3(dr);
+            if dr_norm > 1e-30 {
+                let stretch = (dr_norm - ds) / ds;
+                let f_dir = scale3(normalize3(dr), self.props.ea * stretch);
+                forces[i] = add3(forces[i], f_dir);
+                forces[i + 1] = sub3(forces[i + 1], f_dir);
+            }
+        }
+        forces
+    }
+
+    /// Angular acceleration (global frame) of a node with frame `frame` and angular
+    /// velocity `omega` under the torque `moment`, from the rigid-body Euler
+    /// equation `I α = M − ω × (I ω)` with the diagonal rotary inertia
+    /// `diag(ρI₁, ρI₂, ρJ) · ds` in the material frame.  Axes without inertia do
+    /// not accelerate.
+    fn angular_acceleration(
+        &self,
+        frame: &DirectorTriad,
+        omega: [f64; 3],
+        moment: [f64; 3],
+        node_length: f64,
+    ) -> [f64; 3] {
+        let rotation = frame.to_rotation_matrix();
+        let to_body = mat3_transpose(rotation);
+        let moment_body = mat3_mul_vec(to_body, moment);
+        let omega_body = mat3_mul_vec(to_body, omega);
+        let inertia = [
+            self.props.rho_i1 * node_length,
+            self.props.rho_i2 * node_length,
+            self.props.rho_j * node_length,
+        ];
+        let angular_momentum = [
+            inertia[0] * omega_body[0],
+            inertia[1] * omega_body[1],
+            inertia[2] * omega_body[2],
+        ];
+        let gyroscopic = cross3(omega_body, angular_momentum);
+        let mut alpha_body = [0.0_f64; 3];
+        for axis in 0..3 {
+            if inertia[axis] > 1e-30 {
+                alpha_body[axis] = (moment_body[axis] - gyroscopic[axis]) / inertia[axis];
+            }
+        }
+        mat3_mul_vec(rotation, alpha_body)
+    }
+
     /// Semi-implicit Euler integration step.
     ///
     /// Computes elastic restoring forces/moments from curvature mismatch
-    /// and integrates the equations of motion.
+    /// ([`elastic_forces`](Self::elastic_forces), [`elastic_moments`](Self::elastic_moments))
+    /// and integrates the equations of motion: nodal masses are `ρA ds`, nodal
+    /// rotary inertias the cross-section inertias `ρI₁ ds`, `ρI₂ ds`, `ρJ ds`.
+    ///
+    /// The explicit scheme is only stable for time steps well below the period of
+    /// the stiffest rotational mode, `2π sqrt(ρI ds² / EI)`.
     ///
     /// # Arguments
     /// * `dt` – Time step \[s\].
     /// * `damping` – Velocity damping coefficient (0=none, 1=critical).
     pub fn step(&mut self, dt: f64, damping: f64) {
         let n_seg = self.num_segments();
-
-        // Compute elastic restoring moments at each joint.
-        let mut elastic_moments = vec![[0.0_f64; 3]; self.nodes.len()];
-        let mut elastic_forces = vec![[0.0_f64; 3]; self.nodes.len()];
-
-        for i in 0..n_seg {
-            let kappa = self.darboux(i);
-            let kappa0 = self.intrinsic_kappa[i];
-            let ds = self.rest_lengths[i];
-            let moment_local = internal_moment(&self.props, kappa, kappa0);
-            // Rotate to global frame using node i's frame.
-            let r_i = self.nodes[i].frame.to_rotation_matrix();
-            let moment_global = mat3_mul_vec(r_i, moment_local);
-            // Distribute moment to adjacent nodes.
-            let half_m = scale3(moment_global, 0.5);
-            elastic_moments[i] = add3(elastic_moments[i], half_m);
-            elastic_moments[i + 1] = add3(elastic_moments[i + 1], half_m);
-
-            // Compute centroid stretch (restoring force for Simo–Reissner).
-            let pos_i = self.nodes[i].position;
-            let pos_j = self.nodes[i + 1].position;
-            let dr = sub3(pos_j, pos_i);
-            let dr_norm = norm3(dr);
-            if dr_norm > 1e-30 {
-                let stretch = (dr_norm - ds) / ds;
-                let f_mag = self.props.ea * stretch;
-                let f_dir = scale3(normalize3(dr), f_mag);
-                elastic_forces[i] = add3(elastic_forces[i], f_dir);
-                elastic_forces[i + 1] = sub3(elastic_forces[i + 1], f_dir);
-            }
+        if n_seg == 0 {
+            return;
         }
 
-        // Integrate velocities and positions.
-        let inv_mass =
-            1.0 / (self.props.rho_a * self.rest_lengths.iter().sum::<f64>() / n_seg as f64);
+        // Elastic restoring moments and forces at each joint / segment.
+        let elastic_moments = self.elastic_moments();
+        let elastic_forces = self.elastic_forces();
+
+        // Lumped node length (shared by the mass and the rotary inertia).
+        let node_length = self.rest_lengths.iter().sum::<f64>() / n_seg as f64;
+        let inv_mass = 1.0 / (self.props.rho_a * node_length);
 
         for i in 0..self.nodes.len() {
             if self.nodes[i].is_pinned {
                 continue;
             }
-            let total_force = add3(add3(self.nodes[i].ext_force, elastic_forces[i]), [0.0; 3]);
+            let total_force = add3(self.nodes[i].ext_force, elastic_forces[i]);
             let accel = scale3(total_force, inv_mass);
             // Velocity update with damping.
             let v_new = scale3(
@@ -595,7 +674,12 @@ impl DiscreteCosseratRod {
 
             // Angular velocity and frame update.
             let total_moment = add3(self.nodes[i].ext_moment, elastic_moments[i]);
-            let alpha = scale3(total_moment, inv_mass);
+            let alpha = self.angular_acceleration(
+                &self.nodes[i].frame,
+                self.nodes[i].omega,
+                total_moment,
+                node_length,
+            );
             let omega_new = scale3(
                 add3(self.nodes[i].omega, scale3(alpha, dt)),
                 1.0 - damping * dt,
@@ -1415,5 +1499,193 @@ mod tests {
             "Free end should fall under gravity: initial_y={}, final_y={final_y}",
             initial_pos[1]
         );
+    }
+
+    // ── Joint moments: action and reaction, rotary inertia ────────────────────
+
+    /// Rod with moderately stiff, light joints so that explicit stepping at
+    /// dt = 1e-4 s is far inside the stability limit.
+    fn relaxation_props() -> CosseratRodProperties {
+        CosseratRodProperties::circular(0.01, 1.0e6, 4.0e5, 1000.0)
+    }
+
+    fn rotate_frame(rod: &mut DiscreteCosseratRod, node: usize, axis: [f64; 3], angle: f64) {
+        rod.nodes[node].frame = rod.nodes[node].frame.rotate(rodrigues(axis, angle));
+    }
+
+    fn sum3(vectors: &[[f64; 3]]) -> [f64; 3] {
+        vectors.iter().fold([0.0; 3], |acc, v| add3(acc, *v))
+    }
+
+    // 31. Rotary inertia densities follow the cross-section.
+    #[test]
+    fn test_rotary_inertia_from_cross_section() {
+        let (r, rho) = (0.01, 1000.0);
+        let circular = CosseratRodProperties::circular(r, 1.0e6, 4.0e5, rho);
+        let i_bending = PI * r.powi(4) / 4.0;
+        assert!((circular.rho_i1 - rho * i_bending).abs() < 1e-20);
+        assert!((circular.rho_i2 - rho * i_bending).abs() < 1e-20);
+        assert!(
+            (circular.rho_j - 2.0 * circular.rho_i1).abs() < 1e-20,
+            "polar inertia of a disc is twice the diametral one"
+        );
+        let (w, h) = (0.02, 0.01);
+        let rect = CosseratRodProperties::rectangular(w, h, 1.0e6, 4.0e5, rho);
+        let i1 = w * h.powi(3) / 12.0;
+        let i2 = h * w.powi(3) / 12.0;
+        assert!((rect.rho_i1 - rho * i1).abs() < 1e-18);
+        assert!((rect.rho_i2 - rho * i2).abs() < 1e-18);
+        assert!((rect.rho_j - rho * (i1 + i2)).abs() < 1e-18);
+    }
+
+    // 32. The joint moments are action and reaction pairs.
+    #[test]
+    fn test_elastic_moments_obey_action_reaction() {
+        let props = relaxation_props();
+        let ei = props.ei1;
+        let mut rod = DiscreteCosseratRod::straight(4, 0.4, props);
+        let theta = 0.05_f64;
+        rotate_frame(&mut rod, 2, [1.0, 0.0, 0.0], theta);
+        let moments = rod.elastic_moments();
+        let unit = ei * theta.sin() / 0.1;
+        // Nodes 1 and 3 turn towards node 2; node 2 turns back by both reactions.
+        assert!(
+            (moments[1][0] - unit).abs() < 1e-9 * unit,
+            "{:?}",
+            moments[1]
+        );
+        assert!(
+            (moments[2][0] + 2.0 * unit).abs() < 1e-9 * unit,
+            "{:?}",
+            moments[2]
+        );
+        assert!(
+            (moments[3][0] - unit).abs() < 1e-9 * unit,
+            "{:?}",
+            moments[3]
+        );
+        for node in [0usize, 4] {
+            assert!(norm3(moments[node]) < 1e-12 * unit, "node {node}");
+        }
+        let net = sum3(&moments);
+        assert!(norm3(net) < 1e-12 * unit, "net elastic torque {net:?}");
+    }
+
+    // 33. Rotating an interior frame: the curvature mismatch relaxes with damping
+    // and the elastic torques never add up to a net torque.
+    #[test]
+    fn test_interior_rotation_relaxes_without_net_torque() {
+        let props = relaxation_props();
+        let mut rod = DiscreteCosseratRod::straight(4, 0.4, props);
+        rotate_frame(&mut rod, 2, [0.0, 1.0, 0.0], 0.05);
+        let initial_energy = rod.elastic_energy();
+        assert!(initial_energy > 0.0);
+        let initial_kappa = (0..rod.num_segments())
+            .map(|i| norm3(rod.darboux(i)))
+            .fold(0.0_f64, f64::max);
+        let scale = norm3(rod.elastic_moments()[2]);
+        for step in 0..8000 {
+            let net = sum3(&rod.elastic_moments());
+            assert!(
+                norm3(net) < 1e-9 * scale,
+                "step {step}: net elastic torque {net:?} (scale {scale:e})"
+            );
+            rod.step(1e-4, 40.0);
+        }
+        let kappa = (0..rod.num_segments())
+            .map(|i| norm3(rod.darboux(i)))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            kappa < 1e-4 * initial_kappa,
+            "darboux vector must relax: {initial_kappa} -> {kappa}"
+        );
+        assert!(
+            rod.elastic_energy() < 1e-7 * initial_energy,
+            "elastic energy {initial_energy} -> {}",
+            rod.elastic_energy()
+        );
+    }
+
+    // 34. Angular acceleration uses the rotary inertia of the cross-section.
+    #[test]
+    fn test_angular_acceleration_uses_rotary_inertia() {
+        let props = relaxation_props();
+        let node_length = 0.1;
+        let dt = 1e-4;
+        let torque = 1e-3;
+        let spin_after_one_step = |axis: usize| {
+            let mut rod = DiscreteCosseratRod::straight(2, 0.2, props);
+            let mut moment = [0.0; 3];
+            moment[axis] = torque;
+            rod.nodes[1].apply_moment(moment);
+            rod.step(dt, 0.0);
+            rod.nodes[1].omega[axis]
+        };
+        let about_d1 = spin_after_one_step(0);
+        let about_d3 = spin_after_one_step(2);
+        let expected_d1 = torque / (props.rho_i1 * node_length) * dt;
+        let expected_d3 = torque / (props.rho_j * node_length) * dt;
+        assert!(
+            (about_d1 - expected_d1).abs() < 1e-9 * expected_d1,
+            "spin about d1: {about_d1} vs {expected_d1}"
+        );
+        assert!(
+            (about_d3 - expected_d3).abs() < 1e-9 * expected_d3,
+            "spin about d3: {about_d3} vs {expected_d3}"
+        );
+        // The linear mass density rho*A must not enter the angular dynamics: dividing
+        // the torque by the linear mass would give an acceleration ~4e4 times smaller.
+        let linear_inverse_mass = 1.0 / (props.rho_a * node_length);
+        assert!(
+            about_d1 / dt > 1e3 * torque * linear_inverse_mass,
+            "torque must not be divided by the linear mass"
+        );
+        assert!(
+            (about_d3 / about_d1 - 0.5).abs() < 1e-9,
+            "a disc spins half as fast about its axis as about a diameter"
+        );
+    }
+
+    // 35. A torque-free spinning node conserves its angular momentum (gyroscopic term).
+    #[test]
+    fn test_torque_free_spin_conserves_angular_momentum() {
+        let mut props = relaxation_props();
+        props.ei1 = 0.0;
+        props.ei2 = 0.0;
+        props.gj = 0.0;
+        let node_length = 0.1;
+        let mut rod = DiscreteCosseratRod::straight(2, 0.2, props);
+        rod.nodes[1].omega = [20.0, 0.0, 30.0];
+        let momentum = |rod: &DiscreteCosseratRod| {
+            let rotation = rod.nodes[1].frame.to_rotation_matrix();
+            let to_body = mat3_transpose(rotation);
+            let w = mat3_mul_vec(to_body, rod.nodes[1].omega);
+            let l_body = [
+                props.rho_i1 * node_length * w[0],
+                props.rho_i2 * node_length * w[1],
+                props.rho_j * node_length * w[2],
+            ];
+            mat3_mul_vec(rotation, l_body)
+        };
+        let before = momentum(&rod);
+        let energy = |rod: &DiscreteCosseratRod| {
+            let w = mat3_mul_vec(
+                mat3_transpose(rod.nodes[1].frame.to_rotation_matrix()),
+                rod.nodes[1].omega,
+            );
+            0.5 * node_length
+                * (props.rho_i1 * w[0] * w[0]
+                    + props.rho_i2 * w[1] * w[1]
+                    + props.rho_j * w[2] * w[2])
+        };
+        let e0 = energy(&rod);
+        for _ in 0..10_000 {
+            rod.step(1e-5, 0.0);
+        }
+        let after = momentum(&rod);
+        let drift = norm3(sub3(after, before)) / norm3(before);
+        assert!(drift < 5e-3, "angular momentum drift {drift}");
+        let e1 = energy(&rod);
+        assert!(((e1 - e0) / e0).abs() < 5e-3, "kinetic energy {e0} -> {e1}");
     }
 }

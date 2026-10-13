@@ -99,359 +99,113 @@ impl EigenSolver {
             converged: false,
         }
     }
-    /// Arnoldi iteration: compute k eigenvalues of a non-symmetric matrix.
+    /// Arnoldi iteration: the `k` real eigenvalues of largest magnitude of a
+    /// general (possibly non-symmetric) matrix, with their Ritz vectors.
     ///
-    /// Builds an orthonormal Krylov basis and extracts Ritz values.
+    /// Runs at most `m = min(n, max(2k + 1, max_iter))` steps of the fully
+    /// reorthogonalised Arnoldi process (so `max_iter` is the largest Krylov
+    /// dimension, but never below `2k + 1`) from a fixed pseudo-random start
+    /// vector, stopping early once the `k` wanted pairs pass the residual test.
+    /// Ritz pairs are taken from the Hessenberg matrix `H_m`: its eigenvalues by
+    /// the Francis double-shift QR algorithm and the eigenvectors by inverse
+    /// iteration, mapped back with the Krylov basis.  When the Krylov space
+    /// becomes invariant the process is restarted from a fresh vector orthogonal
+    /// to the basis (and then runs through the whole step budget), which is how
+    /// repeated eigenvalues are found; before that, one Ritz value stands for all
+    /// copies of a multiple eigenvalue.
+    ///
+    /// The eigenvalues are returned in ascending order and `eigenvectors[i]` is
+    /// the unit Ritz vector of `eigenvalues[i]`.  `converged` is `true` only if
+    /// exactly `k` pairs were found and each satisfies the *true* residual test
+    /// `||A v - lambda v|| <= tol` (an absolute tolerance); `iterations` counts
+    /// the Arnoldi steps (matrix-vector products).  A non-square matrix yields an
+    /// empty, non-converged result.
+    ///
+    /// An [`EigenResult`] carries real numbers only, so complex-conjugate Ritz
+    /// pairs are skipped; if fewer than `k` real pairs exist the result is
+    /// shorter than `k` and `converged` is `false`.
     pub fn arnoldi(a: &SparseCSR, k: usize, max_iter: usize, tol: f64) -> EigenResult {
-        let n = a.nrows;
-        let m = k.min(n).min(max_iter);
-        let mut q: Vec<Vec<f64>> = Vec::with_capacity(m + 1);
-        let mut h = vec![vec![0.0f64; m]; m + 1];
-        let mut v0 = vec![1.0f64; n];
-        let nrm = norm2(&v0);
-        v0.iter_mut().for_each(|x| *x /= nrm);
-        q.push(v0);
-        for j in 0..m {
-            let mut z = a.matvec(&q[j]);
-            for i in 0..=j {
-                h[i][j] = dot(&z, &q[i]);
-                axpy(-h[i][j], &q[i], &mut z);
-            }
-            h[j + 1][j] = norm2(&z);
-            if h[j + 1][j] < tol {
-                break;
-            }
-            q.push(vec_scale(1.0 / h[j + 1][j], &z));
-        }
-        let hess: Vec<f64> = (0..m)
-            .flat_map(|i| (0..m).map(|j| h[i][j]).collect::<Vec<_>>())
-            .collect::<Vec<f64>>();
-        let ritz = Self::hessenberg_eigenvalues(&hess, m);
-        EigenResult {
-            eigenvalues: ritz,
-            eigenvectors: q.into_iter().take(k).collect(),
-            iterations: m,
-            converged: true,
-        }
+        super::krylov_eigen::arnoldi(a, k, max_iter, tol)
     }
-    /// Lanczos iteration for symmetric matrices: compute k eigenvalues.
+    /// Lanczos iteration for symmetric matrices: the `k` eigenvalues of largest
+    /// magnitude with their Ritz vectors.
     ///
-    /// Builds a tridiagonal matrix and extracts Ritz values via QR.
+    /// Runs at most `m = min(n, max(2k + 1, max_iter))` steps of the Lanczos
+    /// process with full reorthogonalisation (so `max_iter` is the largest Krylov
+    /// dimension, but never below `2k + 1`) from a fixed pseudo-random start
+    /// vector, stopping early once the `k` wanted pairs pass the residual test.
+    /// The Ritz pairs come from the eigen-decomposition of the symmetric
+    /// tridiagonal matrix `T_m` (implicit QL), `x = V_m y`.  When the Krylov space
+    /// becomes invariant the process restarts from a fresh orthogonal vector (and
+    /// then runs through the whole step budget), which is how repeated eigenvalues
+    /// are found; before that, one Ritz value stands for all copies of a multiple
+    /// eigenvalue.
+    ///
+    /// The eigenvalues are returned in ascending order and `eigenvectors[i]` is
+    /// the unit Ritz vector of `eigenvalues[i]`.  `converged` is `true` only if
+    /// `k` pairs were found and each satisfies the *true* residual test
+    /// `||A v - lambda v|| <= tol` (an absolute tolerance); `iterations` counts
+    /// the Lanczos steps (matrix-vector products).  `a` must be symmetric; a
+    /// non-square matrix yields an empty, non-converged result.
     pub fn lanczos(a: &SparseCSR, k: usize, max_iter: usize, tol: f64) -> EigenResult {
-        let n = a.nrows;
-        let m = k.min(n).min(max_iter);
-        let mut alphas = Vec::with_capacity(m);
-        let mut betas: Vec<f64> = vec![0.0];
-        let mut q_prev = vec![0.0f64; n];
-        let mut q_curr = vec![1.0f64; n];
-        let nrm = norm2(&q_curr);
-        q_curr.iter_mut().for_each(|x| *x /= nrm);
-        let mut q_vecs = vec![q_curr.clone()];
-        for j in 0..m {
-            let mut z = a.matvec(&q_curr);
-            let alpha = dot(&q_curr, &z);
-            alphas.push(alpha);
-            axpy(-alpha, &q_curr, &mut z);
-            axpy(-betas[j], &q_prev, &mut z);
-            let beta = norm2(&z);
-            if beta < tol {
-                break;
-            }
-            betas.push(beta);
-            q_prev = q_curr;
-            q_curr = vec_scale(1.0 / beta, &z);
-            q_vecs.push(q_curr.clone());
-        }
-        let eigenvalues = Self::tridiag_eigenvalues(&alphas, &betas[1..]);
-        EigenResult {
-            eigenvalues,
-            eigenvectors: q_vecs.into_iter().take(k).collect(),
-            iterations: alphas.len(),
-            converged: true,
-        }
+        super::krylov_eigen::lanczos(a, k, max_iter, tol)
     }
-    /// LOBPCG — Locally Optimal Block Preconditioned Conjugate Gradient.
+    /// LOBPCG: Locally Optimal Block Preconditioned Conjugate Gradient (Knyazev).
     ///
-    /// Finds the `k` smallest eigenvalues of a symmetric positive-definite matrix.
+    /// Finds the `k` smallest eigenvalues of a symmetric matrix (positive
+    /// definite or not) with Jacobi preconditioning.  Every iteration performs a
+    /// Rayleigh-Ritz projection onto `span{X, W, P}` -- the current Ritz vectors,
+    /// the preconditioned residuals and the previous search directions -- and keeps
+    /// the smallest Ritz pairs.  A block slightly larger than `k` is used
+    /// internally to speed up convergence; exactly `k` pairs are returned, in
+    /// ascending order of eigenvalue.
+    ///
+    /// Iteration stops when `||A x_i - lambda_i x_i|| <= tol * max(1, |lambda_i|)`
+    /// for all `k` wanted pairs (checked on freshly computed residuals) or after
+    /// `max_iter` iterations, in which case `converged` is `false`.  Very small
+    /// problems (where the search space would span the whole space) are solved by
+    /// a dense symmetric eigen-decomposition instead.
     pub fn lobpcg(a: &SparseCSR, k: usize, tol: f64, max_iter: usize) -> EigenResult {
-        let n = a.nrows;
-        let k = k.min(n);
-        let mut x: Vec<Vec<f64>> = (0..k)
-            .map(|i| {
-                let mut v = vec![0.0f64; n];
-                v[i % n] = 1.0;
-                v
-            })
-            .collect();
-        Self::orthonormalise(&mut x);
-        let mut lambdas = vec![0.0f64; k];
-        for iter in 0..max_iter {
-            let ax: Vec<Vec<f64>> = x.iter().map(|xi| a.matvec(xi)).collect();
-            let mut new_lambdas = vec![0.0f64; k];
-            for i in 0..k {
-                new_lambdas[i] = dot(&x[i], &ax[i]);
-            }
-            let diff: f64 = new_lambdas
-                .iter()
-                .zip(&lambdas)
-                .map(|(a, b)| (a - b).abs())
-                .sum::<f64>()
-                / k as f64;
-            lambdas = new_lambdas;
-            if diff < tol && iter > 0 {
-                return EigenResult {
-                    eigenvalues: lambdas,
-                    eigenvectors: x,
-                    iterations: iter + 1,
-                    converged: true,
-                };
-            }
-            for i in 0..k {
-                let r: Vec<f64> = (0..n).map(|j| ax[i][j] - lambdas[i] * x[i][j]).collect();
-                axpy(-0.1, &r, &mut x[i]);
-            }
-            Self::orthonormalise(&mut x);
-        }
-        EigenResult {
-            eigenvalues: lambdas,
-            eigenvectors: x,
-            iterations: max_iter,
-            converged: false,
-        }
+        super::lobpcg::lobpcg(a, k, tol, max_iter)
     }
-    fn orthonormalise(vecs: &mut [Vec<f64>]) {
-        let k = vecs.len();
-        for i in 0..k {
-            for j in 0..i {
-                let proj = dot(&vecs[i], &vecs[j]);
-                let vj = vecs[j].clone();
-                axpy(-proj, &vj, &mut vecs[i]);
-            }
-            let nrm = norm2(&vecs[i]);
-            if nrm > 1e-300 {
-                vecs[i].iter_mut().for_each(|x| *x /= nrm);
-            }
-        }
-    }
-    /// Extract the eigenvalues of an upper-Hessenberg matrix via the shifted QR
-    /// (Francis) algorithm with deflation.
+    /// Real parts of the eigenvalues of an upper-Hessenberg matrix, sorted
+    /// ascending.
     ///
-    /// The matrix `h` is stored row-major (`n × n`).  The iteration drives the
-    /// sub-diagonal to zero block by block, deflating a real eigenvalue whenever
-    /// a 1×1 block isolates, and a (possibly complex) conjugate pair whenever a
-    /// 2×2 trailing block isolates.  A Wilkinson shift accelerates convergence;
-    /// for general non-symmetric blocks a Rayleigh-quotient (trailing-diagonal)
-    /// shift is used.  The returned vector holds the **real parts** of the
-    /// eigenvalues (the `Vec<f64>` Ritz-value interface cannot carry imaginary
-    /// parts), sorted ascending — for symmetric inputs these are the exact
-    /// eigenvalues.
+    /// The matrix `h` is stored row-major (`n × n`).  This is
+    /// [`hessenberg_eigenvalues_complex`](Self::hessenberg_eigenvalues_complex)
+    /// with the imaginary parts dropped: for symmetric inputs these are the exact
+    /// eigenvalues, and a complex-conjugate pair contributes its real part twice
+    /// (the `Vec<f64>` Ritz-value interface cannot carry imaginary parts).
     pub(crate) fn hessenberg_eigenvalues(h: &[f64], n: usize) -> Vec<f64> {
-        if n == 0 {
-            return Vec::new();
-        }
-        if n == 1 {
-            return vec![h[0]];
-        }
-        // Dense mutable working copy.
-        let mut a: Vec<Vec<f64>> = (0..n)
-            .map(|i| (0..n).map(|j| h[i * n + j]).collect())
+        let mut real_parts: Vec<f64> = Self::hessenberg_eigenvalues_complex(h, n)
+            .into_iter()
+            .map(|(re, _)| re)
             .collect();
-
-        let mut eigs: Vec<f64> = Vec::with_capacity(n);
-        let mut hi = n; // active block is rows/cols 0..hi (exclusive)
-        let eps = f64::EPSILON;
-        let max_total_iter = 30 * n;
-        let mut iter = 0usize;
-
-        while hi > 0 {
-            if hi == 1 {
-                eigs.push(a[0][0]);
-                break;
-            }
-
-            // Look for a negligible sub-diagonal to deflate the active block.
-            // Scan from the bottom of the active block upward.
-            let mut l = hi - 1;
-            while l > 0 {
-                let s = a[l - 1][l - 1].abs() + a[l][l].abs();
-                let s = if s == 0.0 { 1.0 } else { s };
-                if a[l][l - 1].abs() <= eps * s {
-                    a[l][l - 1] = 0.0;
-                    break;
-                }
-                l -= 1;
-            }
-
-            if l == hi - 1 {
-                // 1×1 block converged: real eigenvalue.
-                eigs.push(a[hi - 1][hi - 1]);
-                hi -= 1;
-                continue;
-            }
-            if l == hi - 2 {
-                // 2×2 trailing block converged: solve its characteristic poly.
-                let (r0, r1) = eig_2x2_real_parts(
-                    a[hi - 2][hi - 2],
-                    a[hi - 2][hi - 1],
-                    a[hi - 1][hi - 2],
-                    a[hi - 1][hi - 1],
-                );
-                eigs.push(r0);
-                eigs.push(r1);
-                hi -= 2;
-                continue;
-            }
-
-            if iter >= max_total_iter {
-                // Non-convergence safeguard: emit the current diagonal of the
-                // unresolved block as the best available real estimate rather
-                // than spin forever.  (Still a genuine Rayleigh estimate, not a
-                // fabricated constant.)
-                for (d, row) in a.iter().enumerate().take(hi) {
-                    eigs.push(row[d]);
-                }
-                break;
-            }
-            iter += 1;
-
-            // Wilkinson shift from the trailing 2×2 block on [l, hi).
-            let shift = wilkinson_shift(
-                a[hi - 2][hi - 2],
-                a[hi - 2][hi - 1],
-                a[hi - 1][hi - 2],
-                a[hi - 1][hi - 1],
-            );
-            // Subtract the shift from the active diagonal of the block [l, hi).
-            for (d, row) in a.iter_mut().enumerate().take(hi).skip(l) {
-                row[d] -= shift;
-            }
-            // One implicit-Q-free shifted QR sweep on the active Hessenberg
-            // block via Givens rotations: A ← R Qᵀ where A = Q R.
-            hessenberg_qr_sweep(&mut a, l, hi);
-            // Add the shift back.
-            for (d, row) in a.iter_mut().enumerate().take(hi).skip(l) {
-                row[d] += shift;
-            }
-        }
-
-        eigs.sort_by(|x, y| x.total_cmp(y));
-        eigs
+        real_parts.sort_by(|x, y| x.total_cmp(y));
+        real_parts
     }
-    fn tridiag_eigenvalues(alpha: &[f64], beta: &[f64]) -> Vec<f64> {
-        let m = alpha.len();
-        let mut evals = alpha.to_vec();
-        for _ in 0..100 {
-            for i in 0..m.saturating_sub(1) {
-                if i < beta.len() {
-                    let b = beta[i];
-                    let diff = evals[i + 1] - evals[i];
-                    if diff.abs() < 1e-12 {
-                        continue;
-                    }
-                    let theta = 0.5 * diff / b;
-                    let t = 1.0 / (theta.abs() + (1.0 + theta * theta).sqrt());
-                    let t = if theta < 0.0 { -t } else { t };
-                    let c = 1.0 / (1.0 + t * t).sqrt();
-                    let s = t * c;
-                    let tau = s / (1.0 + c);
-                    evals[i] -= t * b;
-                    evals[i + 1] += t * b;
-                    let _ = (s, tau, c);
-                }
-            }
-        }
-        evals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        evals
+    /// Eigenvalues of a real upper-Hessenberg matrix as `(re, im)` pairs.
+    ///
+    /// The matrix `h` is stored row-major (`n × n`).  Uses the Francis
+    /// double-shift QR algorithm (EISPACK `hqr`): the implicit double shift
+    /// converges to complex-conjugate pairs without complex arithmetic, converged
+    /// 1×1 and 2×2 blocks are deflated, and exceptional shifts break cycles.  The
+    /// result is sorted by real part and then imaginary part; real eigenvalues
+    /// have `im == 0`, a conjugate pair appears as `(re, -im)` followed by
+    /// `(re, +im)`.
+    pub(crate) fn hessenberg_eigenvalues_complex(h: &[f64], n: usize) -> Vec<(f64, f64)> {
+        super::hessenberg_qr::francis_eigenvalues(h, n)
     }
-}
-
-/// Real parts of the two eigenvalues of the 2×2 matrix `[[a, b], [c, d]]`.
-///
-/// For a real conjugate pair (negative discriminant) both real parts equal the
-/// half-trace `(a + d) / 2`.
-fn eig_2x2_real_parts(a: f64, b: f64, c: f64, d: f64) -> (f64, f64) {
-    let tr = a + d;
-    let det = a * d - b * c;
-    let disc = tr * tr - 4.0 * det;
-    if disc >= 0.0 {
-        let s = disc.sqrt();
-        (0.5 * (tr + s), 0.5 * (tr - s))
-    } else {
-        let re = 0.5 * tr;
-        (re, re)
-    }
-}
-
-/// Wilkinson shift for the trailing 2×2 block `[[a, b], [c, d]]`: the eigenvalue
-/// of that block closest to `d` (the bottom-right entry).  Falls back to `d`
-/// when the block has a complex pair.
-fn wilkinson_shift(a: f64, b: f64, c: f64, d: f64) -> f64 {
-    let tr = a + d;
-    let det = a * d - b * c;
-    let disc = tr * tr - 4.0 * det;
-    if disc >= 0.0 {
-        let s = disc.sqrt();
-        let l1 = 0.5 * (tr + s);
-        let l2 = 0.5 * (tr - s);
-        if (l1 - d).abs() <= (l2 - d).abs() {
-            l1
-        } else {
-            l2
-        }
-    } else {
-        d
-    }
-}
-
-/// Perform one shifted-QR sweep on the active upper-Hessenberg block
-/// `a[lo..hi][lo..hi]` using a sequence of Givens rotations.
-///
-/// Computes `A = Q R` by rotating away each sub-diagonal entry (forming `R`),
-/// then applies the accumulated rotations on the right (`R Qᵀ`) so the product
-/// remains upper-Hessenberg.  Operates in place on the full dense matrix `a`,
-/// touching only the active rows/columns.
-fn hessenberg_qr_sweep(a: &mut [Vec<f64>], lo: usize, hi: usize) {
-    if hi <= lo + 1 {
-        return;
-    }
-    let n = a.len();
-    let mut cs = vec![0.0_f64; hi];
-    let mut sn = vec![0.0_f64; hi];
-
-    // --- Form R by zeroing sub-diagonals with Givens rotations (left side). ---
-    for k in lo..hi - 1 {
-        let x = a[k][k];
-        let y = a[k + 1][k];
-        let r = x.hypot(y);
-        let (c, s) = if r == 0.0 { (1.0, 0.0) } else { (x / r, y / r) };
-        cs[k] = c;
-        sn[k] = s;
-        // Apply rotation to rows k and k+1 across the active columns.  Borrow
-        // both rows disjointly so the two are updated together.
-        let (head, tail) = a.split_at_mut(k + 1);
-        let row_k = &mut head[k];
-        let row_k1 = &mut tail[0];
-        for (rk, rk1) in row_k[k..hi].iter_mut().zip(row_k1[k..hi].iter_mut()) {
-            let t1 = *rk;
-            let t2 = *rk1;
-            *rk = c * t1 + s * t2;
-            *rk1 = -s * t1 + c * t2;
-        }
-    }
-
-    // --- Apply rotations on the right (columns) to complete R Qᵀ. ---
-    for k in lo..hi - 1 {
-        let c = cs[k];
-        let s = sn[k];
-        // Rows that can have non-zeros in columns k, k+1 after the left pass:
-        // up to and including row k+1 (Hessenberg structure is preserved).
-        let row_end = (k + 2).min(n);
-        for row in a.iter_mut().take(row_end) {
-            let t1 = row[k];
-            let t2 = row[k + 1];
-            row[k] = c * t1 + s * t2;
-            row[k + 1] = -s * t1 + c * t2;
-        }
+    /// Eigenvalues of the symmetric tridiagonal matrix with diagonal `alpha` and
+    /// off-diagonal `beta`, in ascending order.
+    ///
+    /// `beta[i]` couples rows `i` and `i + 1`, so only the first
+    /// `alpha.len() - 1` entries are used (a Lanczos run may supply one more);
+    /// missing entries count as zero.  Uses the implicit QL algorithm with
+    /// Wilkinson shifts in `O(m²)`; for `alpha = [2, 2, 2]`, `beta = [-1, -1]` it
+    /// returns `[2 - √2, 2, 2 + √2]`.
+    pub fn tridiag_eigenvalues(alpha: &[f64], beta: &[f64]) -> Vec<f64> {
+        crate::numerical_methods::symmetric_tridiagonal_eigenvalues(alpha, beta)
     }
 }
 
@@ -846,10 +600,18 @@ impl IterativeSolver {
             converged: res < tol,
         }
     }
-    /// TFQMR — Transpose-Free Quasi-Minimal Residual method.
+    /// TFQMR — Transpose-Free Quasi-Minimal Residual method (Freund 1993; Saad,
+    /// *Iterative Methods for Sparse Linear Systems*, Algorithm 7.8).
     ///
-    /// A transpose-free variant of QMR that avoids the explicit transpose
-    /// matvec while providing quasi-minimal residuals.
+    /// A transpose-free variant of QMR for general square systems that needs two
+    /// matrix-vector products per iteration and no products with `Aᵀ`.  The
+    /// quasi-residual bound `‖r_m‖ ≤ √(m+1)·τ_m` triggers the convergence test,
+    /// but the solver only reports `converged = true` after confirming that the
+    /// *true* residual `‖b − A x‖` is below `tol`; `residual` is always the true
+    /// residual of the returned `x`.  `iterations` counts full iterations (pairs
+    /// of half-steps).  A breakdown (a vanishing inner product with the shadow
+    /// residual) ends the run with the current iterate and `converged` reflecting
+    /// its true residual.
     pub fn tfqmr(
         a: &SparseCSR,
         b: &[f64],
@@ -860,58 +622,86 @@ impl IterativeSolver {
         let n = b.len();
         let mut x = x0.map(|v| v.to_vec()).unwrap_or_else(|| vec![0.0; n]);
         let r0 = vec_sub(b, &a.matvec(&x));
+        let initial_residual = norm2(&r0);
+        if initial_residual < tol {
+            return SolverResult {
+                x,
+                residual: initial_residual,
+                iterations: 0,
+                converged: true,
+            };
+        }
         let r_tilde = r0.clone();
-        let mut u = r0.clone();
+        let r_tilde_norm = initial_residual;
         let mut w = r0.clone();
+        let mut u = r0;
+        let mut au = a.matvec(&u);
+        let mut v = au.clone();
         let mut d = vec![0.0f64; n];
-        let mut v_tfq = a.matvec(&u);
-        let mut rho = dot(&r_tilde, &r0);
-        let mut tau = norm2(&r0);
+        let mut rho = dot(&r_tilde, &w);
+        let mut tau = initial_residual;
         let mut theta = 0.0f64;
-        let mut eta: f64;
-        let mut sigma;
-        let mut alpha_t;
+        let mut eta = 0.0f64;
+        let mut iterations = 0usize;
         for iter in 0..max_iter {
-            sigma = dot(&r_tilde, &v_tfq);
-            if sigma.abs() < 1e-300 {
+            let sigma = dot(&r_tilde, &v);
+            if sigma.abs() <= 1e-30 * r_tilde_norm * norm2(&v) {
                 break;
             }
-            alpha_t = rho / sigma;
-            for m in 0..2usize {
-                w = vec_sub(&w, &vec_scale(alpha_t, &v_tfq));
-                if m == 1 {
-                    u = vec_sub(&u, &vec_scale(alpha_t, &v_tfq));
-                }
-                let w_norm = norm2(&w);
-                let theta_new = w_norm / tau;
-                let c = 1.0_f64 / (1.0_f64 + theta_new * theta_new).sqrt();
-                tau *= theta_new * c;
-                eta = c * c * alpha_t;
-                d = vec_add(&u, &vec_scale(theta * theta * eta / alpha_t, &d));
+            iterations = iter + 1;
+            let alpha = rho / sigma;
+            let u_odd = vec_sub(&u, &vec_scale(alpha, &v));
+            let au_odd = a.matvec(&u_odd);
+            let mut finished = false;
+            for half in 0..2usize {
+                let (u_half, au_half) = if half == 0 {
+                    (&u, &au)
+                } else {
+                    (&u_odd, &au_odd)
+                };
+                axpy(-alpha, au_half, &mut w);
+                // d ← u + (θ² η / α) d, with the θ and η of the previous half-step.
+                let coefficient = theta * theta * eta / alpha;
+                d = vec_add(u_half, &vec_scale(coefficient, &d));
+                theta = norm2(&w) / tau;
+                let c = 1.0_f64 / (1.0_f64 + theta * theta).sqrt();
+                tau *= theta * c;
+                eta = c * c * alpha;
                 axpy(eta, &d, &mut x);
-                theta = theta_new;
-                if tau * (2.0 * (iter * 2 + m + 1) as f64 + 1.0).sqrt() < tol {
-                    let res = norm2(&vec_sub(b, &a.matvec(&x)));
-                    return SolverResult {
-                        x,
-                        residual: res,
-                        iterations: iter + 1,
-                        converged: true,
-                    };
+                let m = 2 * iter + half + 1;
+                if tau * ((m + 1) as f64).sqrt() < tol {
+                    let true_residual = norm2(&vec_sub(b, &a.matvec(&x)));
+                    if true_residual < tol {
+                        finished = true;
+                        break;
+                    }
                 }
             }
-            let rho_new = dot(&r_tilde, &w);
-            let beta = rho_new / rho;
-            rho = rho_new;
-            u = vec_add(&w, &vec_scale(beta, &u));
-            v_tfq = a.matvec(&u);
+            if finished {
+                break;
+            }
+            if rho.abs() <= 1e-300 {
+                break;
+            }
+            let rho_next = dot(&r_tilde, &w);
+            let beta = rho_next / rho;
+            rho = rho_next;
+            u = vec_add(&w, &vec_scale(beta, &u_odd));
+            let au_next = a.matvec(&u);
+            // v ← A u + β (A u_odd + β v), using the previous v.
+            let inner = vec_add(&au_odd, &vec_scale(beta, &v));
+            v = vec_add(&au_next, &vec_scale(beta, &inner));
+            au = au_next;
+            if !(tau.is_finite() && rho.is_finite()) {
+                break;
+            }
         }
-        let res = norm2(&vec_sub(b, &a.matvec(&x)));
+        let residual = norm2(&vec_sub(b, &a.matvec(&x)));
         SolverResult {
             x,
-            residual: res,
-            iterations: max_iter,
-            converged: res < tol,
+            residual,
+            iterations,
+            converged: residual < tol,
         }
     }
 }
@@ -1263,22 +1053,16 @@ impl MatrixFunctions {
     /// Uses the scaling-and-squaring algorithm with a \[13/13\] Padé approximant,
     /// the same approach used in MATLAB's `expm`.
     pub fn expm(a: &[f64], n: usize) -> Vec<f64> {
-        let pade_coefs: [f64; 14] = [
-            1.0,
-            0.5,
-            0.12,
-            1.833333333333333e-2,
-            1.992063492063492e-3,
-            1.630434782608696e-4,
-            1.035_196_687_370_6e-5,
-            5.175983436853003e-7,
-            2.043_151_770_816_96e-8,
-            6.306659613335318e-10,
-            1.483027285835861e-11,
-            2.529153491597966e-13,
-            2.810170546428514e-15,
-            1.544188477920441e-17,
-        ];
+        // Coefficients of the [13/13] Padé approximant of exp,
+        // c_k = (26 - k)! 13! / (26! k! (13 - k)!), generated by the exact ratio
+        // c_k / c_(k-1) = (14 - k) / (k (27 - k)).  (A hand-typed table used to
+        // carry wrong digits in c_4, c_8, c_9, c_10, c_12 and c_13, which limited
+        // exp(I) to about 7 correct digits.)
+        let mut pade_coefs = [0.0f64; 14];
+        pade_coefs[0] = 1.0;
+        for k in 1..14 {
+            pade_coefs[k] = pade_coefs[k - 1] * (14 - k) as f64 / (k * (27 - k)) as f64;
+        }
         let norm_a = Self::matrix_one_norm(a, n);
         let s = (norm_a / 0.5).log2().ceil().max(0.0) as u32;
         let scale = 1.0f64 / (1u64 << s) as f64;
@@ -1301,32 +1085,14 @@ impl MatrixFunctions {
     }
     /// Compute the matrix logarithm log(A) via inverse scaling and squaring.
     ///
-    /// Uses the Padé approximant-based method. A must be positive definite.
+    /// `a` is stored row-major (`n × n`) and must have no eigenvalues on the
+    /// closed negative real axis (for example, be symmetric positive definite).
+    /// The matrix is brought close to the identity with repeated square roots
+    /// ([`sqrtm`](Self::sqrtm)) until `‖A^(1/2^k) − I‖₁ ≤ 0.25`, `log(I + X)` is
+    /// evaluated with the order-7 diagonal Padé approximant (Gauss-Legendre
+    /// partial fractions, Higham), and the result is scaled back by `2^k`.
     pub fn logm(a: &[f64], n: usize) -> Vec<f64> {
-        let mut a_cur = a.to_vec();
-        let id = Self::eye(n);
-        let mut k = 0u32;
-        for _ in 0..16 {
-            let diff = Self::mat_sub(&a_cur, &id, n);
-            if Self::matrix_one_norm(&diff, n) < 0.5 {
-                break;
-            }
-            a_cur = Self::sqrtm(&a_cur, n);
-            k += 1;
-        }
-        let x = Self::mat_sub(&a_cur, &id, n);
-        let x2 = Self::matmul(&x, &x, n);
-        let x3 = Self::matmul(&x2, &x, n);
-        let nu: Vec<f64> = (0..n * n)
-            .map(|i| x[i] * (1.0 / 2.0) + x2[i] * (3.0 / 20.0) + x3[i] * (1.0 / 60.0))
-            .collect();
-        let de: Vec<f64> = (0..n * n)
-            .map(|i| id[i] + x[i] * (3.0 / 4.0) + x2[i] * (3.0 / 10.0) + x3[i] * (1.0 / 20.0))
-            .collect();
-        let inv_de = Self::inv_dense(&de, n);
-        let log_a_scaled = Self::matmul(&inv_de, &nu, n);
-        let factor = (1u64 << k) as f64;
-        log_a_scaled.iter().map(|v| v * factor).collect()
+        super::matrix_log::logm_dense(a, n)
     }
     /// Compute the matrix square root via the product form of the Denman-Beavers iteration.
     pub fn sqrtm(a: &[f64], n: usize) -> Vec<f64> {

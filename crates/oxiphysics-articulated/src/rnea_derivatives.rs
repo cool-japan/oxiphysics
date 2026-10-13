@@ -35,6 +35,11 @@ use crate::{
 ///
 /// Both matrices are `n×n` row-major where `n = model.total_dof()`:
 /// `dtau_dq[i][j] = ∂τ_i/∂q_j` and `dtau_dqd[i][j] = ∂τ_i/∂q̇_j`.
+///
+/// For joints whose configuration is not Euclidean (quaternion-parameterised
+/// spherical / free-floating joints, `nq ≠ nv`), `∂τ/∂q` is taken with respect
+/// to the tangent-space displacement `δ` of [`ArticulatedModel::integrate`]
+/// (`q(δ) = q ⊕ δ`), so it is always `nv × nv`.
 #[derive(Debug, Clone)]
 pub struct RneaDerivatives {
     /// ∂τ/∂q  (n×n, row index = torque component, col index = q component).
@@ -52,7 +57,8 @@ pub struct RneaDerivatives {
 /// to central finite differences (which remain accurate to O(h²)).
 ///
 /// # Panics
-/// Panics if `q`, `q_dot`, or `q_ddot` are not of length `model.total_dof()`.
+/// Panics if `q` is not of length `model.total_nq()`, or `q_dot` / `q_ddot`
+/// are not of length `model.total_dof()`.
 pub fn rnea_derivatives(
     model: &ArticulatedModel,
     q: &[f64],
@@ -61,10 +67,10 @@ pub fn rnea_derivatives(
 ) -> RneaDerivatives {
     assert_eq!(
         q.len(),
-        model.total_dof(),
+        model.total_nq(),
         "q length mismatch: got {}, expected {}",
         q.len(),
-        model.total_dof()
+        model.total_nq()
     );
     assert_eq!(q_dot.len(), model.total_dof(), "q_dot length mismatch");
     assert_eq!(q_ddot.len(), model.total_dof(), "q_ddot length mismatch");
@@ -81,7 +87,8 @@ pub fn rnea_derivatives(
 /// Returns `true` only for chains where the analytic derivative propagation has
 /// been verified against central finite differences to `1e-6`: every body must
 /// be driven by a single-DoF, constant-subspace joint (revolute, prismatic, or
-/// helical), i.e. `model.dof_count(i) == 1` for all `i`. Multi-DoF joints
+/// helical), i.e. `model.dof_count(i) == 1` and `model.nq_count(i) == 1` for
+/// all `i`. Multi-DoF joints
 /// (universal, spherical, free-floating) have configuration-dependent motion
 /// subspaces and are routed to the finite-difference fallback.
 ///
@@ -92,7 +99,7 @@ pub fn analytic_supported(model: &ArticulatedModel) -> bool {
     if n == 0 {
         return false;
     }
-    (0..n).all(|i| model.dof_count(i) == 1)
+    (0..n).all(|i| model.dof_count(i) == 1 && model.nq_count(i) == 1)
 }
 
 /// Central finite-difference derivatives of RNEA (∂τ/∂q, ∂τ/∂q̇), step `h`.
@@ -100,8 +107,13 @@ pub fn analytic_supported(model: &ArticulatedModel) -> bool {
 /// Correct to O(h²); used as the fallback for joint structures the analytic
 /// recursion does not yet cover, and as the ground truth in tests.
 ///
+/// Configuration perturbations are taken in the tangent space,
+/// `q ⊕ (±h·e_j)` via [`ArticulatedModel::integrate`], so quaternion joints
+/// stay on their manifold and the result is `nv × nv`.
+///
 /// # Panics
-/// Panics if `q`, `q_dot`, or `q_ddot` are not of length `model.total_dof()`.
+/// Panics if `q` is not of length `model.total_nq()`, or `q_dot` / `q_ddot`
+/// are not of length `model.total_dof()`.
 pub fn rnea_derivatives_fd_h(
     model: &ArticulatedModel,
     q: &[f64],
@@ -110,7 +122,7 @@ pub fn rnea_derivatives_fd_h(
     h: f64,
 ) -> RneaDerivatives {
     let n = model.total_dof();
-    assert_eq!(q.len(), n, "q length mismatch");
+    assert_eq!(q.len(), model.total_nq(), "q length mismatch");
     assert_eq!(q_dot.len(), n, "q_dot length mismatch");
     assert_eq!(q_ddot.len(), n, "q_ddot length mismatch");
 
@@ -119,15 +131,15 @@ pub fn rnea_derivatives_fd_h(
 
     let inv_2h = 1.0 / (2.0 * h);
 
-    // ∂τ/∂q: perturb each q[j].
-    let mut q_pert = q.to_vec();
+    // ∂τ/∂q: perturb along each tangent direction e_j.
+    let mut delta = vec![0.0f64; n];
     for j in 0..n {
-        let original = q_pert[j];
-        q_pert[j] = original + h;
-        let tau_plus = rnea(model, &q_pert, q_dot, q_ddot);
-        q_pert[j] = original - h;
-        let tau_minus = rnea(model, &q_pert, q_dot, q_ddot);
-        q_pert[j] = original;
+        delta[j] = 1.0;
+        let q_plus = model.integrate(q, &delta, h);
+        let q_minus = model.integrate(q, &delta, -h);
+        delta[j] = 0.0;
+        let tau_plus = rnea(model, &q_plus, q_dot, q_ddot);
+        let tau_minus = rnea(model, &q_minus, q_dot, q_ddot);
         for i in 0..n {
             dtau_dq[i][j] = (tau_plus[i] - tau_minus[i]) * inv_2h;
         }
@@ -156,7 +168,8 @@ pub fn rnea_derivatives_fd_h(
 /// accuracy and usage notes.
 ///
 /// # Panics
-/// Panics if `q`, `q_dot`, or `q_ddot` are not of length `model.total_dof()`.
+/// Panics if `q` is not of length `model.total_nq()`, or `q_dot` / `q_ddot`
+/// are not of length `model.total_dof()`.
 pub fn rnea_derivatives_fd(
     model: &ArticulatedModel,
     q: &[f64],
@@ -281,7 +294,7 @@ fn compose_tangent(x_t: &SpatialTransform, dx_j: &TransformTangent) -> Transform
 /// transform (`dx`) and the motion vector (`dv`).
 ///
 /// Differentiates the exact `apply_velocity` formula
-/// `[R·ω ; R·(v_lin − trans×ω)]` by the product rule, so the result matches
+/// `[Rᵀ·ω ; Rᵀ·(v_lin − trans×ω)]` by the product rule, so the result matches
 /// central finite differences of `apply_velocity` to machine precision.
 fn d_apply_velocity(
     x: &SpatialTransform,
@@ -289,11 +302,10 @@ fn d_apply_velocity(
     v: &SpatialVec,
     dv: &SpatialVec,
 ) -> SpatialVec {
-    // d(R·ω) = dR·ω + R·dω.
-    let d_ang = add3(
-        &mat3_vec(&dx.drot, &v.angular),
-        &mat3_vec(&x.rot, &dv.angular),
-    );
+    let rt = mat3_transpose(&x.rot);
+    let drt = mat3_transpose(&dx.drot);
+    // d(Rᵀ·ω) = dRᵀ·ω + Rᵀ·dω.
+    let d_ang = add3(&mat3_vec(&drt, &v.angular), &mat3_vec(&rt, &dv.angular));
     // inner = v_lin − trans×ω ; d(inner) = dv_lin − (dtrans×ω + trans×dω).
     let r_cross = cross3(&x.trans, &v.angular);
     let inner = sub3(&v.linear, &r_cross);
@@ -302,8 +314,8 @@ fn d_apply_velocity(
         &cross3(&x.trans, &dv.angular),
     );
     let d_inner = sub3(&dv.linear, &d_r_cross);
-    // d(R·inner) = dR·inner + R·d(inner).
-    let d_lin = add3(&mat3_vec(&dx.drot, &inner), &mat3_vec(&x.rot, &d_inner));
+    // d(Rᵀ·inner) = dRᵀ·inner + Rᵀ·d(inner).
+    let d_lin = add3(&mat3_vec(&drt, &inner), &mat3_vec(&rt, &d_inner));
     SpatialVec::new(d_ang, d_lin)
 }
 
@@ -311,7 +323,7 @@ fn d_apply_velocity(
 /// (`dx`) and the force vector (`df`).
 ///
 /// Differentiates the exact `apply_force` formula
-/// `[Rᵀ·n + trans×(Rᵀ·f_lin) ; Rᵀ·f_lin]` by the product rule, so it matches
+/// `[R·n + trans×(R·f_lin) ; R·f_lin]` by the product rule, so it matches
 /// central finite differences of `apply_force` to machine precision.
 fn d_apply_force(
     x: &SpatialTransform,
@@ -319,13 +331,17 @@ fn d_apply_force(
     f: &SpatialVec,
     df: &SpatialVec,
 ) -> SpatialVec {
-    let rt = mat3_transpose(&x.rot);
-    let drt = mat3_transpose(&dx.drot);
-    // f_parent = Rᵀ·f_lin ; d(f_parent) = dRᵀ·f_lin + Rᵀ·df_lin.
-    let f_parent = mat3_vec(&rt, &f.linear);
-    let d_f_parent = add3(&mat3_vec(&drt, &f.linear), &mat3_vec(&rt, &df.linear));
-    // n_rot = Rᵀ·n ; d(n_rot) = dRᵀ·n + Rᵀ·dn.
-    let d_n_rot = add3(&mat3_vec(&drt, &f.angular), &mat3_vec(&rt, &df.angular));
+    // f_parent = R·f_lin ; d(f_parent) = dR·f_lin + R·df_lin.
+    let f_parent = mat3_vec(&x.rot, &f.linear);
+    let d_f_parent = add3(
+        &mat3_vec(&dx.drot, &f.linear),
+        &mat3_vec(&x.rot, &df.linear),
+    );
+    // n_rot = R·n ; d(n_rot) = dR·n + R·dn.
+    let d_n_rot = add3(
+        &mat3_vec(&dx.drot, &f.angular),
+        &mat3_vec(&x.rot, &df.angular),
+    );
     // r_cross = trans×f_parent ; d = dtrans×f_parent + trans×d(f_parent).
     let d_r_cross = add3(
         &cross3(&dx.dtrans, &f_parent),
@@ -371,7 +387,7 @@ fn rnea_derivatives_analytic(
     // Nominal RNEA quantities.
     let mut v = vec![SpatialVec::ZERO; n]; // body spatial velocity
     let mut a = vec![SpatialVec::ZERO; n]; // body spatial acceleration
-    let mut x_total = vec![SpatialTransform::IDENTITY; n]; // parent→child motion transform
+    let mut x_total = vec![SpatialTransform::IDENTITY; n]; // pose of body i in its parent
     let mut dx_total = vec![TransformTangent::ZERO; n]; // ∂x_full/∂q_i (own coordinate)
     let mut s_axis = vec![SpatialVec::ZERO; n]; // single subspace column (child frame)
 

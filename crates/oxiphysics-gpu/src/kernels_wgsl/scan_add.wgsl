@@ -19,12 +19,15 @@ struct Params {
 fn add_block_offsets(
     @builtin(global_invocation_id) gid_vec: vec3<u32>,
     @builtin(workgroup_id) wg_vec: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
-    let gid = gid_vec.x;
-    let wg_id = wg_vec.x;
+    // A dispatch wider than one dimension allows is folded into y (see
+    // `dispatch_count_for`): linearise the invocation index.
+    let gid = gid_vec.x + gid_vec.y * nwg.x * 256u;
+    let wg_id = wg_vec.x + wg_vec.y * nwg.x;
     let n = params.n;
-    let offset_val = block_offsets[wg_id];
-    if (gid < n) {
-        output[gid] = output[gid] + offset_val;
+    if (gid >= n) {
+        return;
     }
+    output[gid] = output[gid] + block_offsets[wg_id];
 }

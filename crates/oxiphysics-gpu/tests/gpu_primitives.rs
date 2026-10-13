@@ -148,4 +148,56 @@ mod gpu_tests {
         let all_one = vec![1u32; 100];
         assert_eq!(gpu_primitives::compact_u32(&vals, &all_one), vals);
     }
+
+    #[test]
+    fn test_compact_treats_every_nonzero_flag_as_keep() {
+        let _backend = skip_if_no_gpu!();
+        let n = 4096usize;
+        let values: Vec<u32> = (0..n as u32).collect();
+        // Flags other than 1 must keep the element exactly like the CPU reference.
+        let keep: Vec<u32> = (0..n)
+            .map(|i| match i % 5 {
+                0 => 2,
+                1 => 0,
+                2 => 7,
+                3 => u32::MAX,
+                _ => 1,
+            })
+            .collect();
+        let expected: Vec<u32> = values
+            .iter()
+            .zip(keep.iter())
+            .filter(|&(_, &k)| k != 0)
+            .map(|(&v, _)| v)
+            .collect();
+        assert_eq!(gpu_primitives::compact_u32(&values, &keep), expected);
+    }
+
+    #[test]
+    fn test_concurrent_callers_get_correct_results() {
+        let _backend = skip_if_no_gpu!();
+        let workers: Vec<_> = (0..4usize)
+            .map(|t| {
+                std::thread::spawn(move || {
+                    for round in 0..4usize {
+                        let n = 1000 + 313 * t + 41 * round;
+                        let data: Vec<u32> = (0..n).map(|i| ((i * (t + 3)) % 11) as u32).collect();
+                        assert_eq!(
+                            gpu_primitives::exclusive_scan_u32(&data),
+                            cpu_exclusive_scan(&data),
+                            "scan thread {t} round {round}"
+                        );
+                        let bins = gpu_primitives::histogram_u32(&data, 11);
+                        assert_eq!(bins.iter().map(|&c| c as usize).sum::<usize>(), n);
+                        let floats: Vec<f32> = data.iter().map(|&v| v as f32).collect();
+                        let expected_max = data.iter().copied().max().unwrap_or(0) as f32;
+                        assert_eq!(gpu_primitives::reduce_max_f32(&floats), expected_max);
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().expect("worker thread panicked");
+        }
+    }
 }

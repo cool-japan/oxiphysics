@@ -8,6 +8,8 @@
 //! 2-D GJK, ray-cast GJK, time-of-impact via bilateral advancement, and feature
 //! pair generation.
 
+use crate::gjk_epa::simplex_closest::closest_point_to_origin;
+
 // ---------------------------------------------------------------------------
 // Vector math helpers
 // ---------------------------------------------------------------------------
@@ -451,25 +453,28 @@ impl ExpandingPolytope {
             .map(|(i, _)| i)
             .collect();
 
-        // Collect boundary edges of visible faces (edges shared by exactly one visible face)
-        let mut edges: Vec<[usize; 2]> = Vec::new();
+        // The horizon is the boundary of the visible region: the edges used by
+        // exactly one visible face. Edges are keyed by their unordered vertex
+        // pair, so the winding of a face does not matter (`add_face` orients the
+        // normal of every new face itself). An edge used by two visible faces is
+        // interior to the visible region and disappears with it. A sorted map
+        // keeps the order of the new faces deterministic.
+        let mut edge_uses: std::collections::BTreeMap<(usize, usize), (usize, [usize; 2])> =
+            std::collections::BTreeMap::new();
         for &fi in &visible {
             let f = &self.faces[fi];
             for k in 0..3 {
-                let e = [f.indices[k], f.indices[(k + 1) % 3]];
-                // Check if reverse edge exists
-                let rev_count = visible
-                    .iter()
-                    .filter(|&&fj| {
-                        let fj_f = &self.faces[fj];
-                        fj_f.indices.contains(&e[1]) && fj_f.indices.contains(&e[0])
-                    })
-                    .count();
-                if rev_count == 0 {
-                    edges.push(e);
-                }
+                let a = f.indices[k];
+                let b = f.indices[(k + 1) % 3];
+                let entry = edge_uses.entry((a.min(b), a.max(b))).or_insert((0, [a, b]));
+                entry.0 += 1;
             }
         }
+        let edges: Vec<[usize; 2]> = edge_uses
+            .into_values()
+            .filter(|&(uses, _)| uses == 1)
+            .map(|(_, edge)| edge)
+            .collect();
 
         // Remove visible faces (in reverse order to preserve indices)
         let mut sorted_visible = visible.clone();
@@ -687,11 +692,16 @@ impl GjkSolver {
 // 2-D GJK
 // ---------------------------------------------------------------------------
 
+/// Closest points nearer to the origin than this fraction of the simplex extent
+/// count as touching (distance zero) in [`Gjk2D::distance`].
+const TOUCH_TOLERANCE: f64 = 1e-12;
+
 /// 2-D GJK for polygon-polygon distance.
 pub struct Gjk2D {
     /// Maximum iterations.
     pub max_iter: usize,
-    /// Tolerance.
+    /// Relative tolerance of the termination test: the iteration stops once
+    /// the distance is known to within this fraction of itself.
     pub tol: f64,
 }
 
@@ -713,38 +723,63 @@ impl Gjk2D {
     }
 
     /// Compute the minimum distance between two 2-D convex polygons.
+    ///
+    /// Runs the Gilbert-Johnson-Keerthi distance iteration on the Minkowski
+    /// difference `A - B` of the polygon vertex sets. Each iteration finds the
+    /// point `v` of the current simplex (at most three points) nearest to the
+    /// origin, drops the simplex vertices that do not support it, and fetches the
+    /// support point `w` of `A - B` in direction `-v`. The iteration stops when
+    /// `w` cannot improve on `v`, i.e. `|v|^2 - v.w <= tol |v|^2`, which bounds
+    /// the relative error of `|v|` by `tol`, or when `w` repeats a simplex vertex.
+    ///
+    /// Returns `0.0` when the polygons overlap or touch (the simplex encloses the
+    /// origin) and `f64::MAX` if either polygon has no vertices. If `max_iter`
+    /// is exhausted first, the distance of the best simplex found so far is
+    /// returned; it is an upper bound on the true distance and never `0.0` unless
+    /// the polygons really touch. At least one iteration is always performed.
     pub fn distance(&self, poly_a: &[[f64; 2]], poly_b: &[[f64; 2]]) -> f64 {
         if poly_a.is_empty() || poly_b.is_empty() {
             return f64::MAX;
         }
-        let mut dir = [1.0_f64, 0.0_f64];
-        let mut simplex: Vec<[f64; 2]> = Vec::new();
-
-        let sa = Self::support_2d(poly_a, dir);
-        let sb = Self::support_2d(poly_b, [-dir[0], -dir[1]]);
-        let v = [sa[0] - sb[0], sa[1] - sb[1]];
-        simplex.push(v);
-        dir = [-v[0], -v[1]];
-
-        for _ in 0..self.max_iter {
+        // Support point of A - B, embedded in the z = 0 plane so that the 3-D
+        // simplex solver applies unchanged (a triangle that contains the origin
+        // then has the origin itself as its nearest point).
+        let support = |dir: [f64; 2]| -> [f64; 3] {
             let sa = Self::support_2d(poly_a, dir);
             let sb = Self::support_2d(poly_b, [-dir[0], -dir[1]]);
-            let w = [sa[0] - sb[0], sa[1] - sb[1]];
-            let dot = w[0] * dir[0] + w[1] * dir[1];
-            if dot < 1e-8 {
-                // Find closest point to origin on simplex
-                return simplex
-                    .iter()
-                    .map(|p| (p[0] * p[0] + p[1] * p[1]).sqrt())
-                    .fold(f64::MAX, f64::min);
+            [sa[0] - sb[0], sa[1] - sb[1], 0.0]
+        };
+
+        let mut simplex: Vec<[f64; 3]> = Vec::with_capacity(3);
+        simplex.push(support([1.0, 0.0]));
+        let mut v_len = f64::MAX;
+
+        for _ in 0..self.max_iter.max(1) {
+            let closest = closest_point_to_origin(&simplex);
+            let v = closest.point;
+            let v_sq = dot3(v, v);
+            let extent_sq = simplex.iter().map(|w| dot3(*w, *w)).fold(0.0_f64, f64::max);
+            if v_sq <= TOUCH_TOLERANCE * TOUCH_TOLERANCE * extent_sq {
+                return 0.0;
+            }
+            v_len = v_sq.sqrt();
+
+            // Keep only the vertices that support the closest point.
+            let mut index = 0;
+            simplex.retain(|_| {
+                let keep = closest.weights.get(index).is_some_and(|w| *w > 0.0);
+                index += 1;
+                keep
+            });
+
+            let w = support([-v[0], -v[1]]);
+            let gap = v_sq - dot3(v, w);
+            if gap <= self.tol * v_sq || simplex.contains(&w) {
+                return v_len;
             }
             simplex.push(w);
-            // Reduce 2D simplex
-            if simplex.len() > 3 {
-                simplex.truncate(3);
-            }
         }
-        0.0
+        v_len
     }
 }
 
@@ -777,50 +812,113 @@ impl GjkRaycast {
         GjkRaycast { max_iter, tol }
     }
 
-    /// Cast ray from `origin` in `dir` against convex shape with support function.
+    /// Cast a ray from `origin` along `dir` against the convex shape described by
+    /// its support function.
     ///
-    /// `max_t` maximum ray parameter.
+    /// `support(d)` must return the point of the shape furthest along `d`, in the
+    /// same coordinate frame as the ray. `dir` need not be normalised; `t` and
+    /// `max_t` are measured as distances along the normalised direction.
+    ///
+    /// This is the GJK ray cast of van den Bergen ("Ray casting against general
+    /// convex objects with application to continuous collision detection",
+    /// 2004). The ray point `x` starts at the origin and advances along the ray
+    /// to the supporting planes of the shape: with `v = x - c` for a point `c`
+    /// of the shape and `p = support(v)`, `v . (x - p) > 0` means `x` is outside
+    /// the supporting plane at `p`, so the ray advances to that plane (or misses
+    /// when it moves away from it or passes `max_t`). The support points are
+    /// kept as a simplex, `v` becomes the point of `conv(x - P)` nearest to the
+    /// origin, and the cast hits once `|v| <= tol`, i.e. `x` lies in the shape.
+    ///
+    /// Returns `t = Some(distance)` with the hit `point` and the outward surface
+    /// `normal` at the hit (the direction of the last supporting plane the ray
+    /// point was moved onto: exact for polytopes, accurate to about `sqrt(tol)`
+    /// for curved shapes). A ray that starts inside or on the shape hits at
+    /// `t = 0` and no surface was crossed, so the normal is the negated ray
+    /// direction. The cast reports a miss if `max_iter` iterations are not
+    /// enough to bring `|v|` below `tol`, if the ray points away from the
+    /// shape, or if the hit lies beyond `max_t`.
     pub fn cast<F>(&self, origin: [f64; 3], dir: [f64; 3], max_t: f64, support: F) -> RaycastResult
     where
         F: Fn([f64; 3]) -> [f64; 3],
     {
-        let dir_n = norm3(dir);
-        let mut t = 0.0;
+        let miss = RaycastResult {
+            t: None,
+            point: [0.0; 3],
+            normal: [0.0; 3],
+        };
+        let length = len3(dir);
+        if !length.is_finite() || length <= 0.0 || max_t.is_nan() || max_t < 0.0 {
+            return miss;
+        }
+        let ray = scale3(dir, 1.0 / length);
+        let tol_sq = self.tol * self.tol;
+
+        let mut lambda = 0.0_f64;
         let mut x = origin;
-        let mut n = [0.0; 3];
+        let mut hit_normal = [0.0; 3];
+        // Support points of the shape; the simplex is `x - P`, which moves with `x`.
+        let mut points: Vec<[f64; 3]> = Vec::with_capacity(4);
+        // Any point of the shape seeds the search vector.
+        let mut v = sub3(x, support(ray));
 
         for _ in 0..self.max_iter {
-            let p = support(neg3(dir_n));
-            let d = dot3(sub3(p, x), dir_n);
-            if d < 0.0 {
-                t += -d / dot3(dir_n, dir_n).max(1e-300);
-                if t > max_t {
-                    return RaycastResult {
-                        t: None,
-                        point: [0.0; 3],
-                        normal: [0.0; 3],
-                    };
-                }
-                x = add3(origin, scale3(dir_n, t));
-                n = neg3(dir_n);
-            } else {
+            let v_sq = dot3(v, v);
+            if v_sq <= tol_sq {
                 break;
             }
+            let p = support(scale3(v, 1.0 / v_sq.sqrt()));
+            let w = sub3(x, p);
+            let v_dot_w = dot3(v, w);
+            if v_dot_w > 0.0 {
+                // `x` is outside the supporting plane at `p`.
+                let v_dot_r = dot3(v, ray);
+                if v_dot_r >= 0.0 {
+                    return miss;
+                }
+                lambda -= v_dot_w / v_dot_r;
+                if lambda > max_t {
+                    return miss;
+                }
+                x = add3(origin, scale3(ray, lambda));
+                hit_normal = v;
+            }
+            // A repeated support point adds no information (and is not a sign of
+            // convergence: the ray point may just have moved onto its plane).
+            if !points.contains(&p) {
+                points.push(p);
+            }
+            let count = points.len().min(4);
+            let mut simplex = [[0.0_f64; 3]; 4];
+            for (slot, q) in simplex.iter_mut().zip(points.iter()) {
+                *slot = sub3(x, *q);
+            }
+            let closest = closest_point_to_origin(&simplex[..count]);
+            if closest.encloses_origin {
+                // The ray point lies inside conv(P), hence inside the shape.
+                v = [0.0; 3];
+                break;
+            }
+            v = closest.point;
+            let mut index = 0;
+            points.retain(|_| {
+                let keep = closest.weights.get(index).is_some_and(|w| *w > 0.0);
+                index += 1;
+                keep
+            });
         }
 
-        let hit = len3(sub3(support([0.0, 0.0, 1.0]), x)) < self.tol * 10.0;
-        if hit {
-            RaycastResult {
-                t: Some(t),
-                point: x,
-                normal: n,
-            }
+        if dot3(v, v) > tol_sq {
+            return miss;
+        }
+        let normal = if dot3(hit_normal, hit_normal) > 0.0 {
+            norm3(hit_normal)
         } else {
-            RaycastResult {
-                t: None,
-                point: [0.0; 3],
-                normal: [0.0; 3],
-            }
+            neg3(ray)
+        };
+        RaycastResult {
+            t: Some(lambda),
+            point: x,
+            normal,
         }
     }
 }
@@ -1117,23 +1215,6 @@ mod tests {
     }
 
     #[test]
-    fn test_gjk_2d_distance_separated() {
-        let poly_a = vec![[-2.0_f64, 0.0], [-1.0, 0.0], [-1.0, 1.0], [-2.0, 1.0]];
-        let poly_b = vec![[1.0_f64, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0]];
-        let gjk2d = Gjk2D::new(64, 1e-8);
-        let d = gjk2d.distance(&poly_a, &poly_b);
-        assert!(d > 0.0, "d={}", d);
-    }
-
-    #[test]
-    fn test_gjk_raycast_does_not_panic() {
-        let rc = GjkRaycast::new(64, 1e-6);
-        let support = |_d: [f64; 3]| [0.0_f64, 0.0, 0.0];
-        let result = rc.cast([10.0, 0.0, 0.0], [-1.0, 0.0, 0.0], 20.0, support);
-        let _ = result;
-    }
-
-    #[test]
     fn test_toi_gjk_no_panic() {
         let toi = GjkTimeOfImpact::new(32, 1e-6);
         let support = |_d: [f64; 3], _t: f64| ([1.0_f64, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0_f64; 3]);
@@ -1160,20 +1241,6 @@ mod tests {
     }
 
     #[test]
-    fn test_epa_expander_no_panic() {
-        let mut s = SimplexManager::new();
-        s.add([1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0; 3]);
-        s.add([-1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.0; 3]);
-        s.add([0.0, 1.0, 0.0], [0.0, 1.0, 0.0], [0.0; 3]);
-        s.add([0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0; 3]);
-        let mut ep = ExpandingPolytope::from_simplex(&s);
-        let expander = EpaExpander::new(32, 1e-6);
-        let support = |d: [f64; 3]| (scale3(norm3(d), 1.0), norm3(d), [0.0; 3]);
-        let result = expander.expand(&mut ep, support);
-        assert!(result.depth >= 0.0);
-    }
-
-    #[test]
     fn test_simplex_manager_prune() {
         let mut s = SimplexManager::new();
         for i in 0..6 {
@@ -1183,3 +1250,6 @@ mod tests {
         assert!(s.size() <= 4);
     }
 }
+
+#[cfg(test)]
+mod regression_tests;

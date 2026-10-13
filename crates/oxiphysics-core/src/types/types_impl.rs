@@ -355,6 +355,33 @@ impl Aabb {
             max: transform.position + half,
         }
     }
+    /// Bound this box after it has been placed in the world by `transform`.
+    ///
+    /// The box is rotated about the origin of its own frame and then translated,
+    /// exactly like [`Transform::transform_point`] maps points. The result is the
+    /// tightest axis-aligned box that contains the transformed box: its centre is
+    /// the transformed centre `R * c + p` and its half-extents are
+    /// `h'_i = sum_j |R_ij| * h_j`.
+    ///
+    /// Unlike [`Aabb::oriented_box_aabb`] the box does not have to be centred on
+    /// the origin of its frame, so this is the correct way to turn the *local*
+    /// bounding box of a shape into a world-space broad-phase box.
+    pub fn transformed(&self, transform: &Transform) -> Aabb {
+        let centre = self.center();
+        let half = self.half_extents();
+        let rot = transform.rotation.to_rotation_matrix();
+        let m = rot.matrix();
+        let world_half = Vec3::new(
+            m[(0, 0)].abs() * half.x + m[(0, 1)].abs() * half.y + m[(0, 2)].abs() * half.z,
+            m[(1, 0)].abs() * half.x + m[(1, 1)].abs() * half.y + m[(1, 2)].abs() * half.z,
+            m[(2, 0)].abs() * half.x + m[(2, 1)].abs() * half.y + m[(2, 2)].abs() * half.z,
+        );
+        let world_centre = transform.transform_point(&centre);
+        Aabb {
+            min: world_centre - world_half,
+            max: world_centre + world_half,
+        }
+    }
     /// Compute the intersection (overlap) AABB of two boxes.
     ///
     /// Returns `None` if the boxes do not overlap.
@@ -858,22 +885,32 @@ pub struct ColliderHandle {
     pub generation: u32,
 }
 impl ColliderHandle {
+    /// The null handle: a sentinel that refers to no collider.
+    ///
+    /// Slot arenas hand out generation `0` for the first occupant of a slot
+    /// and start at index `0`, so `(0, 0)` is a perfectly ordinary handle (the
+    /// very first collider of a world). The sentinel therefore uses the
+    /// largest index and generation, a pair no arena can realistically issue.
+    pub const NULL: Self = Self {
+        index: u32::MAX,
+        generation: u32::MAX,
+    };
     /// Create a new collider handle.
     pub fn new(index: u32, generation: u32) -> Self {
         Self { index, generation }
     }
 }
 impl ColliderHandle {
-    /// Check if this is a valid handle.
+    /// Check if this is a valid (non-null) handle.
+    ///
+    /// Only [`ColliderHandle::NULL`] is invalid. A valid handle may still be
+    /// stale; ask the owning arena whether the collider is alive.
     pub fn is_valid(&self) -> bool {
-        self.generation > 0 || self.index > 0
+        *self != Self::NULL
     }
-    /// Create a null handle.
+    /// Create a null handle (see [`ColliderHandle::NULL`]).
     pub fn null() -> Self {
-        Self {
-            index: 0,
-            generation: 0,
-        }
+        Self::NULL
     }
 }
 /// A 3-D axis-aligned bounding box with richer query helpers.

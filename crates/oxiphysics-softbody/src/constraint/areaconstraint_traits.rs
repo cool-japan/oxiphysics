@@ -53,4 +53,8 @@ impl SoftConstraint for AreaConstraint {
                 grads[k] * (delta_lambda * particles[idxs[k]].inverse_mass);
         }
     }
+
+    fn reset_lambda(&mut self) {
+        Self::reset_lambda(self);
+    }
 }

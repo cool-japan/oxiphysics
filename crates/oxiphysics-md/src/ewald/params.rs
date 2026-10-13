@@ -7,11 +7,13 @@
 // Physical constant
 // ---------------------------------------------------------------------------
 
-/// Coulomb constant in GROMACS-compatible units: kJ*angstrom*mol^-1*e^-2.
+/// Coulomb constant in kJ*angstrom*mol^-1*e^-2 (energy in kJ/mol, distances in
+/// angstrom).  Value: 1389.354576 kJ*angstrom/(mol*e^2).
 ///
-/// Equivalent to k_e / kBT at 300 K scaled so that energy is in kJ/mol
-/// and distances are in angstrom.  Value: 138.935 kJ*angstrom/(mol*e^2).
-pub const COULOMB_K: f64 = 138.935;
+/// Re-exported from the single definition in
+/// [`crate::electrostatics`] so that Ewald, PME and the direct Coulomb
+/// routines all use the same constant.
+pub use crate::electrostatics::COULOMB_K;
 
 // ---------------------------------------------------------------------------
 // erfc approximation (Abramowitz & Stegun 7.1.26)

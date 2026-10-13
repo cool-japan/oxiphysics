@@ -204,10 +204,10 @@ fn test_lambda_correctness() {
 #[test]
 fn test_ltdl_factor_solve_vs_dense_cholesky() {
     // HARD GATE: sparse LᵀDL solve must match the original H·x = b to 1e-10.
-    let mut model = build_branched_humanoid();
+    let model = build_branched_humanoid();
     let n = model.total_dof();
     let q = vec![0.0; n];
-    let h = compute_mass_matrix_crba(&mut model, &q);
+    let h = compute_mass_matrix_crba(&model, &q);
     let lambda = build_lambda(&model);
 
     let fact = SparseMassFactorization::factor(h.clone(), lambda, n)
@@ -233,10 +233,10 @@ fn test_ltdl_factor_solve_vs_dense_cholesky() {
 
 #[test]
 fn test_ltdl_reconstruction() {
-    let mut model = build_branched_humanoid();
+    let model = build_branched_humanoid();
     let n = model.total_dof();
     let q = vec![0.0; n];
-    let h = compute_mass_matrix_crba(&mut model, &q);
+    let h = compute_mass_matrix_crba(&model, &q);
     let lambda = build_lambda(&model);
     let fact = SparseMassFactorization::factor(h.clone(), lambda, n).expect("SPD");
 
@@ -258,10 +258,10 @@ fn test_ltdl_reconstruction() {
 
 #[test]
 fn test_sparsity_no_fill_in() {
-    let mut model = build_branched_humanoid();
+    let model = build_branched_humanoid();
     let n = model.total_dof();
     let q = vec![0.0; n];
-    let h = compute_mass_matrix_crba(&mut model, &q);
+    let h = compute_mass_matrix_crba(&model, &q);
     let lambda = build_lambda(&model);
     let fact = SparseMassFactorization::factor(h, lambda.clone(), n).expect("SPD");
 
@@ -285,10 +285,10 @@ fn test_sparsity_no_fill_in() {
 
 #[test]
 fn test_factor_crba_convenience() {
-    let mut model = build_branched_humanoid();
+    let model = build_branched_humanoid();
     let n = model.total_dof();
     let q = vec![0.0; n];
-    let fact = factor_crba(&mut model, &q).expect("factor_crba must succeed");
+    let fact = factor_crba(&model, &q).expect("factor_crba must succeed");
     assert_eq!(fact.n_dof(), n);
 
     let b = vec![1.0; n];
@@ -302,10 +302,10 @@ fn test_factor_crba_convenience() {
 
 #[test]
 fn test_solve_columns_matches_individual() {
-    let mut model = build_branched_humanoid();
+    let model = build_branched_humanoid();
     let n = model.total_dof();
     let q = vec![0.0; n];
-    let fact = factor_crba(&mut model, &q).expect("factor_crba");
+    let fact = factor_crba(&model, &q).expect("factor_crba");
 
     let cols: Vec<Vec<f64>> = vec![
         (0..n).map(|i| i as f64 + 1.0).collect(),
@@ -358,10 +358,10 @@ fn test_not_positive_definite_errors() {
 fn test_sparse_beats_dense_cholesky_2x() {
     // PERF GATE: sparse LᵀDL must be ≥ 2x faster than dense Cholesky on a real
     // deep + branched tree. Spine(6) + 5 limbs × 6 = 36 revolute DOFs.
-    let mut model = build_perf_tree(6, 5, 6);
+    let model = build_perf_tree(6, 5, 6);
     let n = model.total_dof();
     let q = vec![0.0; n];
-    let h = compute_mass_matrix_crba(&mut model, &q);
+    let h = compute_mass_matrix_crba(&model, &q);
     let lambda = build_lambda(&model);
     let b: Vec<f64> = (0..n).map(|i| (i as f64 + 1.0) * 0.13 + 0.41).collect();
 

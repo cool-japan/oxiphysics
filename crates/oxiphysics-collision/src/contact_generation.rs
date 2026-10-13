@@ -15,6 +15,9 @@
 //! - Contact caching with LRU
 //! - Contact event system (begin/end events)
 
+mod box_box;
+pub use box_box::BoxBoxManifold;
+
 // ---------------------------------------------------------------------------
 // Helper math
 // ---------------------------------------------------------------------------
@@ -374,161 +377,53 @@ impl PolyhedronContact {
         pb: [f64; 3],
         db: [f64; 3],
     ) -> ([f64; 3], [f64; 3], f64) {
+        // Squared edge length (and denominator) below which an edge counts as
+        // a point (or the two edges as parallel).
+        const DEGENERATE: f64 = 1e-14;
+
         let r = sub3(pa, pb);
         let a = dot3(da, da);
         let e = dot3(db, db);
         let f = dot3(db, r);
 
-        if a < 1e-14 && e < 1e-14 {
+        if a < DEGENERATE && e < DEGENERATE {
             return (pa, pb, norm3(r));
         }
 
-        let s;
-        let t;
-        if a < 1e-14 {
-            s = 0.0;
-            t = (f / e).clamp(0.0, 1.0);
+        // Parameters of the closest points, `s` along edge A and `t` along
+        // edge B, both in [0, 1] (Ericson, Real-Time Collision Detection 5.1.9).
+        let (s, t) = if a < DEGENERATE {
+            (0.0, (f / e).clamp(0.0, 1.0))
         } else {
             let c = dot3(da, r);
-            if e < 1e-14 {
-                s = (-c / a).clamp(0.0, 1.0);
-                t = 0.0;
+            if e < DEGENERATE {
+                ((-c / a).clamp(0.0, 1.0), 0.0)
             } else {
                 let b = dot3(da, db);
                 let denom = a * e - b * b;
-                if denom.abs() > 1e-14 {
-                    s = ((b * f - c * e) / denom).clamp(0.0, 1.0);
+                // Closest points of the two infinite lines, clamped to edge A.
+                // Parallel edges have no unique pair: take the middle of A.
+                let s_line = if denom.abs() > DEGENERATE {
+                    ((b * f - c * e) / denom).clamp(0.0, 1.0)
                 } else {
-                    s = 0.5;
+                    0.5
+                };
+                let t_line = (b * s_line + f) / e;
+                if t_line < 0.0 {
+                    // Beyond the start of B: pin t and re-solve s.
+                    ((-c / a).clamp(0.0, 1.0), 0.0)
+                } else if t_line > 1.0 {
+                    // Beyond the end of B: pin t and re-solve s.
+                    (((b - c) / a).clamp(0.0, 1.0), 1.0)
+                } else {
+                    (s_line, t_line)
                 }
-                t = ((b * s + f) / e).clamp(0.0, 1.0);
-                let _ = s;
             }
-            let _ = t;
-        }
-
-        // Recompute s with clamped t
-        let s_final = if a > 1e-14 {
-            let c = dot3(da, r);
-            let b = dot3(da, db);
-            ((b * t - c) / a).clamp(0.0, 1.0)
-        } else {
-            0.0
         };
 
-        let t_final = if e > 1e-14 {
-            let b = dot3(da, db);
-            ((b * s_final + f) / e).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-
-        // Wait, we need the correct values
-        let _ = (s, t);
-
-        let ca = add3(pa, scale3(da, s_final));
-        let cb = add3(pb, scale3(db, t_final));
+        let ca = add3(pa, scale3(da, s));
+        let cb = add3(pb, scale3(db, t));
         (ca, cb, norm3(sub3(ca, cb)))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// BoxBoxManifold
-// ---------------------------------------------------------------------------
-
-/// Specialized box-box contact manifold generator.
-///
-/// Handles all 6 face pairs and 12*12=144 edge-edge pairs via SAT.
-#[derive(Debug, Clone)]
-pub struct BoxBoxManifold {
-    /// Tolerance for contact detection.
-    pub tolerance: f64,
-}
-
-impl BoxBoxManifold {
-    /// Create a new box-box manifold generator.
-    pub fn new(tolerance: f64) -> Self {
-        Self { tolerance }
-    }
-
-    /// Generate box half-extent vertices.
-    fn box_vertices(
-        center: [f64; 3],
-        half_extents: [f64; 3],
-        axes: [[f64; 3]; 3],
-    ) -> Vec<[f64; 3]> {
-        let mut verts = Vec::with_capacity(8);
-        for sx in &[-1.0, 1.0] {
-            for sy in &[-1.0, 1.0] {
-                for sz in &[-1.0, 1.0] {
-                    let v = add3(
-                        center,
-                        add3(
-                            add3(
-                                scale3(axes[0], sx * half_extents[0]),
-                                scale3(axes[1], sy * half_extents[1]),
-                            ),
-                            scale3(axes[2], sz * half_extents[2]),
-                        ),
-                    );
-                    verts.push(v);
-                }
-            }
-        }
-        verts
-    }
-
-    /// Compute box-box contact manifold.
-    ///
-    /// Returns list of contact points, or empty if separated.
-    pub fn compute(
-        &self,
-        center_a: [f64; 3],
-        half_a: [f64; 3],
-        axes_a: [[f64; 3]; 3],
-        center_b: [f64; 3],
-        half_b: [f64; 3],
-        axes_b: [[f64; 3]; 3],
-    ) -> Vec<ContactPoint> {
-        let verts_a = Self::box_vertices(center_a, half_a, axes_a);
-        let verts_b = Self::box_vertices(center_b, half_b, axes_b);
-
-        // Test 6 face axes (3 from each box)
-        let mut min_sep = f64::INFINITY;
-        let mut best_normal = [0.0f64, 1.0, 0.0];
-
-        for &axis in axes_a.iter().chain(axes_b.iter()) {
-            let n = normalize3(axis);
-            let sep = sat_face_axis(n, &verts_a, &verts_b);
-            if sep > self.tolerance {
-                return Vec::new(); // Separated
-            }
-            if sep < min_sep {
-                min_sep = sep;
-                best_normal = n;
-            }
-        }
-
-        // Orient normal from A to B
-        if dot3(sub3(center_b, center_a), best_normal) < 0.0 {
-            best_normal = neg3(best_normal);
-        }
-
-        // Generate contact points at closest vertices of B
-        let ref_d = dot3(center_a, best_normal) + half_a[0] + half_a[1] + half_a[2]; // Approx
-        let mut contacts = Vec::new();
-        for &v in &verts_b {
-            let pen = ref_d - dot3(v, best_normal);
-            if pen > -self.tolerance {
-                let pos_b = v;
-                let pos_a = add3(v, scale3(best_normal, pen));
-                contacts.push(ContactPoint::new(pos_a, pos_b, best_normal, pen.max(0.0)));
-                if contacts.len() >= MAX_MANIFOLD_POINTS {
-                    break;
-                }
-            }
-        }
-        contacts
     }
 }
 
@@ -778,74 +673,105 @@ pub struct ManifoldReduction;
 impl ManifoldReduction {
     /// Reduce contact points to at most 4 points using maximum area criterion.
     ///
-    /// Algorithm:
-    /// 1. Keep point with maximum penetration depth.
-    /// 2. Keep point furthest from point 1.
-    /// 3. Keep point forming max area triangle with 1-2.
-    /// 4. Keep point forming max area with triangle 1-2-3.
+    /// The kept points are those selected by [`ManifoldReduction::reduce_indices`].
     pub fn reduce(points: &[ContactPoint]) -> Vec<ContactPoint> {
+        Self::reduce_indices(points)
+            .into_iter()
+            .filter_map(|i| points.get(i).copied())
+            .collect()
+    }
+
+    /// Indices (into `points`) of the points that [`ManifoldReduction::reduce`]
+    /// keeps, in selection order.
+    ///
+    /// With at most [`MAX_MANIFOLD_POINTS`] input points every index is
+    /// returned in order. Otherwise four distinct points are chosen:
+    /// 1. the point with maximum penetration depth;
+    /// 2. the point furthest from point 1;
+    /// 3. the point furthest from the segment 1-2 (maximum triangle area);
+    /// 4. the point that adds the largest area to triangle 1-2-3, which also
+    ///    works when all points are coplanar (the usual face-face case).
+    ///
+    /// Ties are broken towards the lowest index, so the selection is
+    /// deterministic.
+    pub fn reduce_indices(points: &[ContactPoint]) -> Vec<usize> {
         if points.len() <= MAX_MANIFOLD_POINTS {
-            return points.to_vec();
+            return (0..points.len()).collect();
         }
 
-        let mut result = Vec::with_capacity(MAX_MANIFOLD_POINTS);
+        let mut chosen: Vec<usize> = Vec::with_capacity(MAX_MANIFOLD_POINTS);
 
-        // Step 1: deepest point
-        let p0_idx = points
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| {
-                a.depth
-                    .partial_cmp(&b.depth)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        result.push(points[p0_idx]);
-        let p0 = points[p0_idx].pos_a;
+        // Step 1: deepest point.
+        let mut deepest = 0;
+        let mut deepest_key = Self::score_key(points[0].depth);
+        for (i, point) in points.iter().enumerate().skip(1) {
+            let key = Self::score_key(point.depth);
+            if key > deepest_key {
+                deepest = i;
+                deepest_key = key;
+            }
+        }
+        chosen.push(deepest);
+        let p0 = points[deepest].pos_a;
 
-        // Step 2: furthest from p0
-        let p1_idx = points
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| {
-                norm_sq3(sub3(a.pos_a, p0))
-                    .partial_cmp(&norm_sq3(sub3(b.pos_a, p0)))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        result.push(points[p1_idx]);
-        let p1 = points[p1_idx].pos_a;
+        // Step 2: furthest from p0.
+        let second = Self::best_unchosen(points, &chosen, |p| norm_sq3(sub3(p.pos_a, p0)));
+        chosen.push(second);
+        let p1 = points[second].pos_a;
 
-        // Step 3: max area with p0-p1
-        let p2_idx = points
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| {
-                let da = Self::point_to_line_dist_sq(a.pos_a, p0, p1);
-                let db = Self::point_to_line_dist_sq(b.pos_a, p0, p1);
-                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        result.push(points[p2_idx]);
-        let p2 = points[p2_idx].pos_a;
+        // Step 3: furthest from the segment p0-p1.
+        let third = Self::best_unchosen(points, &chosen, |p| {
+            Self::point_to_line_dist_sq(p.pos_a, p0, p1)
+        });
+        chosen.push(third);
+        let p2 = points[third].pos_a;
 
-        // Step 4: max area with p0-p1-p2
-        let p3_idx = points
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| {
-                let da = Self::point_to_plane_dist_sq(a.pos_a, p0, p1, p2);
-                let db = Self::point_to_plane_dist_sq(b.pos_a, p0, p1, p2);
-                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        result.push(points[p3_idx]);
+        // Step 4: largest total area of the triangles it spans with the edges
+        // of the triangle p0-p1-p2.
+        let fourth = Self::best_unchosen(points, &chosen, |p| {
+            let q = p.pos_a;
+            norm3(cross3(sub3(p1, p0), sub3(q, p0)))
+                + norm3(cross3(sub3(p2, p1), sub3(q, p1)))
+                + norm3(cross3(sub3(p0, p2), sub3(q, p2)))
+        });
+        chosen.push(fourth);
 
-        result
+        chosen
+    }
+
+    /// Comparison key of a selection score: NaN (a point with non-finite
+    /// coordinates) ranks below every number, so it is only picked when
+    /// nothing else is left.
+    fn score_key(value: f64) -> f64 {
+        if value.is_nan() {
+            f64::NEG_INFINITY
+        } else {
+            value
+        }
+    }
+
+    /// Index of the point with the largest `score` among those not yet in
+    /// `chosen` (lowest index wins ties; a NaN score never beats a number).
+    fn best_unchosen(
+        points: &[ContactPoint],
+        chosen: &[usize],
+        score: impl Fn(&ContactPoint) -> f64,
+    ) -> usize {
+        let mut best: Option<(usize, f64)> = None;
+        for (i, point) in points.iter().enumerate() {
+            if chosen.contains(&i) {
+                continue;
+            }
+            let value = Self::score_key(score(point));
+            let better = match best {
+                None => true,
+                Some((_, best_value)) => value > best_value,
+            };
+            if better {
+                best = Some((i, value));
+            }
+        }
+        best.map(|(i, _)| i).unwrap_or(0)
     }
 
     fn point_to_line_dist_sq(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -854,12 +780,6 @@ impl ManifoldReduction {
         let t = dot3(ap, ab) / dot3(ab, ab).max(1e-15);
         let closest = add3(a, scale3(ab, t.clamp(0.0, 1.0)));
         norm_sq3(sub3(p, closest))
-    }
-
-    fn point_to_plane_dist_sq(p: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
-        let n = normalize3(cross3(sub3(b, a), sub3(c, a)));
-        let d = dot3(sub3(p, a), n);
-        d * d
     }
 }
 
@@ -896,6 +816,13 @@ impl PersistentManifold {
     /// Update manifold with new contact points.
     ///
     /// Matches new points to existing points by proximity and transfers warm-start impulses.
+    ///
+    /// A point that is matched again starts a new life (age 0). An existing
+    /// point without a match is kept for at most [`PersistentManifold::max_lifetime`]
+    /// further updates and then dropped, so contacts of bodies that have
+    /// separated expire instead of lingering forever. After reduction to
+    /// [`MAX_MANIFOLD_POINTS`] points, `point_ages[k]` is the age of
+    /// `manifold.points[k]`.
     pub fn update(&mut self, new_points: &[ContactPoint], frame: u64) {
         let threshold_sq = self.match_threshold * self.match_threshold;
         let mut matched = vec![false; new_points.len()];
@@ -903,7 +830,8 @@ impl PersistentManifold {
         let mut new_ages = Vec::new();
 
         // Try to match new points to existing points
-        for (old_pt, &old_age) in self.manifold.points.iter().zip(self.point_ages.iter()) {
+        for (idx, old_pt) in self.manifold.points.iter().enumerate() {
+            let old_age = self.point_ages.get(idx).copied().unwrap_or(0);
             let mut best_idx = None;
             let mut best_dist = f64::MAX;
             for (j, new_pt) in new_points.iter().enumerate() {
@@ -939,10 +867,16 @@ impl PersistentManifold {
             }
         }
 
-        // Reduce to max 4 points
-        let reduced = ManifoldReduction::reduce(&new_manifold_pts);
-        self.point_ages = vec![0; reduced.len()];
-        self.manifold.points = reduced;
+        // Reduce to max 4 points, carrying every kept point's age along.
+        let kept = ManifoldReduction::reduce_indices(&new_manifold_pts);
+        self.manifold.points = kept
+            .iter()
+            .filter_map(|&i| new_manifold_pts.get(i).copied())
+            .collect();
+        self.point_ages = kept
+            .iter()
+            .filter_map(|&i| new_ages.get(i).copied())
+            .collect();
         self.manifold.last_frame = frame;
     }
 
@@ -1405,8 +1339,54 @@ mod tests {
             [0.2, 0.8, -0.1],
         ];
         let contacts = pg.face_face_contact(&ref_face, &inc_face, [0.0, 0.0, 1.0], 0.2);
-        // Should generate some contacts
-        let _ = contacts;
+        // The incident quad lies 0.1 below the reference plane, fully inside
+        // the reference quad: all four corners are contacts of depth 0.1.
+        assert_eq!(contacts.len(), 4, "got {contacts:?}");
+        for (contact, corner) in contacts.iter().zip(inc_face.iter()) {
+            assert_eq!(contact.normal, [0.0, 0.0, 1.0]);
+            assert!((contact.depth - 0.1).abs() < 1e-12, "{}", contact.depth);
+            assert_eq!(contact.pos_b, *corner);
+            assert!(norm3(sub3(contact.pos_a, [corner[0], corner[1], 0.0])) < 1e-12);
+        }
+    }
+
+    #[test]
+    fn test_polyhedron_face_face_contact_clips_and_applies_the_margin() {
+        let square = [
+            [0.0_f64, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let up = [0.0, 0.0, 1.0];
+        let shifted = |dx: f64, z: f64| square.map(|p| [p[0] + dx, p[1], z]);
+
+        // Half of the incident quad hangs over the reference quad: the clipped
+        // polygon is [0.5, 1] x [0, 1].
+        let pg = PolyhedronContact::new(8);
+        let contacts = pg.face_face_contact(&square, &shifted(0.5, -0.1), up, 0.2);
+        assert_eq!(contacts.len(), 4, "got {contacts:?}");
+        for contact in &contacts {
+            assert!(contact.pos_b[0] >= 0.5 - 1e-12 && contact.pos_b[0] <= 1.0 + 1e-12);
+            assert!((contact.depth - 0.1).abs() < 1e-12);
+        }
+
+        // Above the reference plane but inside the margin: kept with a
+        // negative depth; beyond the margin: dropped.
+        let near = pg.face_face_contact(&square, &shifted(0.0, 0.1), up, 0.2);
+        assert_eq!(near.len(), 4);
+        assert!(near.iter().all(|c| (c.depth + 0.1).abs() < 1e-12));
+        assert!(
+            pg.face_face_contact(&square, &shifted(0.0, 0.3), up, 0.2)
+                .is_empty()
+        );
+
+        // The number of contacts is capped, and empty input gives no contact.
+        let capped =
+            PolyhedronContact::new(2).face_face_contact(&square, &shifted(0.0, -0.1), up, 0.2);
+        assert_eq!(capped.len(), 2);
+        assert!(pg.face_face_contact(&[], &square, up, 0.2).is_empty());
+        assert!(pg.face_face_contact(&square, &[], up, 0.2).is_empty());
     }
 
     #[test]
@@ -1417,12 +1397,102 @@ mod tests {
         let pb = [0.5, 0.5, -1.0_f64];
         let db = [0.0, 0.0, 1.0];
         let (ca, cb, dist) = pg.edge_edge_closest(pa, da, pb, db);
-        let _ = (ca, cb);
-        assert!(
-            dist < 1.0,
-            "closest distance should be less than 1: {}",
-            dist
-        );
+        // Edge A runs along x at y = z = 0; edge B ends at (0.5, 0.5, 0): the
+        // closest points are the middle of A and the end point of B.
+        assert!(norm3(sub3(ca, [0.5, 0.0, 0.0])) < 1e-12, "{ca:?}");
+        assert!(norm3(sub3(cb, [0.5, 0.5, 0.0])) < 1e-12, "{cb:?}");
+        assert!((dist - 0.5).abs() < 1e-12, "distance {dist}");
+    }
+
+    /// Distance from `point` to the segment `start + t * dir`, `t` in `[0, 1]`.
+    fn point_segment_distance(point: [f64; 3], start: [f64; 3], dir: [f64; 3]) -> f64 {
+        let length_sq = dot3(dir, dir);
+        let t = if length_sq > 0.0 {
+            (dot3(sub3(point, start), dir) / length_sq).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        norm3(sub3(point, add3(start, scale3(dir, t))))
+    }
+
+    /// Exact distance between two segments: the minimum of a convex quadratic
+    /// over the parameter square is either at its interior critical point or on
+    /// the boundary, and the boundary consists of four point-segment problems.
+    fn exact_segment_distance(pa: [f64; 3], da: [f64; 3], pb: [f64; 3], db: [f64; 3]) -> f64 {
+        let mut best = point_segment_distance(pa, pb, db)
+            .min(point_segment_distance(add3(pa, da), pb, db))
+            .min(point_segment_distance(pb, pa, da))
+            .min(point_segment_distance(add3(pb, db), pa, da));
+        let r = sub3(pa, pb);
+        let (a, b, e) = (dot3(da, da), dot3(da, db), dot3(db, db));
+        let (c, f) = (dot3(da, r), dot3(db, r));
+        let denom = a * e - b * b;
+        if denom > 1e-12 {
+            let s = (b * f - c * e) / denom;
+            let t = (a * f - b * c) / denom;
+            if (0.0..=1.0).contains(&s) && (0.0..=1.0).contains(&t) {
+                let gap = sub3(add3(pa, scale3(da, s)), add3(pb, scale3(db, t)));
+                best = best.min(norm3(gap));
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn test_polyhedron_edge_edge_closest_matches_the_exact_distance() {
+        let pg = PolyhedronContact::new(1);
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        let mut unit = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) as f64 / (1u64 << 31) as f64 * 2.0 - 1.0
+        };
+        let mut vec3 = |scale: f64| [unit() * scale, unit() * scale, unit() * scale];
+        for case in 0..2000 {
+            let pa = vec3(2.0);
+            let pb = vec3(2.0);
+            let da = vec3(2.0);
+            // Every tenth pair is exactly parallel, every tenth pair has
+            // perpendicular edge directions.
+            let db = match case % 10 {
+                0 => scale3(da, 0.7),
+                5 => [da[1], -da[0], 0.0],
+                _ => vec3(2.0),
+            };
+            let (ca, cb, dist) = pg.edge_edge_closest(pa, da, pb, db);
+            let exact = exact_segment_distance(pa, da, pb, db);
+            assert!(
+                (dist - exact).abs() < 1e-9,
+                "case {case}: distance {dist} vs exact {exact}"
+            );
+            assert!((norm3(sub3(ca, cb)) - dist).abs() < 1e-12);
+            // The closest points lie on their segments.
+            assert!(point_segment_distance(ca, pa, da) < 1e-9, "case {case}");
+            assert!(point_segment_distance(cb, pb, db) < 1e-9, "case {case}");
+        }
+    }
+
+    #[test]
+    fn test_polyhedron_edge_edge_closest_degenerate_edges() {
+        let pg = PolyhedronContact::new(1);
+        let origin = [0.0, 0.0, 0.0_f64];
+        let along_x = [2.0, 0.0, 0.0];
+        let point_b = [1.0, 3.0, 0.0];
+        // Edge B is a point: the closest point of A is its projection.
+        let (ca, cb, dist) = pg.edge_edge_closest(origin, along_x, point_b, [0.0; 3]);
+        assert!(norm3(sub3(ca, [1.0, 0.0, 0.0])) < 1e-12);
+        assert_eq!(cb, point_b);
+        assert!((dist - 3.0).abs() < 1e-12);
+        // Edge A is a point.
+        let (ca, cb, dist) = pg.edge_edge_closest(point_b, [0.0; 3], origin, along_x);
+        assert_eq!(ca, point_b);
+        assert!(norm3(sub3(cb, [1.0, 0.0, 0.0])) < 1e-12);
+        assert!((dist - 3.0).abs() < 1e-12);
+        // Both are points.
+        let (ca, cb, dist) = pg.edge_edge_closest(origin, [0.0; 3], point_b, [0.0; 3]);
+        assert_eq!((ca, cb), (origin, point_b));
+        assert!((dist - norm3(point_b)).abs() < 1e-12);
     }
 
     #[test]
@@ -1654,5 +1724,184 @@ mod tests {
         ));
         mf.prune_inactive();
         assert_eq!(mf.num_points(), 1, "negative depth point should be pruned");
+    }
+
+    // -- ManifoldReduction ---------------------------------------------------
+
+    fn point_at(x: f64, y: f64, depth: f64) -> ContactPoint {
+        ContactPoint::new([x, y, 0.0], [x, y, 0.0], [0.0, 0.0, 1.0], depth)
+    }
+
+    #[test]
+    fn test_reduce_indices_identity_under_limit() {
+        let pts: Vec<_> = (0..MAX_MANIFOLD_POINTS)
+            .map(|i| point_at(i as f64, 0.0, 0.1))
+            .collect();
+        assert_eq!(ManifoldReduction::reduce_indices(&pts), vec![0, 1, 2, 3]);
+        assert!(ManifoldReduction::reduce_indices(&[]).is_empty());
+    }
+
+    #[test]
+    fn test_reduce_indices_distinct_for_coplanar_octagon() {
+        // Eight coplanar points of equal depth: the reduction must keep four
+        // distinct points that span a large quadrilateral.
+        let pts: Vec<_> = (0..8)
+            .map(|i| {
+                let angle = std::f64::consts::FRAC_PI_4 * i as f64;
+                point_at(angle.cos(), angle.sin(), 0.05)
+            })
+            .collect();
+        let kept = ManifoldReduction::reduce_indices(&pts);
+        assert_eq!(kept.len(), MAX_MANIFOLD_POINTS);
+        let mut unique = kept.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), MAX_MANIFOLD_POINTS, "duplicates in {kept:?}");
+
+        // Area of the kept quadrilateral (shoelace over the angular order).
+        let mut by_angle: Vec<[f64; 3]> = kept.iter().map(|&i| pts[i].pos_a).collect();
+        by_angle.sort_by(|a, b| {
+            a[1].atan2(a[0])
+                .partial_cmp(&b[1].atan2(b[0]))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut twice_area = 0.0;
+        for k in 0..by_angle.len() {
+            let a = by_angle[k];
+            let b = by_angle[(k + 1) % by_angle.len()];
+            twice_area += a[0] * b[1] - b[0] * a[1];
+        }
+        // The best quadrilateral of a unit-circle octagon is a square: area 2.
+        assert!(
+            twice_area.abs() * 0.5 > 1.9,
+            "kept points span too little area: {}",
+            twice_area.abs() * 0.5
+        );
+    }
+
+    #[test]
+    fn test_reduce_indices_keeps_deepest_and_matches_reduce() {
+        let mut pts: Vec<_> = (0..9)
+            .map(|i| point_at((i % 3) as f64, (i / 3) as f64, 0.01))
+            .collect();
+        pts[4].depth = 0.5;
+        let kept = ManifoldReduction::reduce_indices(&pts);
+        assert_eq!(kept[0], 4, "deepest point is selected first");
+        let reduced = ManifoldReduction::reduce(&pts);
+        assert_eq!(reduced.len(), kept.len());
+        for (point, &i) in reduced.iter().zip(kept.iter()) {
+            assert_eq!(*point, pts[i]);
+        }
+    }
+
+    #[test]
+    fn test_reduce_indices_never_prefers_nan_candidates() {
+        // The first point carries NaN data. As the first candidate of every
+        // selection step it must not stick just because `x > NaN` is false.
+        let mut pts: Vec<_> = (0..8)
+            .map(|i| {
+                let angle = std::f64::consts::FRAC_PI_4 * i as f64;
+                point_at(angle.cos(), angle.sin(), 0.05)
+            })
+            .collect();
+        pts[0].depth = f64::NAN;
+        pts[0].pos_a = [f64::NAN, f64::NAN, 0.0];
+        let kept = ManifoldReduction::reduce_indices(&pts);
+        assert_eq!(kept.len(), MAX_MANIFOLD_POINTS);
+        let mut unique = kept.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), MAX_MANIFOLD_POINTS, "duplicates in {kept:?}");
+        assert!(!kept.contains(&0), "NaN point was kept: {kept:?}");
+        for &i in &kept {
+            assert!(pts[i].pos_a.iter().all(|c| c.is_finite()));
+        }
+    }
+
+    // -- PersistentManifold lifetime ----------------------------------------
+
+    #[test]
+    fn test_persistent_manifold_unmatched_point_expires() {
+        let mut pm = PersistentManifold::new(1, 2, 0.1);
+        assert_eq!(pm.max_lifetime, 5);
+        pm.update(&[point_at(0.0, 0.0, 0.1)], 1);
+        assert_eq!(pm.num_points(), 1);
+        assert_eq!(pm.point_ages, vec![0]);
+
+        // The bodies separate: no new contacts arrive. The ghost point ages
+        // and survives exactly `max_lifetime` further updates.
+        for frame in 2..=6 {
+            pm.update(&[], frame);
+            assert_eq!(pm.num_points(), 1, "still alive at frame {frame}");
+            assert_eq!(pm.point_ages, vec![(frame - 1) as usize]);
+        }
+        pm.update(&[], 7);
+        assert_eq!(pm.num_points(), 0, "ghost contact must expire");
+        assert!(pm.point_ages.is_empty());
+        assert_eq!(pm.manifold.last_frame, 7);
+    }
+
+    #[test]
+    fn test_persistent_manifold_rematched_point_resets_age_and_keeps_impulse() {
+        let mut pm = PersistentManifold::new(1, 2, 0.1);
+        pm.update(&[point_at(0.0, 0.0, 0.1)], 1);
+        pm.manifold.points[0].impulse = 3.5;
+        for frame in 2..=4 {
+            pm.update(&[], frame);
+        }
+        assert_eq!(pm.point_ages, vec![3]);
+
+        // The contact reappears close to where it was.
+        pm.update(&[point_at(0.02, 0.0, 0.2)], 5);
+        assert_eq!(pm.num_points(), 1);
+        assert_eq!(pm.point_ages, vec![0], "re-matched point starts a new life");
+        assert!((pm.warm_start_impulse(0) - 3.5).abs() < 1e-12);
+        assert!((pm.manifold.points[0].depth - 0.2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_persistent_manifold_ages_follow_reduction() {
+        let mut pm = PersistentManifold::new(1, 2, 0.05);
+        // One contact at a corner of the future patch.
+        pm.update(&[point_at(1.0, 1.0, 0.1)], 1);
+        // Five unrelated new contacts arrive (the old one stays unmatched):
+        // six candidates are reduced to four.
+        let fresh = [
+            point_at(-1.0, -1.0, 0.5),
+            point_at(1.0, -1.0, 0.2),
+            point_at(-1.0, 1.0, 0.2),
+            point_at(0.0, 0.0, 0.2),
+            point_at(0.1, 0.2, 0.2),
+        ];
+        pm.update(&fresh, 2);
+        assert_eq!(pm.num_points(), MAX_MANIFOLD_POINTS);
+        assert_eq!(pm.point_ages.len(), MAX_MANIFOLD_POINTS);
+        for (point, &age) in pm.manifold.points.iter().zip(pm.point_ages.iter()) {
+            let is_old_corner = point.pos_a == [1.0, 1.0, 0.0];
+            assert_eq!(
+                age,
+                if is_old_corner { 1 } else { 0 },
+                "wrong age for point at {:?}",
+                point.pos_a
+            );
+        }
+        assert!(
+            pm.manifold
+                .points
+                .iter()
+                .any(|p| p.pos_a == [1.0, 1.0, 0.0]),
+            "the extreme old corner must survive the reduction"
+        );
+    }
+
+    #[test]
+    fn test_persistent_manifold_tolerates_missing_ages() {
+        // Points added directly to the public manifold without an age entry
+        // must not silently disappear on the next update.
+        let mut pm = PersistentManifold::new(1, 2, 0.1);
+        pm.manifold.add_point(point_at(0.0, 0.0, 0.1));
+        pm.update(&[], 1);
+        assert_eq!(pm.num_points(), 1);
+        assert_eq!(pm.point_ages, vec![1]);
     }
 }

@@ -318,7 +318,9 @@ pub fn compute_angle_forces(
         let delta = theta - angle.theta0;
         total_energy += 0.5 * angle.k_theta * delta * delta;
         let sin_theta = (1.0 - cos_theta * cos_theta).sqrt().max(1e-12);
-        let d_prefactor = -angle.k_theta * delta / sin_theta;
+        // F_i = -dV/dr_i = -k·δ·dθ/dr_i and dθ/dcosθ = -1/sinθ, hence
+        // F_i = +(k·δ / sinθ) · dcosθ/dr_i (restoring for either sign of δ).
+        let d_prefactor = angle.k_theta * delta / sin_theta;
         for dim in 0..3 {
             let d_cos_d_ri =
                 rjk[dim] / (len_ji * len_jk) - cos_theta * rji[dim] / (len_ji * len_ji);
@@ -1069,6 +1071,176 @@ mod tests {
         assert_eq!(outputs[1].len(), 1, "energies should have 1 element");
         for &f in &outputs[0] {
             assert!(f.is_finite(), "angle force not finite: {f}");
+        }
+    }
+    /// Harmonic-angle energy of a single angle (used for finite differences).
+    fn single_angle_energy(positions: &[[f64; 3]], angle: &HarmonicAngle) -> f64 {
+        compute_angle_forces(positions, std::slice::from_ref(angle)).1
+    }
+    /// Central-difference force `-dE/dr` for every coordinate of every atom.
+    fn numeric_angle_forces(
+        positions: &[[f64; 3]],
+        angle: &HarmonicAngle,
+        step: f64,
+    ) -> Vec<[f64; 3]> {
+        let mut out = vec![[0.0f64; 3]; positions.len()];
+        for (atom, force) in out.iter_mut().enumerate() {
+            for (dim, component) in force.iter_mut().enumerate() {
+                let mut plus = positions.to_vec();
+                let mut minus = positions.to_vec();
+                plus[atom][dim] += step;
+                minus[atom][dim] -= step;
+                *component = -(single_angle_energy(&plus, angle)
+                    - single_angle_energy(&minus, angle))
+                    / (2.0 * step);
+            }
+        }
+        out
+    }
+    /// Angle (radians) at vertex `j` between atoms `i` and `k`.
+    fn vertex_angle(positions: &[[f64; 3]], i: usize, j: usize, k: usize) -> f64 {
+        let a = [
+            positions[i][0] - positions[j][0],
+            positions[i][1] - positions[j][1],
+            positions[i][2] - positions[j][2],
+        ];
+        let b = [
+            positions[k][0] - positions[j][0],
+            positions[k][1] - positions[j][1],
+            positions[k][2] - positions[j][2],
+        ];
+        let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let la = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+        let lb = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt();
+        (dot / (la * lb)).clamp(-1.0, 1.0).acos()
+    }
+    /// Assert analytic forces equal the central-difference gradient of the energy
+    /// and that the net force vanishes.
+    fn assert_angle_forces_match_finite_difference(positions: &[[f64; 3]], angle: HarmonicAngle) {
+        let (forces, _) = compute_angle_forces(positions, &[angle]);
+        let numeric = numeric_angle_forces(positions, &angle, 1e-6);
+        for (atom, (analytic, reference)) in forces.iter().zip(numeric.iter()).enumerate() {
+            for (dim, (&a, &r)) in analytic.iter().zip(reference.iter()).enumerate() {
+                // Relative tolerance 1e-5 with a small absolute floor for the
+                // components that are exactly zero.
+                let tol = 1e-5 * r.abs() + 1e-7;
+                assert!(
+                    (a - r).abs() <= tol,
+                    "atom {atom} dim {dim}: analytic {a} vs finite-difference {r}"
+                );
+            }
+        }
+        let net = forces.iter().fold([0.0f64; 3], |acc, f| {
+            [acc[0] + f[0], acc[1] + f[1], acc[2] + f[2]]
+        });
+        for (dim, component) in net.iter().enumerate() {
+            assert!(
+                component.abs() < 1e-9,
+                "net force along {dim} should vanish, got {component}"
+            );
+        }
+    }
+    #[test]
+    fn test_angle_force_matches_finite_difference_wide_angle() {
+        // theta0 = 90 deg, theta = 100 deg (angle too wide, delta > 0).
+        let theta = 100.0_f64.to_radians();
+        let positions = vec![
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [1.3 * theta.cos(), 1.3 * theta.sin(), 0.0],
+        ];
+        let angle = HarmonicAngle::new(0, 1, 2, 100.0, std::f64::consts::FRAC_PI_2);
+        assert!((vertex_angle(&positions, 0, 1, 2) - theta).abs() < 1e-12);
+        assert_angle_forces_match_finite_difference(&positions, angle);
+    }
+    #[test]
+    fn test_angle_force_matches_finite_difference_narrow_angle() {
+        // theta0 = 120 deg, theta ~ 70 deg (angle too narrow, delta < 0), 3-D placement.
+        let positions = vec![[1.2, 0.35, -0.4], [0.3, -0.2, 0.5], [0.1, 0.9, 0.2]];
+        let angle = HarmonicAngle::new(0, 1, 2, 37.5, 120.0_f64.to_radians());
+        let theta = vertex_angle(&positions, 0, 1, 2);
+        assert!(theta < 120.0_f64.to_radians(), "setup must have delta < 0");
+        assert_angle_forces_match_finite_difference(&positions, angle);
+    }
+    #[test]
+    fn test_angle_force_is_restoring() {
+        // Following the force for a small step must move the angle towards theta0
+        // and lower the energy, for both a too-wide and a too-narrow angle.
+        for &(theta_deg, theta0_deg) in &[(100.0_f64, 90.0_f64), (70.0, 90.0), (130.0, 109.5)] {
+            let theta = theta_deg.to_radians();
+            let positions = vec![
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [theta.cos(), theta.sin(), 0.0],
+            ];
+            let angle = HarmonicAngle::new(0, 1, 2, 80.0, theta0_deg.to_radians());
+            let (forces, e0) = compute_angle_forces(&positions, &[angle]);
+            let step = 1e-4;
+            let moved: Vec<[f64; 3]> = positions
+                .iter()
+                .zip(forces.iter())
+                .map(|(p, f)| [p[0] + step * f[0], p[1] + step * f[1], p[2] + step * f[2]])
+                .collect();
+            let e1 = single_angle_energy(&moved, &angle);
+            assert!(
+                e1 < e0,
+                "energy must decrease along the force (theta={theta_deg}, theta0={theta0_deg}): {e0} -> {e1}"
+            );
+            let theta_after = vertex_angle(&moved, 0, 1, 2);
+            assert!(
+                (theta_after - theta0_deg.to_radians()).abs()
+                    < (theta - theta0_deg.to_radians()).abs(),
+                "angle must move towards theta0 (theta={theta_deg}, theta0={theta0_deg})"
+            );
+        }
+    }
+    #[test]
+    fn test_angle_force_kernel_matches_reference_forces() {
+        let theta = 100.0_f64.to_radians();
+        let positions = vec![
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [theta.cos(), theta.sin(), 0.0],
+        ];
+        let theta0 = std::f64::consts::FRAC_PI_2;
+        let (ref_forces, ref_energy) =
+            compute_angle_forces(&positions, &[HarmonicAngle::new(0, 1, 2, 100.0, theta0)]);
+        let flat: Vec<f64> = positions.iter().flat_map(|p| p.iter().copied()).collect();
+        let angle_data = vec![0.0, 1.0, 2.0, 100.0, theta0];
+        let mut outputs = vec![Vec::new(), Vec::new()];
+        AngleForceKernel.execute(&[&flat, &angle_data], &mut outputs, 3);
+        for (atom, f) in ref_forces.iter().enumerate() {
+            for (dim, &expected) in f.iter().enumerate() {
+                assert!(
+                    (outputs[0][atom * 3 + dim] - expected).abs() < 1e-12,
+                    "kernel force mismatch at atom {atom} dim {dim}"
+                );
+            }
+        }
+        assert!((outputs[1][0] - ref_energy).abs() < 1e-12);
+        // The kernel force on atom 0 must pull it towards atom 2 (+y), reducing the angle.
+        assert!(
+            outputs[0][1] > 0.0,
+            "restoring force on atom i should point towards k"
+        );
+        // Central-difference check of the kernel's own energy output.
+        let step = 1e-6;
+        let energy_at = |pos: &[f64]| {
+            let mut out = vec![Vec::new(), Vec::new()];
+            AngleForceKernel.execute(&[pos, &angle_data], &mut out, 3);
+            out[1][0]
+        };
+        for (idx, &actual) in outputs[0].iter().enumerate().take(flat.len()) {
+            let mut plus = flat.clone();
+            let mut minus = flat.clone();
+            plus[idx] += step;
+            minus[idx] -= step;
+            let numeric = -(energy_at(&plus) - energy_at(&minus)) / (2.0 * step);
+            let tol = 1e-5 * numeric.abs() + 1e-7;
+            assert!(
+                (actual - numeric).abs() <= tol,
+                "kernel force component {idx}: {actual} vs finite-difference {numeric}"
+            );
         }
     }
     #[test]

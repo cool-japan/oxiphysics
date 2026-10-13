@@ -6,7 +6,12 @@
 //! Provides `PySphSimulation`: a standalone 3-D weakly compressible SPH (WCSPH)
 //! solver with poly6/spiky kernels, pressure and viscosity forces, configurable
 //! gravity, and query helpers.
+//!
+//! Neighbours are found with the engine's spatial hash
+//! (`oxiphysics::sph::neighbor::SpatialHash3D`), so a step costs `O(N)` rather
+//! than `O(N²)`, and particles may leave any bounding region without cost.
 
+use oxiphysics::sph::neighbor::SpatialHash3D;
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -83,10 +88,48 @@ impl Default for PySphConfig {
 // PySphSimulation
 // ---------------------------------------------------------------------------
 
+/// Neighbour lists in compressed-row form.
+///
+/// The neighbours of particle `i` are `indices[offsets[i]..offsets[i + 1]]`:
+/// every particle within the search radius of `i` **including `i` itself**, in
+/// ascending index order (the order of an all-pairs loop over `j`). The two
+/// vectors are reused from step to step.
+#[derive(Debug, Clone, Default)]
+struct NeighborTable {
+    /// Row boundaries, `offsets.len() == particle count + 1` after a rebuild.
+    offsets: Vec<usize>,
+    /// Concatenated neighbour indices of all rows.
+    indices: Vec<usize>,
+}
+
+impl NeighborTable {
+    /// Rebuild the table for `positions` with search radius `radius`.
+    fn rebuild(&mut self, positions: &[[f64; 3]], radius: f64) {
+        self.offsets.clear();
+        self.indices.clear();
+        let grid = SpatialHash3D::build(positions, radius);
+        self.offsets.push(0);
+        for &pos in positions {
+            let start = self.indices.len();
+            self.indices.extend(grid.find_neighbors(pos));
+            self.indices[start..].sort_unstable();
+            self.offsets.push(self.indices.len());
+        }
+    }
+
+    /// Neighbours of particle `i` (empty if `i` is not part of the table).
+    fn row(&self, i: usize) -> &[usize] {
+        match (self.offsets.get(i), self.offsets.get(i + 1)) {
+            (Some(&start), Some(&end)) => self.indices.get(start..end).unwrap_or(&[]),
+            _ => &[],
+        }
+    }
+}
+
 /// A 3-D weakly-compressible SPH fluid simulation.
 ///
-/// Particles are integrated with forward Euler and use Tait's equation of
-/// state (p = k * (ρ/ρ₀ - 1)) for pressure. Supports an optional flat floor
+/// Particles are integrated with forward Euler and use the linear equation of
+/// state `p = k * (ρ/ρ₀ - 1)` for pressure. Supports an optional flat floor
 /// boundary.
 #[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
@@ -105,6 +148,10 @@ pub struct PySphSimulation {
     time: f64,
     /// Number of steps taken.
     step_count: u64,
+    /// Neighbour table, rebuilt at the start of every step (scratch).
+    neighbors: NeighborTable,
+    /// Per-particle acceleration of the current step (scratch).
+    accelerations: Vec<[f64; 3]>,
 }
 
 #[pymethods]
@@ -120,6 +167,8 @@ impl PySphSimulation {
             config,
             time: 0.0,
             step_count: 0,
+            neighbors: NeighborTable::default(),
+            accelerations: Vec::new(),
         }
     }
 
@@ -232,10 +281,13 @@ impl PySphSimulation {
     ///
     /// Uses WCSPH:
     /// 1. Density via poly6 kernel.
-    /// 2. Pressure from Tait equation.
+    /// 2. Pressure from the linear equation of state `p = k (ρ/ρ₀ - 1)`.
     /// 3. Forces: pressure gradient (spiky) + viscosity (Laplacian) + gravity.
     /// 4. Euler integration.
     /// 5. Optional floor boundary reflection.
+    ///
+    /// The density and force passes visit only the neighbours within the
+    /// smoothing length `h`, found once per step with a spatial hash.
     pub fn step(&mut self, dt: f64) {
         let n = self.positions.len();
         if n == 0 {
@@ -255,30 +307,36 @@ impl PySphSimulation {
         let poly6_coeff = 315.0 / (64.0 * std::f64::consts::PI * h.powi(9));
         let spiky_coeff = -45.0 / (std::f64::consts::PI * h.powi(6));
         let visc_coeff = 45.0 / (std::f64::consts::PI * h.powi(6));
+        // Loop-invariant products (same association as the unhoisted expressions).
+        let mass_poly6 = m * poly6_coeff;
+        let mu_mass = mu * m;
+
+        self.neighbors.rebuild(&self.positions, h);
 
         // -- Density --
         for i in 0..n {
             let mut rho = 0.0f64;
-            for j in 0..n {
+            for &j in self.neighbors.row(i) {
                 let dx = self.positions[i][0] - self.positions[j][0];
                 let dy = self.positions[i][1] - self.positions[j][1];
                 let dz = self.positions[i][2] - self.positions[j][2];
                 let r2 = dx * dx + dy * dy + dz * dz;
                 if r2 < h2 {
                     let diff = h2 - r2;
-                    rho += m * poly6_coeff * diff * diff * diff;
+                    rho += mass_poly6 * diff * diff * diff;
                 }
             }
             self.densities[i] = rho.max(1e-3);
             self.pressures[i] = k * (self.densities[i] / rho0 - 1.0);
         }
 
-        // -- Forces --
-        let mut forces = vec![[0.0f64; 3]; n];
-        for (i, force_i) in forces.iter_mut().enumerate() {
+        // -- Forces (as accelerations) --
+        self.accelerations.clear();
+        self.accelerations.resize(n, [0.0; 3]);
+        for i in 0..n {
             let mut fp = [0.0f64; 3];
             let mut fv = [0.0f64; 3];
-            for j in 0..n {
+            for &j in self.neighbors.row(i) {
                 if i == j {
                     continue;
                 }
@@ -300,22 +358,24 @@ impl PySphSimulation {
                 fp[0] += pf * dx;
                 fp[1] += pf * dy;
                 fp[2] += pf * dz;
-                let vf = mu * m / self.densities[j].max(1e-6) * visc_coeff * hr;
+                let vf = mu_mass / self.densities[j].max(1e-6) * visc_coeff * hr;
                 fv[0] += vf * (self.velocities[j][0] - self.velocities[i][0]);
                 fv[1] += vf * (self.velocities[j][1] - self.velocities[i][1]);
                 fv[2] += vf * (self.velocities[j][2] - self.velocities[i][2]);
             }
             let rho_i = self.densities[i];
-            force_i[0] = (fp[0] + fv[0]) / rho_i + g[0];
-            force_i[1] = (fp[1] + fv[1]) / rho_i + g[1];
-            force_i[2] = (fp[2] + fv[2]) / rho_i + g[2];
+            self.accelerations[i] = [
+                (fp[0] + fv[0]) / rho_i + g[0],
+                (fp[1] + fv[1]) / rho_i + g[1],
+                (fp[2] + fv[2]) / rho_i + g[2],
+            ];
         }
 
         // -- Euler integration --
-        for (i, force_i) in forces.iter().enumerate() {
-            self.velocities[i][0] += force_i[0] * dt;
-            self.velocities[i][1] += force_i[1] * dt;
-            self.velocities[i][2] += force_i[2] * dt;
+        for (i, acceleration) in self.accelerations.iter().enumerate() {
+            self.velocities[i][0] += acceleration[0] * dt;
+            self.velocities[i][1] += acceleration[1] * dt;
+            self.velocities[i][2] += acceleration[2] * dt;
             self.positions[i][0] += self.velocities[i][0] * dt;
             self.positions[i][1] += self.velocities[i][1] * dt;
             self.positions[i][2] += self.velocities[i][2] * dt;
@@ -1359,6 +1419,259 @@ mod sph_new_tests {
         sim.clamp_velocities(10.0); // limit is larger, no change
         let v = sim.velocity(0).unwrap();
         assert!((v[0] - 1.0).abs() < 1e-14);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Neighbour-search tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod neighbor_search_tests {
+    use super::*;
+
+    /// Deterministic generator of uniform numbers in `[0, 1)` (64-bit LCG).
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next_unit(&mut self) -> f64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
+        }
+    }
+
+    /// `count` uniformly random points in a cube of edge `extent`.
+    fn random_cloud(count: usize, extent: f64, seed: u64) -> Vec<[f64; 3]> {
+        let mut rng = Lcg(seed);
+        (0..count)
+            .map(|_| {
+                [
+                    extent * rng.next_unit(),
+                    extent * rng.next_unit(),
+                    extent * rng.next_unit(),
+                ]
+            })
+            .collect()
+    }
+
+    /// Densities, pressures and accelerations of the original all-pairs
+    /// implementation, kept verbatim as an independent reference.
+    fn all_pairs_reference(
+        positions: &[[f64; 3]],
+        velocities: &[[f64; 3]],
+        cfg: &PySphConfig,
+    ) -> (Vec<f64>, Vec<f64>, Vec<[f64; 3]>) {
+        let n = positions.len();
+        let h = cfg.h;
+        let h2 = h * h;
+        let m = cfg.particle_mass;
+        let rho0 = cfg.rest_density;
+        let k = cfg.stiffness;
+        let mu = cfg.viscosity;
+        let g = cfg.gravity;
+        let poly6_coeff = 315.0 / (64.0 * std::f64::consts::PI * h.powi(9));
+        let spiky_coeff = -45.0 / (std::f64::consts::PI * h.powi(6));
+        let visc_coeff = 45.0 / (std::f64::consts::PI * h.powi(6));
+
+        let mut densities = vec![0.0f64; n];
+        let mut pressures = vec![0.0f64; n];
+        for i in 0..n {
+            let mut rho = 0.0f64;
+            for j in 0..n {
+                let dx = positions[i][0] - positions[j][0];
+                let dy = positions[i][1] - positions[j][1];
+                let dz = positions[i][2] - positions[j][2];
+                let r2 = dx * dx + dy * dy + dz * dz;
+                if r2 < h2 {
+                    let diff = h2 - r2;
+                    rho += m * poly6_coeff * diff * diff * diff;
+                }
+            }
+            densities[i] = rho.max(1e-3);
+            pressures[i] = k * (densities[i] / rho0 - 1.0);
+        }
+        let mut accelerations = vec![[0.0f64; 3]; n];
+        for i in 0..n {
+            let mut fp = [0.0f64; 3];
+            let mut fv = [0.0f64; 3];
+            for j in 0..n {
+                if i == j {
+                    continue;
+                }
+                let dx = positions[i][0] - positions[j][0];
+                let dy = positions[i][1] - positions[j][1];
+                let dz = positions[i][2] - positions[j][2];
+                let r2 = dx * dx + dy * dy + dz * dz;
+                if r2 >= h2 || r2 < 1e-20 {
+                    continue;
+                }
+                let r = r2.sqrt();
+                let hr = h - r;
+                let pf = -m * (pressures[i] + pressures[j]) / (2.0 * densities[j].max(1e-6))
+                    * spiky_coeff
+                    * hr
+                    * hr
+                    / r;
+                fp[0] += pf * dx;
+                fp[1] += pf * dy;
+                fp[2] += pf * dz;
+                let vf = mu * m / densities[j].max(1e-6) * visc_coeff * hr;
+                fv[0] += vf * (velocities[j][0] - velocities[i][0]);
+                fv[1] += vf * (velocities[j][1] - velocities[i][1]);
+                fv[2] += vf * (velocities[j][2] - velocities[i][2]);
+            }
+            for k in 0..3 {
+                accelerations[i][k] = (fp[k] + fv[k]) / densities[i] + g[k];
+            }
+        }
+        (densities, pressures, accelerations)
+    }
+
+    fn assert_close(actual: f64, expected: f64, context: &str) {
+        assert!(
+            (actual - expected).abs() <= 1e-12 * expected.abs().max(1.0),
+            "{context}: {actual} vs {expected}"
+        );
+    }
+
+    #[test]
+    fn test_neighbor_table_matches_an_all_pairs_search() {
+        let positions = random_cloud(300, 0.5, 17);
+        let h = 0.1;
+        let mut table = NeighborTable::default();
+        table.rebuild(&positions, h);
+        assert_eq!(table.offsets.len(), positions.len() + 1);
+        for (i, pos_i) in positions.iter().enumerate() {
+            let expected: Vec<usize> = (0..positions.len())
+                .filter(|&j| {
+                    let d: f64 = (0..3).map(|k| (pos_i[k] - positions[j][k]).powi(2)).sum();
+                    d <= h * h
+                })
+                .collect();
+            assert_eq!(table.row(i), expected.as_slice(), "row {i}");
+            assert!(table.row(i).contains(&i), "a particle is its own neighbour");
+        }
+        // Symmetry: j in row(i) <=> i in row(j).
+        for i in 0..positions.len() {
+            for &j in table.row(i) {
+                assert!(
+                    table.row(j).contains(&i),
+                    "pair ({i}, {j}) is not symmetric"
+                );
+            }
+        }
+        assert!(table.row(positions.len()).is_empty());
+    }
+
+    #[test]
+    fn test_step_matches_the_all_pairs_reference_for_500_particles() {
+        let cfg = PySphConfig::water();
+        let positions = random_cloud(500, 0.5, 3);
+        let mut rng = Lcg(99);
+        let velocities: Vec<[f64; 3]> = (0..500)
+            .map(|_| {
+                [
+                    2.0 * rng.next_unit() - 1.0,
+                    2.0 * rng.next_unit() - 1.0,
+                    2.0 * rng.next_unit() - 1.0,
+                ]
+            })
+            .collect();
+        let mut sim = PySphSimulation::new(cfg.clone());
+        for (p, v) in positions.iter().zip(&velocities) {
+            sim.add_particle_with_velocity(*p, *v);
+        }
+        let (rho_ref, p_ref, acc_ref) = all_pairs_reference(&positions, &velocities, &cfg);
+        let dt = 1.0e-3;
+        sim.step(dt);
+
+        // Sanity: the cloud is dense enough that neighbours really matter.
+        let mean_neighbors = sim.neighbors.indices.len() as f64 / 500.0;
+        assert!(
+            mean_neighbors > 8.0,
+            "mean neighbour count {mean_neighbors}"
+        );
+
+        for i in 0..500 {
+            assert_close(sim.densities[i], rho_ref[i], &format!("density {i}"));
+            assert_close(sim.pressures[i], p_ref[i], &format!("pressure {i}"));
+            for k in 0..3 {
+                let v_ref = velocities[i][k] + acc_ref[i][k] * dt;
+                let x_ref = positions[i][k] + v_ref * dt;
+                assert_close(sim.velocities[i][k], v_ref, &format!("velocity {i}.{k}"));
+                assert_close(sim.positions[i][k], x_ref, &format!("position {i}.{k}"));
+            }
+        }
+    }
+
+    #[test]
+    fn test_pressure_follows_the_linear_equation_of_state() {
+        let cfg = PySphConfig::water();
+        let mut sim = PySphSimulation::new(cfg.clone());
+        sim.add_particle_block([0.0; 3], 4, 4, 4, 0.08);
+        sim.step(1.0e-4);
+        for (rho, p) in sim.get_density_field().iter().zip(sim.get_pressure_field()) {
+            assert_close(
+                p,
+                cfg.stiffness * (rho / cfg.rest_density - 1.0),
+                "pressure",
+            );
+        }
+    }
+
+    #[test]
+    fn test_step_with_particles_far_outside_any_bounding_region() {
+        // A dense-grid neighbour search would allocate (extent / h)^3 cells for
+        // this cloud. The spatial hash only stores occupied cells.
+        let mut sim = PySphSimulation::new(PySphConfig::water());
+        sim.add_particle([0.0, 0.0, 0.0]);
+        sim.add_particle([0.05, 0.0, 0.0]);
+        sim.add_particle([1.0e9, -1.0e9, 1.0e9]);
+        sim.add_particle([5.0e11, 0.0, 0.0]);
+        sim.step(1.0e-3);
+        sim.step(1.0e-3);
+        assert_eq!(sim.step_count(), 2);
+        for i in 0..4 {
+            let p = sim.position(i).expect("particle exists");
+            assert!(p.iter().all(|c| c.is_finite()), "particle {i}: {p:?}");
+        }
+        // An isolated particle only sees itself: rho = m * poly6(0) = 315 m / (64 pi h^3).
+        let isolated = 0.02 * 315.0 / (64.0 * std::f64::consts::PI * 0.1_f64.powi(3));
+        assert_close(
+            sim.density(2).expect("particle 2"),
+            isolated,
+            "isolated density",
+        );
+        assert_close(
+            sim.density(3).expect("particle 3"),
+            isolated,
+            "isolated density",
+        );
+        // The two close particles also see each other.
+        assert!(sim.density(0).expect("particle 0") > isolated * 1.01);
+    }
+
+    #[test]
+    fn test_scratch_buffers_follow_particle_removal() {
+        let mut sim = PySphSimulation::new(PySphConfig::water());
+        for p in random_cloud(100, 0.4, 5) {
+            sim.add_particle(p);
+        }
+        sim.step(1.0e-4);
+        assert_eq!(sim.accelerations.len(), 100);
+        let removed = sim.remove_below_y(0.2);
+        assert!(removed > 0 && removed < 100);
+        sim.step(1.0e-4);
+        assert_eq!(sim.accelerations.len(), sim.particle_count());
+        assert_eq!(sim.neighbors.offsets.len(), sim.particle_count() + 1);
+        // Emptying the simulation must not leave the step reading stale rows.
+        sim.remove_below_y(f64::INFINITY);
+        assert_eq!(sim.particle_count(), 0);
+        sim.step(1.0e-4);
+        assert_eq!(sim.step_count(), 3);
     }
 }
 

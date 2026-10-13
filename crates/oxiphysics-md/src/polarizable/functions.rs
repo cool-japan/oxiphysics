@@ -601,4 +601,129 @@ mod tests_polarizable_ext {
             "equal magnitude, opposite signs should cancel"
         );
     }
+
+    /// `n` free Drude particles of mass `drude_mass` (amu) thermostatted at `t_drude`.
+    fn free_drude_ensemble(
+        n: usize,
+        drude_mass: f64,
+        t_drude: f64,
+        gamma: f64,
+    ) -> DrudeExtLagrangian {
+        DrudeExtLagrangian::new(
+            vec![[0.0; 3]; n],
+            vec![[0.0; 3]; n],
+            vec![12.0; n],
+            vec![drude_mass; n],
+            1000.0,
+            t_drude,
+            gamma,
+        )
+    }
+
+    #[test]
+    fn test_langevin_drude_kick_samples_target_temperature() {
+        // Regression: the kick drew uniform noise on [-1, 1) (variance 1/3), so the Drude
+        // particles equilibrated at T/3.  With Gaussian noise m<v^2>/k_B = T per component.
+        // The temperature is measured in SI units (amu -> kg, Å/ps -> m/s) so that the check is
+        // independent of the unit constant used inside the thermostat.
+        use rand::SeedableRng;
+        const AMU_KG: f64 = 1.660_539_066_60e-27;
+        const KB_SI: f64 = 1.380_649e-23;
+        const ANGSTROM_PER_PS_IN_M_PER_S: f64 = 100.0;
+        let (n, mass, t_drude, gamma, dt) = (40, 0.4, 300.0, 5.0, 0.1);
+        let mut state = free_drude_ensemble(n, mass, t_drude, gamma);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(2025);
+        let n_steps = 5_000;
+        let mut sum_v2 = 0.0;
+        for _ in 0..n_steps {
+            state.langevin_drude_kick_with_rng(dt, &mut rng);
+            sum_v2 += state
+                .drude_vel
+                .iter()
+                .map(|v| v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+                .sum::<f64>();
+        }
+        let mean_v2_si = sum_v2 / (n * n_steps) as f64 * ANGSTROM_PER_PS_IN_M_PER_S.powi(2);
+        let t_measured = mass * AMU_KG * mean_v2_si / (3.0 * KB_SI);
+        assert!(
+            (t_measured - t_drude).abs() / t_drude < 0.02,
+            "measured T = {t_measured} K, expected {t_drude} K"
+        );
+        // The internal constant is the SI Boltzmann constant in amu Å² ps⁻² K⁻¹.
+        let kb_expected = KB_SI / AMU_KG / ANGSTROM_PER_PS_IN_M_PER_S.powi(2);
+        assert!(
+            (KB_AMU_ANGSTROM_PS - kb_expected).abs() < 1e-8 * kb_expected,
+            "{KB_AMU_ANGSTROM_PS} vs {kb_expected}"
+        );
+    }
+
+    #[test]
+    fn test_langevin_drude_kick_mean_kinetic_energy_obeys_equipartition() {
+        // <KE> = (3/2) n k_B T_D, with k_B in the model's amu A^2 ps^-2 K^-1 units.
+        use rand::SeedableRng;
+        let (n, mass, t_drude, gamma, dt) = (25, 0.4, 150.0, 8.0, 0.05);
+        let mut state = free_drude_ensemble(n, mass, t_drude, gamma);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(31);
+        let n_kicks = 4_000;
+        let mut sum_ke = 0.0;
+        for _ in 0..n_kicks {
+            state.langevin_drude_kick_with_rng(dt, &mut rng);
+            sum_ke += state.drude_kinetic_energy();
+        }
+        let mean_ke = sum_ke / n_kicks as f64;
+        let expected = 1.5 * n as f64 * KB_AMU_ANGSTROM_PS * t_drude;
+        assert!(
+            (mean_ke - expected).abs() / expected < 0.03,
+            "mean kinetic energy {mean_ke} vs equipartition {expected}"
+        );
+    }
+
+    #[test]
+    fn test_langevin_drude_kick_noise_is_gaussian() {
+        // A uniform draw has kurtosis 1.8, a Gaussian 3.
+        use rand::SeedableRng;
+        let mut state = free_drude_ensemble(50, 0.4, 300.0, 20.0);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(77);
+        let mut samples = Vec::new();
+        for _ in 0..4_000 {
+            // gamma * dt = 20 -> the velocity is fully re-randomised every kick.
+            state.langevin_drude_kick_with_rng(1.0, &mut rng);
+            for v in &state.drude_vel {
+                samples.extend_from_slice(v);
+            }
+        }
+        let n = samples.len() as f64;
+        let mean = samples.iter().sum::<f64>() / n;
+        let var = samples.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n;
+        let kurtosis = samples.iter().map(|x| (x - mean).powi(4)).sum::<f64>() / n / (var * var);
+        assert!((kurtosis - 3.0).abs() < 0.1, "kurtosis = {kurtosis}");
+    }
+
+    #[test]
+    fn test_langevin_drude_kick_zero_temperature_is_pure_damping() {
+        use rand::SeedableRng;
+        let mut state = free_drude_ensemble(3, 0.4, 0.0, 2.0);
+        state.drude_vel = vec![[1.0, -2.0, 3.0]; 3];
+        let mut rng = rand::rngs::StdRng::seed_from_u64(3);
+        state.langevin_drude_kick_with_rng(0.25, &mut rng);
+        let decay = (-2.0_f64 * 0.25).exp();
+        for v in &state.drude_vel {
+            assert!((v[0] - decay).abs() < 1e-14);
+            assert!((v[1] + 2.0 * decay).abs() < 1e-14);
+            assert!((v[2] - 3.0 * decay).abs() < 1e-14);
+        }
+    }
+
+    #[test]
+    fn test_langevin_drude_kick_seeded_stream_is_reproducible() {
+        use rand::SeedableRng;
+        let run = |seed: u64| {
+            let mut state = free_drude_ensemble(4, 0.4, 300.0, 5.0);
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            state.langevin_drude_kick_with_rng(0.1, &mut rng);
+            state.drude_vel
+        };
+        assert_eq!(run(9), run(9));
+        assert_ne!(run(9), run(10));
+    }
 }

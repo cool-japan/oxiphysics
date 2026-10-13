@@ -669,6 +669,61 @@ mod tests {
         assert!(fi_max >= 0.0, "max FI should be non-negative, got {fi_max}");
     }
     #[test]
+    fn test_hashin_matrix_compression_equals_one_at_yc() {
+        let hashin = HashinFailureCriteria::carbon_epoxy_typical();
+        let fi = hashin.matrix_compression(-hashin.yc, 0.0);
+        assert!(
+            (fi - 1.0).abs() < 1e-12,
+            "FI_mc at sigma22 = -Yc must be exactly 1, got {fi}"
+        );
+    }
+    #[test]
+    fn test_hashin_matrix_compression_equals_one_at_yc_for_other_strengths() {
+        // The identity holds for any (Yc, S23) pair, including Yc < 2*S23
+        // where the linear coefficient changes sign.
+        for &(yc, s23) in &[(170.0e6, 40.0e6), (150.0e6, 40.0e6), (60.0e6, 40.0e6)] {
+            let hashin = HashinFailureCriteria::new(1480.0e6, 1200.0e6, 50.0e6, yc, 70.0e6, s23);
+            let fi = hashin.matrix_compression(-yc, 0.0);
+            assert!(
+                (fi - 1.0).abs() < 1e-12,
+                "Yc={yc}, S23={s23}: FI_mc at -Yc = {fi}"
+            );
+        }
+    }
+    #[test]
+    fn test_hashin_matrix_compression_brackets_the_strength() {
+        let hashin = HashinFailureCriteria::carbon_epoxy_typical();
+        let below = hashin.matrix_compression(-0.9 * hashin.yc, 0.0);
+        let at = hashin.matrix_compression(-hashin.yc, 0.0);
+        let above = hashin.matrix_compression(-1.2 * hashin.yc, 0.0);
+        assert!(
+            below > 0.0 && below < 1.0,
+            "90 % of Yc must be sub-critical: {below}"
+        );
+        assert!((at - 1.0).abs() < 1e-12, "100 % of Yc must give 1: {at}");
+        assert!(above > 1.0, "120 % of Yc must predict failure: {above}");
+    }
+    #[test]
+    fn test_hashin_matrix_compression_includes_shear_term() {
+        let hashin = HashinFailureCriteria::carbon_epoxy_typical();
+        let base = hashin.matrix_compression(-50.0e6, 0.0);
+        let with_shear = hashin.matrix_compression(-50.0e6, hashin.s12);
+        assert!(
+            (with_shear - base - 1.0).abs() < 1e-12,
+            "pure shear at S12 adds exactly 1: base={base}, with_shear={with_shear}"
+        );
+    }
+    #[test]
+    fn test_hashin_max_failure_index_reports_matrix_compression_mode() {
+        let hashin = HashinFailureCriteria::carbon_epoxy_typical();
+        let (fi_max, mode) = hashin.max_failure_index(0.0, -hashin.yc, 0.0, 0.0);
+        assert!(
+            (fi_max - 1.0).abs() < 1e-12,
+            "max FI at sigma22 = -Yc must be 1, got {fi_max}"
+        );
+        assert_eq!(mode, 3, "dominant mode must be matrix compression");
+    }
+    #[test]
     fn test_puck_fibre_failure_below_threshold() {
         let puck = PuckFailureCriteria::carbon_epoxy_typical();
         let fi = puck.fibre_failure_index(500.0e6, 1500.0e6);

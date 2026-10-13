@@ -373,7 +373,7 @@ impl ShapeKind {
                 let base = if d0 > d1 { *p0 } else { *p1 };
                 add3(base, scale3(normalize3(dir), *radius))
             }
-            ShapeKind::Plane { normal, offset } => scale3(*normal, *offset + 1e9),
+            ShapeKind::Plane { normal, offset } => plane_support(*normal, *offset, dir),
             ShapeKind::Convex { vertices } => vertices
                 .iter()
                 .max_by(|a, b| {
@@ -385,6 +385,42 @@ impl ShapeKind {
                 .unwrap_or([0.0; 3]),
         }
     }
+}
+/// Half-size of the finite stand-in used to give an unbounded plane a support
+/// point (matches the `1e9` scale historically used for planes).
+const PLANE_SUPPORT_EXTENT: f64 = 1.0e9;
+
+/// Support point of the solid half-space `n . x <= offset`, bounded to a slab of
+/// half-size [`PLANE_SUPPORT_EXTENT`].
+///
+/// A half-space is unbounded, so its exact support function is infinite in
+/// every direction except along the plane normal. The finite stand-in keeps the
+/// direction dependence: the support slides along the plane towards the
+/// tangential part of `dir`, stays on the plane surface when `dir` points out of
+/// the half-space and goes to the far side of the slab when it points into it.
+/// Contact routing never relies on this (plane pairs are resolved in closed form
+/// by `shape_shape_contact`).
+fn plane_support(normal: [f64; 3], offset: f64, dir: [f64; 3]) -> [f64; 3] {
+    let n_len = len3(normal);
+    if n_len <= 1e-12 {
+        return [0.0; 3];
+    }
+    let n = scale3(normal, 1.0 / n_len);
+    let on_plane = scale3(n, offset / n_len);
+    let normal_part = dot3(dir, n);
+    let tangent = sub3(dir, scale3(n, normal_part));
+    let tangent_len = len3(tangent);
+    let slide = if tangent_len > 1e-12 {
+        scale3(tangent, PLANE_SUPPORT_EXTENT / tangent_len)
+    } else {
+        [0.0; 3]
+    };
+    let depth = if normal_part > 0.0 {
+        0.0
+    } else {
+        -PLANE_SUPPORT_EXTENT
+    };
+    add3(add3(on_plane, slide), scale3(n, depth))
 }
 /// Result of a segment cast against a shape.
 #[derive(Debug, Clone)]

@@ -130,3 +130,44 @@ Freeze the robotics API surface only after derivatives and loop closure have pro
 ---
 
 History: the pre-2026-06-11 TODO (last updated 2026-06-06) is preserved in full under "Completed"; the forward roadmap derives from the code-verified dynamics design brief of 2026-06-11.
+
+<!-- AUDIT-2026-10-12 BEGIN -->
+## Audit 2026-10-12 — verified findings (Phase 32 remediation)
+
+Verified: 39 (critical 3, high 7, medium 15, low 14); 2 further raw findings pending second-round verification. IDs refer to the audit ledger; `[x]` = fixed.
+
+### Critical (3)
+- [x] **F0038** (critical, bug, hard/large) `joint.rs:302` — Spherical/FreeFloating orientation always identity inside every algorithm
+- [x] **F0045** (critical, bug, medium/small) `model.rs:38` — Gravity applied as +g root acceleration; bodies fall upward
+- [x] **F0056** (critical, bug, hard/medium) `spatial.rs:350` — Plücker transforms use rot untransposed; dynamics inconsistent with kinematics
+
+### High (7)
+- [x] **F0024** (high, fabrication, hard/medium) `centroidal.rs:79` — CMM uses single-body inertias, wrong compose order, discards COM
+- [x] **F0026** (high, bug, easy/trivial) `crba.rs:68` — CRBA never fills intra-joint off-diagonal mass-matrix entries
+- [x] **F0028** (high, bug, medium/small) `ik.rs:403` — IK orientation error is sin(θ); 180° flip reports success
+- [x] **F0036** (high, bug, easy/trivial) `joint.rs:255` — UniversalJoint transform composes rotations in wrong order
+- [x] **F0037** (high, bug, medium/small) `joint.rs:266` — UniversalJoint has q-dependent S but zero Coriolis term c_J
+- [x] **F0047** (high, missing-feature, hard/large) `model.rs:86` — Spherical/FreeFloating orientation silently identity in every algorithm
+- [x] **F0050** (high, panic, easy/small) `osc.rs:66` — compute_lambda panics via expect for <6-DoF or singular tasks
+
+### Medium (15)
+- [ ] **F0018** (medium, docs, easy/small) `crates/oxiphysics-articulated/README.md:37` — Articulated README usage contradicts the real ArticulatedModel API
+- [ ] **F0019** (medium, perf, medium/medium) `aba.rs:110` — ABA allocates ~10 heap Vecs per body per call
+- [ ] **F0020** (medium, perf, medium/medium) `aba.rs:171` — ABA allocates and clones per-body Vecs every call
+- [ ] **F0021** (medium, perf, medium/medium) `aba.rs:188` — ABA clones never-read workspace vectors; no reusable workspace
+- [ ] **F0022** (medium, fabrication, easy/small) `aba.rs:321` — ABA silently returns q̈=0 for exactly singular joint inertia
+- [ ] **F0025** (medium, api, easy/trivial) `crba.rs:24` — Needless &mut model in CRBA/CMM/OSC/LTDL/derivatives; q unchecked
+- [ ] **F0029** (medium, panic, easy/small) `ik.rs:429` — solve_ik_dls/geometric_jacobian panic on bad ee_body or rest_q length
+- [ ] **F0030** (medium, panic, easy/small) `ik.rs:450` — solve_ik_dls panics on bad ee_body/q_init/rest_q, undocumented
+- [ ] **F0031** (medium, fabrication, medium/small) `ik.rs:474` — lambda_adaptive is a Frobenius-norm stub, not singularity-aware
+- [ ] **F0034** (medium, perf, medium/medium) `joint.rs:31` — Joint motion subspace returns Vec: heap allocs in hot loops
+- [ ] **F0035** (medium, bug, easy/small) `joint.rs:56` — Zero/NaN joint axis silently replaced by z-axis
+- [ ] **F0042** (medium, panic, easy/small) `ltdl.rs:213` — LTDL factor trusts lambda: hang or panic on bad parent array
+- [ ] **F0046** (medium, bug, easy/small) `model.rs:54` — add_body accepts invalid parent: infinite loop or silent garbage
+- [ ] **F0053** (medium, bug, medium/medium) `rnea_derivatives.rs:95` — Analytic RNEA-derivative gate keyed on dof()==1 only
+- [ ] **F0057** (medium, bug, easy/trivial) `spatial.rs:485` — transform_inertia omits COM cross terms in parallel-axis shift
+
+### Low (14) — tracked in the external ledger
+F0027, F0032, F0033, F0039, F0040, F0041, F0043, F0044, F0048, F0049, F0052, F0054, F0055, F0058
+
+<!-- AUDIT-2026-10-12 END -->

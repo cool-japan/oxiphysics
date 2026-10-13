@@ -14,37 +14,65 @@ const BVH_TRAVERSAL_WGSL: &str = include_str!("../shaders/bvh_traversal.wgsl");
 // BvhGpuState — per-BVH GPU resources (allocated once at construction)
 // ============================================================================
 
-/// Persistent GPU resources for a BVH.
+/// Most rays traced by one dispatch.
 ///
-/// `BvhGpuState` owns a `WgpuBackendReal` and three primitive buffers that are
-/// uploaded once at construction time.  Per-call allocations are limited to the
-/// rays buffer and the results buffer, which are re-allocated on demand when the
-/// ray count increases.
-///
-/// # Thread safety
-///
-/// `WgpuBackendReal` is `Send + Sync` (device/queue are `Arc`-wrapped and the
-/// shader cache uses `Mutex`).  We wrap the backend in an additional `Mutex` so
-/// that callers who share a `BvhGpuTraverser` across threads can do so safely
-/// without re-entrant dispatch issues.  `BvhGpuTraverser` is never placed inside
-/// a `rayon::ParallelIterator` closure in the current code-base (verified by the
-/// send-bound audit in Step 0 of the block spec); nevertheless we default to
-/// `Mutex` so the type is unconditionally `Send + Sync`.
+/// Larger batches are split: one workgroup handles 64 rays and a dispatch may use
+/// at most 65 535 workgroups per dimension, and the ray buffer stays far below the
+/// device's storage-binding limit.
 #[cfg(feature = "wgpu-backend")]
-pub(crate) struct BvhGpuState {
-    /// Backend stored once; locked per dispatch.
-    ///
-    /// Using `Mutex<WgpuBackendReal>` rather than `RefCell` so that
-    /// `BvhGpuTraverser` is `Send + Sync` regardless of call-site threading.
-    /// The audit found no parallel call sites today, but the Mutex overhead is
-    /// negligible compared to GPU dispatch latency.
-    pub(crate) backend: std::sync::Mutex<crate::compute::wgpu_backend::real::WgpuBackendReal>,
+const MAX_RAYS_PER_DISPATCH: usize = 1 << 20;
+
+/// Rays the ray and result buffers hold before the first growth.
+#[cfg(feature = "wgpu-backend")]
+const INITIAL_RAY_CAPACITY: usize = 256;
+
+/// The device and every GPU buffer of one BVH traverser.
+///
+/// The node, primitive-AABB, primitive-index and object-ID buffers are uploaded
+/// once at construction.  The 16-byte parameter buffer is created once and
+/// rewritten for every dispatch.  The ray and result buffers are grow-only: they
+/// are replaced (old buffer destroyed, capacity at least doubled) only when a batch
+/// holds more rays than any earlier one, so the number of live buffers never
+/// changes after construction and a traversal allocates nothing in steady state.
+#[cfg(feature = "wgpu-backend")]
+pub(crate) struct BvhGpuDevice {
+    /// The long-lived wgpu device, queue and pipeline cache.
+    pub(crate) backend: crate::compute::wgpu_backend::real::WgpuBackendReal,
+    /// BVH nodes: 8 words each (`min.xyz`, `max.xyz`, `left_first`, `count`).
+    pub(crate) nodes_buf: crate::compute::WgpuBufferHandle,
     /// Primitive AABB buffer: 6 × f32 per primitive [min_xyz, max_xyz].
     pub(crate) prim_aabbs_buf: crate::compute::WgpuBufferHandle,
     /// Primitive-index buffer: one u32 per entry in the flat prim-index array.
     pub(crate) prim_indices_buf: crate::compute::WgpuBufferHandle,
     /// Object-ID buffer: one i32 per primitive.
     pub(crate) object_ids_buf: crate::compute::WgpuBufferHandle,
+    /// `[n_nodes, n_rays, n_prims, 0]`, rewritten for every dispatch.
+    pub(crate) params_buf: crate::compute::WgpuBufferHandle,
+    /// Ray buffer: 8 × f32 per ray, grow-only.
+    pub(crate) rays_buf: crate::compute::WgpuBufferHandle,
+    /// Hit buffer: one i32 per ray, grow-only.
+    pub(crate) results_buf: crate::compute::WgpuBufferHandle,
+    /// Host staging for the ray upload, reused across calls.
+    pub(crate) ray_words: Vec<f32>,
+}
+
+/// Persistent GPU resources for a BVH.
+///
+/// `BvhGpuState` keeps the [`BvhGpuDevice`] (the `WgpuBackendReal` and all of its
+/// buffers) behind a `Mutex`, because `traverse_rays` only takes `&self`.
+///
+/// # Thread safety
+///
+/// `WgpuBackendReal` is `Send + Sync` (device/queue are `Arc`-wrapped and the
+/// shader cache uses `Mutex`).  The additional `Mutex` serialises dispatches and the
+/// resizing of the grow-only buffers, so callers who share a `BvhGpuTraverser`
+/// across threads can do so safely.  `BvhGpuTraverser` is never placed inside a
+/// `rayon::ParallelIterator` closure in the current code-base; the lock overhead is
+/// negligible compared to GPU dispatch latency.
+#[cfg(feature = "wgpu-backend")]
+pub(crate) struct BvhGpuState {
+    /// Device and buffers; locked per dispatch.
+    pub(crate) device: std::sync::Mutex<BvhGpuDevice>,
     /// Number of dispatches completed (observability / reuse test).
     pub(crate) dispatch_count: std::sync::atomic::AtomicU64,
     /// Monotonically increasing ID assigned at construction (reuse test).
@@ -117,7 +145,27 @@ impl BvhGpuTraverser {
             use std::sync::atomic::Ordering;
 
             if let Ok(mut backend) = WgpuBackendReal::try_new() {
-                // ── Upload primitive data (once, reused across all traverse_rays calls) ──
+                // ── Upload the BVH once; every later traverse_rays call reuses it ──
+
+                // nodes: 8 words per node [min.xyz, max.xyz, left_first, count]
+                let node_words: Vec<u32> = flat_nodes
+                    .iter()
+                    .flat_map(|n| {
+                        [
+                            n.aabb.min[0].to_bits(),
+                            n.aabb.min[1].to_bits(),
+                            n.aabb.min[2].to_bits(),
+                            n.aabb.max[0].to_bits(),
+                            n.aabb.max[1].to_bits(),
+                            n.aabb.max[2].to_bits(),
+                            n.left_first,
+                            n.count,
+                        ]
+                    })
+                    .collect();
+                let nodes_buf =
+                    backend.create_buffer_storage((node_words.len() * 4).max(16) as u64);
+                backend.queue_write_buffer_raw(&nodes_buf, bytemuck::cast_slice(&node_words));
 
                 // prim_aabbs: 6 × f32 per primitive
                 let prim_aabb_f32s: Vec<f32> = primitives
@@ -149,6 +197,12 @@ impl BvhGpuTraverser {
                     backend.create_buffer_storage((obj_ids.len() * 4).max(16) as u64);
                 backend.queue_write_buffer_raw(&object_ids_buf, bytemuck::cast_slice(&obj_ids));
 
+                // Per-call buffers, created once: the parameters are rewritten and
+                // the ray/result buffers grow on demand.
+                let params_buf = backend.create_buffer_storage(16);
+                let rays_buf = backend.create_buffer_storage((INITIAL_RAY_CAPACITY * 32) as u64);
+                let results_buf = backend.create_buffer_storage((INITIAL_RAY_CAPACITY * 4) as u64);
+
                 let creation_id = CREATION_COUNTER.fetch_add(1, Ordering::Relaxed);
 
                 return Self {
@@ -156,10 +210,17 @@ impl BvhGpuTraverser {
                     prim_indices,
                     primitives,
                     inner: BvhTraverserInner::Gpu(Box::new(BvhGpuState {
-                        backend: std::sync::Mutex::new(backend),
-                        prim_aabbs_buf,
-                        prim_indices_buf,
-                        object_ids_buf,
+                        device: std::sync::Mutex::new(BvhGpuDevice {
+                            backend,
+                            nodes_buf,
+                            prim_aabbs_buf,
+                            prim_indices_buf,
+                            object_ids_buf,
+                            params_buf,
+                            rays_buf,
+                            results_buf,
+                            ray_words: Vec::new(),
+                        }),
                         dispatch_count: std::sync::atomic::AtomicU64::new(0),
                         creation_id,
                     })),
@@ -215,6 +276,39 @@ impl BvhGpuTraverser {
         }
     }
 
+    /// Number of GPU buffers currently alive on the traverser's device, or `None`
+    /// for a CPU-only traverser.
+    ///
+    /// The BVH is uploaded once and the ray/result buffers are reused and grown in
+    /// place, so this stays constant for the lifetime of the traverser.
+    #[cfg(feature = "wgpu-backend")]
+    pub fn gpu_buffer_count(&self) -> Option<usize> {
+        match &self.inner {
+            BvhTraverserInner::Cpu => None,
+            BvhTraverserInner::Gpu(state) => state
+                .device
+                .lock()
+                .ok()
+                .map(|device| device.backend.live_buffer_count()),
+        }
+    }
+
+    /// Total size in bytes of the live GPU buffers of the traverser's device, or
+    /// `None` for a CPU-only traverser.
+    ///
+    /// Grows only when a call traces more rays than any earlier call.
+    #[cfg(feature = "wgpu-backend")]
+    pub fn gpu_buffer_bytes(&self) -> Option<u64> {
+        match &self.inner {
+            BvhTraverserInner::Cpu => None,
+            BvhTraverserInner::Gpu(state) => state
+                .device
+                .lock()
+                .ok()
+                .map(|device| device.backend.live_buffer_bytes()),
+        }
+    }
+
     /// Traverse the BVH for each ray.
     ///
     /// Returns a `Vec<i32>` of length `rays.len()`.  Each element is either:
@@ -226,6 +320,10 @@ impl BvhGpuTraverser {
         }
         match &self.inner {
             BvhTraverserInner::Cpu => self.traverse_rays_cpu(rays),
+            // An empty BVH has nothing to hit; the kernel returns before writing any
+            // result in that case, so answer on the host.
+            #[cfg(feature = "wgpu-backend")]
+            BvhTraverserInner::Gpu(_) if self.flat_nodes.is_empty() => self.traverse_rays_cpu(rays),
             #[cfg(feature = "wgpu-backend")]
             BvhTraverserInner::Gpu(state) => self
                 .traverse_rays_gpu(state, rays)
@@ -297,6 +395,10 @@ impl BvhGpuTraverser {
 
     // ── GPU traversal ─────────────────────────────────────────────────────────
 
+    /// Trace `rays` on the GPU in batches of at most [`MAX_RAYS_PER_DISPATCH`].
+    ///
+    /// Returns `Err` when the device lock is poisoned, a dispatch fails or a
+    /// read-back comes back short; `traverse_rays` then answers on the host.
     #[cfg(feature = "wgpu-backend")]
     fn traverse_rays_gpu(
         &self,
@@ -305,119 +407,102 @@ impl BvhGpuTraverser {
     ) -> Result<Vec<i32>, crate::GpuError> {
         use std::sync::atomic::Ordering;
 
-        let n_rays = rays.len() as u32;
-        let n_nodes = self.flat_nodes.len() as u32;
-        let n_prims = self.prim_indices.len() as u32;
+        let too_large = |what: &str| {
+            crate::GpuError::ShaderDispatch(format!("{what} count does not fit a 32-bit index"))
+        };
+        let n_nodes = u32::try_from(self.flat_nodes.len()).map_err(|_| too_large("BVH node"))?;
+        let n_prims =
+            u32::try_from(self.prim_indices.len()).map_err(|_| too_large("BVH primitive"))?;
 
-        // Lock the backend for this dispatch.
-        let mut backend = state
-            .backend
-            .lock()
-            .expect("BvhGpuState backend lock poisoned");
+        let mut device = state.device.lock().map_err(|_| {
+            crate::GpuError::ShaderDispatch(
+                "BVH GPU state lock poisoned by an earlier panic".into(),
+            )
+        })?;
+        let mut hits = Vec::with_capacity(rays.len());
+        for batch in rays.chunks(MAX_RAYS_PER_DISPATCH) {
+            hits.extend(device.trace_batch(batch, n_nodes, n_prims)?);
+            state.dispatch_count.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(hits)
+    }
+}
 
-        // ── Encode params [n_nodes, n_rays, n_prims, 0] (per-call) ──────────
-        let params_data: [u32; 4] = [n_nodes, n_rays, n_prims, 0];
-        let params_buf = backend.create_buffer_storage(16);
-        backend.queue_write_buffer_raw(&params_buf, bytemuck::cast_slice(&params_data));
+#[cfg(feature = "wgpu-backend")]
+impl BvhGpuDevice {
+    /// Upload `batch` (at most [`MAX_RAYS_PER_DISPATCH`] rays), dispatch the
+    /// traversal kernel and read the hit of every ray back.
+    ///
+    /// The ray and result buffers are grown in place when the batch is larger than
+    /// any earlier one; nothing else is allocated on the device.
+    fn trace_batch(
+        &mut self,
+        batch: &[GpuRay],
+        n_nodes: u32,
+        n_prims: u32,
+    ) -> Result<Vec<i32>, crate::GpuError> {
+        let n_rays = batch.len();
+        let n_rays_u32 = u32::try_from(n_rays).map_err(|_| {
+            crate::GpuError::ShaderDispatch("ray batch does not fit a 32-bit index".into())
+        })?;
 
-        // ── Encode BVH nodes (per-call, same data each time) ─────────────────
-        // Layout: [min_x, min_y, min_z, max_x, max_y, max_z, left_first_bits, count_bits]
-        let node_f32s: Vec<f32> = self
-            .flat_nodes
-            .iter()
-            .flat_map(|n| {
-                [
-                    n.aabb.min[0],
-                    n.aabb.min[1],
-                    n.aabb.min[2],
-                    n.aabb.max[0],
-                    n.aabb.max[1],
-                    n.aabb.max[2],
-                    f32::from_bits(n.left_first),
-                    f32::from_bits(n.count),
-                ]
-            })
-            .collect();
-        let nodes_buf = backend.create_buffer_storage((node_f32s.len() * 4).max(16) as u64);
-        backend.queue_write_buffer_f32(&nodes_buf, &node_f32s);
+        // Rays: 8 f32 per ray [origin.xyz, direction.xyz, max_t, pad].
+        self.ray_words.clear();
+        for ray in batch {
+            self.ray_words.extend_from_slice(&[
+                ray.origin[0],
+                ray.origin[1],
+                ray.origin[2],
+                ray.direction[0],
+                ray.direction[1],
+                ray.direction[2],
+                ray.max_t,
+                0.0,
+            ]);
+        }
+        self.backend
+            .ensure_buffer(&mut self.rays_buf, (self.ray_words.len() * 4) as u64);
+        self.backend
+            .ensure_buffer(&mut self.results_buf, (n_rays * 4) as u64);
+        self.backend
+            .queue_write_buffer_f32(&self.rays_buf, &self.ray_words);
+        self.backend.queue_write_buffer_raw(
+            &self.params_buf,
+            bytemuck::cast_slice(&[n_nodes, n_rays_u32, n_prims, 0_u32]),
+        );
 
-        // ── Encode rays: 8 f32 per ray ────────────────────────────────────────
-        let ray_f32s: Vec<f32> = rays
-            .iter()
-            .flat_map(|r| {
-                [
-                    r.origin[0],
-                    r.origin[1],
-                    r.origin[2],
-                    r.direction[0],
-                    r.direction[1],
-                    r.direction[2],
-                    r.max_t,
-                    0.0_f32, // pad
-                ]
-            })
-            .collect();
-        let rays_buf = backend.create_buffer_storage((ray_f32s.len() * 4).max(16) as u64);
-        backend.queue_write_buffer_f32(&rays_buf, &ray_f32s);
-
-        // ── Results buffer ────────────────────────────────────────────────────
-        let results_buf = backend.create_buffer_storage((n_rays as usize * 4).max(16) as u64);
-
-        // ── Dispatch ──────────────────────────────────────────────────────────
-        let workgroups_x = n_rays.div_ceil(64);
-        backend
+        let read_only = wgpu::BufferBindingType::Storage { read_only: true };
+        let read_write = wgpu::BufferBindingType::Storage { read_only: false };
+        let workgroups = crate::compute::timestamp::dispatch_count_for(n_rays, 64)
+            .map_err(|e| crate::GpuError::ShaderDispatch(e.to_string()))?;
+        self.backend
             .dispatch_wgsl(
                 BVH_TRAVERSAL_WGSL,
                 "main",
                 &[
-                    (
-                        params_buf,
-                        wgpu::BufferBindingType::Storage { read_only: true },
-                    ),
-                    (
-                        nodes_buf,
-                        wgpu::BufferBindingType::Storage { read_only: true },
-                    ),
-                    (
-                        rays_buf,
-                        wgpu::BufferBindingType::Storage { read_only: true },
-                    ),
-                    (
-                        results_buf,
-                        wgpu::BufferBindingType::Storage { read_only: false },
-                    ),
-                    (
-                        state.prim_indices_buf,
-                        wgpu::BufferBindingType::Storage { read_only: true },
-                    ),
-                    (
-                        state.object_ids_buf,
-                        wgpu::BufferBindingType::Storage { read_only: true },
-                    ),
-                    (
-                        state.prim_aabbs_buf,
-                        wgpu::BufferBindingType::Storage { read_only: true },
-                    ),
+                    (self.params_buf, read_only),
+                    (self.nodes_buf, read_only),
+                    (self.rays_buf, read_only),
+                    (self.results_buf, read_write),
+                    (self.prim_indices_buf, read_only),
+                    (self.object_ids_buf, read_only),
+                    (self.prim_aabbs_buf, read_only),
                 ],
-                [workgroups_x, 1, 1],
+                workgroups,
             )
             .map_err(|e| crate::GpuError::ShaderDispatch(e.to_string()))?;
 
-        // ── Read results back ─────────────────────────────────────────────────
-        let raw = backend.read_buffer_f32(results_buf);
-        let hits: Vec<i32> = raw
-            .iter()
-            .take(n_rays as usize)
-            .map(|&f| f32::to_bits(f) as i32)
-            .collect();
-
-        // Pad to n_rays if buffer was short.
-        let mut result = hits;
-        result.resize(n_rays as usize, -1);
-
-        // Increment observability counter.
-        state.dispatch_count.fetch_add(1, Ordering::Relaxed);
-
-        Ok(result)
+        // The grown result buffer may be larger than this batch: keep the first n_rays.
+        let raw = self
+            .backend
+            .read_buffer_u32(self.results_buf)
+            .map_err(|e| crate::GpuError::ReadBack(e.to_string()))?;
+        if raw.len() < n_rays {
+            return Err(crate::GpuError::ReadBack(format!(
+                "expected {n_rays} BVH hits, the read-back returned {}",
+                raw.len()
+            )));
+        }
+        Ok(raw[..n_rays].iter().map(|&word| word as i32).collect())
     }
 }

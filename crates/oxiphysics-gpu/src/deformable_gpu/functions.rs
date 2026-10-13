@@ -699,6 +699,285 @@ mod tests {
         solver.add_element(elem);
         assert!(solver.num_nodes >= 10);
     }
+    // ── Corotational element (F1903) ───────────────────────────────────────
+
+    /// Non-orthogonal rest tetrahedron: `Dm` has a unit-edge-length column
+    /// pair at 45°, so edge-spring "forces" would not vanish at rest.
+    const SKEWED_REST: [[f64; 3]; 4] = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+    /// Small, fixed, asymmetric displacements of the four nodes.
+    const DISPLACEMENTS: [[f64; 3]; 4] = [
+        [0.02, -0.01, 0.03],
+        [0.10, 0.05, -0.07],
+        [-0.04, 0.12, 0.02],
+        [0.06, -0.08, 0.11],
+    ];
+    fn displaced(rest: &[[f64; 3]; 4], scale: f64) -> Vec<[f64; 3]> {
+        rest.iter()
+            .zip(DISPLACEMENTS.iter())
+            .map(|(p, d)| add3(*p, scale3(*d, scale)))
+            .collect()
+    }
+    fn skewed_element(youngs: f64, poisson: f64) -> CorotationalElement {
+        CorotationalElement::from_rest([0, 1, 2, 3], &SKEWED_REST, youngs, poisson)
+    }
+    /// Rotate a point about an axis through the origin (Rodrigues).
+    fn rotate_about(axis: [f64; 3], angle: f64, p: [f64; 3]) -> [f64; 3] {
+        let k = normalize3(axis);
+        let (s, c) = angle.sin_cos();
+        add3(
+            add3(scale3(p, c), scale3(cross3(k, p), s)),
+            scale3(k, dot3(k, p) * (1.0 - c)),
+        )
+    }
+    fn assert_close(actual: f64, expected: f64, tol: f64, what: &str) {
+        assert!(
+            (actual - expected).abs() <= tol,
+            "{what}: {actual} vs {expected} (tol {tol})"
+        );
+    }
+    #[test]
+    fn test_corotational_rest_pose_is_force_free_for_non_orthogonal_tet() {
+        let elem = skewed_element(1.0e6, 0.3);
+        assert_close(elem.rest_volume, 1.0 / 6.0, 1.0e-15, "rest volume");
+        let forces = elem.compute_nodal_forces(&SKEWED_REST);
+        for (i, f) in forces.iter().enumerate() {
+            assert!(length3(*f) < 1.0e-9, "node {i} rest force {f:?}");
+        }
+        assert!(elem.strain_energy(&SKEWED_REST) < 1.0e-12);
+    }
+    #[test]
+    fn test_corotational_deformation_gradient_is_identity_at_rest() {
+        let elem = skewed_element(1.0e5, 0.3);
+        let f = elem.deformation_gradient(&SKEWED_REST).unwrap();
+        for i in 0..3 {
+            for j in 0..3 {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert_close(f[i][j], expected, 1.0e-14, "F at rest");
+            }
+        }
+    }
+    #[test]
+    fn test_corotational_rigid_motion_is_force_and_energy_free() {
+        let elem = skewed_element(1.0e6, 0.3);
+        let moved: Vec<[f64; 3]> = SKEWED_REST
+            .iter()
+            .map(|p| add3(rotate_about([1.0, 2.0, 3.0], 0.9, *p), [4.0, -2.0, 7.5]))
+            .collect();
+        let forces = elem.compute_nodal_forces(&moved);
+        for (i, f) in forces.iter().enumerate() {
+            assert!(length3(*f) < 1.0e-6, "node {i} force {f:?} in rigid motion");
+        }
+        assert!(elem.strain_energy(&moved) < 1.0e-9);
+    }
+    #[test]
+    fn test_corotational_forces_are_the_negative_energy_gradient() {
+        let elem = skewed_element(1.0e5, 0.3);
+        let positions = displaced(&SKEWED_REST, 1.0);
+        let forces = elem.compute_nodal_forces(&positions);
+        let h = 1.0e-6;
+        for node in 0..4 {
+            for axis in 0..3 {
+                let mut plus = positions.clone();
+                let mut minus = positions.clone();
+                plus[node][axis] += h;
+                minus[node][axis] -= h;
+                let gradient = (elem.strain_energy(&plus) - elem.strain_energy(&minus)) / (2.0 * h);
+                let tol = 1.0e-5 * (1.0 + forces[node][axis].abs());
+                assert_close(
+                    forces[node][axis],
+                    -gradient,
+                    tol,
+                    &format!("force[{node}][{axis}]"),
+                );
+            }
+        }
+    }
+    #[test]
+    fn test_corotational_forces_carry_no_net_force_or_torque() {
+        let elem = skewed_element(1.0e5, 0.3);
+        let positions = displaced(&SKEWED_REST, 1.0);
+        let forces = elem.compute_nodal_forces(&positions);
+        let mut net = [0.0; 3];
+        let mut torque = [0.0; 3];
+        for (p, f) in positions.iter().zip(forces.iter()) {
+            net = add3(net, *f);
+            torque = add3(torque, cross3(*p, *f));
+        }
+        let scale = forces.iter().map(|f| length3(*f)).fold(0.0, f64::max);
+        assert!(scale > 1.0, "the deformed element must carry force");
+        assert!(length3(net) < 1.0e-9 * scale, "net force {net:?}");
+        assert!(length3(torque) < 1.0e-8 * scale, "net torque {torque:?}");
+    }
+    #[test]
+    fn test_corotational_uniform_stretch_energy_matches_closed_form() {
+        let elem = skewed_element(2.0e5, 0.25);
+        let (lambda, mu) = elem.lame();
+        let eps = 0.01;
+        let stretched: Vec<[f64; 3]> = SKEWED_REST.iter().map(|p| scale3(*p, 1.0 + eps)).collect();
+        // F = (1 + eps) I, R = I:  psi = mu * 3 eps^2 + lambda / 2 * (3 eps)^2.
+        let expected = elem.rest_volume * eps * eps * (3.0 * mu + 4.5 * lambda);
+        assert_close(
+            elem.strain_energy(&stretched),
+            expected,
+            1.0e-9 * expected,
+            "uniform stretch energy",
+        );
+        // The forces are restoring: they point back towards the centroid.
+        let forces = elem.compute_nodal_forces(&stretched);
+        let centroid = scale3(
+            stretched.iter().fold([0.0; 3], |acc, p| add3(acc, *p)),
+            0.25,
+        );
+        let outward: f64 = stretched
+            .iter()
+            .zip(forces.iter())
+            .map(|(p, f)| dot3(sub3(*p, centroid), *f))
+            .sum();
+        assert!(outward < 0.0, "stretch forces must be restoring: {outward}");
+    }
+    #[test]
+    fn test_corotational_inverted_element_is_pushed_back() {
+        let elem = skewed_element(1.0e5, 0.3);
+        let mut inverted: Vec<[f64; 3]> = SKEWED_REST.to_vec();
+        inverted[3][2] = -0.8;
+        let f = elem.deformation_gradient(&inverted).unwrap();
+        let det_f = dot3(f[0], cross3(f[1], f[2]));
+        assert!(det_f < 0.0, "the element must be inverted, det F = {det_f}");
+        let energy = elem.strain_energy(&inverted);
+        assert!(energy > 0.0);
+        let forces = elem.compute_nodal_forces(&inverted);
+        // The forces are the descent direction of the energy.
+        let stepped: Vec<[f64; 3]> = inverted
+            .iter()
+            .zip(forces.iter())
+            .map(|(p, f)| add3(*p, scale3(*f, 1.0e-7)))
+            .collect();
+        assert!(elem.strain_energy(&stepped) < energy);
+        // And they match the finite-difference gradient there as well.
+        let h = 1.0e-6;
+        let mut plus = inverted.clone();
+        let mut minus = inverted.clone();
+        plus[3][2] += h;
+        minus[3][2] -= h;
+        let gradient = (elem.strain_energy(&plus) - elem.strain_energy(&minus)) / (2.0 * h);
+        assert_close(
+            forces[3][2],
+            -gradient,
+            1.0e-5 * (1.0 + forces[3][2].abs()),
+            "inverted d_z force",
+        );
+    }
+    #[test]
+    fn test_corotational_degenerate_rest_shape_carries_no_energy() {
+        let flat = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+        ];
+        let elem = CorotationalElement::from_rest([0, 1, 2, 3], &flat, 1.0e5, 0.3);
+        assert_eq!(elem.rest_volume, 0.0);
+        let positions = displaced(&flat, 1.0);
+        assert_eq!(elem.strain_energy(&positions), 0.0);
+        assert_eq!(elem.compute_nodal_forces(&positions), [[0.0; 3]; 4]);
+    }
+    #[test]
+    fn test_corotational_tiny_elements_are_not_degenerate() {
+        // The degeneracy test is relative, so a micro-scale tetrahedron is valid.
+        let tiny: [[f64; 3]; 4] = SKEWED_REST.map(|p| scale3(p, 1.0e-6));
+        let elem = CorotationalElement::from_rest([0, 1, 2, 3], &tiny, 1.0e5, 0.3);
+        assert!(elem.rest_volume > 0.0);
+        assert_close(elem.rest_volume, 1.0e-18 / 6.0, 1.0e-30, "tiny rest volume");
+    }
+    #[test]
+    fn test_corotational_incompressible_poisson_ratio_stays_finite() {
+        let elem = skewed_element(1.0e5, 0.5);
+        let (lambda, mu) = elem.lame();
+        assert!(lambda.is_finite() && mu.is_finite());
+        for f in elem.compute_nodal_forces(&SKEWED_REST) {
+            assert!(f.iter().all(|c| c.is_finite() && c.abs() < 1.0e-6));
+        }
+    }
+    #[test]
+    fn test_corotational_out_of_range_nodes_give_zero_response() {
+        let elem = CorotationalElement::from_rest([0, 1, 2, 9], &SKEWED_REST, 1.0e5, 0.3);
+        assert!(elem.deformation_gradient(&SKEWED_REST).is_none());
+        assert_eq!(elem.strain_energy(&SKEWED_REST), 0.0);
+        assert_eq!(elem.compute_nodal_forces(&SKEWED_REST), [[0.0; 3]; 4]);
+    }
+    #[test]
+    fn test_fem_solver_skewed_tet_is_force_free_at_rest() {
+        let mut solver = FEMGpuSolver::new(4);
+        solver.add_element(skewed_element(1.0e6, 0.3));
+        let mut buf = DeformableGpuBuffer::new();
+        for &p in &SKEWED_REST {
+            buf.push(p, [0.0; 3], 1.0_f64);
+        }
+        buf.reset_forces();
+        solver.assemble_forces(&mut buf);
+        for i in 0..4 {
+            assert!(
+                length3(buf.forces[i]) < 1.0e-9,
+                "node {i}: {:?}",
+                buf.forces[i]
+            );
+        }
+        assert!(solver.strain_energy(&buf) < 1.0e-12);
+    }
+    #[test]
+    fn test_fem_solver_assembles_shared_nodes_and_sums_energy() {
+        // Two tetrahedra glued along the face (1, 2, 3).
+        let rest_a = SKEWED_REST;
+        let apex = [1.0, 1.0, 1.0];
+        let rest_b = [SKEWED_REST[1], SKEWED_REST[2], SKEWED_REST[3], apex];
+        let elem_a = CorotationalElement::from_rest([0, 1, 2, 3], &rest_a, 1.0e5, 0.3);
+        let elem_b = CorotationalElement::from_rest([1, 2, 3, 4], &rest_b, 2.0e5, 0.2);
+        let mut solver = FEMGpuSolver::new(5);
+        solver.add_element(elem_a.clone());
+        solver.add_element(elem_b.clone());
+        let positions: Vec<[f64; 3]> = displaced(&SKEWED_REST, 1.0)
+            .into_iter()
+            .chain(std::iter::once(add3(apex, [0.05, -0.03, 0.07])))
+            .collect();
+        let mut buf = DeformableGpuBuffer::new();
+        for &p in &positions {
+            buf.push(p, [0.0; 3], 1.0_f64);
+        }
+        buf.reset_forces();
+        solver.assemble_forces(&mut buf);
+        let fa = elem_a.compute_nodal_forces(&positions);
+        let fb = elem_b.compute_nodal_forces(&positions);
+        for node in 0..5 {
+            let mut expected = [0.0; 3];
+            if node < 4 {
+                expected = add3(expected, fa[node]);
+            }
+            if node >= 1 {
+                expected = add3(expected, fb[node - 1]);
+            }
+            for axis in 0..3 {
+                assert_close(
+                    buf.forces[node][axis],
+                    expected[axis],
+                    1.0e-9,
+                    "assembled force",
+                );
+            }
+        }
+        let total = elem_a.strain_energy(&positions) + elem_b.strain_energy(&positions);
+        assert!(total > 0.0);
+        assert_close(
+            solver.strain_energy(&buf),
+            total,
+            1.0e-12 * total,
+            "total energy",
+        );
+    }
     #[test]
     fn test_gpu_collision_plane_detect() {
         let cr = GPUCollisionResponse::default_params();

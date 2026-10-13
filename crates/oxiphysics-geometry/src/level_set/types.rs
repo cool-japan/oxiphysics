@@ -3,7 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
-use super::functions::{MC_EDGE_CORNERS, MC_EDGE_TABLE, MC_TRI_TABLE};
+use crate::mc_tables::{MC_EDGE_ASCENDING, MC_EDGE_TABLE, case_index, case_triangles};
 
 /// Signed distance transform from a point cloud or triangle mesh.
 ///
@@ -527,52 +527,15 @@ impl LevelSetField {
     }
     /// Mean curvature κ = div(∇φ / |∇φ|) at grid node (ix, iy, iz).
     ///
-    /// Computed via second-order finite differences.
+    /// Computed from second-order finite differences of the grid values with all six
+    /// second derivatives (including the mixed ones φxy, φxz, φyz):
+    /// κ = \[φxx(φy² + φz²) + φyy(φx² + φz²) + φzz(φx² + φy²) − 2(φxφyφxy +
+    /// φxφzφxz + φyφzφyz)\] / |∇φ|³.  On the grid boundary the stencils become
+    /// one-sided.  A sphere signed-distance field `|x| − r` has κ = 2 / |x|.
+    ///
+    /// Returns `0.0` for a node outside the grid and where ∇φ vanishes.
     pub fn mean_curvature(&self, ix: usize, iy: usize, iz: usize) -> f64 {
-        let phi = self.get(ix, iy, iz);
-        let dx2 = self.dx * self.dx;
-        let get = |x: usize, y: usize, z: usize| -> f64 {
-            let xc = x.min(self.nx - 1);
-            let yc = y.min(self.ny - 1);
-            let zc = z.min(self.nz - 1);
-            self.get(xc, yc, zc)
-        };
-        let pxp = if ix + 1 < self.nx {
-            get(ix + 1, iy, iz)
-        } else {
-            phi
-        };
-        let pxm = if ix > 0 { get(ix - 1, iy, iz) } else { phi };
-        let pyp = if iy + 1 < self.ny {
-            get(ix, iy + 1, iz)
-        } else {
-            phi
-        };
-        let pym = if iy > 0 { get(ix, iy - 1, iz) } else { phi };
-        let pzp = if iz + 1 < self.nz {
-            get(ix, iy, iz + 1)
-        } else {
-            phi
-        };
-        let pzm = if iz > 0 { get(ix, iy, iz - 1) } else { phi };
-        let phix = (pxp - pxm) / (2.0 * self.dx);
-        let phiy = (pyp - pym) / (2.0 * self.dx);
-        let phiz = (pzp - pzm) / (2.0 * self.dx);
-        let phixx = (pxp - 2.0 * phi + pxm) / dx2;
-        let phiyy = (pyp - 2.0 * phi + pym) / dx2;
-        let phizz = (pzp - 2.0 * phi + pzm) / dx2;
-        let grad2 = phix * phix + phiy * phiy + phiz * phiz;
-        let grad_mag = grad2.sqrt().max(1e-30);
-
-        (phixx + phiyy + phizz) / grad_mag
-            - (phix * phix * phixx
-                + phiy * phiy * phiyy
-                + phiz * phiz * phizz
-                + 2.0
-                    * (phix * phiy * ((pxp + pyp - pxm - pym) / (4.0 * self.dx * self.dx) - 0.0)
-                        + phix * phiz * 0.0
-                        + phiy * phiz * 0.0))
-                / (grad_mag * grad2).max(1e-30)
+        super::finite_difference::mean_curvature_at(self, ix, iy, iz)
     }
     /// Initialize the level-set as a sphere SDF.
     ///
@@ -698,106 +661,27 @@ impl LevelSetReinit {
             }
         }
     }
-    /// Simple iterative fast marching sweep reinitialization (alternating directions).
+    /// Fast-sweeping redistancing (Zhao 2005): turn `field` into a signed distance
+    /// function with `|∇φ| = 1` while keeping the sign of every node.
     ///
-    /// Faster than the PDE approach for well-behaved fields; performs `n_sweeps`
-    /// alternating-direction passes of the first-order update.
+    /// Nodes that have a neighbour of opposite sign (and nodes with φ = 0 exactly)
+    /// are frozen with the first-order distance estimate `|φ| / |∇φ|`, limited by
+    /// the distance to the closest zero crossing along a grid edge.  All other
+    /// nodes start at a huge distance and are lowered by Gauss–Seidel sweeps with
+    /// the upwind Godunov update of the Eikonal equation `|∇d| = 1`, using the
+    /// nearest known distance along each of the x, y and z axes.  Sweep `s` visits
+    /// the grid in the diagonal ordering `s mod 8`, so `n_sweeps = 8` is one full
+    /// Gauss–Seidel iteration; the loop ends early once a whole cycle of eight
+    /// orderings changes no node by more than `self.tol`.
+    ///
+    /// Nodes that the requested sweeps have not reached keep their original value;
+    /// a field without a zero level set, or one containing NaN, is left unchanged.
     ///
     /// # Arguments
-    /// * `field`   – the level-set field to reinitialize
-    /// * `n_sweeps`– number of alternating-direction sweep passes
+    /// * `field`    – the level-set field to reinitialize
+    /// * `n_sweeps` – maximum number of Gauss–Seidel sweeps
     pub fn fast_sweep(&self, field: &mut LevelSetField, n_sweeps: usize) {
-        let dx = field.dx;
-        let nx = field.nx;
-        let ny = field.ny;
-        let nz = field.nz;
-        for sweep in 0..n_sweeps {
-            let ix_range: Vec<usize> = if sweep % 2 == 0 {
-                (0..nx).collect()
-            } else {
-                (0..nx).rev().collect()
-            };
-            let iy_range: Vec<usize> = if (sweep / 2) % 2 == 0 {
-                (0..ny).collect()
-            } else {
-                (0..ny).rev().collect()
-            };
-            let iz_range: Vec<usize> = if (sweep / 4) % 2 == 0 {
-                (0..nz).collect()
-            } else {
-                (0..nz).rev().collect()
-            };
-            for &iz in &iz_range {
-                for &iy in &iy_range {
-                    for &ix in &ix_range {
-                        let phi_c = field.get(ix, iy, iz);
-                        let axm = if ix > 0 {
-                            field.get(ix - 1, iy, iz)
-                        } else {
-                            phi_c
-                        };
-                        let axp = if ix + 1 < nx {
-                            field.get(ix + 1, iy, iz)
-                        } else {
-                            phi_c
-                        };
-                        let aym = if iy > 0 {
-                            field.get(ix, iy - 1, iz)
-                        } else {
-                            phi_c
-                        };
-                        let ayp = if iy + 1 < ny {
-                            field.get(ix, iy + 1, iz)
-                        } else {
-                            phi_c
-                        };
-                        let azm = if iz > 0 {
-                            field.get(ix, iy, iz - 1)
-                        } else {
-                            phi_c
-                        };
-                        let azp = if iz + 1 < nz {
-                            field.get(ix, iy, iz + 1)
-                        } else {
-                            phi_c
-                        };
-                        let ax = if phi_c >= 0.0 {
-                            axm.min(axp)
-                        } else {
-                            axm.max(axp)
-                        };
-                        let ay = if phi_c >= 0.0 {
-                            aym.min(ayp)
-                        } else {
-                            aym.max(ayp)
-                        };
-                        let az = if phi_c >= 0.0 {
-                            azm.min(azp)
-                        } else {
-                            azm.max(azp)
-                        };
-                        let new_val = if phi_c >= 0.0 {
-                            (ax.abs().min(ay.abs()).min(az.abs()) + dx).min(phi_c.abs())
-                        } else {
-                            let d = (ax.abs().min(ay.abs()).min(az.abs()) + dx).min(phi_c.abs());
-                            -d
-                        };
-                        let _ = ax;
-                        let _ = ay;
-                        let _ = az;
-                        let _ = new_val;
-                        let candidate = if phi_c >= 0.0 {
-                            axm.max(0.0).min(axp.max(0.0)).min(phi_c).max(0.0) + dx
-                        } else {
-                            (axm.min(0.0).max(axp.min(0.0)).max(phi_c).min(0.0)) - dx
-                        };
-                        if (candidate.abs() < phi_c.abs()) && (candidate * phi_c >= 0.0) {
-                            field.set(ix, iy, iz, candidate);
-                        }
-                    }
-                }
-            }
-        }
+        super::fast_sweep::fast_sweep(self, field, n_sweeps);
     }
 }
 /// Output triangle from marching cubes isosurface extraction.
@@ -809,7 +693,12 @@ pub struct McTriangle {
 /// Isosurface extraction via the Marching Cubes algorithm.
 ///
 /// Implements the full 256-case lookup table for robust triangle generation
-/// at the specified isovalue.
+/// at the specified isovalue.  A grid node is *inside* when its value is
+/// strictly below the isovalue; the emitted triangles are wound counter-clockwise
+/// when seen from outside, i.e. their normals point towards increasing field
+/// values.  Crossing points are interpolated from the lower to the upper end of
+/// every cube edge, so the triangles of neighbouring cells meet at bit-identical
+/// vertices.
 pub struct IsosurfaceExtraction {
     /// Isovalue defining the surface (default: 0.0 for signed distance fields).
     pub isovalue: f64,
@@ -872,35 +761,23 @@ impl IsosurfaceExtraction {
             field.node_pos(ix + 1, iy + 1, iz + 1),
             field.node_pos(ix, iy + 1, iz + 1),
         ];
-        let mut cube_idx = 0u8;
-        for (i, &vi) in v.iter().enumerate() {
-            if vi < self.isovalue {
-                cube_idx |= 1 << i;
-            }
-        }
-        if cube_idx == 0 || cube_idx == 255 {
+        let case = case_index(&v, self.isovalue);
+        if case == 0 || case == 255 {
             return;
         }
-        let edge_flags = MC_EDGE_TABLE[cube_idx as usize];
+        let edge_flags = MC_EDGE_TABLE[case];
         let mut edge_verts = [[0.0f64; 3]; 12];
-        for e in 0..12 {
+        for (e, &[lo, hi]) in MC_EDGE_ASCENDING.iter().enumerate() {
             if edge_flags & (1 << e) != 0 {
-                let (a, b) = MC_EDGE_CORNERS[e];
-                edge_verts[e] = interp_vertex(p[a], p[b], v[a], v[b], self.isovalue);
+                edge_verts[e] = interp_vertex(p[lo], p[hi], v[lo], v[hi], self.isovalue);
             }
         }
-        let tris = &MC_TRI_TABLE[cube_idx as usize];
-        let mut i = 0;
-        while i < tris.len() && tris[i] != -1 {
-            let tri = McTriangle {
-                vertices: [
-                    edge_verts[tris[i] as usize],
-                    edge_verts[tris[i + 1] as usize],
-                    edge_verts[tris[i + 2] as usize],
-                ],
-            };
-            triangles.push(tri);
-            i += 3;
+        for [a, b, c] in case_triangles(case) {
+            // The table winds into the solid; swap two vertices so the triangle
+            // faces out of it.
+            triangles.push(McTriangle {
+                vertices: [edge_verts[a], edge_verts[c], edge_verts[b]],
+            });
         }
     }
     /// Count the number of triangles in the isosurface.

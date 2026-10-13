@@ -231,13 +231,19 @@ pub fn steam_quality(t: f64, p: f64) -> f64 {
 }
 
 /// Dynamic viscosity of water (Pa·s) as a function of temperature (K).
+///
+/// Empirical liquid-water correlation
+/// `μ(T) = a · exp(b/T + c·T + d·T²)` with `a = 1.856e-14` Pa·s, `b = 4209` K,
+/// `c = 0.04527` K⁻¹ and `d = -3.376e-5` K⁻². It reproduces the tabulated
+/// viscosity of liquid water to within 4 % between 273 K and 393 K (the error
+/// grows to about 5 % at 423 K and 8 % at 450 K), e.g. ≈ 9.1e-4 Pa·s at 298 K
+/// (tabulated 8.9e-4) and ≈ 3.6e-4 Pa·s at 353 K (tabulated 3.55e-4).
 pub fn water_viscosity(t: f64) -> f64 {
-    // Simplified Vogel equation
     let a = 1.856e-14;
     let b = 4209.0;
     let c = 0.04527;
     let d = -3.376e-5;
-    a * (b / t + c + d * t).exp()
+    a * (b / t + c * t + d * t * t).exp()
 }
 
 /// Specific heat capacity of water (J kg⁻¹ K⁻¹) as function of T (K).
@@ -1648,5 +1654,74 @@ mod tests {
         let cp = water_cp(300.0);
         // Specific heat of water ~4180 J/(kg K)
         assert!(cp > 4000.0 && cp < 4500.0, "Water Cp: {cp}");
+    }
+
+    /// Tabulated dynamic viscosity of liquid water (CRC / IAPWS): 8.90e-4 Pa·s
+    /// at 25 °C and 3.55e-4 Pa·s at 80 °C. The correlation must be within 3 %.
+    #[test]
+    fn test_water_viscosity_matches_tabulated_values() {
+        let mu_25 = water_viscosity(298.15);
+        assert!(
+            (mu_25 - 8.9e-4).abs() < 0.03 * 8.9e-4,
+            "mu(298.15 K) = {mu_25:e} Pa s, expected about 8.9e-4"
+        );
+        let mu_80 = water_viscosity(353.15);
+        assert!(
+            (mu_80 - 3.55e-4).abs() < 0.03 * 3.55e-4,
+            "mu(353.15 K) = {mu_80:e} Pa s, expected about 3.55e-4"
+        );
+    }
+
+    /// The Vogel form `a exp(b/T + c T + d T^2)` must be evaluated with all four
+    /// terms; checked against an independent evaluation of the exponent.
+    #[test]
+    fn test_water_viscosity_follows_vogel_exponent() {
+        for t in [280.0_f64, 300.0, 340.0, 380.0] {
+            let exponent = 4209.0 / t + 0.04527 * t - 3.376e-5 * t * t;
+            let expected = 1.856e-14 * exponent.exp();
+            let mu = water_viscosity(t);
+            assert!(
+                (mu - expected).abs() < 1e-12 * expected,
+                "mu({t} K) = {mu:e}, expected {expected:e}"
+            );
+        }
+    }
+
+    /// Water at room temperature is about 1e-3 Pa s: never the 1e-8 Pa s the
+    /// mis-applied correlation produced.
+    #[test]
+    fn test_water_viscosity_physical_range_and_monotone() {
+        let mut previous = f64::INFINITY;
+        for step in 0..=12 {
+            let t = 273.15 + 10.0 * step as f64;
+            let mu = water_viscosity(t);
+            assert!(
+                (1.0e-4..2.0e-3).contains(&mu),
+                "mu({t} K) = {mu:e} Pa s is outside the liquid-water range"
+            );
+            assert!(mu < previous, "viscosity must fall with temperature");
+            previous = mu;
+        }
+    }
+
+    /// `reservoir_impedance = mu L / k`: with the corrected viscosity a 300 m
+    /// well pair in fractured rock (k = 1e-12 m^2) at 300 K is about 2.6e11
+    /// Pa s/m^3, not the ~7e6 the 1e-8 Pa s viscosity gave.
+    #[test]
+    fn test_reservoir_impedance_uses_physical_viscosity() {
+        let mut egs = EgsSystem::new(3000.0, RockType::FracturedRock);
+        egs.reservoir_temp = 300.0;
+        egs.injection_pos = [0.0, -3000.0, 0.0];
+        egs.production_pos = [300.0, -3000.0, 0.0];
+        let impedance = egs.reservoir_impedance();
+        let expected = water_viscosity(300.0) * 300.0 / RockType::FracturedRock.permeability();
+        assert!(
+            (impedance - expected).abs() < 1e-12 * expected,
+            "impedance {impedance:e}, expected {expected:e}"
+        );
+        assert!(
+            (2.4e11..2.8e11).contains(&impedance),
+            "impedance {impedance:e} Pa s/m^3 is not of the order 2.6e11"
+        );
     }
 }

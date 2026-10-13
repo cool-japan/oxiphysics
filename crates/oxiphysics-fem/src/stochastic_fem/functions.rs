@@ -186,60 +186,172 @@ pub fn pce_variance(coeffs: &[f64]) -> f64 {
     }
     coeffs[1..].iter().map(|c| c * c).sum()
 }
-/// Gauss-Hermite quadrature nodes and weights for `n`-point rule.
+/// Gauss-Hermite quadrature nodes and weights for the `n`-point rule.
 ///
-/// Returns `(nodes, weights)` for approximating ∫ f(x) exp(-x²) dx.
-/// Supports n = 1, 2, 3, 4, 5; returns empty vecs for other values.
+/// Returns `(nodes, weights)` with the nodes in ascending order, for the
+/// physicists' integral
+///
+/// ∫ f(x) exp(−x²) dx ≈ Σᵢ wᵢ f(xᵢ),
+///
+/// which is exact for every polynomial `f` of degree ≤ 2n − 1.  The weights
+/// sum to √π.  To integrate against the standard normal density use the
+/// substitution ξ = √2·x together with the factor π^(−1/2):
+/// E[g(ξ)] = π^(−1/2) Σᵢ wᵢ g(√2·xᵢ).
+///
+/// The rule is computed for any `n ≥ 1` with the Golub–Welsch algorithm: the
+/// nodes are the eigenvalues of the symmetric tridiagonal Jacobi matrix with
+/// zero diagonal and off-diagonal entries √(k/2), and the weights are
+/// √π times the squared first components of the normalised eigenvectors.
+/// The nodes are then polished with Newton steps on the orthonormal Hermite
+/// recurrence and the weights re-evaluated from the Christoffel formula
+/// wᵢ = 1 / (n · hₙ₋₁(xᵢ)²), so the tabulated low-order rules are accurate to
+/// machine precision.
+///
+/// Returns empty vectors for `n == 0`.
 pub fn gauss_hermite_quadrature(n: usize) -> (Vec<f64>, Vec<f64>) {
-    match n {
-        1 => (vec![0.0], vec![PI.sqrt()]),
-        2 => (
-            vec![
-                -std::f64::consts::FRAC_1_SQRT_2,
-                std::f64::consts::FRAC_1_SQRT_2,
-            ],
-            vec![0.886_226_925_452_758, 0.886_226_925_452_758],
-        ),
-        3 => (
-            vec![-1.224_744_871_391_589, 0.0, 1.224_744_871_391_589],
-            vec![
-                0.295_408_975_150_920,
-                1.181_635_900_603_681,
-                0.295_408_975_150_920,
-            ],
-        ),
-        4 => (
-            vec![
-                -1.650_680_123_885_785,
-                -0.524_647_623_275_290,
-                0.524_647_623_275_290,
-                1.650_680_123_885_785,
-            ],
-            vec![
-                0.081_312_835_447_245,
-                0.804_914_090_005_513,
-                0.804_914_090_005_513,
-                0.081_312_835_447_245,
-            ],
-        ),
-        5 => (
-            vec![
-                -2.020_182_470_003_108,
-                -0.958_572_464_613_819,
-                0.0,
-                0.958_572_464_613_819,
-                2.020_182_470_003_108,
-            ],
-            vec![
-                0.019_953_242_059_046,
-                0.394_424_314_739_089,
-                0.945_308_720_482_942,
-                0.394_424_314_739_089,
-                0.019_953_242_059_046,
-            ],
-        ),
-        _ => (vec![], vec![]),
+    if n == 0 {
+        return (vec![], vec![]);
     }
+    let mut diag = vec![0.0_f64; n];
+    let mut off_diag: Vec<f64> = (0..n)
+        .map(|k| {
+            if k + 1 < n {
+                ((k + 1) as f64 / 2.0).sqrt()
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let mut first_row = vec![0.0_f64; n];
+    first_row[0] = 1.0;
+    if !tridiagonal_ql_first_row(&mut diag, &mut off_diag, &mut first_row) {
+        return (vec![], vec![]);
+    }
+    let mut pairs: Vec<(f64, f64)> = diag
+        .iter()
+        .zip(first_row.iter())
+        .map(|(&x, &z)| (x, PI.sqrt() * z * z))
+        .collect();
+    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut nodes: Vec<f64> = pairs.iter().map(|p| p.0).collect();
+    let mut weights: Vec<f64> = pairs.iter().map(|p| p.1).collect();
+    // Enforce the exact symmetry x_{n-1-i} = -x_i, w_{n-1-i} = w_i.
+    for i in 0..n / 2 {
+        let j = n - 1 - i;
+        let x = 0.5 * (nodes[j] - nodes[i]);
+        let w = 0.5 * (weights[i] + weights[j]);
+        nodes[i] = -x;
+        nodes[j] = x;
+        weights[i] = w;
+        weights[j] = w;
+    }
+    if n % 2 == 1 {
+        nodes[n / 2] = 0.0;
+    }
+    // Newton polish on the orthonormal Hermite recurrence, then Christoffel weights.
+    for (x, w) in nodes.iter_mut().zip(weights.iter_mut()) {
+        let mut refined = *x;
+        for _ in 0..4 {
+            let (h_n, h_nm1) = orthonormal_hermite_pair(n, refined);
+            let derivative = (2.0 * n as f64).sqrt() * h_nm1;
+            if derivative == 0.0 || !derivative.is_finite() || !h_n.is_finite() {
+                break;
+            }
+            refined -= h_n / derivative;
+        }
+        if refined.is_finite() && (refined - *x).abs() <= 1.0e-6 * (1.0 + x.abs()) {
+            let (_, h_nm1) = orthonormal_hermite_pair(n, refined);
+            let christoffel = 1.0 / (n as f64 * h_nm1 * h_nm1);
+            if christoffel.is_finite() && christoffel > 0.0 {
+                *x = refined;
+                *w = christoffel;
+            }
+        }
+    }
+    (nodes, weights)
+}
+/// Values `(hₙ(x), hₙ₋₁(x))` of the Hermite polynomials orthonormal with
+/// respect to the weight exp(−x²), by the stable three-term recurrence
+/// h₀ = π^(−1/4), h_{k+1} = √(2/(k+1))·x·h_k − √(k/(k+1))·h_{k−1}.
+fn orthonormal_hermite_pair(n: usize, x: f64) -> (f64, f64) {
+    let mut h_prev = 0.0_f64;
+    let mut h = PI.powf(-0.25);
+    for k in 0..n {
+        let kf = k as f64;
+        let h_next = (2.0 / (kf + 1.0)).sqrt() * x * h - (kf / (kf + 1.0)).sqrt() * h_prev;
+        h_prev = h;
+        h = h_next;
+    }
+    (h, h_prev)
+}
+/// Eigenvalues of a symmetric tridiagonal matrix by the implicit QL algorithm
+/// with Wilkinson shifts, together with the first row of the orthogonal
+/// eigenvector matrix.
+///
+/// On entry `d` holds the diagonal, `e[i]` the off-diagonal entry coupling
+/// rows `i` and `i + 1` (`e[n - 1]` is unused and must be zero) and `z` the
+/// first row of the identity.  On success `d` holds the eigenvalues and
+/// `z[j]` the first component of the eigenvector of `d[j]`.  Returns `false`
+/// if the iteration fails to converge.
+fn tridiagonal_ql_first_row(d: &mut [f64], e: &mut [f64], z: &mut [f64]) -> bool {
+    const MAX_ITERATIONS: usize = 60;
+    let n = d.len();
+    for l in 0..n {
+        let mut iterations = 0;
+        loop {
+            let mut m = l;
+            while m + 1 < n {
+                let scale = d[m].abs() + d[m + 1].abs();
+                if e[m].abs() <= f64::EPSILON * scale {
+                    break;
+                }
+                m += 1;
+            }
+            if m == l {
+                break;
+            }
+            iterations += 1;
+            if iterations > MAX_ITERATIONS {
+                return false;
+            }
+            let mut g = (d[l + 1] - d[l]) / (2.0 * e[l]);
+            let mut r = g.hypot(1.0);
+            g = d[m] - d[l] + e[l] / (g + r.copysign(g));
+            let (mut s, mut c, mut p) = (1.0_f64, 1.0_f64, 0.0_f64);
+            let mut underflow = false;
+            let mut i = m;
+            while i > l {
+                i -= 1;
+                let f = s * e[i];
+                let b = c * e[i];
+                r = f.hypot(g);
+                e[i + 1] = r;
+                if r == 0.0 {
+                    d[i + 1] -= p;
+                    e[m] = 0.0;
+                    underflow = true;
+                    break;
+                }
+                s = f / r;
+                c = g / r;
+                g = d[i + 1] - p;
+                r = (d[i] - g) * s + 2.0 * c * b;
+                p = s * r;
+                d[i + 1] = g + p;
+                g = c * r - b;
+                let z_next = z[i + 1];
+                z[i + 1] = s * z[i] + c * z_next;
+                z[i] = c * z[i] - s * z_next;
+            }
+            if underflow {
+                continue;
+            }
+            d[l] -= p;
+            e[l] = g;
+            e[m] = 0.0;
+        }
+    }
+    true
 }
 /// Estimate P(u > threshold) from Monte Carlo samples.
 ///
@@ -688,7 +800,83 @@ mod tests {
     #[test]
     fn test_pce_from_quadrature_constant() {
         let pce = PolynomialChaosExpansion::from_quadrature(|_| 3.0, 2, 3);
-        assert!((pce.mean() - 3.0).abs() < 0.1, "mean={}", pce.mean());
+        assert!((pce.mean() - 3.0).abs() < 1e-12, "mean={}", pce.mean());
+        assert!(pce.coefficients[1].abs() < 1e-12);
+        assert!(pce.coefficients[2].abs() < 1e-12);
+    }
+    #[test]
+    fn test_pce_from_quadrature_linear_model_has_unit_first_coefficient() {
+        // xi = He_1(xi): c = [0, 1, 0].  The mis-scaled projection gave c1 = 0.5.
+        let pce = PolynomialChaosExpansion::from_quadrature(|xi| xi, 2, 3);
+        assert!(pce.coefficients[0].abs() < 1e-13);
+        assert!(
+            (pce.coefficients[1] - 1.0).abs() < 1e-13,
+            "c1 = {}",
+            pce.coefficients[1]
+        );
+        assert!(pce.coefficients[2].abs() < 1e-13);
+    }
+    #[test]
+    fn test_pce_from_quadrature_quadratic_model() {
+        // xi^2 = He_2 + He_0: c = [1, 0, 1].
+        let pce = PolynomialChaosExpansion::from_quadrature(|xi| xi * xi, 2, 3);
+        let expected = [1.0, 0.0, 1.0];
+        for (k, (got, want)) in pce.coefficients.iter().zip(expected.iter()).enumerate() {
+            assert!((got - want).abs() < 1e-13, "c{k} = {got}, expected {want}");
+        }
+    }
+    #[test]
+    fn test_pce_from_quadrature_cubic_model_in_all_supported_rules() {
+        // xi^3 = He_3 + 3 He_1: c = [0, 3, 0, 1, 0].  Exact once 2n - 1 >= 3 + 4.
+        for quad_pts in 4..=9 {
+            let pce = PolynomialChaosExpansion::from_quadrature(|xi| xi.powi(3), 4, quad_pts);
+            let expected = [0.0, 3.0, 0.0, 1.0, 0.0];
+            for (k, (got, want)) in pce.coefficients.iter().zip(expected.iter()).enumerate() {
+                assert!(
+                    (got - want).abs() < 1e-11,
+                    "{quad_pts} points: c{k} = {got}, expected {want}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn test_pce_from_quadrature_exponential_model_matches_closed_form() {
+        // exp(a xi) = exp(a^2 / 2) * sum_n a^n / n! * He_n(xi).
+        let a = 0.5_f64;
+        let max_order = 5;
+        let pce = PolynomialChaosExpansion::from_quadrature(|xi| (a * xi).exp(), max_order, 12);
+        let mut factorial = 1.0;
+        for n in 0..=max_order {
+            if n > 0 {
+                factorial *= n as f64;
+            }
+            let expected = (0.5 * a * a).exp() * a.powi(n as i32) / factorial;
+            assert!(
+                (pce.coefficients[n] - expected).abs() < 1e-12,
+                "c{n} = {}, expected {expected}",
+                pce.coefficients[n]
+            );
+        }
+        // The projected mean equals E[exp(a xi)] = exp(a^2 / 2).
+        assert!((pce.mean() - (0.5 * a * a).exp()).abs() < 1e-12);
+    }
+    #[test]
+    fn test_pce_from_quadrature_zero_points_gives_zero_coefficients() {
+        let pce = PolynomialChaosExpansion::from_quadrature(|xi| xi, 3, 0);
+        assert_eq!(pce.coefficients, vec![0.0; 4]);
+    }
+    #[test]
+    fn test_pce_from_quadrature_evaluates_model_once_per_node() {
+        let calls = std::cell::Cell::new(0usize);
+        let _ = PolynomialChaosExpansion::from_quadrature(
+            |xi| {
+                calls.set(calls.get() + 1);
+                xi
+            },
+            6,
+            5,
+        );
+        assert_eq!(calls.get(), 5);
     }
     #[test]
     fn test_gauss_hermite_1pt() {
@@ -713,6 +901,140 @@ mod tests {
         let (nodes, weights) = gauss_hermite_quadrature(5);
         assert_eq!(nodes.len(), 5);
         assert_eq!(weights.len(), 5);
+    }
+    #[test]
+    fn test_gauss_hermite_5pt_matches_reference_values() {
+        let (nodes, weights) = gauss_hermite_quadrature(5);
+        let ref_nodes = [
+            -2.020_182_870_456_086,
+            -0.958_572_464_613_818_5,
+            0.0,
+            0.958_572_464_613_818_5,
+            2.020_182_870_456_086,
+        ];
+        let ref_weights = [
+            0.019_953_242_059_045_91,
+            0.393_619_323_152_241_2,
+            0.945_308_720_482_941_9,
+            0.393_619_323_152_241_2,
+            0.019_953_242_059_045_91,
+        ];
+        for k in 0..5 {
+            assert!(
+                (nodes[k] - ref_nodes[k]).abs() < 1e-14,
+                "node {k}: {} vs {}",
+                nodes[k],
+                ref_nodes[k]
+            );
+            assert!(
+                (weights[k] - ref_weights[k]).abs() < 1e-14,
+                "weight {k}: {} vs {}",
+                weights[k],
+                ref_weights[k]
+            );
+        }
+    }
+    #[test]
+    fn test_gauss_hermite_low_order_rules_match_closed_forms() {
+        let (n2, w2) = gauss_hermite_quadrature(2);
+        assert!((n2[1] - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-15);
+        assert!((n2[0] + std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-15);
+        assert!((w2[0] - PI.sqrt() / 2.0).abs() < 1e-15);
+        let (n3, w3) = gauss_hermite_quadrature(3);
+        assert!((n3[2] - 1.5_f64.sqrt()).abs() < 1e-15);
+        assert_eq!(n3[1], 0.0);
+        assert!((w3[1] - 2.0 * PI.sqrt() / 3.0).abs() < 1e-15);
+        assert!((w3[0] - PI.sqrt() / 6.0).abs() < 1e-15);
+        let (n4, w4) = gauss_hermite_quadrature(4);
+        assert!((n4[3] - 1.650_680_123_885_784_4).abs() < 1e-14);
+        assert!((n4[2] - 0.524_647_623_275_290_4).abs() < 1e-14);
+        assert!((w4[3] - 0.081_312_835_447_245_24).abs() < 1e-14);
+        assert!((w4[2] - 0.804_914_090_005_512_7).abs() < 1e-14);
+    }
+    #[test]
+    fn test_gauss_hermite_weights_sum_to_sqrt_pi_for_every_order() {
+        for n in 1..=30 {
+            let (nodes, weights) = gauss_hermite_quadrature(n);
+            assert_eq!(nodes.len(), n);
+            assert_eq!(weights.len(), n);
+            let sum: f64 = weights.iter().sum();
+            assert!(
+                (sum - PI.sqrt()).abs() < 1e-12 * PI.sqrt(),
+                "n = {n}: sum of weights = {sum}"
+            );
+            assert!(weights.iter().all(|&w| w > 0.0));
+        }
+    }
+    #[test]
+    fn test_gauss_hermite_nodes_ascending_and_symmetric() {
+        for n in 1..=20 {
+            let (nodes, weights) = gauss_hermite_quadrature(n);
+            for pair in nodes.windows(2) {
+                assert!(pair[0] < pair[1], "n = {n}: nodes not strictly ascending");
+            }
+            for i in 0..n {
+                assert_eq!(nodes[i], -nodes[n - 1 - i], "n = {n}: node symmetry");
+                assert_eq!(weights[i], weights[n - 1 - i], "n = {n}: weight symmetry");
+            }
+        }
+    }
+    #[test]
+    fn test_gauss_hermite_integrates_even_moments_exactly() {
+        // ∫ x^(2k) exp(-x²) dx = Γ(k + 1/2) = (2k - 1)!! √π / 2^k, exact for 2k <= 2n - 1.
+        for n in 1..=12 {
+            let (nodes, weights) = gauss_hermite_quadrature(n);
+            let mut exact = PI.sqrt();
+            for k in 0..n {
+                if k > 0 {
+                    exact *= (2 * k - 1) as f64 / 2.0;
+                }
+                let approx: f64 = nodes
+                    .iter()
+                    .zip(weights.iter())
+                    .map(|(&x, &w)| w * x.powi(2 * k as i32))
+                    .sum();
+                assert!(
+                    (approx - exact).abs() < 1e-11 * exact.max(1.0),
+                    "n = {n}, moment 2k = {}: {approx} vs {exact}",
+                    2 * k
+                );
+            }
+        }
+    }
+    #[test]
+    fn test_gauss_hermite_odd_moments_vanish() {
+        let (nodes, weights) = gauss_hermite_quadrature(7);
+        for power in [1, 3, 5, 7, 9, 11, 13] {
+            let approx: f64 = nodes
+                .iter()
+                .zip(weights.iter())
+                .map(|(&x, &w)| w * x.powi(power))
+                .sum();
+            assert!(approx.abs() < 1e-12, "odd moment {power}: {approx}");
+        }
+    }
+    #[test]
+    fn test_gauss_hermite_zero_points_is_empty() {
+        let (nodes, weights) = gauss_hermite_quadrature(0);
+        assert!(nodes.is_empty());
+        assert!(weights.is_empty());
+    }
+    #[test]
+    fn test_gauss_hermite_standard_normal_expectations() {
+        // E[xi^2] = 1, E[xi^4] = 3, E[xi^6] = 15 through the sqrt(2) substitution.
+        let (nodes, weights) = gauss_hermite_quadrature(6);
+        let expect = |power: i32| -> f64 {
+            nodes
+                .iter()
+                .zip(weights.iter())
+                .map(|(&x, &w)| w * (2.0_f64.sqrt() * x).powi(power))
+                .sum::<f64>()
+                / PI.sqrt()
+        };
+        assert!((expect(0) - 1.0).abs() < 1e-13);
+        assert!((expect(2) - 1.0).abs() < 1e-13);
+        assert!((expect(4) - 3.0).abs() < 1e-12);
+        assert!((expect(6) - 15.0).abs() < 1e-11);
     }
     #[test]
     fn test_morris_screening_returns_correct_length() {

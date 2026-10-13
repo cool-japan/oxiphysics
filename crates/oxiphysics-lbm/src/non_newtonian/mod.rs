@@ -127,10 +127,10 @@ pub use lbm_integration::{
     ThixotropicModel, ViscosityField, apply_non_newtonian_collision, deborah_number,
     effective_relaxation_frequency, effective_relaxation_time, effective_tau,
     generalized_reynolds_power_law, iterate_apparent_viscosity, kolmogorov_scale,
-    metzner_reed_reynolds, non_newtonian_bgk_step_2d, oldroyd_b_viscosity,
-    shear_rate_from_strain_tensor, smagorinsky_turbulent_viscosity, trouton_ratio,
-    turbulent_effective_viscosity, update_relaxation_field, update_tau_from_shear_rates,
-    van_driest_mixing_length, viscosity_index, weissenberg_number,
+    metzner_reed_reynolds, non_newtonian_bgk_step_2d, non_newtonian_relaxation_time_d2q9,
+    oldroyd_b_viscosity, shear_rate_from_strain_tensor, smagorinsky_turbulent_viscosity,
+    trouton_ratio, turbulent_effective_viscosity, update_relaxation_field,
+    update_tau_from_shear_rates, van_driest_mixing_length, viscosity_index, weissenberg_number,
 };
 
 // ---------------------------------------------------------------------------
@@ -200,3 +200,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests_extended.rs"]
 mod tests_extended;
+
+#[cfg(test)]
+#[path = "collision_tests.rs"]
+mod collision_tests;

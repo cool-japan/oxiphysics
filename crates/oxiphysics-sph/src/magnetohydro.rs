@@ -14,12 +14,15 @@
 //! - [`curl_b`]: SPH estimate of ∇ × **B**
 //! - [`div_b`]: SPH estimate of ∇·**B** (divergence cleaning monitor)
 //! - [`induction_equation_rhs`]: Ideal MHD induction: d**B**/dt = ∇×(**v**×**B**)
-//! - [`dedner_cleaning`]: Dedner hyperbolic divergence cleaning
+//! - [`dedner_cleaning`]: Dedner hyperbolic/parabolic (GLM) divergence cleaning
+//!   with the per-particle potential [`MhdParticle::psi`]
 //! - [`MhdSolver`]: Resistive MHD solver accumulating particles
 //! - [`lundquist_number`]: Magnetic Reynolds number S = vA·L/η
 //! - [`plasma_beta`]: Ratio of thermal to magnetic pressure
 
 use std::f64::consts::PI;
+
+use crate::kernel::SphKernel;
 
 // ============================================================================
 // Physical constants
@@ -71,6 +74,7 @@ fn len3(v: [f64; 3]) -> f64 {
 // ============================================================================
 
 /// SPH particle carrying a magnetic field vector for MHD simulation.
+#[derive(Debug, Clone)]
 pub struct MhdParticle {
     /// Position **x** (m).
     pub pos: [f64; 3],
@@ -86,6 +90,10 @@ pub struct MhdParticle {
     pub mass: f64,
     /// Smoothing length h (m).
     pub h: f64,
+    /// Dedner divergence-cleaning potential ψ (T·m/s).
+    ///
+    /// Advanced by [`dedner_cleaning`]; zero for a freshly created particle.
+    pub psi: f64,
 }
 
 impl MhdParticle {
@@ -107,6 +115,7 @@ impl MhdParticle {
             p,
             mass,
             h,
+            psi: 0.0,
         }
     }
 
@@ -306,28 +315,126 @@ pub fn induction_equation_rhs(
 // Dedner cleaning
 // ============================================================================
 
-/// Dedner hyperbolic/parabolic divergence cleaning step for **B**.
+/// Analytic kernel gradient ∇_i W(**x**_i − **x**_j, h_i) of the pair
+/// `(pi, pj)`, or `None` when the two particles coincide.
+fn pair_kernel_gradient(
+    pi: &MhdParticle,
+    pj: &MhdParticle,
+    kernel: &dyn SphKernel,
+) -> Option<[f64; 3]> {
+    let rij = sub3(pi.pos, pj.pos);
+    let r = len3(rij);
+    if r < 1e-300 {
+        return None;
+    }
+    Some(scale3(rij, kernel.grad_w(r, pi.h) / r))
+}
+
+/// SPH divergence (∇·**B**)_i = Σ_j (m_j/ρ_j) (**B**_j − **B**_i) · ∇_i W_ij
+/// with the analytic kernel gradient.
+fn divergence_b_analytic(particles: &[MhdParticle], i: usize, kernel: &dyn SphKernel) -> f64 {
+    let pi = &particles[i];
+    let mut result = 0.0f64;
+    for (j, pj) in particles.iter().enumerate() {
+        if j == i {
+            continue;
+        }
+        let Some(grad_w) = pair_kernel_gradient(pi, pj, kernel) else {
+            continue;
+        };
+        let volume_j = pj.mass / (pj.rho + 1e-300);
+        result += volume_j * dot3(sub3(pj.b, pi.b), grad_w);
+    }
+    result
+}
+
+/// SPH gradient (∇ψ)_i = Σ_j (m_j/ρ_j) (ψ_j − ψ_i) ∇_i W_ij of the stored
+/// cleaning potentials.
+fn gradient_psi(particles: &[MhdParticle], i: usize, kernel: &dyn SphKernel) -> [f64; 3] {
+    let pi = &particles[i];
+    let mut result = [0.0f64; 3];
+    for (j, pj) in particles.iter().enumerate() {
+        if j == i {
+            continue;
+        }
+        let Some(grad_w) = pair_kernel_gradient(pi, pj, kernel) else {
+            continue;
+        };
+        let volume_j = pj.mass / (pj.rho + 1e-300);
+        result = add3(result, scale3(grad_w, volume_j * (pj.psi - pi.psi)));
+    }
+    result
+}
+
+/// Dedner hyperbolic/parabolic (GLM) divergence cleaning step for **B**.
 ///
-/// Each particle carries an implicit cleaning scalar ψ (not stored in
-/// `MhdParticle`); this simplified version applies an exponential decay to **B**
-/// proportional to the local divergence error:
+/// Each particle carries a cleaning potential ψ ([`MhdParticle::psi`]) that is
+/// sourced by the local divergence error and feeds back on the field:
 ///
-/// B_new = B_old · exp(-cp² / ch² · dt)
+/// ```text
+/// dψ/dt = −ch² ∇·B − ψ/τ,      τ_i = h_i / (σ ch)
+/// dB/dt = −∇ψ
+/// ```
 ///
-/// where ch is the cleaning wave speed and cp is the parabolic damping speed.
+/// so that ∇·**B** errors propagate away as waves of speed `ch` and are damped
+/// on the time scale `τ` (Dedner et al. 2002; Tricco & Price 2012).  A
+/// divergence-free field gives ψ = 0 and is left exactly unchanged; in
+/// particular the magnetic energy of a solenoidal field is not drained.
+///
+/// One call advances the system by `dt` in four snapshot passes:
+///
+/// 1. ∇·**B** is evaluated for every particle from the current field;
+/// 2. ψ is advanced with the damping term integrated exactly,
+///    ψ ← ψ e^{−dt/τ} − ch² (∇·**B**) τ (1 − e^{−dt/τ}), which stays stable for
+///    any `σ` and reduces to ψ ← ψ − ch² (∇·**B**) dt when `σ = 0`;
+/// 3. ∇ψ is evaluated from the updated potentials;
+/// 4. **B** ← **B** − dt ∇ψ.
+///
+/// Both operators use the analytic kernel gradient ∇_i W_ij with the smoothing
+/// length h_i of the receiving particle.  The explicit scheme is stable only
+/// for `ch · dt ≲ 0.3 · h`.  The cost is O(N²) per call.
 ///
 /// # Arguments
 /// * `particles` – mutable particle slice
-/// * `ch`        – hyperbolic cleaning speed (m/s)
-/// * `cp`        – parabolic damping coefficient (m/s)
+/// * `ch`        – hyperbolic cleaning speed (m/s); `0` disables the cleaning
+/// * `sigma`     – dimensionless damping factor σ; values ≤ 0 disable the damping
 /// * `dt`        – time step (s)
-pub fn dedner_cleaning(particles: &mut [MhdParticle], ch: f64, cp: f64, dt: f64) {
-    if ch.abs() < 1e-300 {
+/// * `kernel`    – SPH smoothing kernel
+pub fn dedner_cleaning(
+    particles: &mut [MhdParticle],
+    ch: f64,
+    sigma: f64,
+    dt: f64,
+    kernel: &dyn SphKernel,
+) {
+    if particles.is_empty() || !ch.is_finite() || !dt.is_finite() || ch.abs() < 1e-300 {
         return;
     }
-    let decay = (-cp * cp / (ch * ch) * dt).exp();
-    for p in particles.iter_mut() {
-        p.b = scale3(p.b, decay);
+    let n = particles.len();
+    let ch_sq = ch * ch;
+
+    let divergence: Vec<f64> = (0..n)
+        .map(|i| divergence_b_analytic(particles, i, kernel))
+        .collect();
+
+    for (p, &div_i) in particles.iter_mut().zip(divergence.iter()) {
+        let damping_rate = if sigma > 0.0 && p.h > 0.0 {
+            sigma * ch.abs() / p.h
+        } else {
+            0.0
+        };
+        let x = damping_rate * dt;
+        let (decay, source_time) = if x == 0.0 {
+            (1.0, dt)
+        } else {
+            ((-x).exp(), -(-x).exp_m1() / x * dt)
+        };
+        p.psi = p.psi * decay - ch_sq * div_i * source_time;
+    }
+
+    let gradients: Vec<[f64; 3]> = (0..n).map(|i| gradient_psi(particles, i, kernel)).collect();
+    for (p, grad) in particles.iter_mut().zip(gradients.iter()) {
+        p.b = sub3(p.b, scale3(*grad, dt));
     }
 }
 
@@ -427,6 +534,7 @@ pub fn plasma_beta(p: f64, b: [f64; 3]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kernel::CubicSplineKernel;
 
     // ---- MhdParticle --------------------------------------------------------
 
@@ -561,39 +669,315 @@ mod tests {
 
     // ---- dedner_cleaning ----------------------------------------------------
 
-    #[test]
-    fn test_dedner_cleaning_reduces_b() {
-        let mut particles = vec![MhdParticle::new(
-            [0.0; 3],
-            [0.0; 3],
-            [0.01, 0.0, 0.0],
-            1.0,
-            1e5,
-            0.001,
-            0.05,
-        )];
-        let b0 = len3(particles[0].b);
-        dedner_cleaning(&mut particles, 1e3, 1e2, 0.01);
-        let b1 = len3(particles[0].b);
-        // Decay factor < 1, so |B| must decrease
-        assert!(b1 < b0 || (b1 - b0).abs() < 1e-20);
+    /// Cubic lattice of `n`³ particles (spacing `s`, smoothing length `h = s`)
+    /// centred on the origin, carrying the field `field(pos)`.  With
+    /// `rho = 1000` and `m = rho s³` every particle owns the volume `s³`.
+    fn lattice(n: usize, s: f64, field: impl Fn([f64; 3]) -> [f64; 3]) -> Vec<MhdParticle> {
+        let rho = 1000.0;
+        let mass = rho * s * s * s;
+        let half = (n as f64 - 1.0) / 2.0;
+        let mut particles = Vec::with_capacity(n * n * n);
+        for ix in 0..n {
+            for iy in 0..n {
+                for iz in 0..n {
+                    let pos = [
+                        (ix as f64 - half) * s,
+                        (iy as f64 - half) * s,
+                        (iz as f64 - half) * s,
+                    ];
+                    particles.push(MhdParticle::new(
+                        pos,
+                        [0.0; 3],
+                        field(pos),
+                        rho,
+                        1e5,
+                        mass,
+                        s,
+                    ));
+                }
+            }
+        }
+        particles
+    }
+
+    /// Particles whose complete support (2 h) lies inside a 7³ lattice.
+    fn is_interior(p: &MhdParticle, s: f64) -> bool {
+        p.pos.iter().all(|c| c.abs() <= s + 1e-12)
+    }
+
+    fn rms_div_interior(particles: &[MhdParticle], s: f64) -> f64 {
+        let kernel = CubicSplineKernel;
+        let values: Vec<f64> = (0..particles.len())
+            .filter(|&i| is_interior(&particles[i], s))
+            .map(|i| div_b(particles, i, |r, h| kernel.w(r, h)))
+            .collect();
+        assert!(!values.is_empty());
+        (values.iter().map(|d| d * d).sum::<f64>() / values.len() as f64).sqrt()
+    }
+
+    fn max_b_norm(particles: &[MhdParticle]) -> f64 {
+        particles.iter().map(|p| len3(p.b)).fold(0.0, f64::max)
     }
 
     #[test]
-    fn test_dedner_cleaning_zero_ch_no_change() {
-        let mut particles = vec![MhdParticle::new(
-            [0.0; 3],
-            [0.0; 3],
-            [0.01, 0.0, 0.0],
-            1.0,
-            1e5,
-            0.001,
-            0.05,
-        )];
-        let b0 = len3(particles[0].b);
-        dedner_cleaning(&mut particles, 0.0, 1e2, 0.01);
-        let b1 = len3(particles[0].b);
-        assert!((b1 - b0).abs() < 1e-20);
+    fn test_dedner_uniform_field_unchanged_after_many_calls() {
+        // A divergence-free field must be left alone (the former implementation
+        // multiplied B by a decay factor on every call).
+        let b0 = [0.01, -0.02, 0.03];
+        let s = 0.1;
+        let mut particles = lattice(5, s, |_| b0);
+        let ch = 5.0;
+        let dt = 0.25 * s / ch;
+        for _ in 0..100 {
+            dedner_cleaning(&mut particles, ch, 1.0, dt, &CubicSplineKernel);
+        }
+        for p in &particles {
+            for (component, expected) in p.b.iter().zip(b0.iter()) {
+                assert!(
+                    (component - expected).abs() < 1e-12,
+                    "uniform B changed: {:?}",
+                    p.b
+                );
+            }
+            assert!(p.psi.abs() < 1e-12, "psi must stay zero, got {}", p.psi);
+        }
+    }
+
+    #[test]
+    fn test_dedner_divergence_error_sources_psi_with_correct_sign() {
+        // B = (a x, 0, 0) has ∇·B = a > 0; with σ = 0 one step gives ψ = −ch² dt ∇·B.
+        let s = 0.1;
+        let a = 0.5;
+        let mut particles = lattice(7, s, |pos| [a * pos[0], 0.0, 0.0]);
+        let kernel = CubicSplineKernel;
+        let div_before: Vec<f64> = (0..particles.len())
+            .map(|i| div_b(&particles, i, |r, h| kernel.w(r, h)))
+            .collect();
+        let (ch, dt) = (4.0, 1e-4);
+        dedner_cleaning(&mut particles, ch, 0.0, dt, &kernel);
+        let mut checked = 0;
+        for (i, p) in particles.iter().enumerate() {
+            let expected = -ch * ch * dt * div_before[i];
+            assert!(
+                (p.psi - expected).abs() <= 1e-6 * expected.abs() + 1e-18,
+                "particle {i}: psi {} vs −ch² dt div {}",
+                p.psi,
+                expected
+            );
+            if is_interior(p, s) {
+                checked += 1;
+                assert!(p.psi < 0.0, "positive divergence must give negative psi");
+                // the lattice sum reproduces the continuum divergence a
+                assert!(
+                    (div_before[i] - a).abs() < 0.05 * a,
+                    "SPH divergence {} should be close to {a}",
+                    div_before[i]
+                );
+            }
+        }
+        assert_eq!(checked, 27);
+    }
+
+    #[test]
+    fn test_dedner_psi_gradient_drives_b_against_gradient() {
+        // ψ = g x with a uniform B (∇·B = 0): B ← B − dt ∇ψ lowers B_x.
+        let s = 0.1;
+        let g = 3.0;
+        let b0 = [0.2, 0.0, 0.0];
+        let mut particles = lattice(7, s, |_| b0);
+        for p in particles.iter_mut() {
+            p.psi = g * p.pos[0];
+        }
+        let before = particles.clone();
+        let dt = 1e-3;
+        let kernel = CubicSplineKernel;
+        dedner_cleaning(&mut particles, 2.0, 0.0, dt, &kernel);
+
+        for (i, p) in particles.iter().enumerate() {
+            // independent evaluation of Σ_j V_j (ψ_j − ψ_i) ∇_i W_ij
+            let mut grad = [0.0f64; 3];
+            for (j, q) in before.iter().enumerate() {
+                if j == i {
+                    continue;
+                }
+                let d = sub3(before[i].pos, q.pos);
+                let r = len3(d);
+                let w = kernel.grad_w(r, before[i].h) / r;
+                let volume = q.mass / q.rho;
+                for k in 0..3 {
+                    grad[k] += volume * (q.psi - before[i].psi) * w * d[k];
+                }
+            }
+            for (k, g_k) in grad.iter().enumerate() {
+                let expected = before[i].b[k] - dt * g_k;
+                assert!(
+                    (p.b[k] - expected).abs() < 1e-12,
+                    "particle {i} component {k}: {} vs {expected}",
+                    p.b[k]
+                );
+            }
+            assert_eq!(p.psi, before[i].psi, "∇·B = 0 leaves ψ untouched at σ = 0");
+            if is_interior(p, s) {
+                let delta_bx = p.b[0] - b0[0];
+                assert!(
+                    (delta_bx + dt * g).abs() < 0.05 * dt * g,
+                    "B_x must change by −dt g = {}, got {delta_bx}",
+                    -dt * g
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_dedner_damping_decays_psi_exactly() {
+        // Uniform B and uniform ψ: no source, no gradient, only the damping
+        // ψ ← ψ exp(−σ ch dt / h) acts.
+        let s = 0.1;
+        let (ch, sigma, dt) = (5.0, 0.8, 0.01);
+        let b0 = [0.01, 0.0, 0.0];
+        let mut particles = lattice(3, s, |_| b0);
+        for p in particles.iter_mut() {
+            p.psi = 2.0;
+        }
+        let factor = (-sigma * ch * dt / s).exp();
+        for step in 1..=5 {
+            dedner_cleaning(&mut particles, ch, sigma, dt, &CubicSplineKernel);
+            let expected = 2.0 * factor.powi(step);
+            for p in &particles {
+                assert!(
+                    (p.psi - expected).abs() < 1e-13 * expected,
+                    "step {step}: psi {} vs {expected}",
+                    p.psi
+                );
+                assert_eq!(p.b, b0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_dedner_damping_is_unconditionally_stable() {
+        // σ ch dt / h = 50 would flip the sign of ψ with a forward-Euler
+        // damping term; the exponential integrator keeps it positive and tiny.
+        let s = 0.1;
+        let mut particles = lattice(3, s, |_| [0.0, 0.0, 0.01]);
+        for p in particles.iter_mut() {
+            p.psi = 1.0;
+        }
+        dedner_cleaning(&mut particles, 5.0, 1.0, 1.0, &CubicSplineKernel);
+        for p in &particles {
+            assert!(p.psi > 0.0 && p.psi < 1e-20, "psi = {}", p.psi);
+        }
+    }
+
+    #[test]
+    fn test_dedner_solenoidal_rotation_field_untouched_in_interior() {
+        // B = g (−y, x, 0) is divergence free; on interior particles the
+        // lattice sum is exact, so one step leaves B and ψ unchanged.
+        let s = 0.1;
+        let g = 0.4;
+        let mut particles = lattice(7, s, |pos| [-g * pos[1], g * pos[0], 0.0]);
+        let before: Vec<[f64; 3]> = particles.iter().map(|p| p.b).collect();
+        dedner_cleaning(&mut particles, 4.0, 1.0, 1e-3, &CubicSplineKernel);
+        let mut checked = 0;
+        for (p, b_before) in particles.iter().zip(before.iter()) {
+            if !is_interior(p, s) {
+                continue;
+            }
+            checked += 1;
+            assert!(p.psi.abs() < 1e-9, "psi = {}", p.psi);
+            for (component, expected) in p.b.iter().zip(b_before.iter()) {
+                assert!((component - expected).abs() < 1e-12);
+            }
+        }
+        assert_eq!(checked, 27);
+    }
+
+    #[test]
+    fn test_dedner_cleans_monopole_perturbation() {
+        // Smooth monopole bump B = B0 + b_a (r/s) exp(−r²/w²): ∇·B > 0 around
+        // the origin.  Cleaning must remove the divergence error without
+        // blowing up the field.
+        let s = 0.1;
+        let w = 1.5 * s;
+        let b0 = [0.003, -0.002, 0.001];
+        let b_a = 0.01;
+        let mut particles = lattice(7, s, |pos| {
+            let envelope = (-(pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]) / (w * w)).exp();
+            [
+                b0[0] + b_a * pos[0] / s * envelope,
+                b0[1] + b_a * pos[1] / s * envelope,
+                b0[2] + b_a * pos[2] / s * envelope,
+            ]
+        });
+        let ch = 5.0;
+        let dt = 0.25 * s / ch;
+        let rms_initial = rms_div_interior(&particles, s);
+        let b_max_initial = max_b_norm(&particles);
+        assert!(
+            rms_initial > 0.05,
+            "seeded divergence too small: {rms_initial}"
+        );
+
+        for _ in 0..10 {
+            dedner_cleaning(&mut particles, ch, 1.0, dt, &CubicSplineKernel);
+        }
+        let rms_mid = rms_div_interior(&particles, s);
+        assert!(
+            rms_mid < 0.5 * rms_initial,
+            "rms ∇·B after 10 steps {rms_mid} vs initial {rms_initial}"
+        );
+
+        for _ in 0..40 {
+            dedner_cleaning(&mut particles, ch, 1.0, dt, &CubicSplineKernel);
+        }
+        let rms_final = rms_div_interior(&particles, s);
+        assert!(
+            rms_final < 0.05 * rms_initial,
+            "rms ∇·B after 50 steps {rms_final} vs initial {rms_initial}"
+        );
+        assert!(
+            max_b_norm(&particles) < 2.0 * b_max_initial,
+            "cleaning must not amplify the field"
+        );
+        assert!(particles.iter().all(|p| p.b.iter().all(|c| c.is_finite())));
+    }
+
+    #[test]
+    fn test_dedner_disabled_inputs_are_no_ops() {
+        let s = 0.1;
+        let field = |pos: [f64; 3]| [0.5 * pos[0], 0.0, 0.0];
+        let reference = lattice(3, s, field);
+        for (ch, dt) in [(0.0, 1e-3), (5.0, 0.0), (f64::NAN, 1e-3), (5.0, f64::NAN)] {
+            let mut particles = lattice(3, s, field);
+            dedner_cleaning(&mut particles, ch, 1.0, dt, &CubicSplineKernel);
+            for (p, r) in particles.iter().zip(reference.iter()) {
+                assert_eq!(p.b, r.b, "ch = {ch}, dt = {dt}");
+                assert_eq!(p.psi, 0.0, "ch = {ch}, dt = {dt}");
+            }
+        }
+        let mut empty: Vec<MhdParticle> = Vec::new();
+        dedner_cleaning(&mut empty, 5.0, 1.0, 1e-3, &CubicSplineKernel);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_dedner_nonpositive_sigma_disables_damping() {
+        let s = 0.1;
+        let field = |pos: [f64; 3]| [0.5 * pos[0], 0.0, 0.0];
+        let mut zero = lattice(3, s, field);
+        let mut negative = lattice(3, s, field);
+        dedner_cleaning(&mut zero, 5.0, 0.0, 1e-3, &CubicSplineKernel);
+        dedner_cleaning(&mut negative, 5.0, -2.0, 1e-3, &CubicSplineKernel);
+        for (a, b) in zero.iter().zip(negative.iter()) {
+            assert_eq!(a.psi, b.psi);
+            assert_eq!(a.b, b.b);
+        }
+    }
+
+    #[test]
+    fn test_mhd_particle_new_starts_with_zero_psi() {
+        let p = MhdParticle::new([0.0; 3], [0.0; 3], [0.01, 0.0, 0.0], 1.0, 0.0, 1.0, 0.1);
+        assert_eq!(p.psi, 0.0);
     }
 
     // ---- MhdSolver ----------------------------------------------------------

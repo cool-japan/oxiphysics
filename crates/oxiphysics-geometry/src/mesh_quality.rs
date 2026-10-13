@@ -102,7 +102,8 @@ pub struct MeshQuality {
     pub max_angle_deg: f64,
     /// Skewness in \[0, 1\]; 0 = perfect, 1 = degenerate.
     pub skewness: f64,
-    /// Scaled Jacobian determinant in \[-1, 1\]; ideal equilateral = 1.
+    /// Scaled Jacobian magnitude in \[0, 1\] (independent of the element's
+    /// winding); the ideal regular element scores 1 and a degenerate one 0.
     pub jacobian: f64,
 }
 
@@ -158,32 +159,40 @@ pub fn compute_tet_quality(v0: [f64; 3], v1: [f64; 3], v2: [f64; 3], v3: [f64; 3
 
     // Jacobian: det of edge matrix (proportional to signed volume)
     let jac = dot3(e01, cross3(e02, e03));
-    // Ideal regular tet with same mean edge length
+    // Ideal regular tet with the same mean edge length a: its edge matrix has
+    // determinant 6V = a^3 / sqrt(2), so a regular tet scores exactly 1.
     let mean_edge = edge_lengths.iter().sum::<f64>() / 6.0;
-    let ideal_jac = mean_edge * mean_edge * mean_edge * (2.0_f64).sqrt();
+    let ideal_jac = mean_edge.powi(3) / std::f64::consts::SQRT_2;
     // Take absolute value so the jacobian is positive for non-degenerate tets
     // regardless of vertex winding order
     let scaled_jac = if ideal_jac < f64::EPSILON {
         0.0
     } else {
-        jac.abs() / ideal_jac
+        (jac.abs() / ideal_jac).min(1.0)
     };
 
-    // Dihedral angles between each pair of faces
-    // Face normals (outward for the tet):
+    // Dihedral angles between each pair of faces.
+    //
+    // The four face normals are built with the cyclic edge orders below so that
+    // they are *consistently* oriented: all four point into the tetrahedron for a
+    // positively wound element (det(e01, e02, e03) > 0) and all four point out of
+    // it for a negatively wound one.  Only that consistency matters, because the
+    // dihedral angle is the supplement of the angle between two consistently
+    // oriented normals, whichever side they face.
     //   face 012: n0 = (v1-v0) × (v2-v0)
     //   face 013: n1 = (v3-v0) × (v1-v0)
     //   face 023: n2 = (v2-v0) × (v3-v0)
-    //   face 123: n3 = (v2-v1) × (v3-v1)
+    //   face 123: n3 = (v3-v1) × (v2-v1)
     let n012 = normalize3(cross3(e01, e02));
     let n013 = normalize3(cross3(e03, e01));
     let n023 = normalize3(cross3(e02, e03));
-    let n123 = normalize3(cross3(e12, e13));
+    let n123 = normalize3(cross3(e13, e12));
 
     // Dihedral angle along each edge = π - angle between adjacent face normals
     let dihedral_angle = |na: [f64; 3], nb: [f64; 3]| -> f64 {
         let cos_a = dot3(na, nb).clamp(-1.0, 1.0);
-        // dihedral angle is the supplement of the angle between outward normals
+        // dihedral angle is the supplement of the angle between the consistently
+        // oriented face normals
         std::f64::consts::PI - cos_a.acos()
     };
 
@@ -208,8 +217,8 @@ pub fn compute_tet_quality(v0: [f64; 3], v1: [f64; 3], v2: [f64; 3], v3: [f64; 3
     let max_angle_deg = dihedrals.iter().cloned().fold(0.0_f64, f64::max) * rad_to_deg;
 
     // Skewness: (max_angle - ideal) / (180 - ideal)
-    // For a regular tet, ideal dihedral ≈ 70.529°
-    let ideal_dihedral = 70.529;
+    // For a regular tet the dihedral angle is acos(1/3) ≈ 70.5288°
+    let ideal_dihedral = (1.0_f64 / 3.0).acos().to_degrees();
     let skewness = ((max_angle_deg - ideal_dihedral) / (180.0 - ideal_dihedral)).clamp(0.0, 1.0);
 
     MeshQuality {
@@ -488,11 +497,17 @@ pub fn tet_jacobian_det(v0: [f64; 3], v1: [f64; 3], v2: [f64; 3], v3: [f64; 3]) 
     dot3(j[0], cross3(j[1], j[2]))
 }
 
-/// Compute the scaled Jacobian quality metric for a tetrahedron.
+/// Compute the scaled Jacobian quality metric of a tetrahedron at its first
+/// corner `v0`.
 ///
 /// The scaled Jacobian is the Jacobian determinant divided by the product of
-/// the edge lengths forming the Jacobian, normalized to \[-1, 1\].
-/// A value of 1 indicates an ideal (regular) tetrahedron.
+/// the lengths of the three edges that form it, `det / (l01 * l02 * l03)`, and
+/// then divided by the value `1 / sqrt(2)` of the regular tetrahedron (the
+/// Verdict normalisation), so that a regular tetrahedron scores exactly `1` and
+/// an inverted one a negative value.  The result is clamped to \[-1, 1\]; a
+/// corner whose three edges are mutually orthogonal would otherwise score
+/// `sqrt(2)`.  Use [`tet_min_scaled_jacobian`] for a measure of the whole
+/// element.
 pub fn tet_scaled_jacobian(v0: [f64; 3], v1: [f64; 3], v2: [f64; 3], v3: [f64; 3]) -> f64 {
     let j = tet_jacobian_matrix(v0, v1, v2, v3);
     let det = dot3(j[0], cross3(j[1], j[2]));
@@ -506,16 +521,18 @@ pub fn tet_scaled_jacobian(v0: [f64; 3], v1: [f64; 3], v2: [f64; 3], v3: [f64; 3
         return 0.0;
     }
 
-    // For a regular tetrahedron, the scaled Jacobian equals sqrt(2)
-    // Normalize to [0, 1] by dividing by sqrt(2)
+    // For a regular tetrahedron det / (l0 * l1 * l2) = 1 / sqrt(2) (three edges
+    // at 60° to each other), so multiplying by sqrt(2) maps it to exactly 1.
     let raw = det / denom;
-    raw / (2.0_f64).sqrt()
+    (raw * std::f64::consts::SQRT_2).clamp(-1.0, 1.0)
 }
 
 /// Compute the scaled Jacobian at all four corners of a tetrahedron
 /// and return the minimum value.
 ///
-/// This is a more robust quality measure than checking just one corner.
+/// This is a more robust quality measure than checking just one corner and
+/// equals the Verdict tetrahedron scaled Jacobian `sqrt(2) * det / max(l_i l_j l_k)`:
+/// `1` for a regular tetrahedron and `1 / sqrt(2)` for the unit right-corner one.
 pub fn tet_min_scaled_jacobian(v0: [f64; 3], v1: [f64; 3], v2: [f64; 3], v3: [f64; 3]) -> f64 {
     // Each corner uses edges emanating from that vertex, with consistent
     // even-permutation ordering to preserve orientation.
@@ -888,13 +905,16 @@ pub fn quality_guided_smoothing(
             }
             let new_pos = scale3(sums[i], 1.0 / counts[i] as f64);
 
-            // Compute minimum quality before move for affected tets
+            // Compute minimum quality before move for affected tets.  The
+            // element-wise minimum over all four corners is used: the single-corner
+            // scaled Jacobian saturates at 1 for near-orthogonal corners and would
+            // let degrading moves through.
             let min_q_before = tets
                 .iter()
                 .filter(|t| t.contains(&i))
                 .map(|t| {
                     let vv: Vec<[f64; 3]> = t.iter().map(|&vi| positions[vi]).collect();
-                    tet_scaled_jacobian(vv[0], vv[1], vv[2], vv[3]).abs()
+                    tet_min_scaled_jacobian(vv[0], vv[1], vv[2], vv[3]).abs()
                 })
                 .fold(f64::INFINITY, f64::min);
 
@@ -907,7 +927,7 @@ pub fn quality_guided_smoothing(
                 .filter(|t| t.contains(&i))
                 .map(|t| {
                     let vv: Vec<[f64; 3]> = t.iter().map(|&vi| positions[vi]).collect();
-                    tet_scaled_jacobian(vv[0], vv[1], vv[2], vv[3]).abs()
+                    tet_min_scaled_jacobian(vv[0], vv[1], vv[2], vv[3]).abs()
                 })
                 .fold(f64::INFINITY, f64::min);
 
@@ -1657,3 +1677,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod regression_tests;

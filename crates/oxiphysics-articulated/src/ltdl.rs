@@ -301,7 +301,7 @@ impl SparseMassFactorization {
 /// # Errors
 /// Returns [`LtdlError`] if the resulting matrix is not SPD.
 pub fn factor_crba(
-    model: &mut ArticulatedModel,
+    model: &ArticulatedModel,
     q: &[f64],
 ) -> Result<SparseMassFactorization, LtdlError> {
     use crate::crba::compute_mass_matrix_crba;

@@ -14,6 +14,7 @@ use crate::drivetrain::DrivetrainLegacy as Drivetrain;
 use crate::steering::AckermannSteering;
 use crate::suspension::SuspensionModel;
 use crate::tire::TireModel;
+use crate::wheel::spin::{advance_wheel_spin, longitudinal_slip_stiffness};
 use crate::wheel::{Wheel, WheelState};
 
 /// A ground hit result from a suspension ray cast.
@@ -166,6 +167,28 @@ impl RaycastVehicle {
     /// 6. Applies all forces to the chassis body
     /// 7. Updates vehicle state (speed, yaw rate, etc.)
     ///
+    /// # Wheel spin
+    ///
+    /// `WheelState::spin_velocity` is signed (negative while rolling backwards,
+    /// e.g. in reverse gear) and is integrated for **every** wheel, including
+    /// those beyond the four driven by the drivetrain model, which roll freely.
+    /// The brake is applied to every wheel in contact as a dissipative torque:
+    /// it stops a wheel but never reverses it.
+    ///
+    /// # Numerical note
+    ///
+    /// The tyre slip ratio is normalised by at least 0.5 m/s, so a wheel relaxes
+    /// towards the ground speed at a rate of up to `k_x * r^2 / (0.5 * I)` (about
+    /// 16 000 / s for the default [`LinearTire`](crate::tire::LinearTire) and
+    /// wheel).  The spin is therefore advanced with a linearly implicit step
+    /// that treats this stiffness implicitly (see `wheel::spin`): the wheel
+    /// follows the ground speed without chatter for any step size.  The chassis
+    /// velocity is still coupled explicitly through the tyre force, which limits
+    /// the step for creeping speeds: below about 1 m/s the slip normalisation
+    /// makes the tyre act like a damper of `k_x / 0.5` Ns/m, and a step above
+    /// roughly `2 * 0.5 * m / (n * k_x)` (a few milliseconds for a 1.5 t car)
+    /// lets the chassis speed oscillate around standstill.
+    ///
     /// # Arguments
     /// * `dt` - Time step in seconds
     /// * `chassis` - Mutable reference to the chassis rigid body
@@ -202,12 +225,17 @@ impl RaycastVehicle {
             *wss = ws.spin_velocity;
         }
 
-        // 5. Compute drivetrain torques
-        let drive_torques = self.drivetrain.compute_wheel_torques(
-            self.state.throttle,
-            self.state.brake,
-            &wheel_spin_speeds,
-        );
+        // 5. Compute drivetrain torques.
+        //
+        // The legacy drivetrain models the first four wheels only and folds the
+        // brake into its torque as a signed term, which can push a stopped wheel
+        // backwards.  It is therefore asked for the pure drive torques
+        // (brake = 0); the brake is applied to every wheel below as a
+        // dissipative torque that can stop a wheel but never reverse it.
+        let drive_torques =
+            self.drivetrain
+                .compute_wheel_torques(self.state.throttle, 0.0, &wheel_spin_speeds);
+        let brake_torque = self.state.brake.clamp(0.0, 1.0) * self.drivetrain.max_brake_torque;
 
         for (i, (wheel, ws)) in self
             .wheels
@@ -317,15 +345,16 @@ impl RaycastVehicle {
                     // Compute slip ratio
                     let wheel_speed_at_ground = ws.spin_velocity * wheel.radius;
                     let denominator = v_forward.abs().max(0.5);
-                    ws.slip_ratio = (wheel_speed_at_ground - v_forward) / denominator;
-                    ws.slip_ratio = ws.slip_ratio.clamp(-1.0, 1.0);
+                    let raw_slip_ratio = (wheel_speed_at_ground - v_forward) / denominator;
+                    ws.slip_ratio = raw_slip_ratio.clamp(-1.0, 1.0);
 
                     // Compute tire forces
+                    let friction = ground_hit.friction * wheel.friction_slip;
                     let (fy, fx) = tire_model.compute_forces(
                         ws.slip_angle,
                         ws.slip_ratio,
                         susp_force,
-                        ground_hit.friction * wheel.friction_slip,
+                        friction,
                     );
                     ws.lateral_force = fy;
                     ws.longitudinal_force = fx;
@@ -338,14 +367,40 @@ impl RaycastVehicle {
                     let r_force = force_point - chassis.transform.position;
                     total_torque += r_force.cross(&contact_force);
 
-                    // Update wheel spin from drive torque
+                    // Update the (signed) wheel spin.  Only the first four wheels
+                    // receive drive torque from the legacy drivetrain, but every
+                    // wheel reacts to the tire longitudinal force and to the
+                    // brake, so extra axles roll freely instead of staying
+                    // locked.  Negative spin is legitimate (reverse gear,
+                    // rolling backwards).
                     let wheel_inertia = 0.5 * wheel.mass * wheel.radius * wheel.radius;
-                    if wheel_inertia > 1e-10 && i < 4 {
-                        let drive_torque = drive_torques[i];
+                    if wheel_inertia > 1e-10 {
+                        let drive_torque = drive_torques.get(i).copied().unwrap_or(0.0);
                         let tire_resistance = -fx * wheel.radius;
                         let net_torque = drive_torque + tire_resistance;
-                        ws.spin_velocity += (net_torque / wheel_inertia) * dt;
-                        ws.spin_velocity = ws.spin_velocity.max(0.0); // prevent reverse spin from braking past zero
+                        // d(tyre torque)/d(spin) = r^2 * dFx/dkappa / denominator;
+                        // a clamped slip ratio no longer depends on the spin.
+                        let torque_stiffness = if raw_slip_ratio.abs() < 1.0 {
+                            let slip_stiffness = longitudinal_slip_stiffness(
+                                tire_model,
+                                ws.slip_angle,
+                                ws.slip_ratio,
+                                susp_force,
+                                friction,
+                                fx,
+                            );
+                            wheel.radius * wheel.radius * slip_stiffness / denominator
+                        } else {
+                            0.0
+                        };
+                        ws.spin_velocity = advance_wheel_spin(
+                            ws.spin_velocity,
+                            net_torque,
+                            torque_stiffness,
+                            brake_torque,
+                            wheel_inertia,
+                            dt,
+                        );
                     }
                 }
                 None => {
@@ -1777,5 +1832,79 @@ mod tests {
         let loads = [1000.0_f64; 4];
         let a = traction_limited_acceleration(&loads, 1.0, 0.0);
         assert!((a).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_wheels_beyond_the_fourth_integrate_their_spin() {
+        // Regression: only the first four wheels used to be integrated, so a
+        // sixth wheel kept spin 0 and braked permanently (slip ratio -1).
+        let mut v = RaycastVehicle::new_default_4wheel();
+        for x in [-0.75, 0.75] {
+            v.wheels.push(Wheel {
+                connection_point: Vec3::new(x, -0.1, -2.5),
+                ..Wheel::default()
+            });
+            v.wheel_states.push(WheelState::default());
+        }
+        v.drivetrain.gearbox.shift(0);
+
+        let mut chassis = RigidBody::new(1500.0);
+        chassis.transform.position = Vec3::new(0.0, 0.52, 0.0);
+        chassis.velocity = Vec3::new(0.0, 0.0, 10.0);
+        chassis.linear_damping = 0.0;
+        chassis.angular_damping = 0.0;
+        let gravity = Vec3::new(0.0, -9.81, 0.0);
+        let ground = flat_ground_query(0.0);
+        let suspension = LinearSuspension;
+        let tire = LinearTire::default();
+
+        v.set_inputs(0.0, 0.0, 0.0);
+        let dt = 0.0001;
+        for _ in 0..2000 {
+            chassis.force_accumulator = Vec3::zeros();
+            chassis.torque_accumulator = Vec3::zeros();
+            v.update(dt, &mut chassis, &gravity, &ground, &suspension, &tire);
+            chassis.integrate_forces(dt, &gravity);
+            chassis.integrate_velocity(dt);
+        }
+        for i in 4..6 {
+            assert!(
+                v.wheel_states[i].spin_velocity > 20.0,
+                "wheel {i} must roll at about v / r = {}, spin = {}",
+                chassis.velocity.z / v.wheels[i].radius,
+                v.wheel_states[i].spin_velocity
+            );
+        }
+    }
+
+    #[test]
+    fn test_reverse_gear_produces_negative_wheel_spin() {
+        // Regression: the spin was clamped to >= 0, which discarded the negative
+        // drive torque of the reverse gear.
+        let mut v = RaycastVehicle::new_default_4wheel();
+        v.drivetrain.layout = DriveLayout::RearWheelDrive;
+        v.drivetrain.gearbox.shift(-1);
+
+        let mut chassis = RigidBody::new(1500.0);
+        chassis.transform.position = Vec3::new(0.0, 0.52, 0.0);
+        chassis.linear_damping = 0.0;
+        chassis.angular_damping = 0.0;
+        let gravity = Vec3::new(0.0, -9.81, 0.0);
+        let ground = flat_ground_query(0.0);
+        let suspension = LinearSuspension;
+        let tire = LinearTire::default();
+
+        v.set_inputs(1.0, 0.0, 0.0);
+        let dt = 0.0001;
+        for _ in 0..5000 {
+            chassis.force_accumulator = Vec3::zeros();
+            chassis.torque_accumulator = Vec3::zeros();
+            v.update(dt, &mut chassis, &gravity, &ground, &suspension, &tire);
+            chassis.integrate_forces(dt, &gravity);
+            chassis.integrate_velocity(dt);
+        }
+        assert!(v.wheel_states[2].spin_velocity < -0.5);
+        assert!(v.wheel_states[3].spin_velocity < -0.5);
+        assert!(chassis.velocity.z < -0.1, "vz = {}", chassis.velocity.z);
     }
 }

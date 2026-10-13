@@ -311,6 +311,155 @@ impl AStarPlanner {
 }
 
 // ---------------------------------------------------------------------------
+// Nearest-neighbour index for the RRT
+// ---------------------------------------------------------------------------
+
+/// Index of the node closest to `query`, found by a linear scan.
+///
+/// Among nodes at exactly the same distance the one with the lowest index wins;
+/// a node whose distance is NaN only wins when there is no other.
+fn nearest_node_linear(nodes: &[[f64; 2]], query: [f64; 2]) -> Option<usize> {
+    let mut best: Option<(f64, usize)> = None;
+    for (i, node) in nodes.iter().enumerate() {
+        let d2 = dist2(*node, query);
+        match best {
+            Some((best_d2, _)) if d2 >= best_d2 || d2.is_nan() => {}
+            _ => best = Some((d2, i)),
+        }
+    }
+    best.map(|(_, i)| i)
+}
+
+/// Uniform-grid index over the nodes of an RRT for nearest-neighbour queries.
+///
+/// Nodes are bucketed into square cells of side `cell_size`.  A query walks the
+/// rings of cells around the query point outwards and stops as soon as the best
+/// node found is closer than anything the remaining rings can hold, so a query
+/// inside a dense tree looks at a handful of cells instead of at every node.
+/// The result is exactly that of [`nearest_node_linear`].  The index falls back
+/// to that scan when the ring walk would touch more cells than there are nodes
+/// (a query far away from a small tree) and when a point cannot be bucketed
+/// (not finite, or so far out that its cell index would overflow).
+struct NodeGrid {
+    /// Side length of a cell (world units).
+    cell_size: f64,
+    /// Indices of the nodes in each occupied cell.
+    cells: HashMap<(i64, i64), Vec<usize>>,
+    /// Inclusive range of occupied cell columns and rows
+    /// `(min_x, max_x, min_y, max_y)`, `None` while nothing is indexed.
+    bounds: Option<(i64, i64, i64, i64)>,
+    /// Set when a node could not be bucketed; queries then scan linearly.
+    has_unindexed_node: bool,
+}
+
+impl NodeGrid {
+    /// Largest cell coordinate that is bucketed; keeps all ring arithmetic far
+    /// from `i64` overflow.
+    const MAX_CELL_COORD: f64 = 1.0e15;
+
+    /// Create an empty index.  A `cell_size` that is not a positive finite number
+    /// is replaced by 1; the cell size only affects speed, never the result.
+    fn new(cell_size: f64) -> Self {
+        let cell_size = if cell_size.is_finite() && cell_size > 0.0 {
+            cell_size
+        } else {
+            1.0
+        };
+        Self {
+            cell_size,
+            cells: HashMap::new(),
+            bounds: None,
+            has_unindexed_node: false,
+        }
+    }
+
+    /// Cell containing `p`, or `None` when `p` cannot be bucketed.
+    fn cell_of(&self, p: [f64; 2]) -> Option<(i64, i64)> {
+        let cx = (p[0] / self.cell_size).floor();
+        let cy = (p[1] / self.cell_size).floor();
+        if cx.abs() < Self::MAX_CELL_COORD && cy.abs() < Self::MAX_CELL_COORD {
+            Some((cx as i64, cy as i64))
+        } else {
+            None
+        }
+    }
+
+    /// Register node number `index`, located at `p`.
+    fn insert(&mut self, index: usize, p: [f64; 2]) {
+        let Some((cx, cy)) = self.cell_of(p) else {
+            self.has_unindexed_node = true;
+            return;
+        };
+        self.cells.entry((cx, cy)).or_default().push(index);
+        self.bounds = Some(match self.bounds {
+            None => (cx, cx, cy, cy),
+            Some((x0, x1, y0, y1)) => (x0.min(cx), x1.max(cx), y0.min(cy), y1.max(cy)),
+        });
+    }
+
+    /// Index of the node closest to `query`; `nodes` holds the positions the
+    /// registered indices refer to.  The lowest index wins among exact ties.
+    fn nearest(&self, nodes: &[[f64; 2]], query: [f64; 2]) -> Option<usize> {
+        let (Some((x0, x1, y0, y1)), Some((qx, qy)), false) =
+            (self.bounds, self.cell_of(query), self.has_unindexed_node)
+        else {
+            return nearest_node_linear(nodes, query);
+        };
+        // Chebyshev radius, in cells, that reaches every occupied cell.
+        let max_ring = (qx - x0)
+            .abs()
+            .max((qx - x1).abs())
+            .max((qy - y0).abs())
+            .max((qy - y1).abs());
+
+        let scan_cell = |cell: (i64, i64), best: &mut Option<(f64, usize)>| {
+            let Some(members) = self.cells.get(&cell) else {
+                return;
+            };
+            for &i in members {
+                let d2 = dist2(nodes[i], query);
+                match *best {
+                    Some((best_d2, best_i))
+                        if d2 > best_d2 || d2.is_nan() || (d2 == best_d2 && i > best_i) => {}
+                    _ => *best = Some((d2, i)),
+                }
+            }
+        };
+
+        let mut best: Option<(f64, usize)> = None;
+        let mut cells_visited = 0_usize;
+        for ring in 0..=max_ring {
+            if ring == 0 {
+                scan_cell((qx, qy), &mut best);
+                cells_visited += 1;
+            } else {
+                for dx in -ring..=ring {
+                    scan_cell((qx + dx, qy - ring), &mut best);
+                    scan_cell((qx + dx, qy + ring), &mut best);
+                }
+                for dy in (1 - ring)..ring {
+                    scan_cell((qx - ring, qy + dy), &mut best);
+                    scan_cell((qx + ring, qy + dy), &mut best);
+                }
+                cells_visited = cells_visited.saturating_add(8 * ring as usize);
+            }
+            // Every node in a cell of ring `ring + 1` or beyond is at least
+            // `ring * cell_size` away from the query.
+            if let Some((best_d2, _)) = best {
+                let reach = ring as f64 * self.cell_size;
+                if best_d2 < reach * reach {
+                    break;
+                }
+            }
+            if cells_visited > nodes.len() {
+                return nearest_node_linear(nodes, query);
+            }
+        }
+        best.map(|(_, i)| i)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RRT planner
 // ---------------------------------------------------------------------------
 
@@ -336,8 +485,10 @@ impl RrtPlanner {
 
     /// Plan a path on `map` from `start` to `goal`.
     ///
-    /// Returns `None` when the tree exhausts `max_iterations` without reaching
-    /// within `goal_radius` of `goal`.
+    /// Every tree edge, including the closing edge from the last node to `goal`,
+    /// is checked against the obstacles of `map`.  Returns `None` when the tree
+    /// exhausts `max_iterations` without getting within `goal_radius` of `goal`
+    /// with a free line of sight to it.
     pub fn plan(
         &self,
         map: &GridMap,
@@ -361,6 +512,8 @@ impl RrtPlanner {
 
         let mut nodes: Vec<[f64; 2]> = vec![start];
         let mut parent: Vec<usize> = vec![0]; // parent[0] is unused (root)
+        let mut index = NodeGrid::new(self.step_size);
+        index.insert(0, start);
 
         for _ in 0..self.max_iterations {
             // Sample
@@ -374,16 +527,7 @@ impl RrtPlanner {
             };
 
             // Nearest node
-            let nearest_idx = nodes
-                .iter()
-                .enumerate()
-                .min_by(|(_, a), (_, b)| {
-                    dist2(**a, sample)
-                        .partial_cmp(&dist2(**b, sample))
-                        .unwrap_or(Ordering::Equal)
-                })
-                .map(|(i, _)| i)
-                .unwrap_or(0);
+            let nearest_idx = index.nearest(&nodes, sample).unwrap_or(0);
 
             let nearest = nodes[nearest_idx];
             let d = dist(nearest, sample);
@@ -402,10 +546,13 @@ impl RrtPlanner {
             }
 
             nodes.push(new_node);
+            index.insert(nodes.len() - 1, new_node);
             parent.push(nearest_idx);
 
-            // Goal check
-            if dist(new_node, goal) <= goal_radius {
+            // Goal check: the closing edge new_node -> goal has to be collision
+            // free as well, otherwise the path could cut through obstacles that
+            // lie within `goal_radius` of the goal.
+            if dist(new_node, goal) <= goal_radius && map.line_of_sight(new_node, goal) {
                 // Add goal node if not already there
                 let goal_idx = if dist(new_node, goal) > 1e-9 {
                     nodes.push(goal);
@@ -538,10 +685,33 @@ impl PotentialField {
 pub struct PathSmoother;
 
 impl PathSmoother {
+    /// Maximum number of relaxation sweeps [`PathSmoother::smooth_path`] performs.
+    pub const MAX_SMOOTH_ITERS: usize = 10_000;
+
     /// Gradient-descent path smoothing.
     ///
-    /// Minimises `w_data · Σ|pᵢ − pᵢ₀|² + w_smooth · Σ|pᵢ₊₁ − 2pᵢ + pᵢ₋₁|²`
-    /// while keeping the first and last points fixed.
+    /// Minimises `½ w_data · Σ|pᵢ − pᵢ₀|² + ½ w_smooth · Σ|pᵢ₊₁ − pᵢ|²` while
+    /// keeping the first and last points fixed.  Every sweep moves each interior
+    /// point down its own gradient with a unit step,
+    /// `pᵢ += w_data (pᵢ₀ − pᵢ) + w_smooth (pᵢ₋₁ − 2 pᵢ + pᵢ₊₁)`, and already uses
+    /// the updated `pᵢ₋₁`.
+    ///
+    /// That in-place sweep is the successive over-relaxation (SOR) of the linear
+    /// system `(w_data + 2 w_smooth) pᵢ − w_smooth (pᵢ₋₁ + pᵢ₊₁) = w_data pᵢ₀` with
+    /// the relaxation factor `w_data + 2 w_smooth`.  The system is symmetric
+    /// positive definite, so the sweeps converge exactly when this factor is
+    /// below 2; from 2 on they oscillate or blow up.
+    ///
+    /// The relaxation stops as soon as the summed absolute update of a sweep is
+    /// at most `tolerance`, and after at most [`PathSmoother::MAX_SMOOTH_ITERS`]
+    /// sweeps in any case; a `tolerance` of zero (or less) therefore runs until
+    /// the iterate stops moving or the sweep limit is reached.
+    ///
+    /// The call cannot hang or return a blown-up path on bad input: when a weight
+    /// is negative or not finite, the relaxation factor `w_data + 2 w_smooth` is 2
+    /// or more, `tolerance` is not finite, or a path coordinate is not finite,
+    /// the unsmoothed path is returned unchanged.  The same happens should the
+    /// iterate overflow regardless.
     pub fn smooth_path(
         path: &[[f64; 2]],
         weight_data: f64,
@@ -551,11 +721,22 @@ impl PathSmoother {
         if path.len() < 3 {
             return path.to_vec();
         }
+        let weights_valid = weight_data.is_finite()
+            && weight_smooth.is_finite()
+            && weight_data >= 0.0
+            && weight_smooth >= 0.0;
+        let points_finite = path.iter().all(|p| p[0].is_finite() && p[1].is_finite());
+        // Relaxation factor of the in-place sweep (see the method documentation).
+        let stable = weight_data + 2.0 * weight_smooth < 2.0;
+        if !weights_valid || !stable || !tolerance.is_finite() || !points_finite {
+            return path.to_vec();
+        }
+        let tolerance = tolerance.max(0.0);
         let n = path.len();
         let orig = path.to_vec();
         let mut smoothed = path.to_vec();
 
-        loop {
+        for _ in 0..Self::MAX_SMOOTH_ITERS {
             let mut change = 0.0_f64;
             for i in 1..n - 1 {
                 for k in 0..2 {
@@ -567,7 +748,11 @@ impl PathSmoother {
                     change += delta.abs();
                 }
             }
-            if change < tolerance {
+            if !change.is_finite() {
+                // Diverged: the iterate is meaningless, keep the input path.
+                return path.to_vec();
+            }
+            if change <= tolerance {
                 break;
             }
         }
@@ -630,12 +815,10 @@ impl PathSmoother {
             prev = pt;
         }
         // Always include the last point unless it coincides with the last resampled point
-        if dist(
-            *result.last().expect("collection should not be empty"),
-            *path.last().expect("collection should not be empty"),
-        ) > 1e-9
+        if let (Some(&last_sample), Some(&last_point)) = (result.last(), path.last())
+            && dist(last_sample, last_point) > 1e-9
         {
-            result.push(*path.last().expect("collection should not be empty"));
+            result.push(last_point);
         }
         result
     }
@@ -678,137 +861,156 @@ enum DubinsWord {
     Lrl,
 }
 
+/// Arc-length spacing of the waypoints returned by [`DubinsPath::plan`] (m).
+const DUBINS_SAMPLE_SPACING: f64 = 0.05;
+
 impl DubinsPath {
     /// Compute the shortest Dubins path from `start` to `goal` with minimum
     /// turning radius `min_radius`.
     ///
-    /// Returns uniformly sampled world-space waypoints at ~0.1 m arc-length
-    /// resolution.
+    /// Returns world-space waypoints sampled at an arc-length spacing of at
+    /// most 0.05 m.  The first waypoint is the start position and the last one
+    /// is the end of the third path segment, which coincides with the goal
+    /// position (and heading) up to rounding error.
+    ///
+    /// When `min_radius` is not a positive finite number, the poses are not
+    /// finite, or no word is valid, the straight segment between the two
+    /// positions is returned.
     pub fn plan(start: PathPlannerState, goal: PathPlannerState, min_radius: f64) -> Vec<[f64; 2]> {
-        use std::f64::consts::PI;
-
-        // Normalise to the standard Dubins frame (start at origin, heading 0)
-        let dx = goal.x - start.x;
-        let dy = goal.y - start.y;
-        let d = (dx * dx + dy * dy).sqrt() / min_radius;
-        let alpha = mod2pi(start.theta - dx.atan2(dy) + PI / 2.0); // local start heading
-        let beta = mod2pi(goal.theta - dx.atan2(dy) + PI / 2.0); // local goal heading
-
-        let candidates = [
-            (DubinsWord::Lsl, dubins_lsl(d, alpha, beta)),
-            (DubinsWord::Rsr, dubins_rsr(d, alpha, beta)),
-            (DubinsWord::Lsr, dubins_lsr(d, alpha, beta)),
-            (DubinsWord::Rsl, dubins_rsl(d, alpha, beta)),
-            (DubinsWord::Rlr, dubins_rlr(d, alpha, beta)),
-            (DubinsWord::Lrl, dubins_lrl(d, alpha, beta)),
-        ];
-
-        // Pick shortest valid path
-        let best = candidates
-            .iter()
-            .filter_map(|(word, seg)| seg.map(|s| (*word, s)))
-            .min_by(|(_, a), (_, b)| {
-                let la: f64 = a[0] + a[1] + a[2];
-                let lb: f64 = b[0] + b[1] + b[2];
-                la.partial_cmp(&lb).unwrap_or(Ordering::Equal)
-            });
-
-        let (word, segs) = match best {
-            Some(v) => v,
-            None => return vec![[start.x, start.y], [goal.x, goal.y]],
-        };
-
-        sample_dubins(start, goal, word, segs, min_radius, 0.05)
+        match shortest_dubins_word(start, goal, min_radius) {
+            Some((word, segs)) => {
+                sample_dubins(start, goal, word, segs, min_radius, DUBINS_SAMPLE_SPACING)
+            }
+            None => vec![[start.x, start.y], [goal.x, goal.y]],
+        }
     }
+}
+
+/// Select the shortest of the six Dubins words between two poses.
+///
+/// Returns the word together with its three segment lengths, normalised by
+/// `min_radius` (arc segments are angles in radians, the straight segment is a
+/// length in units of the radius).
+fn shortest_dubins_word(
+    start: PathPlannerState,
+    goal: PathPlannerState,
+    min_radius: f64,
+) -> Option<(DubinsWord, [f64; 3])> {
+    if !(min_radius > 0.0 && min_radius.is_finite()) {
+        return None;
+    }
+
+    // Normalise to the standard Dubins frame: the x axis points from the start
+    // to the goal, the distance between them is `d` turning radii.
+    let dx = goal.x - start.x;
+    let dy = goal.y - start.y;
+    let d = (dx * dx + dy * dy).sqrt() / min_radius;
+    if !d.is_finite() {
+        return None;
+    }
+    let phi = dy.atan2(dx);
+    let alpha = mod2pi(start.theta - phi); // start heading in the local frame
+    let beta = mod2pi(goal.theta - phi); // goal heading in the local frame
+
+    let candidates = [
+        (DubinsWord::Lsl, dubins_lsl(d, alpha, beta)),
+        (DubinsWord::Rsr, dubins_rsr(d, alpha, beta)),
+        (DubinsWord::Lsr, dubins_lsr(d, alpha, beta)),
+        (DubinsWord::Rsl, dubins_rsl(d, alpha, beta)),
+        (DubinsWord::Rlr, dubins_rlr(d, alpha, beta)),
+        (DubinsWord::Lrl, dubins_lrl(d, alpha, beta)),
+    ];
+
+    // Pick shortest valid path
+    candidates
+        .iter()
+        .filter_map(|(word, seg)| seg.map(|s| (*word, s)))
+        .min_by(|(_, a), (_, b)| {
+            let la: f64 = a[0] + a[1] + a[2];
+            let lb: f64 = b[0] + b[1] + b[2];
+            la.partial_cmp(&lb).unwrap_or(Ordering::Equal)
+        })
 }
 
 // ---------------------------------------------------------------------------
 // Dubins helper functions
 // ---------------------------------------------------------------------------
 
+/// Wrap an angle into `[0, 2π)`.
 fn mod2pi(x: f64) -> f64 {
-    let mut v = x % (2.0 * std::f64::consts::PI);
+    let two_pi = 2.0 * std::f64::consts::PI;
+    let mut v = x % two_pi;
     if v < 0.0 {
-        v += 2.0 * std::f64::consts::PI;
+        v += two_pi;
+    }
+    // A tiny negative input rounds `v + 2π` up to exactly 2π (a full spurious
+    // turn); fold it back onto 0.
+    if two_pi - v < 1e-12 {
+        v = 0.0;
     }
     v
 }
 
+// The six words are expressed in the standard Dubins frame (unit turning
+// radius, start at the origin, goal on the +x axis at distance `d`) with
+// `alpha`/`beta` the start/goal headings relative to the start->goal chord.
+// Each returns the segment lengths `[t, p, q]` of the word.
+
 fn dubins_lsl(d: f64, alpha: f64, beta: f64) -> Option<[f64; 3]> {
-    let ca = alpha.cos();
-    let sa = alpha.sin();
-    let cb = beta.cos();
-    let sb = beta.sin();
-    let tmp0 = d + sa - sb;
-    let p_sq = 2.0 + d * d - 2.0 * (d * (sa - sb) - 2.0 * ca * cb + 2.0);
-    // LSL: t = mod2pi(-alpha + atan2(cb-ca, d+sa-sb)), p = sqrt(p_sq), q = mod2pi(beta - ...)
-    let tmp1 = (cb - ca).atan2(tmp0);
-    let t = mod2pi(-alpha + tmp1);
-    let p_sq2 = 2.0 + d * d - 2.0 * ca * cb * 2.0 + 2.0 * d * (sa - sb);
-    if p_sq2 < 0.0 {
+    let (sa, ca) = alpha.sin_cos();
+    let (sb, cb) = beta.sin_cos();
+    let c_ab = (alpha - beta).cos();
+    let p_sq = 2.0 + d * d - 2.0 * c_ab + 2.0 * d * (sa - sb);
+    if p_sq < 0.0 {
         return None;
     }
-    let _ = p_sq; // suppress unused warning
-    let p = p_sq2.max(0.0).sqrt();
-    let q = mod2pi(beta - tmp1);
-    Some([t, p, q])
+    let tmp = (cb - ca).atan2(d + sa - sb);
+    Some([mod2pi(-alpha + tmp), p_sq.sqrt(), mod2pi(beta - tmp)])
 }
 
 fn dubins_rsr(d: f64, alpha: f64, beta: f64) -> Option<[f64; 3]> {
-    let ca = alpha.cos();
-    let sa = alpha.sin();
-    let cb = beta.cos();
-    let sb = beta.sin();
-    let tmp0 = d - sa + sb;
-    let tmp1 = (ca - cb).atan2(tmp0);
-    let t = mod2pi(alpha - tmp1);
-    let p_sq = 2.0 + d * d - 2.0 * ca * cb * 2.0 - 2.0 * d * (sa - sb);
+    let (sa, ca) = alpha.sin_cos();
+    let (sb, cb) = beta.sin_cos();
+    let c_ab = (alpha - beta).cos();
+    let p_sq = 2.0 + d * d - 2.0 * c_ab + 2.0 * d * (sb - sa);
     if p_sq < 0.0 {
         return None;
     }
-    let p = p_sq.max(0.0).sqrt();
-    let q = mod2pi(-beta + tmp1);
-    Some([t, p, q])
+    let tmp = (ca - cb).atan2(d - sa + sb);
+    Some([mod2pi(alpha - tmp), p_sq.sqrt(), mod2pi(-beta + tmp)])
 }
 
 fn dubins_lsr(d: f64, alpha: f64, beta: f64) -> Option<[f64; 3]> {
-    let ca = alpha.cos();
-    let sa = alpha.sin();
-    let cb = beta.cos();
-    let sb = beta.sin();
-    let p_sq = -2.0 + d * d + 2.0 * ca * cb * 2.0 + 2.0 * d * (sa + sb);
+    let (sa, ca) = alpha.sin_cos();
+    let (sb, cb) = beta.sin_cos();
+    let c_ab = (alpha - beta).cos();
+    let p_sq = -2.0 + d * d + 2.0 * c_ab + 2.0 * d * (sa + sb);
     if p_sq < 0.0 {
         return None;
     }
-    let p = p_sq.max(0.0).sqrt();
-    let tmp0 = (-ca - cb).atan2(d + sa + sb) - (-2.0_f64).atan2(p);
-    let t = mod2pi(-alpha + tmp0);
-    let q = mod2pi(-beta + tmp0);
-    Some([t, p, q])
+    let p = p_sq.sqrt();
+    let tmp = (-ca - cb).atan2(d + sa + sb) - (-2.0_f64).atan2(p);
+    Some([mod2pi(-alpha + tmp), p, mod2pi(-beta + tmp)])
 }
 
 fn dubins_rsl(d: f64, alpha: f64, beta: f64) -> Option<[f64; 3]> {
-    let ca = alpha.cos();
-    let sa = alpha.sin();
-    let cb = beta.cos();
-    let sb = beta.sin();
-    let p_sq = d * d - 2.0 + 2.0 * ca * cb * 2.0 - 2.0 * d * (sa + sb);
+    let (sa, ca) = alpha.sin_cos();
+    let (sb, cb) = beta.sin_cos();
+    let c_ab = (alpha - beta).cos();
+    let p_sq = d * d - 2.0 + 2.0 * c_ab - 2.0 * d * (sa + sb);
     if p_sq < 0.0 {
         return None;
     }
-    let p = p_sq.max(0.0).sqrt();
-    let tmp0 = (ca + cb).atan2(d - sa - sb) - (2.0_f64).atan2(p);
-    let t = mod2pi(alpha - tmp0);
-    let q = mod2pi(beta - tmp0);
-    Some([t, p, q])
+    let p = p_sq.sqrt();
+    let tmp = (ca + cb).atan2(d - sa - sb) - (2.0_f64).atan2(p);
+    Some([mod2pi(alpha - tmp), p, mod2pi(beta - tmp)])
 }
 
 fn dubins_rlr(d: f64, alpha: f64, beta: f64) -> Option<[f64; 3]> {
-    let ca = alpha.cos();
-    let sa = alpha.sin();
-    let cb = beta.cos();
-    let sb = beta.sin();
-    let tmp0 = (6.0 - d * d + 2.0 * ca * cb * 2.0 + 2.0 * d * (sa - sb)) / 8.0;
+    let (sa, ca) = alpha.sin_cos();
+    let (sb, cb) = beta.sin_cos();
+    let c_ab = (alpha - beta).cos();
+    let tmp0 = (6.0 - d * d + 2.0 * c_ab + 2.0 * d * (sa - sb)) / 8.0;
     if tmp0.abs() > 1.0 {
         return None;
     }
@@ -819,11 +1021,10 @@ fn dubins_rlr(d: f64, alpha: f64, beta: f64) -> Option<[f64; 3]> {
 }
 
 fn dubins_lrl(d: f64, alpha: f64, beta: f64) -> Option<[f64; 3]> {
-    let ca = alpha.cos();
-    let sa = alpha.sin();
-    let cb = beta.cos();
-    let sb = beta.sin();
-    let tmp0 = (6.0 - d * d + 2.0 * ca * cb * 2.0 - 2.0 * d * (sa - sb)) / 8.0;
+    let (sa, ca) = alpha.sin_cos();
+    let (sb, cb) = beta.sin_cos();
+    let c_ab = (alpha - beta).cos();
+    let tmp0 = (6.0 - d * d + 2.0 * c_ab + 2.0 * d * (sb - sa)) / 8.0;
     if tmp0.abs() > 1.0 {
         return None;
     }
@@ -1401,6 +1602,9 @@ impl DynamicReplanner {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod regression_tests;
 
 #[cfg(test)]
 mod tests {

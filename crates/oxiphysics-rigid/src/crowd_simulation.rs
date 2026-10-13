@@ -11,6 +11,7 @@
 //! - [`EmergentBehavior`] — lane formation, oscillation at bottleneck, arch formation
 //! - [`EvacuationSimulation`] — exit choice, bottleneck congestion, evacuation time
 
+use crate::rng_util::uniform;
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -1225,6 +1226,9 @@ impl CrowdSimulationWorld {
 // ---------------------------------------------------------------------------
 
 /// Spawn `n` pedestrians randomly inside a rectangular region.
+///
+/// A region that is flat along an axis (`x_min == x_max` or `y_min == y_max`)
+/// places every pedestrian on that coordinate.
 pub fn spawn_pedestrians_in_rect(
     n: usize,
     x_min: f64,
@@ -1235,11 +1239,10 @@ pub fn spawn_pedestrians_in_rect(
     mass: f64,
 ) -> Vec<Pedestrian> {
     let mut rng = rand::rng();
-    use rand::RngExt as _;
     (0..n)
         .map(|i| {
-            let x = rng.random_range(x_min..x_max);
-            let y = rng.random_range(y_min..y_max);
+            let x = uniform(&mut rng, x_min, x_max);
+            let y = uniform(&mut rng, y_min, y_max);
             Pedestrian::new(i, [x, y], destination, mass)
         })
         .collect()

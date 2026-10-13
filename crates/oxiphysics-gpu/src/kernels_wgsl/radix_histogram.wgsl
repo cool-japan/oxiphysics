@@ -23,9 +23,12 @@ var<workgroup> local_bins: array<atomic<u32>, 256u>;
 fn radix_histogram(
     @builtin(workgroup_id) wg_vec: vec3<u32>,
     @builtin(local_invocation_id) lid_vec: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
     let lid = lid_vec.x;
-    let tile_id = wg_vec.x;
+    // A dispatch wider than one dimension allows is folded into y (see
+    // `dispatch_count_for`): linearise the workgroup (tile) index.
+    let tile_id = wg_vec.x + wg_vec.y * nwg.x;
 
     atomicStore(&local_bins[lid], 0u);
     workgroupBarrier();
@@ -37,5 +40,8 @@ fn radix_histogram(
     }
     workgroupBarrier();
 
-    tile_hist[lid * params.num_tiles + tile_id] = atomicLoad(&local_bins[lid]);
+    // Tiles of the folded grid past the last real tile would alias other rows.
+    if (tile_id < params.num_tiles) {
+        tile_hist[lid * params.num_tiles + tile_id] = atomicLoad(&local_bins[lid]);
+    }
 }

@@ -23,11 +23,21 @@ fn reduce_sum_block(
     @builtin(local_invocation_id) lid_vec: vec3<u32>,
     @builtin(global_invocation_id) gid_vec: vec3<u32>,
     @builtin(workgroup_id) wg_vec: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
     let lid = lid_vec.x;
-    let gid = gid_vec.x;
-    let wg_id = wg_vec.x;
-    scratch[lid] = select(0.0, input[gid], gid < params.n);
+    // A dispatch wider than one dimension allows is folded into y (see
+    // `dispatch_count_for`): linearise the invocation and workgroup indices.
+    let gid = gid_vec.x + gid_vec.y * nwg.x * 256u;
+    let wg_id = wg_vec.x + wg_vec.y * nwg.x;
+    let n = params.n;
+    // Workgroups of the folded grid past the last block must not write `partials`.
+    let in_range = wg_id < n / 256u + select(0u, 1u, (n % 256u) != 0u);
+    var value: f32 = 0.0;
+    if (gid < n) {
+        value = input[gid];
+    }
+    scratch[lid] = value;
     workgroupBarrier();
 
     var stride: u32 = 256u >> 1u;
@@ -40,7 +50,7 @@ fn reduce_sum_block(
         stride = stride >> 1u;
     }
 
-    if (lid == 0u) {
+    if (lid == 0u && in_range) {
         partials[wg_id] = scratch[0u];
     }
 }
@@ -50,11 +60,18 @@ fn reduce_max_block(
     @builtin(local_invocation_id) lid_vec: vec3<u32>,
     @builtin(global_invocation_id) gid_vec: vec3<u32>,
     @builtin(workgroup_id) wg_vec: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
     let lid = lid_vec.x;
-    let gid = gid_vec.x;
-    let wg_id = wg_vec.x;
-    scratch[lid] = select(-3.4028235e38, input[gid], gid < params.n);
+    let gid = gid_vec.x + gid_vec.y * nwg.x * 256u;
+    let wg_id = wg_vec.x + wg_vec.y * nwg.x;
+    let n = params.n;
+    let in_range = wg_id < n / 256u + select(0u, 1u, (n % 256u) != 0u);
+    var value: f32 = -3.4028235e38;
+    if (gid < n) {
+        value = input[gid];
+    }
+    scratch[lid] = value;
     workgroupBarrier();
 
     var stride: u32 = 256u >> 1u;
@@ -67,7 +84,7 @@ fn reduce_max_block(
         stride = stride >> 1u;
     }
 
-    if (lid == 0u) {
+    if (lid == 0u && in_range) {
         partials[wg_id] = scratch[0u];
     }
 }

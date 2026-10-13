@@ -3,7 +3,42 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
+use crate::error::MdError;
+use rand::rngs::StdRng;
+use rand::{Rng, RngExt, SeedableRng};
 
+/// Metropolis acceptance test for a move whose reduced cost is `delta`.
+///
+/// `delta` is the change of the dimensionless energy `β E`, so `exp(-delta)` is
+/// the Boltzmann factor, and the move is accepted with probability
+/// `min(1, exp(-delta))`.  Exactly one uniform random number is consumed per
+/// call regardless of `delta`, which keeps seeded streams aligned between runs
+/// with different bias landscapes.
+fn metropolis_accept<R: Rng + ?Sized>(delta: f64, rng: &mut R) -> bool {
+    let u: f64 = rng.random();
+    u < (-delta).exp().min(1.0)
+}
+/// Check that `index` addresses one of `n_replicas` replicas.
+fn check_replica_index(index: usize, n_replicas: usize) -> Result<(), MdError> {
+    if index < n_replicas {
+        Ok(())
+    } else {
+        Err(MdError::General(format!(
+            "replica index {index} out of range for {n_replicas} replicas"
+        )))
+    }
+}
+/// Inverse thermal energy `1 / (k_B T)` in mol/kJ, rejecting non-positive or
+/// non-finite temperatures.
+fn inverse_thermal_energy(temperature: f64) -> Result<f64, MdError> {
+    if temperature.is_finite() && temperature > 0.0 {
+        Ok(1.0 / (KB * temperature))
+    } else {
+        Err(MdError::General(format!(
+            "replica temperature must be positive and finite, got {temperature}"
+        )))
+    }
+}
 /// State for a metadynamics (or well-tempered metadynamics) simulation.
 pub struct MetadynamicsState {
     /// Deposited Gaussian hills.
@@ -173,15 +208,97 @@ impl CoordinationNumberCV {
         }
     }
     /// Evaluate the switching function sigma(r).
+    ///
+    /// The point `r = r_0` is a removable singularity (`0/0`) with the finite
+    /// limit `sigma(r_0) = n / m`, which is returned there.
     pub fn switching_function(&self, r: f64) -> f64 {
-        let x = r / self.r_0;
+        self.switching_value_and_derivative(r / self.r_0).0
+    }
+    /// Derivative `d sigma / d r` of the switching function.
+    ///
+    /// At the removable singularity `r = r_0` the limit
+    /// `d sigma / d r = n (n - m) / (2 m r_0)` is returned.
+    pub fn switching_derivative(&self, r: f64) -> f64 {
+        self.switching_value_and_derivative(r / self.r_0).1 / self.r_0
+    }
+    /// `(sigma, d sigma / dx)` as functions of the reduced distance `x = r / r_0`.
+    ///
+    /// Away from `x = 1`
+    ///
+    /// ```text
+    /// sigma  = (1 - x^n) / (1 - x^m)
+    /// sigma' = [-n x^(n-1) (1 - x^m) + m x^(m-1) (1 - x^n)] / (1 - x^m)^2
+    /// ```
+    ///
+    /// Both the numerator and the denominator vanish at `x = 1`, so within
+    /// [`SWITCHING_SERIES_HALF_WIDTH`] of it the Taylor series of the ratio of the
+    /// two geometric sums is used instead of the cancelling closed form.  The
+    /// function is degenerate (and returns zero) for `n = 0` (numerator
+    /// identically zero) and `m = 0`; for `n = m` it is identically one.
+    fn switching_value_and_derivative(&self, x: f64) -> (f64, f64) {
+        if self.n == 0 || self.m == 0 {
+            return (0.0, 0.0);
+        }
+        if self.n == self.m {
+            return (1.0, 0.0);
+        }
+        let n = f64::from(self.n);
+        let m = f64::from(self.m);
+        let eps = x - 1.0;
+        if eps.abs() < SWITCHING_SERIES_HALF_WIDTH {
+            let coefficients = removable_singularity_series(n, m);
+            let prefactor = n / m;
+            let mut value = 0.0;
+            let mut slope = 0.0;
+            for (order, c) in coefficients.iter().enumerate().rev() {
+                value = value * eps + c;
+                if order > 0 {
+                    slope = slope * eps + c * order as f64;
+                }
+            }
+            return (prefactor * value, prefactor * slope);
+        }
         let xn = x.powi(self.n as i32);
         let xm = x.powi(self.m as i32);
-        if (1.0 - xm).abs() < 1e-15 {
-            return 0.0;
+        if !xn.is_finite() || !xm.is_finite() {
+            // x^m overflowed: far beyond r_0 the switching function has decayed to 0.
+            return (0.0, 0.0);
         }
-        (1.0 - xn) / (1.0 - xm)
+        let xn_1 = x.powi(self.n as i32 - 1);
+        let xm_1 = x.powi(self.m as i32 - 1);
+        let denominator = 1.0 - xm;
+        let value = (1.0 - xn) / denominator;
+        let slope = (-n * xn_1 * denominator + m * xm_1 * (1.0 - xn)) / (denominator * denominator);
+        (value, slope)
     }
+}
+/// Half width of the interval around `x = r / r_0 = 1` in which the switching
+/// function is evaluated from its Taylor series.
+pub(super) const SWITCHING_SERIES_HALF_WIDTH: f64 = 1.0e-4;
+/// Taylor coefficients `c_0..c_4` in `eps = x - 1` of `m * sigma(x) / n`.
+///
+/// With `P_k(eps) = ((1 + eps)^k - 1) / (k eps) = sum_j C(k-1, j) eps^j / (j + 1)`
+/// the switching function is `sigma = (n / m) P_n(eps) / P_m(eps)`; the ratio of
+/// the two power series is formed by long division.  `c_0 = 1`,
+/// `c_1 = (n - m) / 2`.
+fn removable_singularity_series(n: f64, m: f64) -> [f64; 5] {
+    let geometric_coefficient = |k: f64, order: usize| -> f64 {
+        let mut binomial = 1.0;
+        for i in 0..order {
+            binomial *= (k - 1.0 - i as f64) / (i as f64 + 1.0);
+        }
+        binomial / (order as f64 + 1.0)
+    };
+    let mut c = [0.0_f64; 5];
+    c[0] = 1.0;
+    for order in 1..c.len() {
+        let mut coefficient = geometric_coefficient(n, order);
+        for i in 1..=order {
+            coefficient -= geometric_coefficient(m, i) * c[order - i];
+        }
+        c[order] = coefficient;
+    }
+    c
 }
 /// CV measuring the end-to-end distance of a polymer chain.
 ///
@@ -262,26 +379,84 @@ impl PtMetaD {
     pub fn n_replicas(&self) -> usize {
         self.replicas.len()
     }
-    /// Attempt a replica exchange between adjacent replicas `i` and `i+1`.
+    /// Reduced cost `Δ` of exchanging the configurations of the adjacent
+    /// replicas `i` and `j = i + 1`.
     ///
-    /// Exchange probability:
-    ///   P = min(1, exp(Δ))
-    ///   Δ = (beta_i - beta_{i+1}) * (V_i(s_i) - V_i(s_{i+1}))
+    /// Replica `k` samples the weight `exp(-β_k [U(x) + V_k(s(x))])`, where `U` is
+    /// the potential energy, `V_k` the metadynamics bias of that replica and
+    /// `s(x)` the collective variable.  Swapping the configuration `x_i` of
+    /// replica `i` (CV value `cv_i`, potential energy `potential_energy_i`) with
+    /// the configuration `x_j` of replica `j` (`cv_j`, `potential_energy_j`)
+    /// changes the weight by
     ///
-    /// Returns true if exchange was accepted (uses deterministic criterion here).
-    pub fn try_exchange_adjacent(&mut self, i: usize, cv_i: &[f64], cv_j: &[f64]) -> bool {
-        assert!(i + 1 < self.replicas.len(), "replica index out of range");
-        self.n_attempts += 1;
-        let beta_i = 1.0 / (KB * self.temperatures[i]);
-        let beta_j = 1.0 / (KB * self.temperatures[i + 1]);
+    /// ```text
+    /// Δ = (β_i − β_j) (U_j − U_i) + β_i [V_i(s_j) − V_i(s_i)] + β_j [V_j(s_i) − V_j(s_j)]
+    /// ```
+    ///
+    /// and the exchange has to be accepted with probability `min(1, exp(-Δ))`.
+    /// Potential energies are in kJ/mol, like the hill heights.
+    ///
+    /// # Errors
+    /// [`MdError::General`] if `i + 1` is not a valid replica, a replica
+    /// temperature is not positive and finite, or `Δ` is NaN.
+    pub fn exchange_delta(
+        &self,
+        i: usize,
+        cv_i: &[f64],
+        cv_j: &[f64],
+        potential_energy_i: f64,
+        potential_energy_j: f64,
+    ) -> Result<f64, MdError> {
+        let j = i.saturating_add(1);
+        check_replica_index(j, self.replicas.len())?;
+        let temperature_of = |k: usize| {
+            self.temperatures
+                .get(k)
+                .copied()
+                .ok_or_else(|| MdError::General(format!("no temperature stored for replica {k}")))
+        };
+        let beta_i = inverse_thermal_energy(temperature_of(i)?)?;
+        let beta_j = inverse_thermal_energy(temperature_of(j)?)?;
         let v_i_at_i = self.replicas[i].bias_potential(cv_i);
         let v_i_at_j = self.replicas[i].bias_potential(cv_j);
-        let delta = (beta_j - beta_i) * (v_i_at_i - v_i_at_j);
-        let accept = delta >= 0.0 || (-delta).exp() > 0.5;
+        let v_j_at_i = self.replicas[j].bias_potential(cv_i);
+        let v_j_at_j = self.replicas[j].bias_potential(cv_j);
+        let delta = (beta_i - beta_j) * (potential_energy_j - potential_energy_i)
+            + beta_i * (v_i_at_j - v_i_at_i)
+            + beta_j * (v_j_at_i - v_j_at_j);
+        if delta.is_nan() {
+            return Err(MdError::General(
+                "replica-exchange cost is NaN (check the potential energies and CV values)".into(),
+            ));
+        }
+        Ok(delta)
+    }
+    /// Attempt a replica exchange between adjacent replicas `i` and `i + 1`.
+    ///
+    /// The cost `Δ` of [`PtMetaD::exchange_delta`] is evaluated and the exchange
+    /// is accepted with the Metropolis probability `min(1, exp(-Δ))`, drawing one
+    /// uniform number from `rng`.  The attempt (and acceptance) counters are
+    /// updated; it is up to the caller to swap the configurations of the two
+    /// replicas when `Ok(true)` is returned.
+    ///
+    /// # Errors
+    /// See [`PtMetaD::exchange_delta`]; nothing is counted when an error occurs.
+    pub fn try_exchange_adjacent<R: Rng + ?Sized>(
+        &mut self,
+        i: usize,
+        cv_i: &[f64],
+        cv_j: &[f64],
+        potential_energy_i: f64,
+        potential_energy_j: f64,
+        rng: &mut R,
+    ) -> Result<bool, MdError> {
+        let delta = self.exchange_delta(i, cv_i, cv_j, potential_energy_i, potential_energy_j)?;
+        let accept = metropolis_accept(delta, rng);
+        self.n_attempts += 1;
         if accept {
             self.n_accepted += 1;
         }
-        accept
+        Ok(accept)
     }
     /// Acceptance rate.
     pub fn acceptance_rate(&self) -> f64 {
@@ -370,9 +545,20 @@ impl MetadynamicsParams {
 ///
 /// Each walker deposits hills independently; between deposition steps they share
 /// all hills so that each walker feels the combined bias from the entire ensemble.
+///
+/// The struct keeps a shared pool of every hill that has been synchronised so
+/// far together with, per walker, how many entries of its hill list are already
+/// part of that pool.  A synchronisation therefore only moves the hills
+/// deposited since the previous one, and repeated synchronisations without new
+/// deposits are no-ops.
 pub struct MultipleWalkersMetadynamics {
     /// Per-walker metadynamics states.
     pub walkers: Vec<MetadynamicsState>,
+    /// Every hill deposited by any walker, in synchronisation order.
+    pool: Vec<GaussianHill>,
+    /// Per walker, the length of its hill list at the last synchronisation
+    /// (the leading entries of `walkers[w].hills` that already equal the pool).
+    synced_len: Vec<usize>,
 }
 impl MultipleWalkersMetadynamics {
     /// Create `n_walkers` independent metadynamics walkers with identical parameters.
@@ -380,34 +566,39 @@ impl MultipleWalkersMetadynamics {
         let walkers = (0..n_walkers)
             .map(|_| MetadynamicsState::new(params_fn()))
             .collect();
-        Self { walkers }
+        Self {
+            walkers,
+            pool: Vec::new(),
+            synced_len: vec![0; n_walkers],
+        }
     }
     /// Synchronise all walkers: share hills across the entire ensemble.
     ///
-    /// Each walker receives a copy of every hill deposited by any other walker.
-    /// This merges hills from all walkers into a single shared pool for all.
+    /// The hills each walker deposited since the previous synchronisation are
+    /// appended to the shared pool, and then every walker's hill list is set to
+    /// the pool, so each walker holds exactly one copy of every hill ever
+    /// deposited.  Calling this again without new deposits changes nothing (the
+    /// bias is never counted twice).
     pub fn synchronise(&mut self) {
-        let all_hills: Vec<GaussianHill> = self
-            .walkers
-            .iter()
-            .flat_map(|w| {
-                w.hills
-                    .iter()
-                    .map(|h| GaussianHill::new(h.center.clone(), h.height, h.widths.clone()))
-            })
-            .collect();
-        for walker in &mut self.walkers {
-            walker.hills.clear();
-            for h in &all_hills {
-                walker.hills.push(GaussianHill::new(
-                    h.center.clone(),
-                    h.height,
-                    h.widths.clone(),
-                ));
-            }
+        // Walkers appended after construction have not contributed anything yet.
+        self.synced_len.resize(self.walkers.len(), 0);
+        for (walker, &synced) in self.walkers.iter().zip(self.synced_len.iter()) {
+            let first_new = synced.min(walker.hills.len());
+            self.pool.extend(walker.hills[first_new..].iter().cloned());
+        }
+        for (walker, synced) in self.walkers.iter_mut().zip(self.synced_len.iter_mut()) {
+            walker.hills = self.pool.clone();
+            *synced = self.pool.len();
         }
     }
-    /// Total number of deposited hills across all walkers (before synchronisation).
+    /// The shared pool: every hill that has been synchronised so far, once.
+    pub fn shared_hills(&self) -> &[GaussianHill] {
+        &self.pool
+    }
+    /// Total number of hills held by all walkers.
+    ///
+    /// Right after a synchronisation every walker holds the whole pool, so this
+    /// equals `n_walkers() * shared_hills().len()`.
     pub fn total_hills(&self) -> usize {
         self.walkers.iter().map(|w| w.hills.len()).sum()
     }
@@ -433,6 +624,7 @@ impl RadiusOfGyrationCV {
     }
 }
 /// A Gaussian hill deposited in metadynamics.
+#[derive(Debug, Clone)]
 pub struct GaussianHill {
     /// Center in CV space (one value per CV dimension).
     pub center: Vec<f64>,
@@ -529,8 +721,11 @@ impl SteeredMD {
 /// Bias-exchange metadynamics (BE-META): multiple replicas each biased along
 /// a different CV, with periodic exchange between replicas.
 ///
-/// Each replica carries an independent metadynamics state for its own CV.
-/// Exchanges are attempted between adjacent replicas using Metropolis criterion.
+/// Each replica carries an independent metadynamics state for its own bias.
+/// Exchanges are attempted between replicas with the Metropolis criterion,
+/// driven by a seeded random number generator (see
+/// [`BiasExchangeMetadynamics::with_seed`]) or by a generator supplied by the
+/// caller (see [`BiasExchangeMetadynamics::try_exchange_with_rng`]).
 pub struct BiasExchangeMetadynamics {
     /// Per-replica metadynamics states.
     pub replicas: Vec<MetadynamicsState>,
@@ -540,13 +735,31 @@ pub struct BiasExchangeMetadynamics {
     pub n_accepted: usize,
     /// Total exchange attempts.
     pub n_attempts: usize,
+    /// Random stream behind [`BiasExchangeMetadynamics::try_exchange`].
+    rng: StdRng,
 }
 impl BiasExchangeMetadynamics {
+    /// Seed of the exchange random stream used by [`BiasExchangeMetadynamics::new`].
+    pub const DEFAULT_SEED: u64 = 0x00BE_5EED_0001_0001;
     /// Create `n_replicas` replicas with given parameters.
+    ///
+    /// The exchange random stream is seeded with
+    /// [`BiasExchangeMetadynamics::DEFAULT_SEED`], so runs are reproducible;
+    /// use [`BiasExchangeMetadynamics::with_seed`] for independent streams.
     pub fn new(
         n_replicas: usize,
         temperature: f64,
         params_fn: impl Fn(usize) -> MetadynamicsParams,
+    ) -> Self {
+        Self::with_seed(n_replicas, temperature, params_fn, Self::DEFAULT_SEED)
+    }
+    /// Like [`BiasExchangeMetadynamics::new`] with an explicit seed for the
+    /// random stream that decides the exchange attempts.
+    pub fn with_seed(
+        n_replicas: usize,
+        temperature: f64,
+        params_fn: impl Fn(usize) -> MetadynamicsParams,
+        seed: u64,
     ) -> Self {
         let replicas = (0..n_replicas)
             .map(|i| MetadynamicsState::new(params_fn(i)))
@@ -556,31 +769,96 @@ impl BiasExchangeMetadynamics {
             temperature,
             n_accepted: 0,
             n_attempts: 0,
+            rng: StdRng::seed_from_u64(seed),
         }
     }
-    /// Attempt a replica exchange between replicas `i` and `j`.
+    /// Reduced cost `Δ` of swapping the configurations of replicas `i` and `j`.
     ///
-    /// Uses the Metropolis criterion:
-    /// Δ = β * (V_bias_j(cv_i) - V_bias_j(cv_j) + V_bias_i(cv_j) - V_bias_i(cv_i))
+    /// With `V_k` the bias of replica `k`, `cv_i` the collective variable of the
+    /// configuration currently held by replica `i` and `cv_j` that of replica
+    /// `j`,
     ///
-    /// Returns `true` if the exchange was accepted.
-    pub fn try_exchange(&mut self, i: usize, j: usize, cv_i: &[f64], cv_j: &[f64]) -> bool {
-        self.n_attempts += 1;
-        let beta = 1.0 / (KB * self.temperature);
+    /// ```text
+    /// Δ = β [ V_i(cv_j) + V_j(cv_i) − V_i(cv_i) − V_j(cv_j) ]
+    /// ```
+    ///
+    /// (all replicas share the temperature, so the potential energies cancel).
+    /// Both CV values are taken in the CV space seen by both replica biases; a
+    /// bias is evaluated at each of them.  The exchange has to be accepted with
+    /// probability `min(1, exp(-Δ))`.
+    ///
+    /// # Errors
+    /// [`MdError::General`] if `i` or `j` is not a replica, if `i == j`, if the
+    /// temperature is not positive and finite, or if `Δ` is NaN.
+    pub fn exchange_delta(
+        &self,
+        i: usize,
+        j: usize,
+        cv_i: &[f64],
+        cv_j: &[f64],
+    ) -> Result<f64, MdError> {
+        check_replica_index(i, self.replicas.len())?;
+        check_replica_index(j, self.replicas.len())?;
+        if i == j {
+            return Err(MdError::General(format!(
+                "cannot exchange replica {i} with itself"
+            )));
+        }
+        let beta = inverse_thermal_energy(self.temperature)?;
         let v_i_at_i = self.replicas[i].bias_potential(cv_i);
         let v_i_at_j = self.replicas[i].bias_potential(cv_j);
         let v_j_at_j = self.replicas[j].bias_potential(cv_j);
         let v_j_at_i = self.replicas[j].bias_potential(cv_i);
         let delta = beta * ((v_i_at_j + v_j_at_i) - (v_i_at_i + v_j_at_j));
-        let accept = if delta <= 0.0 {
-            true
-        } else {
-            (-delta).exp() > 0.5
-        };
-        if accept {
+        if delta.is_nan() {
+            return Err(MdError::General(
+                "bias-exchange cost is NaN (check the CV values)".into(),
+            ));
+        }
+        Ok(delta)
+    }
+    /// Attempt a replica exchange between replicas `i` and `j`.
+    ///
+    /// Evaluates [`BiasExchangeMetadynamics::exchange_delta`] and accepts with
+    /// the Metropolis probability `min(1, exp(-Δ))`, drawing one number from the
+    /// internal seeded stream.  Returns `Ok(true)` if the exchange was accepted;
+    /// the caller then swaps the configurations.
+    ///
+    /// # Errors
+    /// See [`BiasExchangeMetadynamics::exchange_delta`]; nothing is counted when
+    /// an error occurs.
+    pub fn try_exchange(
+        &mut self,
+        i: usize,
+        j: usize,
+        cv_i: &[f64],
+        cv_j: &[f64],
+    ) -> Result<bool, MdError> {
+        let delta = self.exchange_delta(i, j, cv_i, cv_j)?;
+        let accept = metropolis_accept(delta, &mut self.rng);
+        self.record_attempt(accept);
+        Ok(accept)
+    }
+    /// Like [`BiasExchangeMetadynamics::try_exchange`], but the acceptance draw
+    /// comes from the caller's generator `rng` (the internal stream is untouched).
+    pub fn try_exchange_with_rng<R: Rng + ?Sized>(
+        &mut self,
+        i: usize,
+        j: usize,
+        cv_i: &[f64],
+        cv_j: &[f64],
+        rng: &mut R,
+    ) -> Result<bool, MdError> {
+        let delta = self.exchange_delta(i, j, cv_i, cv_j)?;
+        let accept = metropolis_accept(delta, rng);
+        self.record_attempt(accept);
+        Ok(accept)
+    }
+    fn record_attempt(&mut self, accepted: bool) {
+        self.n_attempts += 1;
+        if accepted {
             self.n_accepted += 1;
         }
-        accept
     }
     /// Overall acceptance rate.
     pub fn acceptance_rate(&self) -> f64 {

@@ -147,37 +147,38 @@ pub(super) fn inv3(m: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
 /// Solve the cubic equation for eigenvalues of a 3x3 symmetric matrix.
 ///
 /// x^3 - I1*x^2 + I2*x - I3 = 0
+///
+/// All three roots of this characteristic polynomial are real because the
+/// matrix is symmetric, so the trigonometric solution of the depressed cubic
+/// applies.  With `x = I1/3 + y` the equation becomes
+/// `y^3 - (p/3)*y - q/27 = 0`, where `p = I1² - 3*I2` and
+/// `q = 2*I1³ - 9*I1*I2 + 27*I3`, with roots
+///
+/// `y_k = (2*sqrt(p)/3) * cos((acos(q / (2*p*sqrt(p))) + 2*pi*k) / 3)`,
+/// `k = 0, 1, 2`.
+///
+/// The eigenvalues are returned sorted in descending order.
 pub(super) fn solve_cubic_symmetric(i1: f64, i2: f64, i3: f64) -> [f64; 3] {
     let p = i1 * i1 - 3.0 * i2;
-    let q = 2.0 * i1 * i1 * i1 - 9.0 * i1 * i2 + 27.0 * i3;
-    if p.abs() < 1e-30 {
+    if p <= 1e-30 {
+        // p = ½·Σ(λi - λj)² vanishes only for a triple root (isotropic state).
+        // A slightly negative p can appear through round-off and means the same.
         let val = i1 / 3.0;
         return [val, val, val];
     }
-    let discriminant = (q * q - 4.0 * p * p * p).max(0.0);
-    if discriminant < 1e-30 {
-        let r = q / (2.0 * p * p.sqrt());
-        let r_clamped = clamp(r, -1.0, 1.0);
-        let theta = r_clamped.acos();
-        let sqrt_p = (p / 3.0).sqrt();
-        let x1 = i1 / 3.0 + 2.0 * sqrt_p * (theta / 3.0).cos();
-        let x2 = i1 / 3.0 + 2.0 * sqrt_p * ((theta + 2.0 * PI) / 3.0).cos();
-        let x3 = i1 / 3.0 + 2.0 * sqrt_p * ((theta + 4.0 * PI) / 3.0).cos();
-        let mut vals = [x1, x2, x3];
-        vals.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-        vals
-    } else {
-        let r = q / (2.0 * p * p.sqrt());
-        let r_clamped = clamp(r, -1.0, 1.0);
-        let theta = r_clamped.acos();
-        let sqrt_p = (p / 3.0).sqrt();
-        let x1 = i1 / 3.0 + 2.0 * sqrt_p * (theta / 3.0).cos();
-        let x2 = i1 / 3.0 + 2.0 * sqrt_p * ((theta + 2.0 * PI) / 3.0).cos();
-        let x3 = i1 / 3.0 + 2.0 * sqrt_p * ((theta + 4.0 * PI) / 3.0).cos();
-        let mut vals = [x1, x2, x3];
-        vals.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-        vals
-    }
+    let q = 2.0 * i1 * i1 * i1 - 9.0 * i1 * i2 + 27.0 * i3;
+    let sqrt_p = p.sqrt();
+    let cos_arg = clamp(q / (2.0 * p * sqrt_p), -1.0, 1.0);
+    let theta = cos_arg.acos();
+    let mean = i1 / 3.0;
+    let amplitude = 2.0 * sqrt_p / 3.0;
+    let mut vals = [
+        mean + amplitude * (theta / 3.0).cos(),
+        mean + amplitude * ((theta + 2.0 * PI) / 3.0).cos(),
+        mean + amplitude * ((theta + 4.0 * PI) / 3.0).cos(),
+    ];
+    vals.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    vals
 }
 #[cfg(test)]
 mod tests {
@@ -602,6 +603,145 @@ mod tests {
                     approx_eq(fe[i][j], f[i][j], EPS),
                     "Fe should equal F when Fg=I"
                 );
+            }
+        }
+    }
+    fn rot_z(angle: f64) -> [[f64; 3]; 3] {
+        let (s, c) = angle.sin_cos();
+        [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]
+    }
+    fn rot_x(angle: f64) -> [[f64; 3]; 3] {
+        let (s, c) = angle.sin_cos();
+        [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]]
+    }
+    /// Q·diag(d)·Qᵀ.
+    fn rotate_diag(q: &[[f64; 3]; 3], d: [f64; 3]) -> [[f64; 3]; 3] {
+        let diag = [[d[0], 0.0, 0.0], [0.0, d[1], 0.0], [0.0, 0.0, d[2]]];
+        mat_mul3(&mat_mul3(q, &diag), &transpose3(q))
+    }
+    /// Principal invariants (I1, I2, I3) of a 3x3 matrix.
+    fn invariants_of(m: &[[f64; 3]; 3]) -> (f64, f64, f64) {
+        let i1 = trace3(m);
+        let i2 = 0.5 * (i1 * i1 - trace3(&mat_mul3(m, m)));
+        (i1, i2, det3(m))
+    }
+    #[test]
+    fn test_solve_cubic_symmetric_exact_diag_4_1_1() {
+        // C = diag(4,1,1): I1 = 6, I2 = 4+4+1 = 9, I3 = 4.
+        let ev = solve_cubic_symmetric(6.0, 9.0, 4.0);
+        for (got, want) in ev.iter().zip([4.0, 1.0, 1.0]) {
+            assert!((got - want).abs() < 1e-10, "got {ev:?}");
+        }
+    }
+    #[test]
+    fn test_solve_cubic_symmetric_exact_diag_9_4_1() {
+        // C = diag(9,4,1): I1 = 14, I2 = 36+9+4 = 49, I3 = 36.
+        let ev = solve_cubic_symmetric(14.0, 49.0, 36.0);
+        for (got, want) in ev.iter().zip([9.0, 4.0, 1.0]) {
+            assert!((got - want).abs() < 1e-10, "got {ev:?}");
+        }
+    }
+    #[test]
+    fn test_solve_cubic_symmetric_isotropic_triple_root() {
+        let ev = solve_cubic_symmetric(3.0, 3.0, 1.0);
+        for got in ev {
+            assert!((got - 1.0).abs() < 1e-14, "got {ev:?}");
+        }
+    }
+    #[test]
+    fn test_solve_cubic_symmetric_round_off_negative_p_is_finite() {
+        // I1² - 3·I2 is a hair negative here; the result must stay finite.
+        let ev = solve_cubic_symmetric(3.0, 3.0 + 4.0e-16, 1.0);
+        assert!(ev.iter().all(|v| v.is_finite()), "got {ev:?}");
+    }
+    #[test]
+    fn test_solve_cubic_symmetric_sorted_descending() {
+        let ev = solve_cubic_symmetric(
+            0.3 + 2.5 + 7.1,
+            0.3 * 2.5 + 0.3 * 7.1 + 2.5 * 7.1,
+            0.3 * 2.5 * 7.1,
+        );
+        assert!(ev[0] >= ev[1] && ev[1] >= ev[2], "got {ev:?}");
+        for (got, want) in ev.iter().zip([7.1, 2.5, 0.3]) {
+            assert!((got - want).abs() < 1e-12, "got {ev:?}");
+        }
+    }
+    #[test]
+    fn test_skin_principal_stretches_recover_rotated_stretches() {
+        let skin = SkinMechanicsOgden::human_skin();
+        let q = mat_mul3(&rot_z(0.4), &rot_x(0.9));
+        // F = Q·diag(2, 1, 0.5)·Qᵀ is symmetric positive definite, so its
+        // principal stretches are exactly (2, 1, 0.5).
+        let f = rotate_diag(&q, [2.0, 1.0, 0.5]);
+        let stretches = skin.principal_stretches(&f);
+        for (got, want) in stretches.iter().zip([2.0, 1.0, 0.5]) {
+            assert!(
+                (got - want).abs() < 1e-10,
+                "principal stretches {stretches:?}"
+            );
+        }
+    }
+    #[test]
+    fn test_skin_principal_stretches_identity() {
+        let skin = SkinMechanicsOgden::human_skin();
+        let stretches = skin.principal_stretches(&identity_f());
+        for got in stretches {
+            assert!(
+                (got - 1.0).abs() < 1e-12,
+                "principal stretches {stretches:?}"
+            );
+        }
+    }
+    #[test]
+    fn test_skin_principal_stretches_uniaxial_isochoric() {
+        // F = diag(λ, λ^-½, λ^-½) has a repeated eigenvalue, which is the
+        // worst-conditioned case for an invariant-based cubic solve.
+        let skin = SkinMechanicsOgden::human_skin();
+        let lambda = 1.5_f64;
+        let stretches = skin.principal_stretches(&uniaxial_stretch(lambda));
+        let lateral = 1.0 / lambda.sqrt();
+        assert!((stretches[0] - lambda).abs() < 1e-6, "{stretches:?}");
+        assert!((stretches[1] - lateral).abs() < 1e-6, "{stretches:?}");
+        assert!((stretches[2] - lateral).abs() < 1e-6, "{stretches:?}");
+    }
+    #[test]
+    fn test_solve_cubic_symmetric_random_spd_invariants() {
+        // Deterministic LCG so the matrices are reproducible.
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 11) as f64) / ((1u64 << 53) as f64) * 2.0 - 1.0
+        };
+        for _ in 0..50 {
+            let mut b = [[0.0f64; 3]; 3];
+            for row in &mut b {
+                for entry in row.iter_mut() {
+                    *entry = next();
+                }
+            }
+            // A = Bᵀ·B + 0.1·I is symmetric positive definite.
+            let mut a = mat_mul3(&transpose3(&b), &b);
+            for (i, row) in a.iter_mut().enumerate() {
+                row[i] += 0.1;
+            }
+            let (i1, i2, i3) = invariants_of(&a);
+            let ev = solve_cubic_symmetric(i1, i2, i3);
+            let sum: f64 = ev.iter().sum();
+            let prod: f64 = ev.iter().product();
+            let pair = ev[0] * ev[1] + ev[0] * ev[2] + ev[1] * ev[2];
+            assert!((sum - i1).abs() < 1e-10, "sum {sum} vs I1 {i1}");
+            assert!((prod - i3).abs() < 1e-10, "product {prod} vs I3 {i3}");
+            assert!((pair - i2).abs() < 1e-10, "pair sum {pair} vs I2 {i2}");
+            assert!(
+                ev[2] > 0.0,
+                "SPD matrix must give positive eigenvalues {ev:?}"
+            );
+            // Every root must annihilate the characteristic polynomial.
+            for &lam in &ev {
+                let residual = lam * lam * lam - i1 * lam * lam + i2 * lam - i3;
+                assert!(residual.abs() < 1e-10, "residual {residual} at {lam}");
             }
         }
     }

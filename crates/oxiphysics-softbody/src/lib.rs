@@ -340,12 +340,22 @@ mod tests {
 
     // 14. Cloth sags under gravity (center vertex moves downward).
     //
-    // A 3x3 grid cloth is pinned at its four corners.  After 100 XPBD steps
-    // with gravity applied, the center particle (index 4) must have a negative
-    // Y position (sag below the initial flat XZ plane).
+    // A 3x3 grid cloth is pinned at its four corners.  Every edge chain between
+    // two pinned corners is exactly as long as the corner distance, so the
+    // cloth can only sag by stretching its compliant distance constraints.  A
+    // particle of mass m carried by two such constraints of compliance alpha
+    // settles where the sag s satisfies s^3 = alpha m g, i.e. about 10 cm for
+    // the values below.  This only holds if the solver restarts the Lagrange
+    // multipliers every sub-step: with stale multipliers the constraints keep
+    // softening and the cloth sags without bound.
+    //
+    // Only the distance constraints take part, because the closed-form sag
+    // above is that of the distance chains alone; bending constraints add their
+    // own, mesh dependent, resistance to curvature.
     #[test]
     fn test_cloth_gravity_sag() {
-        let mut cloth = XpbdClothMesh::new(3, 3, 2.0, 2.0, 1.0, 1e-4);
+        let compliance = 1e-4;
+        let mut cloth = XpbdClothMesh::new(3, 3, 2.0, 2.0, 1.0, compliance);
         // Pin the four corners.
         cloth.pin(0, 0);
         cloth.pin(2, 0);
@@ -356,19 +366,11 @@ mod tests {
         let dt = 1.0 / 60.0;
         let mut solver = XpbdSolver::new(10);
 
-        // Collect all constraints into a single boxed list.
         let mut constraints: Vec<Box<dyn SoftConstraint>> = cloth
             .distance_constraints
             .iter()
             .cloned()
             .map(|c| Box::new(c) as Box<dyn SoftConstraint>)
-            .chain(
-                cloth
-                    .bending_constraints
-                    .iter()
-                    .cloned()
-                    .map(|c| Box::new(c) as Box<dyn SoftConstraint>),
-            )
             .collect();
 
         for _ in 0..100 {
@@ -378,11 +380,24 @@ mod tests {
         }
 
         // Center particle is index nx/2 * nx + nx/2 = 1 * 3 + 1 = 4 for a 3x3 grid.
+        let static_sag = (compliance * 9.81_f64).cbrt();
         let center_y = cloth.body.particles[4].position.y;
         assert!(
             center_y < -0.01,
             "Center particle should sag below y=0 under gravity, got y={center_y}"
         );
+        assert!(
+            (center_y + static_sag).abs() < 0.1 * static_sag,
+            "Center particle should settle near the static sag -{static_sag}, got y={center_y}"
+        );
+        // The mid-edge particles hang from the same taut chains.
+        for mid_edge in [1, 3, 5, 7] {
+            let y = cloth.body.particles[mid_edge].position.y;
+            assert!(
+                (y + static_sag).abs() < 0.1 * static_sag,
+                "Mid-edge particle {mid_edge} should settle near -{static_sag}, got y={y}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------

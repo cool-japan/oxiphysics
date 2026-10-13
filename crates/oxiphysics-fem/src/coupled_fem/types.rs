@@ -850,96 +850,6 @@ impl PiezoelectricCoupling {
         }
     }
 }
-/// Thermo-mechanical staggered coupling driver.
-///
-/// Solves heat equation first, then uses resulting temperatures as input to the
-/// mechanical problem, iterating until convergence.
-#[derive(Debug, Clone)]
-pub struct ThermoMechanicalCoupling {
-    /// Thermal field
-    pub thermal: ThermalField,
-    /// Mechanical displacement field \[u_x, u_y\] per node
-    pub displacements: Vec<[f64; 2]>,
-    /// Material model
-    pub material: ThermoElasticMaterial,
-    /// Convergence tolerance for the staggered iteration
-    pub tol: f64,
-    /// Maximum iterations
-    pub max_iter: usize,
-}
-impl ThermoMechanicalCoupling {
-    /// Create a new thermo-mechanical coupling problem on an nx × ny mesh.
-    pub fn new(nx: usize, ny: usize, material: ThermoElasticMaterial) -> Self {
-        let n_nodes = nx * ny;
-        let thermal = ThermalField::uniform(nx, ny, material.t_ref);
-        let displacements = vec![[0.0; 2]; n_nodes];
-        Self {
-            thermal,
-            displacements,
-            material,
-            tol: 1e-6,
-            max_iter: 50,
-        }
-    }
-    /// One staggered step: solve heat first, then mechanics.
-    ///
-    /// Returns the change in displacement norm (convergence indicator).
-    pub fn staggered_step(&mut self, dt: f64, heat_source: f64) -> f64 {
-        let nx = self.thermal.nx;
-        let ny = self.thermal.ny;
-        let alpha_diff = self.material.kappa / (self.material.rho * self.material.cp);
-        let h = 1.0 / (nx.max(ny) as f64);
-        let fo = alpha_diff * dt / (h * h);
-        let mut new_temps = self.thermal.temperatures.clone();
-        for i in 1..nx - 1 {
-            for j in 1..ny - 1 {
-                let c = self.thermal.temperatures[self.thermal.idx(i, j)];
-                let xp = self.thermal.temperatures[self.thermal.idx(i + 1, j)];
-                let xm = self.thermal.temperatures[self.thermal.idx(i - 1, j)];
-                let yp = self.thermal.temperatures[self.thermal.idx(i, j + 1)];
-                let ym = self.thermal.temperatures[self.thermal.idx(i, j - 1)];
-                new_temps[self.thermal.idx(i, j)] = c
-                    + fo * (xp + xm + yp + ym - 4.0 * c)
-                    + heat_source * dt / (self.material.rho * self.material.cp);
-            }
-        }
-        self.thermal.temperatures = new_temps;
-        let mut disp_change = 0.0f64;
-        for node in 0..self.displacements.len() {
-            let temp = self.thermal.temperatures[node];
-            let dt_t = temp - self.material.t_ref;
-            let du = self.material.alpha * dt_t * h;
-            disp_change += du * du;
-            self.displacements[node][0] += du * 0.5;
-            self.displacements[node][1] += du * 0.5;
-        }
-        disp_change.sqrt()
-    }
-    /// Run the staggered iteration until convergence.
-    pub fn solve(&mut self, dt: f64, heat_source: f64) -> usize {
-        for iter in 0..self.max_iter {
-            let change = self.staggered_step(dt, heat_source);
-            if change < self.tol {
-                return iter + 1;
-            }
-        }
-        self.max_iter
-    }
-    /// Compute the von Mises stress at a given node (plane-stress approximation).
-    pub fn von_mises_stress(&self, node: usize) -> f64 {
-        let temp = self.thermal.temperatures[node];
-        let e = self.material.modulus_at(temp);
-        let nu = self.material.nu;
-        let ux = self.displacements[node][0];
-        let uy = self.displacements[node][1];
-        let eps_x = ux;
-        let eps_y = uy;
-        let sigma_x = e / (1.0 - nu * nu) * (eps_x + nu * eps_y);
-        let sigma_y = e / (1.0 - nu * nu) * (nu * eps_x + eps_y);
-        let tau_xy = 0.0_f64;
-        (sigma_x * sigma_x - sigma_x * sigma_y + sigma_y * sigma_y + 3.0 * tau_xy * tau_xy).sqrt()
-    }
-}
 /// Node temperatures for a 2-D quadrilateral mesh patch.
 #[derive(Debug, Clone)]
 pub struct ThermalField {
@@ -1789,25 +1699,69 @@ impl AcousticCavity1D {
     pub fn apply_wall_bc(&mut self) {
         self.velocity[self.n_nodes - 1] = 0.0;
     }
-    /// One-step Lax-Wendroff update (linearized acoustic equations).
+    /// One-step Lax-Wendroff update of the linearised acoustic equations
+    ///
+    /// ∂p/∂t + ρc² ∂v/∂x = 0,  ∂v/∂t + (1/ρ) ∂p/∂x = 0.
+    ///
+    /// Because the system matrix satisfies A² = c²·I, the second-order
+    /// Lax-Wendroff correction is the diffusive term ½r²(qᵢ₊₁ − 2qᵢ + qᵢ₋₁)
+    /// for both fields (r = c·dt/h).  The scheme is stable for r ≤ 1.
+    ///
+    /// Only interior nodes are advanced; the two end nodes keep whatever values
+    /// the caller prescribed (e.g. via [`Self::apply_pressure_source`] or
+    /// [`Self::apply_wall_bc`]).  Use [`Self::step_rigid_walls`] for a closed
+    /// cavity whose end nodes are advanced with a reflecting closure.
     pub fn step(&mut self, dt: f64) {
         let r = self.c_sound * dt / self.h;
         assert!(r <= 1.0, "CFL {r:.3} > 1: reduce dt");
         let mut new_p = self.pressure.clone();
         let mut new_v = self.velocity.clone();
+        let half_r2 = 0.5 * r * r;
         for i in 1..self.n_nodes - 1 {
             new_p[i] = self.pressure[i]
                 - 0.5
                     * r
                     * self.rho_f
                     * self.c_sound
-                    * (self.velocity[i + 1] - self.velocity[i - 1]);
+                    * (self.velocity[i + 1] - self.velocity[i - 1])
+                + half_r2 * (self.pressure[i + 1] - 2.0 * self.pressure[i] + self.pressure[i - 1]);
             new_v[i] = self.velocity[i]
                 - 0.5 * r / (self.rho_f * self.c_sound)
-                    * (self.pressure[i + 1] - self.pressure[i - 1]);
+                    * (self.pressure[i + 1] - self.pressure[i - 1])
+                + half_r2 * (self.velocity[i + 1] - 2.0 * self.velocity[i] + self.velocity[i - 1]);
         }
         self.pressure = new_p;
         self.velocity = new_v;
+    }
+    /// One Lax-Wendroff step for a closed cavity with rigid walls at both ends.
+    ///
+    /// Interior nodes are advanced exactly as in [`Self::step`].  The wall nodes
+    /// use the reflecting ghost-node closure v₋₁ = −v₁, p₋₁ = p₁ (and the mirror
+    /// image at the right wall), which enforces v = 0 at the wall while letting
+    /// the wall pressure evolve:
+    ///
+    /// p₀⁺ = p₀ − r·ρc·v₁ + r²(p₁ − p₀),  v₀⁺ = 0.
+    ///
+    /// Cavities with fewer than three nodes have no interior and are left
+    /// unchanged.
+    pub fn step_rigid_walls(&mut self, dt: f64) {
+        let n = self.n_nodes;
+        if n < 3 {
+            return;
+        }
+        let r = self.c_sound * dt / self.h;
+        let z = self.rho_f * self.c_sound;
+        let (p_first, p_second, v_second) = (self.pressure[0], self.pressure[1], self.velocity[1]);
+        let (p_last, p_penult, v_penult) = (
+            self.pressure[n - 1],
+            self.pressure[n - 2],
+            self.velocity[n - 2],
+        );
+        self.step(dt);
+        self.pressure[0] = p_first - r * z * v_second + r * r * (p_second - p_first);
+        self.velocity[0] = 0.0;
+        self.pressure[n - 1] = p_last + r * z * v_penult + r * r * (p_penult - p_last);
+        self.velocity[n - 1] = 0.0;
     }
     /// Structural response force on the left boundary from acoustic pressure.
     ///
@@ -1815,14 +1769,19 @@ impl AcousticCavity1D {
     pub fn boundary_force(&self) -> f64 {
         self.pressure[0]
     }
-    /// Compute total acoustic energy density.
+    /// Total acoustic energy per unit area \[J/m²\]
+    ///
+    /// E = ∫₀ᴸ ( p²/(2ρc²) + ρv²/2 ) dx, integrated with the trapezoidal rule
+    /// (half weight on the two end nodes, which sit on the cavity walls).
     pub fn total_energy(&self) -> f64 {
+        let n = self.n_nodes;
         let mut e = 0.0;
-        for i in 0..self.n_nodes {
+        for i in 0..n {
             let e_p = self.pressure[i] * self.pressure[i]
                 / (2.0 * self.rho_f * self.c_sound * self.c_sound);
             let e_v = 0.5 * self.rho_f * self.velocity[i] * self.velocity[i];
-            e += (e_p + e_v) * self.h;
+            let weight = if i == 0 || i + 1 == n { 0.5 } else { 1.0 };
+            e += (e_p + e_v) * weight * self.h;
         }
         e
     }

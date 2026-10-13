@@ -517,6 +517,9 @@ impl InternalForces {
 
     /// Compute the vector of generalized elastic forces on both nodes of segment `seg`.
     /// Returns `(f_a, m_a, f_b, m_b)` where `f` are forces and `m` are moments.
+    ///
+    /// The forces are restoring: a stretched segment pulls node `a` towards `b`
+    /// (`f_a = +n`) and node `b` towards `a` (`f_b = -n`).
     pub fn nodal_forces(rod: &CosseratRod, seg: usize) -> (Vec3, Vec3, Vec3, Vec3) {
         let loads = Self::compute(rod, seg);
         let a = &rod.nodes[seg];
@@ -551,15 +554,21 @@ impl InternalForces {
         );
         let m_a = vec3_scale(m_a_body, 1.0 / rest_len);
 
-        // Equal and opposite on node b
-        let f_b = f_internal;
-        let f_a = vec3_scale(f_internal, -1.0);
+        // The internal force n is the pull the segment exerts on its end nodes.  For
+        // a stretched segment (N > 0) it draws node a towards b (+n) and node b
+        // towards a (-n), and a positive shear force Q along d1 (the tangent leans
+        // towards +d1) pushes a along +d1 and b along -d1: every component is
+        // restoring.  The reverse assignment amplifies stretch and shear.
+        let f_a = f_internal;
+        let f_b = vec3_scale(f_internal, -1.0);
         let m_b = vec3_scale(m_a, -1.0);
 
-        // Add d3 × f contribution to moments (torque arm)
+        // Torque arm of the same force couple, d3 x n, shared half and half: both
+        // nodes receive +(ds / 2) d3 x n, which turns the directors towards the
+        // tangent and so relaxes the shear strain.
         let half_len = rest_len * 0.5;
         let torque_a = vec3_scale(vec3_cross(a.d3, f_internal), half_len);
-        let torque_b = vec3_scale(vec3_cross(b.d3, f_b), half_len);
+        let torque_b = vec3_scale(vec3_cross(b.d3, f_internal), half_len);
 
         (f_a, vec3_add(m_a, torque_a), f_b, vec3_add(m_b, torque_b))
     }
@@ -1405,5 +1414,120 @@ mod tests {
         let rod = CosseratRod::new_straight(7, 1.0, stiff, 1.0, 1e-6);
         assert_eq!(rod.n_segments(), 6);
         assert_eq!(rod.n_nodes(), 7);
+    }
+
+    // ── Internal force signs ──────────────────────────────────────────────────
+
+    /// Two-node rod along z with the given axial / shear stiffness and rotary inertia.
+    fn two_node_rod(ea: f64, ga: f64, rotary_inertia: f64) -> CosseratRod {
+        let stiff = RodStiffness {
+            ei1: 1.0,
+            ei2: 1.0,
+            gj: 1.0,
+            ea,
+            ga,
+        };
+        CosseratRod::new_straight(2, 1.0, stiff, 1.0, rotary_inertia)
+    }
+
+    // 31. A stretched segment pulls its end nodes towards each other.
+    #[test]
+    fn test_nodal_forces_of_stretched_segment_are_restoring() {
+        let mut rod = two_node_rod(1.0e4, 1.0e4, 1.0e-3);
+        rod.nodes[1].position = [0.0, 0.0, 1.1];
+        let (f_a, _m_a, f_b, _m_b) = InternalForces::nodal_forces(&rod, 0);
+        let axial = 1.0e4 * 0.1;
+        assert!(
+            (f_a[2] - axial).abs() < 1e-6 * axial,
+            "node a is drawn towards b: f_a = {f_a:?}"
+        );
+        assert!(
+            (f_b[2] + axial).abs() < 1e-6 * axial,
+            "node b is drawn towards a: f_b = {f_b:?}"
+        );
+        for d in 0..3 {
+            assert!((f_a[d] + f_b[d]).abs() < 1e-9, "forces must balance");
+        }
+    }
+
+    // 32. A rod stretched by 10 % and left free shortens.
+    #[test]
+    fn test_stretched_two_node_rod_shortens() {
+        let mut rod = two_node_rod(1.0e4, 1.0e4, 1.0e-3);
+        rod.nodes[1].position = [0.0, 0.0, 1.1];
+        let mut previous = rod.segment_stretch(0);
+        assert!((previous - 1.1).abs() < 1e-12);
+        for step in 0..100 {
+            CosseratDynamics::step_euler(&mut rod, 1.0e-5);
+            let stretch = rod.segment_stretch(0);
+            assert!(
+                stretch < previous,
+                "stretch must decrease monotonically: step {step}: {previous} -> {stretch}"
+            );
+            previous = stretch;
+        }
+        // a = EA * eps / m = 1e3 m/s^2 per node, so 2 * 1/2 * a * t^2 = 1e-3 after 1 ms.
+        assert!(previous < 1.1 - 5.0e-4, "stretch after 1 ms: {previous}");
+        assert!(previous > 1.0, "the rod must not overshoot: {previous}");
+    }
+
+    // 33. Shear forces push the nodes back in line with the directors.
+    #[test]
+    fn test_sheared_segment_forces_are_restoring() {
+        let mut rod = two_node_rod(1.0e4, 1.0e4, 1.0e-3);
+        rod.nodes[1].position = [0.1, 0.0, 1.0];
+        let (_eps, gamma1, gamma2, _, _, _) = InternalForces::segment_strains(&rod, 0);
+        assert!(gamma1 > 0.09 && gamma2.abs() < 1e-12, "gamma1 = {gamma1}");
+        let (f_a, m_a, f_b, m_b) = InternalForces::nodal_forces(&rod, 0);
+        assert!(f_a[0] > 0.0, "node a is pushed along +d1: {f_a:?}");
+        assert!(f_b[0] < 0.0, "node b is pushed along -d1: {f_b:?}");
+        // The d3 x n couple turns both directors towards the tangent (about +d2).
+        assert!(m_a[1] > 0.0 && m_b[1] > 0.0, "m_a = {m_a:?}, m_b = {m_b:?}");
+        for d in 0..3 {
+            assert!((m_a[d] - m_b[d]).abs() < 1e-9 * m_a[1].abs().max(1.0));
+        }
+    }
+
+    // 34. With nearly fixed directors the lateral offset of a sheared rod decays.
+    #[test]
+    fn test_sheared_rod_lateral_offset_decays() {
+        let mut rod = two_node_rod(1.0e4, 1.0e4, 1.0e3);
+        rod.nodes[1].position = [0.1, 0.0, 1.0];
+        let offset = |r: &CosseratRod| r.nodes[1].position[0] - r.nodes[0].position[0];
+        let before = offset(&rod);
+        let mut previous = before;
+        for step in 0..100 {
+            CosseratDynamics::step_euler(&mut rod, 1.0e-5);
+            let now = offset(&rod);
+            assert!(
+                now < previous,
+                "lateral offset must shrink: step {step}: {previous} -> {now}"
+            );
+            previous = now;
+        }
+        // Relative acceleration 2 * GA * gamma1 / m ~ 2e3 m/s^2: ~1e-3 m after 1 ms.
+        assert!(before - previous > 5.0e-4, "offset {before} -> {previous}");
+        assert!(previous > 0.0);
+    }
+
+    // 35. The director torque relaxes gamma1 as well.
+    #[test]
+    fn test_sheared_rod_gamma1_decreases_when_directors_are_free() {
+        let mut rod = two_node_rod(1.0e4, 1.0e4, 1.0e-3);
+        rod.nodes[1].position = [0.1, 0.0, 1.0];
+        let gamma1 = |r: &CosseratRod| InternalForces::segment_strains(r, 0).1;
+        let before = gamma1(&rod);
+        let mut previous = before;
+        for step in 0..10 {
+            CosseratDynamics::step_euler(&mut rod, 1.0e-5);
+            let now = gamma1(&rod);
+            assert!(
+                now < previous,
+                "gamma1 must decrease: step {step}: {previous} -> {now}"
+            );
+            previous = now;
+        }
+        assert!(before - previous > 1.0e-3, "gamma1 {before} -> {previous}");
+        assert!(previous > 0.0, "no overshoot after 0.1 ms");
     }
 }

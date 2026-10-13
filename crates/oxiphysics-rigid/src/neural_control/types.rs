@@ -3,6 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
+use crate::rng_util::uniform;
 use rand::RngExt;
 /// Online running-mean / running-variance normaliser (Welford's algorithm).
 #[derive(Debug, Clone)]
@@ -370,7 +371,7 @@ impl DenseLayer {
         let weights = (0..out_size)
             .map(|_| {
                 (0..in_size)
-                    .map(|_| rng.random_range(-limit..limit))
+                    .map(|_| uniform(&mut rng, -limit, limit))
                     .collect()
             })
             .collect();
@@ -904,7 +905,7 @@ impl ModelPredictiveControl {
         for _ in 0..self.num_candidates {
             let mut s = state.to_vec();
             let first_action: Vec<f64> = (0..self.action_dim)
-                .map(|_| rng.random_range(-self.action_bound..self.action_bound))
+                .map(|_| uniform(&mut rng, -self.action_bound, self.action_bound))
                 .collect();
             let mut total_cost = 0.0;
             let mut discount = 1.0;
@@ -914,7 +915,7 @@ impl ModelPredictiveControl {
                 total_cost += discount * cost_fn(&s);
                 discount *= self.gamma;
                 action = (0..self.action_dim)
-                    .map(|_| rng.random_range(-self.action_bound..self.action_bound))
+                    .map(|_| uniform(&mut rng, -self.action_bound, self.action_bound))
                     .collect();
             }
             if total_cost < best_cost {
@@ -952,7 +953,7 @@ impl ModelPredictiveControl {
                         cost += disc * cost_fn(&s);
                         disc *= self.gamma;
                         act = (0..d)
-                            .map(|_| rng.random_range(-self.action_bound..self.action_bound))
+                            .map(|_| uniform(&mut rng, -self.action_bound, self.action_bound))
                             .collect();
                     }
                     (a, cost)
@@ -1122,10 +1123,13 @@ impl MotionPlanning {
         self
     }
     /// Sample a random configuration within bounds.
+    ///
+    /// A joint whose bounds coincide (`lower[i] == upper[i]`) is pinned at that
+    /// value.
     pub fn random_config(&self) -> Vec<f64> {
         let mut rng = rand::rng();
         (0..self.config_dim)
-            .map(|i| rng.random_range(self.lower[i]..self.upper[i]))
+            .map(|i| uniform(&mut rng, self.lower[i], self.upper[i]))
             .collect()
     }
     /// Find the nearest node index to `q` in `nodes`.

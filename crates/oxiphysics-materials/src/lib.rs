@@ -570,27 +570,44 @@ impl MaterialMixture {
         (1.0 - phi) * k1 + phi * k2
     }
 
-    /// Hashin-Shtrikman upper bound for bulk modulus.
+    /// Hashin-Shtrikman(-Walpole) bulk modulus of a two-phase isotropic
+    /// composite for a given comparison (reference) shear modulus `g_ref`:
+    ///
+    /// K(G_ref) = \[ (1-φ)/(K₁ + 4G_ref/3) + φ/(K₂ + 4G_ref/3) \]⁻¹ − 4G_ref/3
+    ///
+    /// This is algebraically identical to the classical form
+    /// K_ref + f_inc / (1/(K_inc − K_ref) + 3(1 − f_inc)/(3K_ref + 4G_ref))
+    /// for either choice of reference phase, but it is symmetric in the two
+    /// phases and has no singularity when K₁ = K₂.
+    fn hashin_shtrikman_bulk_with_reference_shear(k1: f64, k2: f64, g_ref: f64, phi: f64) -> f64 {
+        let shift = 4.0 * g_ref / 3.0;
+        let inv_sum = (1.0 - phi) / (k1 + shift) + phi / (k2 + shift);
+        1.0 / inv_sum - shift
+    }
+
+    /// Hashin-Shtrikman upper bound for the bulk modulus of a two-phase
+    /// isotropic composite.
+    ///
+    /// The comparison medium is the stiffest phase: its shear modulus is
+    /// `max(g1, g2)` (Walpole's form, which is also valid when one phase has
+    /// the larger bulk modulus and the other the larger shear modulus).
     ///
     /// # Arguments
     /// * `k1`, `k2` — bulk moduli of phases 1 and 2 \[Pa\]
     /// * `g1`, `g2` — shear moduli of phases 1 and 2 \[Pa\]
     /// * `phi`      — volume fraction of phase 2
-    pub fn hashin_shtrikman_upper_bulk(k1: f64, k2: f64, g1: f64, _g2: f64, phi: f64) -> f64 {
-        // HS+ uses phase 1 (stiffer) as reference if k1 > k2
-        let (k_ref, k_inc, _g_ref, phi_inc) = if k1 >= k2 {
-            (k1, k2, g1, phi)
-        } else {
-            (k2, k1, _g2, 1.0 - phi)
-        };
-        let denom = 3.0 * k_ref + 4.0 * _g_ref;
-        k_ref + phi_inc / ((1.0 / (k_inc - k_ref)) + (1.0 - phi_inc) * 3.0 / denom)
+    pub fn hashin_shtrikman_upper_bulk(k1: f64, k2: f64, g1: f64, g2: f64, phi: f64) -> f64 {
+        Self::hashin_shtrikman_bulk_with_reference_shear(k1, k2, g1.max(g2), phi)
     }
 
-    /// Hashin-Shtrikman lower bound for bulk modulus.
+    /// Hashin-Shtrikman lower bound for the bulk modulus of a two-phase
+    /// isotropic composite.
+    ///
+    /// The comparison medium is the softest phase: its shear modulus is
+    /// `min(g1, g2)`.  Arguments are as for
+    /// [`MaterialMixture::hashin_shtrikman_upper_bulk`].
     pub fn hashin_shtrikman_lower_bulk(k1: f64, k2: f64, g1: f64, g2: f64, phi: f64) -> f64 {
-        // HS- uses the softer phase as reference
-        Self::hashin_shtrikman_upper_bulk(k2, k1, g2, g1, 1.0 - phi)
+        Self::hashin_shtrikman_bulk_with_reference_shear(k1, k2, g1.min(g2), phi)
     }
 
     /// Mixture density: ρ = φ·ρ₂ + (1-φ)·ρ₁ \[kg/m³\].
@@ -1269,11 +1286,97 @@ mod tests {
 
     #[test]
     fn test_hashin_shtrikman_upper_at_zero_phi() {
-        // At φ=0 the mixture should approach phase 1
+        // At φ=0 the mixture is pure phase 1: K = k1.
         let k_hs =
             MaterialMixture::hashin_shtrikman_upper_bulk(100.0e9, 300.0e9, 40.0e9, 100.0e9, 0.0);
-        // Very close to k1 = 100e9 or k2 = 300e9 depending on ordering
-        assert!((100.0e9 - 1.0..=300.0e9 + 1.0).contains(&k_hs));
+        assert!((k_hs - 100.0e9).abs() / 100.0e9 < 1e-12, "K+ = {k_hs}");
+    }
+
+    #[test]
+    fn test_hashin_shtrikman_bounds_reference_values() {
+        // k1 = 10, g1 = 5 (stiff), k2 = 1, g2 = 0.5 (soft), 50/50 mixture.
+        let (k1, g1, k2, g2, phi) = (10.0, 5.0, 1.0, 0.5, 0.5);
+        let upper = MaterialMixture::hashin_shtrikman_upper_bulk(k1, k2, g1, g2, phi);
+        let lower = MaterialMixture::hashin_shtrikman_lower_bulk(k1, k2, g1, g2, phi);
+        // Hand-evaluated classical HS formulas:
+        //   K+ = 10 + 0.5 / (1/(1-10) + 3·0.5/(3·10 + 4·5))
+        //   K- =  1 + 0.5 / (1/(10-1) + 3·0.5/(3·1 + 4·0.5))
+        let expected_upper = 10.0 + 0.5 / (1.0 / (1.0 - 10.0) + 3.0 * 0.5 / (30.0 + 20.0));
+        let expected_lower = 1.0 + 0.5 / (1.0 / (10.0 - 1.0) + 3.0 * 0.5 / (3.0 + 2.0));
+        assert!((upper - expected_upper).abs() < 1e-12, "K+ = {upper}");
+        assert!((lower - expected_lower).abs() < 1e-12, "K- = {lower}");
+        assert!((upper - 3.8356).abs() < 5e-4, "K+ = {upper}");
+        assert!((lower - 2.2162).abs() < 5e-4, "K- = {lower}");
+        assert!(
+            lower < upper,
+            "the lower bound must lie strictly below the upper bound"
+        );
+    }
+
+    #[test]
+    fn test_hashin_shtrikman_bounds_lie_between_reuss_and_voigt() {
+        let (k1, g1, k2, g2) = (10.0, 5.0, 1.0, 0.5);
+        for &phi in &[0.1, 0.25, 0.5, 0.75, 0.9] {
+            let reuss = MaterialMixture::reuss_modulus(k1, k2, phi);
+            let voigt = MaterialMixture::voigt_modulus(k1, k2, phi);
+            let lower = MaterialMixture::hashin_shtrikman_lower_bulk(k1, k2, g1, g2, phi);
+            let upper = MaterialMixture::hashin_shtrikman_upper_bulk(k1, k2, g1, g2, phi);
+            assert!(
+                reuss < lower && lower < upper && upper < voigt,
+                "φ={phi}: Reuss {reuss} < HS- {lower} < HS+ {upper} < Voigt {voigt} violated"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hashin_shtrikman_bounds_recover_pure_phases() {
+        let (k1, g1, k2, g2) = (10.0, 5.0, 1.0, 0.5);
+        for bound in [
+            MaterialMixture::hashin_shtrikman_lower_bulk as fn(f64, f64, f64, f64, f64) -> f64,
+            MaterialMixture::hashin_shtrikman_upper_bulk,
+        ] {
+            assert!((bound(k1, k2, g1, g2, 0.0) - k1).abs() < 1e-12);
+            assert!((bound(k1, k2, g1, g2, 1.0) - k2).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn test_hashin_shtrikman_bounds_are_phase_order_invariant() {
+        // Swapping the labels of the two phases (and φ -> 1-φ) must not change the bounds.
+        let (k1, g1, k2, g2, phi) = (10.0, 5.0, 1.0, 0.5, 0.3);
+        let upper = MaterialMixture::hashin_shtrikman_upper_bulk(k1, k2, g1, g2, phi);
+        let upper_swapped = MaterialMixture::hashin_shtrikman_upper_bulk(k2, k1, g2, g1, 1.0 - phi);
+        let lower = MaterialMixture::hashin_shtrikman_lower_bulk(k1, k2, g1, g2, phi);
+        let lower_swapped = MaterialMixture::hashin_shtrikman_lower_bulk(k2, k1, g2, g1, 1.0 - phi);
+        assert!((upper - upper_swapped).abs() < 1e-12);
+        assert!((lower - lower_swapped).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_hashin_shtrikman_identical_bulk_moduli_is_regular() {
+        // k1 == k2 used to divide by zero in the classical form; the bounds collapse to k.
+        let upper = MaterialMixture::hashin_shtrikman_upper_bulk(5.0, 5.0, 2.0, 3.0, 0.4);
+        let lower = MaterialMixture::hashin_shtrikman_lower_bulk(5.0, 5.0, 2.0, 3.0, 0.4);
+        assert!((upper - 5.0).abs() < 1e-12, "K+ = {upper}");
+        assert!((lower - 5.0).abs() < 1e-12, "K- = {lower}");
+    }
+
+    #[test]
+    fn test_hashin_shtrikman_bounds_with_non_well_ordered_phases() {
+        // Phase 1 has the larger bulk modulus but the smaller shear modulus.
+        let (k1, g1, k2, g2, phi) = (10.0, 1.0, 4.0, 3.0, 0.5);
+        let lower = MaterialMixture::hashin_shtrikman_lower_bulk(k1, k2, g1, g2, phi);
+        let upper = MaterialMixture::hashin_shtrikman_upper_bulk(k1, k2, g1, g2, phi);
+        let reuss = MaterialMixture::reuss_modulus(k1, k2, phi);
+        let voigt = MaterialMixture::voigt_modulus(k1, k2, phi);
+        assert!(reuss <= lower && lower < upper && upper <= voigt);
+        // Walpole: the upper bound uses G_max = 3, the lower bound G_min = 1.
+        let walpole = |g: f64| {
+            let s = 4.0 * g / 3.0;
+            1.0 / (0.5 / (k1 + s) + 0.5 / (k2 + s)) - s
+        };
+        assert!((upper - walpole(3.0)).abs() < 1e-12);
+        assert!((lower - walpole(1.0)).abs() < 1e-12);
     }
 
     // ── MaterialIndex tests ────────────────────────────────────────────────────

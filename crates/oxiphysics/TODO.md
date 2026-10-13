@@ -154,3 +154,67 @@ Headline items: deterministic mode, scene format v2, CLI scene runner, plugin re
 | Large-scale worlds (deferred) | Phase 30 |
 | Differentiable pipeline (deferred) | Phase 25 |
 | 1.0 acceptance gate | root 1.0 release gate |
+
+<!-- AUDIT-2026-10-12 BEGIN -->
+## Audit 2026-10-12 — verified findings (Phase 32 remediation)
+
+Verified: 65 (critical 3, high 18, medium 27, low 17); 14 further raw findings pending second-round verification. IDs refer to the audit ledger; `[x]` = fixed.
+
+### Critical (3)
+- [ ] **F5440** (critical, fabrication, easy/small) `coupling/mod.rs:296` — CouplingRuntime::step samples zero sites, so every coupling is a no-op
+- [x] **F5472** (critical, bug, medium/small) `profiler.rs:220` — ScopeGuard raw pointer makes safe profiler API unsound
+- [x] **F5473** (critical, bug, medium/small) `profiler.rs:323` — ScopeGuard raw pointer makes safe profiler API unsound
+
+### High (18)
+- [ ] **F5423** (high, docs, easy/small) `crates/oxiphysics/README.md:65` — Umbrella crates.io README examples do not compile; feature claim false
+- [ ] **F5433** (high, bug, easy/small) `character.rs:262` — Unconditional ground snap cancels jumps; slide reprojects consumed motion
+- [ ] **F5437** (high, bug, medium/small) `coupling/md_continuum_adapter.rs:269` — MD-continuum penalty force is anti-restoring and its coefficients are swapped
+- [ ] **F5438** (high, bug, easy/trivial) `coupling/md_continuum_adapter.rs:275` — MdContinuumAdapter applies anti-restoring force; stiffness/damping swapped
+- [ ] **F5455** (high, bug, medium/small) `navmesh.rs:545` — Funnel drops the corner waypoint and duplicates the apex
+- [x] **F5461** (high, fabrication, medium/small) `pipeline.rs:278` — sph_rigid_coupling config is stored but never applied in step()
+- [x] **F5463** (high, bug, medium/small) `pipeline.rs:533` — CCD step resolves only earliest TOI pair, skips all other contacts
+- [x] **F5464** (high, bug, easy/small) `pipeline.rs:830` — Pipeline world AABBs ignore collider rotation, missing contacts
+- [x] **F5465** (high, bug, easy/trivial) `pipeline.rs:846` — Sensor-vs-solid pairs receive contact impulses and position correction
+- [x] **F5468** (high, bug, hard/medium) `pipeline.rs:1066` — PGS lacks accumulated impulses; warm start inert; Baumgarte inside iterations
+- [x] **F5469** (high, bug, medium/medium) `pipeline.rs:1127` — Baumgarte position push applied every PGS iteration with stale depth
+- [x] **F5470** (high, bug, medium/small) `profiler.rs:197` — ProfilerSession::scope returns lifetime-less raw-pointer guard (unsound safe API)
+- [x] **F5474** (high, bug, easy/trivial) `query.rs:264` — distance_sq squares signed distance; containing bodies reported far away
+- [ ] **F5477** (high, bug, easy/small) `rollback.rs:190` — Rollback 'FNV-1a' hash uses a wrong prime and disagrees with WASM
+- [ ] **F5486** (high, perf, medium/medium) `spatial_grid.rs:118` — SpatialGrid 'hash grid' is a flat Vec linear scan; pairs O(N²)
+- [ ] **F5487** (high, perf, medium/medium) `spatial_grid.rs:166` — 'Spatial hash grid' is actually an O(N) linear scan
+- [ ] **F5496** (high, test, medium/medium) `crates/oxiphysics/tests/validation_lbm.rs:117` — LBM validation re-implements collision; library operators unvalidated
+- [ ] **F5498** (high, test, medium/small) `crates/oxiphysics/tests/validation_rigid.rs:165` — Angular-momentum test is vacuous; integrator lacks gyroscopic term
+
+### Medium (27)
+- [ ] **F5422** (medium, policy, medium/medium) `crates/oxiphysics/Cargo.toml:27` — Facade forces all sub-crates plus wgpu with no feature opt-out
+- [ ] **F5426** (medium, missing-feature, easy/small) `aero.rs:307` — Wing airspeed ignores angular velocity: no aerodynamic damping
+- [ ] **F5428** (medium, missing-feature, medium/medium) `builder.rs:58` — SimulationConfig builder output has no engine consumer
+- [ ] **F5430** (medium, missing-feature, medium/large) `builder.rs:188` — builder::* configs are dead ends that nothing consumes
+- [ ] **F5431** (medium, bug, easy/small) `buoyancy.rs:186` — Buoyancy ignores fluid floor/layers; drag not scaled by submersion
+- [ ] **F5432** (medium, bug, easy/small) `buoyancy.rs:250` — Buoyancy ignores the fluid floor; drag not scaled by submersion
+- [ ] **F5436** (medium, bug, easy/trivial) `coupling/fem_sph.rs:85` — Coupler penalty law swaps stiffness and damping roles
+- [ ] **F5439** (medium, panic, easy/small) `coupling/mod.rs:236` — schedule_pair checks indices only in debug builds; step panics in release
+- [ ] **F5442** (medium, fabrication, easy/small) `force_field.rs:224` — Wind returns speed in m/s as Newtons; promised drag absent
+- [ ] **F5446** (medium, panic, easy/small) `ik.rs:415` — TwoBone IK panics on zero or NaN segment lengths, and IkError is never returned
+- [ ] **F5449** (medium, docs, easy/small) `lib.rs:71` — 'Every public API is annotated with a stability level' is false
+- [ ] **F5450** (medium, missing-feature, hard/large) `lib.rs:233` — Coupling runtime ships only mock domains, mocks in root API
+- [ ] **F5453** (medium, bug, medium/medium) `navmesh.rs:141` — Obstacle blocking tests only the portal midpoint
+- [ ] **F5459** (medium, bug, easy/small) `perf_regression.rs:462` — Hand-rolled JSON writes NaN.0/inf.0, making baselines unloadable
+- [ ] **F5462** (medium, panic, easy/trivial) `pipeline.rs:419` — Profile history remove(0) panics when the limit is 0 and costs O(n)
+- [ ] **F5467** (medium, bug, medium/small) `pipeline.rs:891` — Warm-start cache keyed by enumeration index and stores last-iteration impulse only
+- [ ] **F5475** (medium, missing-feature, medium/large) `query.rs:585` — Facade query/scene/snapshot/replay modules have no bridge to RigidBodySet
+- [ ] **F5478** (medium, bug, medium/small) `rollback.rs:297` — RollbackWorld::step silently drops all but first local command
+- [ ] **F5480** (medium, missing-feature, medium/large) `scene.rs:329` — SceneDescription cannot be validated or instantiated into engine
+- [ ] **F5485** (medium, panic, easy/trivial) `snapshot.rs:385` — SnapshotManager::new(0).push() panics, and remove(0) is O(n)
+- [ ] **F5488** (medium, perf, medium/medium) `spatial_grid.rs:182` — 'Spatial hash grid' is a linear scan; stale cells after cell_size change
+- [ ] **F5492** (medium, bug, easy/trivial) `xpbd.rs:202` — particle_velocity returns v/substeps when given outer dt
+- [ ] **F5493** (medium, bug, easy/trivial) `xpbd.rs:272` — Infinite compliance (documented no-op) produces NaN positions
+- [ ] **F5494** (medium, test, easy/small) `crates/oxiphysics/tests/regression_baselines/fem_cantilever_deflection.json:5` — FEM cantilever baseline tolerance is 70%, but the docs claim 15%
+- [ ] **F5495** (medium, test, medium/small) `crates/oxiphysics/tests/validation_fem.rs:98` — FEM cantilever gate allows 70% error; stale comments
+- [ ] **F5497** (medium, test, medium/medium) `crates/oxiphysics/tests/validation_md_lj.rs:361` — MD, LBM and SPH validation baselines run only with --ignored
+- [ ] **F5499** (medium, test, medium/medium) `crates/oxiphysics/tests/validation_sph.rs:247` — Dam-break validation is smoke-only (c ≥ 0.01) and ignored
+
+### Low (17) — tracked in the external ledger
+F5421, F5424, F5429, F5434, F5443, F5447, F5448, F5451, F5454, F5460, F5466, F5476, F5481, F5482, F5483, F5490, F5491
+
+<!-- AUDIT-2026-10-12 END -->

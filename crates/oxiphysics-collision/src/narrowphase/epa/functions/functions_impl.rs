@@ -104,7 +104,10 @@ pub fn build_contact(face: &Face, vertices: &[SupportPoint]) -> Contact {
     let w = w / total;
     let point_a = v0.support_a * u + v1.support_a * v + v2.support_a * w;
     let point_b = v0.support_b * u + v1.support_b * v + v2.support_b * w;
-    Contact::new(point_a, point_b, face.normal, face.distance)
+    // `face.normal` is the outward normal of the Minkowski difference A - B,
+    // which points from A toward B. The crate-wide `Contact` convention is a
+    // normal pointing FROM B TOWARD A, so it is negated here.
+    Contact::new(point_a, point_b, -face.normal, face.distance)
 }
 /// Find the horizon (silhouette) edges visible from a support point.
 ///

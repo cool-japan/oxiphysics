@@ -2,6 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+pub use super::bar::{bar_uncertainty, fep_bar};
 use super::types::{AlchemicalResult, LambdaWindow, WhamWindow};
 
 /// Zwanzig (exponential averaging) free energy estimate.
@@ -23,58 +24,6 @@ pub fn fep_zwanzig(du_samples: &[f64], kt: f64) -> f64 {
         return f64::INFINITY;
     }
     -kt * avg_exp.ln()
-}
-/// Fermi / logistic function used in the BAR self-consistency equation.
-#[inline]
-pub(super) fn fermi(x: f64) -> f64 {
-    1.0 / (1.0 + x.exp())
-}
-/// Bennett Acceptance Ratio (BAR) free energy estimate.
-///
-/// Solves the self-consistent BAR equation iteratively until convergence within
-/// `tol` or 10 000 iterations.  The Zwanzig estimate is used as a fallback
-/// when samples from only one state are available.
-///
-/// # Arguments
-/// * `du_forward`  – ΔU = U₁ − U₀ samples from state 0.
-/// * `du_backward` – ΔU = U₀ − U₁ samples from state 1.
-/// * `kt`          – thermal energy k_B T.
-/// * `tol`         – convergence tolerance (absolute, in units of energy).
-pub fn fep_bar(du_forward: &[f64], du_backward: &[f64], kt: f64, tol: f64) -> f64 {
-    let n0 = du_forward.len();
-    let n1 = du_backward.len();
-    if n0 == 0 && n1 == 0 {
-        return 0.0;
-    }
-    if n1 == 0 {
-        return fep_zwanzig(du_forward, kt);
-    }
-    if n0 == 0 {
-        return -fep_zwanzig(du_backward, kt);
-    }
-    let ln_ratio = ((n0 as f64) / (n1 as f64)).ln();
-    let mut df = 0.0_f64;
-    for _ in 0..10_000 {
-        let c = df / kt - ln_ratio;
-        let num: f64 = du_backward
-            .iter()
-            .map(|&du| fermi(du / kt + c))
-            .sum::<f64>();
-        let den: f64 = du_forward
-            .iter()
-            .map(|&du| fermi(-du / kt - c))
-            .sum::<f64>();
-        if den.abs() < 1e-300 {
-            break;
-        }
-        let df_new = kt * (num / den).ln() + kt * ln_ratio;
-        if (df_new - df).abs() < tol {
-            df = df_new;
-            break;
-        }
-        df = df_new;
-    }
-    df
 }
 /// Statistical uncertainty in the Zwanzig estimate via block averaging.
 ///
@@ -840,40 +789,6 @@ pub fn ti_block_average(samples: &[f64], block_size: usize) -> (f64, f64) {
     };
     (mean, (var / nb).sqrt())
 }
-/// Statistical uncertainty of the BAR estimate using a bootstrap-like formula.
-///
-/// Uses the asymptotic formula from Bennett (1976):
-/// ```text
-/// σ²(ΔF) ≈ 1/(N₀ · ⟨f²⟩₀ - ⟨f⟩₀²) + 1/(N₁ · ⟨f²⟩₁ - ⟨f⟩₁²)
-/// ```
-/// where f = fermi((ΔU ± ΔF) / kT).
-///
-/// Returns the estimated standard deviation of the BAR ΔF estimate.
-pub fn bar_uncertainty(du_forward: &[f64], du_backward: &[f64], df: f64, kt: f64) -> f64 {
-    let n0 = du_forward.len();
-    let n1 = du_backward.len();
-    if n0 < 2 || n1 < 2 || kt == 0.0 {
-        return 0.0;
-    }
-    let ln_ratio = ((n0 as f64) / (n1 as f64)).ln();
-    let c = df / kt - ln_ratio;
-    let fermi_vals_0: Vec<f64> = du_forward.iter().map(|&du| fermi(-du / kt - c)).collect();
-    let fermi_vals_1: Vec<f64> = du_backward.iter().map(|&du| fermi(du / kt + c)).collect();
-    let var_contrib = |fv: &[f64]| -> f64 {
-        let nf = fv.len() as f64;
-        let mean = fv.iter().sum::<f64>() / nf;
-        let mean_sq = fv.iter().map(|x| x * x).sum::<f64>() / nf;
-        let var = (mean_sq - mean * mean).max(0.0);
-        if var < 1e-300 {
-            f64::INFINITY
-        } else {
-            1.0 / (nf * var)
-        }
-    };
-    let v0 = var_contrib(&fermi_vals_0);
-    let v1 = var_contrib(&fermi_vals_1);
-    ((v0 + v1) * kt * kt).sqrt()
-}
 /// Compute the umbrella bias potential energy.
 ///
 /// `U_bias(ξ) = 0.5 * k * (ξ - ξ_ref)²`
@@ -1088,37 +1003,6 @@ mod tests {
         let samples = vec![du; 1000];
         let df = fep_zwanzig(&samples, kt);
         assert!((df - du).abs() < 1e-10, "expected {du}, got {df}");
-    }
-    #[test]
-    fn test_fep_bar_symmetric() {
-        let fwd: Vec<f64> = vec![1.0, -1.0, 2.0, -2.0];
-        let bwd: Vec<f64> = vec![-1.0, 1.0, -2.0, 2.0];
-        let df = fep_bar(&fwd, &bwd, 1.0, 1e-10);
-        assert!(df.abs() < 1e-4, "symmetric BAR should give ΔF≈0, got {df}");
-    }
-    #[test]
-    fn test_fep_bar_empty_forward() {
-        let bwd = vec![0.0; 50];
-        let df = fep_bar(&[], &bwd, 1.0, 1e-10);
-        assert!(df.abs() < 1e-10, "expected 0, got {df}");
-    }
-    #[test]
-    fn test_fep_bar_empty_backward() {
-        let fwd = vec![0.0; 50];
-        let df = fep_bar(&fwd, &[], 1.0, 1e-10);
-        assert!(df.abs() < 1e-10, "expected 0, got {df}");
-    }
-    #[test]
-    fn test_fep_bar_both_empty() {
-        let df = fep_bar(&[], &[], 1.0, 1e-10);
-        assert_eq!(df, 0.0);
-    }
-    #[test]
-    fn test_fep_bar_constant_shift() {
-        let c = 1.5_f64;
-        let fwd = vec![c; 200];
-        let df = fep_bar(&fwd, &[], 1.0, 1e-10);
-        assert!((df - c).abs() < 1e-10, "expected ≈{c}, got {df}");
     }
     #[test]
     fn test_fep_uncertainty_constant() {
@@ -1673,28 +1557,6 @@ mod tests {
             (integral - sum_w * c).abs() < 1e-10,
             "GL quadrature integral = sum_w * c = {}, got {integral}",
             sum_w * c
-        );
-    }
-    #[test]
-    fn test_bar_uncertainty_constant_samples() {
-        let fwd = vec![0.0_f64; 50];
-        let bwd = vec![0.0_f64; 50];
-        let df = 0.0;
-        let unc = bar_uncertainty(&fwd, &bwd, df, 1.0);
-        assert!(
-            unc.is_finite() || unc == f64::INFINITY,
-            "BAR uncertainty must be finite or inf"
-        );
-    }
-    #[test]
-    fn test_bar_uncertainty_returns_nonnegative() {
-        let fwd: Vec<f64> = (0..50).map(|i| i as f64 * 0.1 - 2.5).collect();
-        let bwd: Vec<f64> = (0..50).map(|i| -(i as f64 * 0.1 - 2.5)).collect();
-        let df = fep_bar(&fwd, &bwd, 1.0, 1e-8);
-        let unc = bar_uncertainty(&fwd, &bwd, df, 1.0);
-        assert!(
-            unc >= 0.0 || unc == f64::INFINITY,
-            "BAR uncertainty should be >= 0"
         );
     }
     #[test]

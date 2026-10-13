@@ -447,19 +447,27 @@ impl CarbonCycleOcean {
         }
     }
 
-    /// Solubility of CO2 in seawater \[mol/L/atm\] (Weiss 1974, simplified).
+    /// Solubility of CO2 in seawater K₀ \[mol/kg/atm\] (Weiss 1974).
     ///
-    /// K_0 ≈ exp(a1 + a2/T + a3·ln(T) + S·(b1 + b2/T))
+    /// ```text
+    /// ln K₀ = A₁ + A₂ (100/T) + A₃ ln(T/100) + S [B₁ + B₂ (T/100) + B₃ (T/100)²]
+    /// ```
+    ///
+    /// with the absolute temperature `T` in kelvin and the practical salinity
+    /// `S`.  Coefficients (Weiss 1974, Table I, mol kg⁻¹ atm⁻¹ set):
+    /// `A₁ = −60.2409`, `A₂ = 93.4517`, `A₃ = 23.3585`, `B₁ = 0.023517`,
+    /// `B₂ = −0.023656`, `B₃ = 0.0047036`.  At 15 °C and S = 35 this gives
+    /// K₀ ≈ 0.0375 mol kg⁻¹ atm⁻¹.
     pub fn co2_solubility(&self) -> f64 {
-        let tk = self.sst + 273.15;
-        // Coefficients from Weiss 1974
+        let t_100 = (self.sst + 273.15) / 100.0;
         let a1 = -60.2409;
-        let a2 = 9345.17;
+        let a2 = 93.4517;
         let a3 = 23.3585;
         let b1 = 0.023517;
         let b2 = -0.023656;
+        let b3 = 0.0047036;
         let s = self.salinity;
-        (a1 + a2 / tk + a3 * tk.ln() + s * (b1 + b2 * 100.0 / tk)).exp()
+        (a1 + a2 / t_100 + a3 * t_100.ln() + s * (b1 + b2 * t_100 + b3 * t_100 * t_100)).exp()
     }
 
     /// Ocean surface pCO2 \[µatm\] estimated from DIC and alkalinity
@@ -491,8 +499,10 @@ impl CarbonCycleOcean {
         let sc = 2073.1 - 125.62 * self.sst + 3.6276 * self.sst * self.sst;
         let k_w_cm_h = 0.31 * wind_speed_ms * wind_speed_ms * (sc / 660.0).powf(-0.5);
         let k_w_m_yr = k_w_cm_h * 0.01 * 8760.0; // cm/h → m/yr
-        let k0 = self.co2_solubility(); // mol/L/atm
-        let k0_mol_m3_uatm = k0 * 1000.0 / 1.0e6; // mol/m³/µatm
+        let k0 = self.co2_solubility(); // mol/kg/atm
+        // mol/kg/atm → mol/m³/µatm: multiply by the seawater density and
+        // divide by 10⁶ µatm per atm.
+        let k0_mol_m3_uatm = k0 * RHO0_SW / 1.0e6;
         k_w_m_yr * k0_mol_m3_uatm * dpco2
     }
 }
@@ -911,6 +921,50 @@ mod tests {
         let warm = CarbonCycleOcean::new(400.0, 25.0, 35.0, 2300.0, 2100.0);
         // Warmer water holds less CO2
         assert!(cold.co2_solubility() > warm.co2_solubility());
+    }
+
+    #[test]
+    fn test_co2_solubility_matches_weiss_reference_values() {
+        // Weiss (1974) K0 in mol/kg/atm: 15 °C and S = 35 give 0.03746; the
+        // former implementation returned 4e45 here.
+        let k0 = CarbonCycleOcean::new(400.0, 15.0, 35.0, 2300.0, 2100.0).co2_solubility();
+        assert!((k0 - 0.03746).abs() < 1.0e-3, "K0(15 °C, S=35) = {k0}");
+        // 25 °C, S = 35: 0.0284 mol/kg/atm (CO2SYS reference value).
+        let k0 = CarbonCycleOcean::new(400.0, 25.0, 35.0, 2300.0, 2100.0).co2_solubility();
+        assert!((k0 - 0.0284).abs() < 5.0e-4, "K0(25 °C, S=35) = {k0}");
+        // Fresh water at 25 °C: Henry constant of CO2 ≈ 0.0341 mol/kg/atm.
+        let k0 = CarbonCycleOcean::new(400.0, 25.0, 0.0, 2300.0, 2100.0).co2_solubility();
+        assert!((k0 - 0.0341).abs() < 5.0e-4, "K0(25 °C, S=0) = {k0}");
+    }
+
+    #[test]
+    fn test_co2_solubility_decreases_with_salinity() {
+        // Salting out: saltier water dissolves less CO2.
+        let fresh = CarbonCycleOcean::new(400.0, 15.0, 0.0, 2300.0, 2100.0);
+        let salty = CarbonCycleOcean::new(400.0, 15.0, 35.0, 2300.0, 2100.0);
+        assert!(salty.co2_solubility() < fresh.co2_solubility());
+        // Weiss: K0(15 °C, S=0) = 0.0456 mol/kg/atm.
+        assert!((fresh.co2_solubility() - 0.0456).abs() < 1.0e-3);
+    }
+
+    #[test]
+    fn test_air_sea_flux_has_realistic_magnitude_and_uses_seawater_density() {
+        // Make the air-sea pCO2 difference exactly 40 µatm irrespective of the
+        // carbonate chemistry, then check the gas-exchange arithmetic:
+        //   k_w = 0.31 U² (Sc/660)^-0.5 = 16.08 cm/h at 8 m/s, 15 °C
+        //   F   = k_w · K0 · ρ_sw · Δp = 1408 m/yr · 0.03746 mol/kg/atm
+        //         · 1025 kg/m³ · 40e-6 atm ≈ 2.163 mol/m²/yr
+        // (2.110 with the former 1000 kg/m³ conversion, 1e50 with the old K0.)
+        let mut ocean = CarbonCycleOcean::new(0.0, 15.0, 35.0, 2300.0, 2100.0);
+        ocean.pco2_atm = ocean.ocean_pco2() + 40.0;
+        let flux = ocean.air_sea_flux(8.0);
+        assert!(
+            (flux - 2.163).abs() < 0.005,
+            "air-sea CO2 flux {flux} mol/m²/yr, expected ≈ 2.163"
+        );
+        // Zero pCO2 difference gives zero flux.
+        ocean.pco2_atm = ocean.ocean_pco2();
+        assert!(ocean.air_sea_flux(8.0).abs() < 1.0e-12);
     }
 
     #[test]

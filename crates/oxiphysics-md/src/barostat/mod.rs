@@ -4,6 +4,8 @@ pub mod berendsenbarostat_traits;
 pub mod functions;
 pub mod nobarostat_traits;
 pub mod parrinellorahmanbarostat_traits;
+#[cfg(test)]
+mod pressure_control_tests;
 pub mod types;
 
 // Re-export all types

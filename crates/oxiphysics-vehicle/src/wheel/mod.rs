@@ -2,6 +2,8 @@
 
 /// Functions and utilities.
 mod functions;
+/// Wheel-spin integration helpers of the raycast vehicle.
+pub(crate) mod spin;
 /// Type definitions.
 mod types;
 /// Trait implementations for wheel_traits.

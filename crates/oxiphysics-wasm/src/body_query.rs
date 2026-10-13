@@ -938,9 +938,11 @@ mod tests {
 
     fn make_engine_with_bodies() -> WasmPhysicsEngine {
         let mut e = WasmPhysicsEngine::new(0.0, -9.81, 0.0);
-        e.add_dynamic_body(1.0, 0.0, 5.0, 0.0);
-        e.add_dynamic_body(2.0, 3.0, 5.0, 0.0);
-        e.add_static_body(0.0, 0.0, 0.0);
+        e.add_dynamic_body(1.0, 0.0, 5.0, 0.0)
+            .expect("add dynamic body");
+        e.add_dynamic_body(2.0, 3.0, 5.0, 0.0)
+            .expect("add dynamic body");
+        e.add_static_body(0.0, 0.0, 0.0).expect("add static body");
         e
     }
 
@@ -1088,7 +1090,9 @@ mod tests {
     #[test]
     fn test_batch_body_query_total_kinetic_energy() {
         let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-        let h = engine.add_dynamic_body(2.0, 0.0, 0.0, 0.0);
+        let h = engine
+            .add_dynamic_body(2.0, 0.0, 0.0, 0.0)
+            .expect("add dynamic body");
         engine.set_velocity(h, 3.0, 0.0, 0.0).unwrap();
         let bq = BatchBodyQuery::from_engine(&engine);
         // KE = 0.5 * 2 * 3² = 9
@@ -1100,7 +1104,7 @@ mod tests {
     #[test]
     fn test_simulation_snapshot_from_engine() {
         let mut engine = make_engine_with_bodies();
-        engine.step(1.0 / 60.0);
+        engine.step(1.0 / 60.0).expect("step");
         let snap = SimulationSnapshot::from_engine(&engine, 1);
         assert_eq!(snap.bodies.len(), 3);
         assert_eq!(snap.frame, 1);
@@ -1156,11 +1160,19 @@ mod tests {
     #[test]
     fn test_constraint_count_with_contacts() {
         let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-        let b0 = engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
-        let b1 = engine.add_dynamic_body(1.0, 1.5, 0.0, 0.0);
-        engine.add_sphere_collider(b0, 1.0);
-        engine.add_sphere_collider(b1, 1.0);
-        engine.step(1.0 / 60.0);
+        let b0 = engine
+            .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+            .expect("add dynamic body");
+        let b1 = engine
+            .add_dynamic_body(1.0, 1.5, 0.0, 0.0)
+            .expect("add dynamic body");
+        engine
+            .add_sphere_collider(b0, 1.0)
+            .expect("add sphere collider");
+        engine
+            .add_sphere_collider(b1, 1.0)
+            .expect("add sphere collider");
+        engine.step(1.0 / 60.0).expect("step");
         let q = ConstraintCountQuery::from_engine(&engine);
         assert_eq!(q.total, engine.get_contact_count());
     }
@@ -1179,11 +1191,19 @@ mod tests {
     #[test]
     fn test_contact_manifolds_export_with_contacts() {
         let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-        let b0 = engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
-        let b1 = engine.add_dynamic_body(1.0, 1.5, 0.0, 0.0);
-        engine.add_sphere_collider(b0, 1.0);
-        engine.add_sphere_collider(b1, 1.0);
-        engine.step(1.0 / 60.0);
+        let b0 = engine
+            .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+            .expect("add dynamic body");
+        let b1 = engine
+            .add_dynamic_body(1.0, 1.5, 0.0, 0.0)
+            .expect("add dynamic body");
+        engine
+            .add_sphere_collider(b0, 1.0)
+            .expect("add sphere collider");
+        engine
+            .add_sphere_collider(b1, 1.0)
+            .expect("add sphere collider");
+        engine.step(1.0 / 60.0).expect("step");
         let exp = ContactManifoldsExport::from_engine(&engine);
         let count = exp.count;
         let flat = exp.to_flat_f64();
@@ -1195,9 +1215,13 @@ mod tests {
     #[test]
     fn test_batch_body_query_fast_bodies() {
         let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-        let h = engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+        let h = engine
+            .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+            .expect("add dynamic body");
         engine.set_velocity(h, 10.0, 0.0, 0.0).unwrap();
-        engine.add_dynamic_body(1.0, 5.0, 0.0, 0.0); // slow body
+        engine
+            .add_dynamic_body(1.0, 5.0, 0.0, 0.0)
+            .expect("add dynamic body"); // slow body
         let bq = BatchBodyQuery::from_engine(&engine);
         let fast = bq.fast_bodies(5.0);
         assert_eq!(fast.len(), 1);

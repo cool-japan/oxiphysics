@@ -26,6 +26,8 @@
 //! | [`crba`] | Composite Rigid Body Algorithm — O(n²) mass matrix |
 //! | [`centroidal`] | Centroidal Momentum Matrix (CMM) |
 //! | [`osc`] | Operational-space inertia Λ = (J·M⁻¹·Jᵀ)⁻¹ |
+//! | [`ik`] | Forward kinematics, geometric Jacobian, damped least-squares IK |
+//! | [`error`] | [`ArticulatedError`] for fallible computations |
 //!
 //! # Examples
 //!
@@ -101,7 +103,7 @@
 //! let body = RigidBody::new("link", inertia, None, SpatialTransform::IDENTITY);
 //! model.add_body(body, Box::new(RevoluteJoint::new([0.0, 0.0, 1.0])));
 //!
-//! let m = compute_mass_matrix_crba(&mut model, &[0.0]);
+//! let m = compute_mass_matrix_crba(&model, &[0.0]);
 //! assert_eq!(m.len(), 1, "1×1 mass matrix for 1-DoF pendulum");
 //! assert!((m[0][0] - 1.0).abs() < 1e-10, "M[0][0] = m·l² = 1.0, got {}", m[0][0]);
 //! ```
@@ -114,6 +116,7 @@ pub mod aba_derivatives;
 pub mod body;
 pub mod centroidal;
 pub mod crba;
+pub mod error;
 pub mod ik;
 pub mod joint;
 pub mod joint_limits;
@@ -124,6 +127,7 @@ pub mod rnea;
 pub mod rnea_derivatives;
 pub mod spatial;
 
+pub use error::ArticulatedError;
 pub use joint::HelicalJoint;
 pub use joint::SphericalJoint;
 pub use joint::UniversalJoint;

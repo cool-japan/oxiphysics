@@ -3,6 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use crate::engine::WasmPhysicsEngine;
+use crate::error::Error;
 use crate::types::{BodyState, ColliderConfig, RigidBodyConfig, Vec3Wasm};
 use wasm_bindgen::prelude::*;
 
@@ -44,25 +45,31 @@ pub fn create_engine(gravity_x: f64, gravity_y: f64, gravity_z: f64) -> WasmPhys
 }
 /// Create a physics engine from a JSON configuration string.
 ///
-/// Falls back to default gravity `(0, -9.81, 0)` if parsing fails.
+/// Falls back to default gravity `(0, -9.81, 0)` if parsing fails.  Throws if
+/// the parsed configuration is unusable (for example a non-positive
+/// `fixed_dt` or zero `max_substeps`).
 #[wasm_bindgen]
-pub fn create_engine_from_json(config_json: &str) -> WasmPhysicsEngine {
+pub fn create_engine_from_json(config_json: &str) -> Result<WasmPhysicsEngine, JsValue> {
     if let Some(cfg) = JsPhysicsConfig::from_json(config_json) {
-        cfg.build()
+        Ok(cfg.build()?)
     } else {
-        WasmPhysicsEngine::new(0.0, -9.81, 0.0)
+        Ok(WasmPhysicsEngine::new(0.0, -9.81, 0.0))
     }
 }
-/// Advance a mutable engine reference by `dt` seconds.
+/// Advance a mutable engine reference by `dt` seconds of real time.
 ///
 /// This is the primary simulation loop function; call it every animation frame.
+/// The time is consumed in fixed substeps (see [`WasmPhysicsEngine::step`]).
+/// Throws if `dt` is negative, `NaN` or infinite.
 #[wasm_bindgen]
-pub fn engine_step(engine: &mut WasmPhysicsEngine, dt: f64) {
-    engine.step(dt);
+pub fn engine_step(engine: &mut WasmPhysicsEngine, dt: f64) -> Result<(), JsValue> {
+    Ok(engine.step(dt)?)
 }
 /// Add a sphere body to the engine.
 ///
-/// Returns the body handle.
+/// Returns the body handle.  Throws (and adds nothing) if `mass` is negative
+/// or not finite, `radius` is not finite and positive, or the position is not
+/// finite.
 #[wasm_bindgen]
 pub fn engine_add_sphere(
     engine: &mut WasmPhysicsEngine,
@@ -71,17 +78,18 @@ pub fn engine_add_sphere(
     y: f64,
     z: f64,
     radius: f64,
-) -> u32 {
+) -> Result<u32, JsValue> {
     let cfg = RigidBodyConfig::new()
         .with_mass(mass)
         .with_position(x, y, z);
-    let handle = engine.add_rigid_body(&cfg);
-    engine.add_sphere_collider(handle, radius);
-    handle
+    let (handle, _) = engine.add_body_with_collider(&cfg, &ColliderConfig::sphere(radius))?;
+    Ok(handle)
 }
 /// Add a box body to the engine.
 ///
-/// Returns the body handle.
+/// Returns the body handle.  Throws (and adds nothing) if `mass` is negative
+/// or not finite, a half-extent is not finite and positive, or the position is
+/// not finite.
 #[wasm_bindgen]
 pub fn engine_add_box(
     engine: &mut WasmPhysicsEngine,
@@ -92,18 +100,18 @@ pub fn engine_add_box(
     hx: f64,
     hy: f64,
     hz: f64,
-) -> u32 {
+) -> Result<u32, JsValue> {
     let cfg = RigidBodyConfig::new()
         .with_mass(mass)
         .with_position(x, y, z);
-    let handle = engine.add_rigid_body(&cfg);
-    engine.add_box_collider(handle, hx, hy, hz);
-    handle
+    let (handle, _) = engine.add_body_with_collider(&cfg, &ColliderConfig::cuboid(hx, hy, hz))?;
+    Ok(handle)
 }
 /// Add a static infinite plane to the engine.
 ///
-/// The plane normal `(nx, ny, nz)` should be normalized.
-/// Returns the body handle.
+/// The plane normal `(nx, ny, nz)` need not be unit length (it is normalised
+/// and `offset` rescaled to match).  Returns the body handle.  Throws (and adds
+/// nothing) if the normal is zero or any value is not finite.
 #[wasm_bindgen]
 pub fn engine_add_static_plane(
     engine: &mut WasmPhysicsEngine,
@@ -111,11 +119,11 @@ pub fn engine_add_static_plane(
     ny: f64,
     nz: f64,
     offset: f64,
-) -> u32 {
+) -> Result<u32, JsValue> {
     let cfg = RigidBodyConfig::static_body();
-    let handle = engine.add_rigid_body(&cfg);
-    engine.add_plane_collider(handle, nx, ny, nz, offset);
-    handle
+    let (handle, _) =
+        engine.add_body_with_collider(&cfg, &ColliderConfig::plane(nx, ny, nz, offset))?;
+    Ok(handle)
 }
 /// Change the gravity of a running engine.
 #[wasm_bindgen]
@@ -235,57 +243,80 @@ pub fn engine_get_contact_events_json(engine: &WasmPhysicsEngine) -> String {
 }
 /// Batch-add bodies from a JSON array of `JsBodyDesc` objects.
 ///
-/// Returns the number of bodies successfully added.
+/// Returns the number of bodies added (the length of the array).  The batch is
+/// all-or-nothing: if the JSON cannot be parsed, a shape name is unknown or a
+/// descriptor holds an invalid value (negative mass, non-positive radius, a
+/// zero plane normal, ...), the call throws and the engine is left unchanged.
 #[wasm_bindgen]
-pub fn engine_add_bodies_from_json(engine: &mut WasmPhysicsEngine, json: &str) -> u32 {
-    let descs: Vec<JsBodyDesc> = match serde_json::from_str(json) {
-        Ok(v) => v,
-        Err(_) => return 0,
-    };
-    let mut count = 0u32;
+pub fn engine_add_bodies_from_json(
+    engine: &mut WasmPhysicsEngine,
+    json: &str,
+) -> Result<u32, JsValue> {
+    Ok(add_bodies_from_json(engine, json)?)
+}
+/// Rust implementation of [`engine_add_bodies_from_json`].
+fn add_bodies_from_json(engine: &mut WasmPhysicsEngine, json: &str) -> crate::error::Result<u32> {
+    let descs: Vec<JsBodyDesc> = serde_json::from_str(json)
+        .map_err(|error| Error::ConfigDeserialization(error.to_string()))?;
+    let mut added: Vec<u32> = Vec::with_capacity(descs.len());
     for desc in &descs {
-        let cfg = RigidBodyConfig::new()
-            .with_mass(desc.mass)
-            .with_position(desc.position[0], desc.position[1], desc.position[2])
-            .with_linear_velocity(desc.velocity[0], desc.velocity[1], desc.velocity[2])
-            .with_restitution(desc.restitution)
-            .with_friction(desc.friction);
-        let cfg = if desc.mass == 0.0 {
-            RigidBodyConfig::static_body()
-                .with_position(desc.position[0], desc.position[1], desc.position[2])
-                .with_restitution(desc.restitution)
-                .with_friction(desc.friction)
-        } else {
-            cfg
-        };
-        let handle = engine.add_rigid_body(&cfg);
-        match desc.shape.as_str() {
-            "sphere" => {
-                engine.add_sphere_collider(handle, desc.radius);
-            }
-            "box" => {
-                engine.add_box_collider(
-                    handle,
-                    desc.half_extents[0],
-                    desc.half_extents[1],
-                    desc.half_extents[2],
-                );
-            }
-            "capsule" => {
-                engine.add_capsule_collider(handle, desc.radius, desc.height);
-            }
-            "plane" => {
-                let n = desc.half_extents;
-                let norm = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-15);
-                engine.add_plane_collider(handle, n[0] / norm, n[1] / norm, n[2] / norm, 0.0);
-            }
-            _ => {
-                engine.add_sphere_collider(handle, desc.radius);
+        match add_body_from_desc(engine, desc) {
+            Ok(handle) => added.push(handle),
+            Err(error) => {
+                for handle in added.into_iter().rev() {
+                    engine.remove_body(handle).map_err(|rollback| {
+                        Error::internal(format!(
+                            "could not roll back body {handle} after `{error}`: {rollback}"
+                        ))
+                    })?;
+                }
+                return Err(error);
             }
         }
-        count += 1;
     }
-    count
+    Ok(added.len() as u32)
+}
+/// Create the body and collider described by `desc`.
+fn add_body_from_desc(
+    engine: &mut WasmPhysicsEngine,
+    desc: &JsBodyDesc,
+) -> crate::error::Result<u32> {
+    let [px, py, pz] = desc.position;
+    let base = if desc.mass == 0.0 {
+        RigidBodyConfig::static_body().with_position(px, py, pz)
+    } else {
+        RigidBodyConfig::new()
+            .with_mass(desc.mass)
+            .with_position(px, py, pz)
+            .with_linear_velocity(desc.velocity[0], desc.velocity[1], desc.velocity[2])
+    };
+    let body = base
+        .with_restitution(desc.restitution)
+        .with_friction(desc.friction);
+    let collider = match desc.shape.as_str() {
+        "sphere" => ColliderConfig::sphere(desc.radius),
+        "box" => ColliderConfig::cuboid(
+            desc.half_extents[0],
+            desc.half_extents[1],
+            desc.half_extents[2],
+        ),
+        "capsule" => ColliderConfig::capsule(desc.radius, desc.height),
+        // A plane descriptor carries its normal in `half_extents`; the plane
+        // passes through the body position.
+        "plane" => ColliderConfig::plane(
+            desc.half_extents[0],
+            desc.half_extents[1],
+            desc.half_extents[2],
+            0.0,
+        ),
+        other => {
+            return Err(Error::UnsupportedShape(format!(
+                "unknown body shape {other:?} (expected \"sphere\", \"box\", \"capsule\" or \"plane\")"
+            )));
+        }
+    };
+    let (handle, _) = engine.add_body_with_collider(&body, &collider)?;
+    Ok(handle)
 }
 /// Compute a lightweight hash of all body positions (for dirty-checking from JS).
 ///
@@ -308,15 +339,16 @@ pub fn engine_state_hash_js(engine: &WasmPhysicsEngine) -> f64 {
 }
 /// Set up a standard demo scene: ground plane + N falling spheres.
 ///
-/// Returns a `Vec<u32>` of sphere body handles.
+/// Returns a `Vec<u32>` of sphere body handles.  Throws if `radius` is not
+/// finite and positive or `start_height` is not finite.
 #[wasm_bindgen]
 pub fn setup_falling_spheres_scene(
     engine: &mut WasmPhysicsEngine,
     count: u32,
     radius: f64,
     start_height: f64,
-) -> Vec<u32> {
-    engine_add_static_plane(engine, 0.0, 1.0, 0.0, 0.0);
+) -> Result<Vec<u32>, JsValue> {
+    engine_add_static_plane(engine, 0.0, 1.0, 0.0, 0.0)?;
     let mut handles = Vec::with_capacity(count as usize);
     let cols = (count as f64).sqrt().ceil() as u32;
     for i in 0..count {
@@ -325,10 +357,10 @@ pub fn setup_falling_spheres_scene(
         let x = col as f64 * (radius * 2.5) - (cols as f64 * radius * 1.25);
         let y = start_height + row as f64 * (radius * 3.0);
         let z = 0.0;
-        let h = engine_add_sphere(engine, 1.0, x, y, z, radius);
+        let h = engine_add_sphere(engine, 1.0, x, y, z, radius)?;
         handles.push(h);
     }
-    handles
+    Ok(handles)
 }
 /// Compute the bounding box of all bodies as `[min_x, min_y, min_z, max_x, max_y, max_z]`.
 pub fn engine_bounding_box(engine: &WasmPhysicsEngine) -> [f64; 6] {
@@ -374,17 +406,26 @@ pub fn engine_center_of_mass_js(engine: &WasmPhysicsEngine) -> Vec<f64> {
 }
 /// Add a collider to an existing body, specified via JSON (a `ColliderConfig`).
 ///
-/// Returns the collider handle, or `u32::MAX` on failure.
+/// Returns the collider handle.  Throws if the JSON is not a valid
+/// `ColliderConfig`, `body_handle` is not a live body, or the collider
+/// parameters are invalid (non-positive radius, zero plane normal, ...).
 #[wasm_bindgen]
 pub fn engine_add_collider_json(
     engine: &mut WasmPhysicsEngine,
     body_handle: u32,
     collider_json: &str,
-) -> u32 {
-    match serde_json::from_str::<ColliderConfig>(collider_json) {
-        Ok(cfg) => engine.add_collider(body_handle, &cfg),
-        Err(_) => u32::MAX,
-    }
+) -> Result<u32, JsValue> {
+    Ok(add_collider_from_json(engine, body_handle, collider_json)?)
+}
+/// Rust implementation of [`engine_add_collider_json`].
+fn add_collider_from_json(
+    engine: &mut WasmPhysicsEngine,
+    body_handle: u32,
+    collider_json: &str,
+) -> crate::error::Result<u32> {
+    let cfg: ColliderConfig = serde_json::from_str(collider_json)
+        .map_err(|error| Error::ConfigDeserialization(error.to_string()))?;
+    engine.add_collider(body_handle, &cfg)
 }
 /// A flat buffer of per-body transform matrices (column-major 4×4, 16 floats each)
 /// ready for upload to a WebGL uniform array or instanced transform buffer.
@@ -624,7 +665,9 @@ mod tests {
     #[test]
     fn test_serialize_state() {
         let mut engine = WasmPhysicsEngine::new(0.0, -9.81, 0.0);
-        engine.add_dynamic_body(1.0, 1.0, 2.0, 3.0);
+        engine
+            .add_dynamic_body(1.0, 1.0, 2.0, 3.0)
+            .expect("add dynamic body");
         let json = serialize_state(&engine);
         let state = deserialize_state(&json).expect("should deserialize");
         assert_eq!(state.num_bodies, 1);
@@ -639,13 +682,13 @@ mod tests {
     #[test]
     fn test_create_engine_from_json() {
         let json = r#"{"gravity_x":0.0,"gravity_y":-1.62,"gravity_z":0.0,"fixed_dt":0.016,"max_substeps":4,"solver_iterations":8,"ccd_enabled":false,"sleeping_enabled":true,"linear_sleep_threshold":0.01,"angular_sleep_threshold":0.01}"#;
-        let engine = create_engine_from_json(json);
+        let engine = create_engine_from_json(json).expect("create engine from json");
         assert!((engine.gravity()[1] + 1.62).abs() < 1e-10);
     }
     #[test]
     fn test_engine_add_sphere() {
         let mut engine = create_engine(0.0, -9.81, 0.0);
-        let h = engine_add_sphere(&mut engine, 1.0, 0.0, 10.0, 0.0, 0.5);
+        let h = engine_add_sphere(&mut engine, 1.0, 0.0, 10.0, 0.0, 0.5).expect("add sphere body");
         assert_eq!(engine_get_body_count(&engine), 1);
         let pos = engine_get_position(&engine, h);
         assert!((pos[1] - 10.0).abs() < 1e-10);
@@ -653,21 +696,23 @@ mod tests {
     #[test]
     fn test_engine_add_box() {
         let mut engine = create_engine(0.0, -9.81, 0.0);
-        let h = engine_add_box(&mut engine, 2.0, 1.0, 2.0, 3.0, 0.5, 0.5, 0.5);
+        let h =
+            engine_add_box(&mut engine, 2.0, 1.0, 2.0, 3.0, 0.5, 0.5, 0.5).expect("add box body");
         let pos = engine_get_position(&engine, h);
         assert!((pos[0] - 1.0).abs() < 1e-10);
     }
     #[test]
     fn test_engine_add_static_plane() {
         let mut engine = create_engine(0.0, -9.81, 0.0);
-        let _h = engine_add_static_plane(&mut engine, 0.0, 1.0, 0.0, 0.0);
+        let _h =
+            engine_add_static_plane(&mut engine, 0.0, 1.0, 0.0, 0.0).expect("add static plane");
         assert_eq!(engine_get_body_count(&engine), 1);
     }
     #[test]
     fn test_engine_step_and_get_position() {
         let mut engine = create_engine(0.0, -10.0, 0.0);
-        let h = engine_add_sphere(&mut engine, 1.0, 0.0, 100.0, 0.0, 0.5);
-        engine_step(&mut engine, 1.0);
+        let h = engine_add_sphere(&mut engine, 1.0, 0.0, 100.0, 0.0, 0.5).expect("add sphere body");
+        engine_step(&mut engine, 1.0).expect("step");
         let pos = engine_get_position(&engine, h);
         assert!(pos[1] < 100.0, "body should have fallen");
     }
@@ -680,7 +725,7 @@ mod tests {
     #[test]
     fn test_engine_apply_impulse() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        let h = engine_add_sphere(&mut engine, 2.0, 0.0, 0.0, 0.0, 0.5);
+        let h = engine_add_sphere(&mut engine, 2.0, 0.0, 0.0, 0.0, 0.5).expect("add sphere body");
         let ok = engine_apply_impulse(&mut engine, h, 10.0, 0.0, 0.0);
         assert!(ok);
         let vel = engine_get_velocity(&engine, h);
@@ -689,26 +734,26 @@ mod tests {
     #[test]
     fn test_engine_apply_force() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        let h = engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5);
+        let h = engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5).expect("add sphere body");
         engine.set_body_linear_damping(h, 0.0).unwrap();
         let ok = engine_apply_force(&mut engine, h, 10.0, 0.0, 0.0);
         assert!(ok);
-        engine.set_fixed_dt(1.0);
-        engine_step(&mut engine, 1.0);
+        engine.set_fixed_dt(1.0).expect("set fixed dt");
+        engine_step(&mut engine, 1.0).expect("step");
         let vel = engine_get_velocity(&engine, h);
         assert!((vel[0] - 10.0).abs() < 1e-6);
     }
     #[test]
     fn test_engine_remove_body() {
         let mut engine = create_engine(0.0, -9.81, 0.0);
-        let h = engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5);
+        let h = engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5).expect("add sphere body");
         assert!(engine_remove_body(&mut engine, h));
         assert!(!engine_remove_body(&mut engine, h));
     }
     #[test]
     fn test_engine_set_velocity() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        let h = engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5);
+        let h = engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5).expect("add sphere body");
         let ok = engine_set_velocity(&mut engine, h, 5.0, 0.0, 0.0);
         assert!(ok);
         let vel = engine_get_velocity(&engine, h);
@@ -717,39 +762,39 @@ mod tests {
     #[test]
     fn test_engine_reset() {
         let mut engine = create_engine(0.0, -9.81, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5);
-        engine_step(&mut engine, 0.1);
+        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5).expect("add sphere body");
+        engine_step(&mut engine, 0.1).expect("step");
         engine_reset(&mut engine);
         assert_eq!(engine_get_body_count(&engine), 0);
     }
     #[test]
     fn test_engine_serialize() {
         let mut engine = create_engine(0.0, -9.81, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 1.0, 2.0, 3.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, 1.0, 2.0, 3.0, 0.5).expect("add sphere body");
         let json = engine_serialize(&engine);
         assert!(json.contains("num_bodies"));
     }
     #[test]
     fn test_state_hash_changes() {
         let mut engine = create_engine(0.0, -10.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 0.0, 100.0, 0.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, 0.0, 100.0, 0.0, 0.5).expect("add sphere body");
         let h0 = engine_state_hash(&engine);
-        engine_step(&mut engine, 1.0);
+        engine_step(&mut engine, 1.0).expect("step");
         let h1 = engine_state_hash(&engine);
         assert_ne!(h0, h1, "hash should change after step");
     }
     #[test]
     fn test_setup_falling_spheres_scene() {
         let mut engine = create_engine(0.0, -9.81, 0.0);
-        let handles = setup_falling_spheres_scene(&mut engine, 4, 0.5, 10.0);
+        let handles = setup_falling_spheres_scene(&mut engine, 4, 0.5, 10.0).expect("set up scene");
         assert_eq!(handles.len(), 4);
         assert_eq!(engine_get_body_count(&engine), 5);
     }
     #[test]
     fn test_bounding_box() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, -5.0, 0.0, 0.0, 0.5);
-        engine_add_sphere(&mut engine, 1.0, 5.0, 10.0, 0.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, -5.0, 0.0, 0.0, 0.5).expect("add sphere body");
+        engine_add_sphere(&mut engine, 1.0, 5.0, 10.0, 0.0, 0.5).expect("add sphere body");
         let bb = engine_bounding_box(&engine);
         assert!((bb[0] + 5.0).abs() < 1e-10);
         assert!((bb[3] - 5.0).abs() < 1e-10);
@@ -758,8 +803,8 @@ mod tests {
     #[test]
     fn test_center_of_mass() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, -2.0, 0.0, 0.0, 0.5);
-        engine_add_sphere(&mut engine, 1.0, 2.0, 0.0, 0.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, -2.0, 0.0, 0.0, 0.5).expect("add sphere body");
+        engine_add_sphere(&mut engine, 1.0, 2.0, 0.0, 0.0, 0.5).expect("add sphere body");
         let com = engine_center_of_mass(&engine);
         assert!(com.x.abs() < 1e-10, "COM.x should be 0, got {}", com.x);
     }
@@ -770,25 +815,25 @@ mod tests {
             {"mass":1.0,"position":[0.0,5.0,0.0],"velocity":[0.0,0.0,0.0],"shape":"sphere","radius":0.5,"half_extents":[0.5,0.5,0.5],"height":1.0,"restitution":0.3,"friction":0.5,"tag":"ball1"},
             {"mass":1.0,"position":[2.0,5.0,0.0],"velocity":[0.0,0.0,0.0],"shape":"box","radius":0.5,"half_extents":[0.5,0.5,0.5],"height":1.0,"restitution":0.3,"friction":0.5,"tag":"box1"}
         ]"#;
-        let count = engine_add_bodies_from_json(&mut engine, json);
+        let count = engine_add_bodies_from_json(&mut engine, json).expect("add bodies from json");
         assert_eq!(count, 2);
         assert_eq!(engine_get_body_count(&engine), 2);
     }
     #[test]
     fn test_contact_events_json() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        let b0 = engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 1.0);
-        let b1 = engine_add_sphere(&mut engine, 1.0, 1.5, 0.0, 0.0, 1.0);
+        let b0 = engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 1.0).expect("add sphere body");
+        let b1 = engine_add_sphere(&mut engine, 1.0, 1.5, 0.0, 0.0, 1.0).expect("add sphere body");
         engine_set_velocity(&mut engine, b0, 2.0, 0.0, 0.0);
         engine_set_velocity(&mut engine, b1, -2.0, 0.0, 0.0);
-        engine_step(&mut engine, 1.0 / 60.0);
+        engine_step(&mut engine, 1.0 / 60.0).expect("step");
         let json = engine_get_contact_events_json(&engine);
         assert!(json.starts_with('['));
     }
     #[test]
     fn test_raycast_json() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        let b = engine_add_sphere(&mut engine, 1.0, 10.0, 0.0, 0.0, 1.0);
+        let b = engine_add_sphere(&mut engine, 1.0, 10.0, 0.0, 0.0, 1.0).expect("add sphere body");
         let _ = b;
         let json = engine_raycast_json(&engine, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 100.0);
         assert!(json.contains("hit"));
@@ -796,7 +841,7 @@ mod tests {
     #[test]
     fn test_get_all_transforms() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 1.0, 2.0, 3.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, 1.0, 2.0, 3.0, 0.5).expect("add sphere body");
         let t = engine_get_all_transforms(&engine);
         assert_eq!(t.len(), 7);
     }
@@ -839,7 +884,7 @@ mod tests {
     #[test]
     fn test_webgl_transform_matrices_one_body() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 1.0, 2.0, 3.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, 1.0, 2.0, 3.0, 0.5).expect("add sphere body");
         let mats = engine_get_webgl_transform_matrices(&engine);
         assert_eq!(mats.len(), 16);
         assert!(
@@ -862,16 +907,16 @@ mod tests {
     #[test]
     fn test_webgl_transform_matrices_two_bodies() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5);
-        engine_add_sphere(&mut engine, 1.0, 5.0, 0.0, 0.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5).expect("add sphere body");
+        engine_add_sphere(&mut engine, 1.0, 5.0, 0.0, 0.0, 0.5).expect("add sphere body");
         let mats = engine_get_webgl_transform_matrices(&engine);
         assert_eq!(mats.len(), 32);
     }
     #[test]
     fn test_engine_get_body_colors() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5);
-        engine_add_sphere(&mut engine, 1.0, 5.0, 0.0, 0.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5).expect("add sphere body");
+        engine_add_sphere(&mut engine, 1.0, 5.0, 0.0, 0.0, 0.5).expect("add sphere body");
         let active_color = [1.0f32, 0.0, 0.0, 1.0];
         let sleep_color = [0.0f32, 0.0, 1.0, 1.0];
         let colors = engine_get_body_colors(&engine, active_color, sleep_color);
@@ -880,7 +925,7 @@ mod tests {
     #[test]
     fn test_engine_get_webgl_scene_json() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5).expect("add sphere body");
         let json = engine_get_webgl_scene_json(&engine);
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["body_count"], 1);
@@ -926,7 +971,7 @@ mod tests {
     #[test]
     fn test_wasm_scratch_buffer_fill_positions() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 1.0, 2.0, 3.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, 1.0, 2.0, 3.0, 0.5).expect("add sphere body");
         let mut scratch = WasmScratchBuffer::new(64);
         let slice = scratch.fill_positions(&engine);
         assert_eq!(slice.len(), 3);
@@ -937,7 +982,7 @@ mod tests {
     #[test]
     fn test_wasm_scratch_buffer_fill_transforms() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5).expect("add sphere body");
         let mut scratch = WasmScratchBuffer::new(64);
         let slice = scratch.fill_transforms(&engine);
         assert_eq!(slice.len(), 7);
@@ -945,7 +990,7 @@ mod tests {
     #[test]
     fn test_wasm_scratch_buffer_clear() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5).expect("add sphere body");
         let mut scratch = WasmScratchBuffer::new(16);
         scratch.fill_positions(&engine);
         assert!(!scratch.is_empty());
@@ -960,8 +1005,8 @@ mod tests {
     #[test]
     fn test_engine_memory_stats() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5);
-        engine_add_sphere(&mut engine, 1.0, 5.0, 0.0, 0.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5).expect("add sphere body");
+        engine_add_sphere(&mut engine, 1.0, 5.0, 0.0, 0.0, 0.5).expect("add sphere body");
         let stats = engine_memory_stats(&engine);
         assert_eq!(stats.body_count, 2u32);
         assert!(stats.body_state_bytes > 0);
@@ -969,7 +1014,7 @@ mod tests {
     #[test]
     fn test_engine_memory_stats_json() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5).expect("add sphere body");
         let json = engine_memory_stats_json(&engine);
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["body_count"], 1);
@@ -1019,9 +1064,9 @@ mod tests {
     #[test]
     fn test_js_event_queue_collect_contacts() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 1.0);
-        engine_add_sphere(&mut engine, 1.0, 1.5, 0.0, 0.0, 1.0);
-        engine_step(&mut engine, 1.0 / 60.0);
+        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 1.0).expect("add sphere body");
+        engine_add_sphere(&mut engine, 1.0, 1.5, 0.0, 0.0, 1.0).expect("add sphere body");
+        engine_step(&mut engine, 1.0 / 60.0).expect("step");
         let mut queue = JsEventQueue::new(0);
         queue.collect_contacts_from_engine(&engine);
         let _json = queue.to_json();
@@ -1029,8 +1074,8 @@ mod tests {
     #[test]
     fn test_build_extended_state() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 1.0, 0.0, 0.0, 0.5);
-        engine_add_sphere(&mut engine, 1.0, -1.0, 0.0, 0.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, 1.0, 0.0, 0.0, 0.5).expect("add sphere body");
+        engine_add_sphere(&mut engine, 1.0, -1.0, 0.0, 0.0, 0.5).expect("add sphere body");
         let state = build_extended_state(&engine);
         assert_eq!(state.base.num_bodies, 2);
         assert_eq!(state.kinetic_energies.len(), 2);
@@ -1038,7 +1083,7 @@ mod tests {
     #[test]
     fn test_serialize_extended_state_json() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 0.0, 5.0, 0.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, 0.0, 5.0, 0.0, 0.5).expect("add sphere body");
         let json = serialize_extended_state(&engine);
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(v["base"].is_object());
@@ -1048,7 +1093,7 @@ mod tests {
     #[test]
     fn test_extended_state_roundtrip() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 3.0, 0.0, 0.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, 3.0, 0.0, 0.0, 0.5).expect("add sphere body");
         let state = build_extended_state(&engine);
         let json = state.to_json();
         let back = JsExtendedState::from_json(&json).expect("should deserialize");
@@ -1058,7 +1103,7 @@ mod tests {
     #[test]
     fn test_engine_total_kinetic_energy_at_rest() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5);
+        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5).expect("add sphere body");
         let ke = engine_total_kinetic_energy(&engine);
         assert!(
             ke.abs() < 1e-10,
@@ -1068,7 +1113,7 @@ mod tests {
     #[test]
     fn test_engine_total_kinetic_energy_moving() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        let h = engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5);
+        let h = engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5).expect("add sphere body");
         engine_set_velocity(&mut engine, h, 3.0, 4.0, 0.0);
         let ke = engine_total_kinetic_energy(&engine);
         assert!((ke - 12.5).abs() < 1e-6, "KE should be 12.5, got {ke}");
@@ -1076,7 +1121,7 @@ mod tests {
     #[test]
     fn test_engine_get_speed_array_json() {
         let mut engine = create_engine(0.0, 0.0, 0.0);
-        let h = engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5);
+        let h = engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5).expect("add sphere body");
         engine_set_velocity(&mut engine, h, 3.0, 4.0, 0.0);
         let json = engine_get_speed_array_json(&engine);
         let speeds: Vec<f64> = serde_json::from_str(&json).unwrap();
@@ -1086,5 +1131,181 @@ mod tests {
             "speed should be 5.0, got {}",
             speeds[0]
         );
+    }
+    #[test]
+    fn test_batch_add_rejects_invalid_json() {
+        let mut engine = create_engine(0.0, 0.0, 0.0);
+        let result = add_bodies_from_json(&mut engine, "not json");
+        assert!(
+            matches!(result, Err(Error::ConfigDeserialization(_))),
+            "{result:?}"
+        );
+        assert_eq!(engine_get_body_count(&engine), 0);
+    }
+    #[test]
+    fn test_batch_add_is_all_or_nothing() {
+        let mut engine = create_engine(0.0, 0.0, 0.0);
+        let descs = vec![
+            JsBodyDesc::sphere(1.0, 0.0, 1.0, 0.0, 0.5),
+            JsBodyDesc::cuboid(1.0, 3.0, 1.0, 0.0, 0.5, 0.5, 0.5),
+            JsBodyDesc::sphere(1.0, 6.0, 1.0, 0.0, -0.5),
+        ];
+        let json = serde_json::to_string(&descs).expect("serialize descriptors");
+        let result = add_bodies_from_json(&mut engine, &json);
+        assert!(
+            matches!(result, Err(Error::InvalidDimension(_))),
+            "{result:?}"
+        );
+        assert_eq!(
+            engine_get_body_count(&engine),
+            0,
+            "the valid descriptors of a failed batch are rolled back"
+        );
+        assert_eq!(engine.get_active_collider_count(), 0);
+        // The engine is still fully usable afterwards.
+        engine_add_sphere(&mut engine, 1.0, 0.0, 0.0, 0.0, 0.5).expect("add sphere body");
+        assert_eq!(engine_get_body_count(&engine), 1);
+    }
+    #[test]
+    fn test_batch_add_rejects_unknown_shapes_degenerate_planes_and_bad_masses() {
+        let mut engine = create_engine(0.0, 0.0, 0.0);
+        let mut torus = JsBodyDesc::sphere(1.0, 0.0, 0.0, 0.0, 0.5);
+        torus.shape = "torus".to_string();
+        let json = serde_json::to_string(&vec![torus]).expect("serialize descriptors");
+        assert!(matches!(
+            add_bodies_from_json(&mut engine, &json),
+            Err(Error::UnsupportedShape(_))
+        ));
+
+        let flat = JsBodyDesc::static_plane(0.0, 0.0, 0.0, 0.0);
+        let json = serde_json::to_string(&vec![flat]).expect("serialize descriptors");
+        assert!(matches!(
+            add_bodies_from_json(&mut engine, &json),
+            Err(Error::InvalidParameter { .. })
+        ));
+
+        // A negative mass used to create a body that never moved.
+        let heavy = JsBodyDesc::sphere(-1.0, 0.0, 0.0, 0.0, 0.5);
+        let json = serde_json::to_string(&vec![heavy]).expect("serialize descriptors");
+        assert!(matches!(
+            add_bodies_from_json(&mut engine, &json),
+            Err(Error::InvalidMass(_))
+        ));
+        assert_eq!(engine_get_body_count(&engine), 0);
+    }
+    #[test]
+    fn test_batch_add_builds_every_supported_shape() {
+        let mut engine = create_engine(0.0, 0.0, 0.0);
+        let mut capsule = JsBodyDesc::sphere(1.0, 4.0, 1.0, 0.0, 0.25);
+        capsule.shape = "capsule".to_string();
+        capsule.height = 1.0;
+        let descs = vec![
+            JsBodyDesc::sphere(1.0, 0.0, 1.0, 0.0, 0.5),
+            JsBodyDesc::cuboid(1.0, 2.0, 1.0, 0.0, 0.5, 0.5, 0.5),
+            capsule,
+            JsBodyDesc::static_plane(0.0, 1.0, 0.0, 0.0),
+        ];
+        let json = serde_json::to_string(&descs).expect("serialize descriptors");
+        let count = add_bodies_from_json(&mut engine, &json).expect("valid batch");
+        assert_eq!(count, 4);
+        assert_eq!(engine_get_body_count(&engine), 4);
+        assert_eq!(engine.get_active_collider_count(), 4);
+    }
+    #[test]
+    fn test_batch_add_plane_normal_is_normalised_by_the_engine() {
+        let mut engine = create_engine(0.0, 0.0, 0.0);
+        // `2 y = 0` through the body position (0, 1, 0): the plane y = 1.
+        let plane = JsBodyDesc::static_plane(0.0, 2.0, 0.0, 1.0);
+        let json = serde_json::to_string(&vec![plane]).expect("serialize descriptors");
+        assert_eq!(
+            engine_add_bodies_from_json(&mut engine, &json).expect("batch"),
+            1
+        );
+        let hit = engine.raycast(0.0, 5.0, 0.0, 0.0, -1.0, 0.0, 100.0);
+        assert!(hit.hit);
+        assert!(
+            (hit.distance - 4.0).abs() < 1e-12,
+            "plane at y = 1, got {hit:?}"
+        );
+    }
+    #[test]
+    fn test_add_collider_from_json_paths() {
+        let mut engine = create_engine(0.0, 0.0, 0.0);
+        let body = engine
+            .add_static_body(0.0, 0.0, 0.0)
+            .expect("add static body");
+        let json = serde_json::to_string(&ColliderConfig::sphere(0.5)).expect("serialize");
+        let handle = add_collider_from_json(&mut engine, body, &json).expect("collider");
+        assert_ne!(handle, u32::MAX, "the u32::MAX failure sentinel is gone");
+        assert_eq!(engine.get_active_collider_count(), 1);
+
+        assert!(matches!(
+            add_collider_from_json(&mut engine, body, "{"),
+            Err(Error::ConfigDeserialization(_))
+        ));
+        assert_eq!(
+            add_collider_from_json(&mut engine, 77, &json),
+            Err(Error::BodyNotFound(77))
+        );
+        let bad = serde_json::to_string(&ColliderConfig::sphere(-1.0)).expect("serialize");
+        assert!(matches!(
+            add_collider_from_json(&mut engine, body, &bad),
+            Err(Error::InvalidDimension(_))
+        ));
+        assert_eq!(
+            engine.get_active_collider_count(),
+            1,
+            "failures store nothing"
+        );
+    }
+    #[test]
+    fn test_engine_add_collider_json_wrapper() {
+        let mut engine = create_engine(0.0, 0.0, 0.0);
+        let body = engine
+            .add_static_body(0.0, 0.0, 0.0)
+            .expect("add static body");
+        let json =
+            serde_json::to_string(&ColliderConfig::cuboid(1.0, 1.0, 1.0)).expect("serialize");
+        let handle = engine_add_collider_json(&mut engine, body, &json).expect("collider");
+        assert_eq!(handle, 0);
+        assert_eq!(engine.get_active_collider_count(), 1);
+    }
+    #[test]
+    fn test_js_physics_config_build_validates_the_configuration() {
+        let engine = JsPhysicsConfig::new()
+            .with_fixed_dt(1.0 / 120.0)
+            .build()
+            .expect("valid configuration");
+        assert!((engine.config().fixed_dt - 1.0 / 120.0).abs() < 1e-15);
+        JsPhysicsConfig::new()
+            .build_js()
+            .expect("default configuration");
+
+        let negative = JsPhysicsConfig::new().with_fixed_dt(-0.01).build();
+        assert!(
+            matches!(negative, Err(Error::InvalidTimeStep(dt)) if dt == -0.01),
+            "{negative:?}"
+        );
+        let no_substeps = JsPhysicsConfig::new().with_max_substeps(0).build();
+        assert!(matches!(no_substeps, Err(Error::InvalidParameter { .. })));
+    }
+    #[test]
+    fn test_engine_step_consumes_time_in_fixed_substeps() {
+        let mut engine = create_engine(0.0, -10.0, 0.0);
+        engine_add_sphere(&mut engine, 1.0, 0.0, 100.0, 0.0, 0.5).expect("add sphere body");
+        engine_step(&mut engine, 1.0).expect("step");
+        // Four substeps of 1/60 s fit the default cap; the rest is dropped.
+        assert!((engine.time() - 4.0 / 60.0).abs() < 1e-12);
+        assert_eq!(engine.debug_info().substeps_performed, 4);
+    }
+    #[test]
+    fn test_setup_falling_spheres_scene_uses_the_validated_helpers() {
+        let mut engine = create_engine(0.0, -9.81, 0.0);
+        let handles = setup_falling_spheres_scene(&mut engine, 6, 0.5, 5.0).expect("scene");
+        assert_eq!(handles.len(), 6);
+        assert_eq!(engine.get_active_collider_count(), 7);
+        for handle in handles {
+            assert!(engine.contains_body(handle));
+        }
     }
 }

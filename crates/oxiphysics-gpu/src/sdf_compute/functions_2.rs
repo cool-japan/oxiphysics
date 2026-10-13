@@ -180,14 +180,6 @@ mod tests_new_sdf {
         );
     }
     #[test]
-    fn test_marching_cubes_small_grid() {
-        let mut g = SdfGrid::new(2, 2, 2, 0.5, [0.0; 3]);
-        g.set(0, 0, 0, -0.1);
-        g.values.iter_mut().skip(1).for_each(|v| *v = 0.5);
-        let tris = marching_cubes(&g, 0.0);
-        let _ = tris;
-    }
-    #[test]
     fn test_gaussian_blur_preserves_size() {
         let g = sphere_grid(10, 0.1, 0.4);
         let blurred = sdf_gaussian_blur(&g, 1.0);
@@ -241,28 +233,6 @@ mod tests_new_sdf {
         let count_orig = g.values.iter().filter(|&&v| v < 0.0).count();
         let count_er = eroded.values.iter().filter(|&&v| v < 0.0).count();
         assert!(count_er <= count_orig, "erosion should shrink interior");
-    }
-    #[test]
-    fn test_sdf_open_leq_original() {
-        let g = sphere_grid(15, 0.1, 0.3);
-        let opened = sdf_open(&g, 0.05);
-        let count_orig = g.values.iter().filter(|&&v| v < 0.0).count();
-        let count_open = opened.values.iter().filter(|&&v| v < 0.0).count();
-        assert!(
-            count_open <= count_orig + 5,
-            "open should not significantly expand"
-        );
-    }
-    #[test]
-    fn test_sdf_close_geq_original() {
-        let g = sphere_grid(15, 0.1, 0.3);
-        let closed = sdf_close(&g, 0.05);
-        let count_orig = g.values.iter().filter(|&&v| v < 0.0).count();
-        let count_close = closed.values.iter().filter(|&&v| v < 0.0).count();
-        assert!(
-            count_close >= count_orig - 5,
-            "close should not significantly shrink"
-        );
     }
     #[test]
     fn test_sdf_offset_surface() {

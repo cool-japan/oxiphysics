@@ -3,14 +3,18 @@
 //! This module contains method implementations for `RigidBody`.
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-use oxiphysics_core::Transform;
 use oxiphysics_core::math::{Mat3, Quat, Real, Unit, Vec3};
+use oxiphysics_core::{MassProperties, Transform};
 
 use super::rigidbody_type::RigidBody;
 use super::types::{BodySnapshot, BodyState, BodyType};
 
 impl RigidBody {
     /// Create a new dynamic rigid body with the given mass.
+    ///
+    /// The body is undamped: [`RigidBody::linear_damping`] and
+    /// [`RigidBody::angular_damping`] are rates in 1/s and both start at zero,
+    /// so a default body falls with `v = g t` whatever the time step.
     pub fn new(mass: Real) -> Self {
         let inverse_mass = if mass > 0.0 { 1.0 / mass } else { 0.0 };
         Self {
@@ -25,8 +29,8 @@ impl RigidBody {
             torque_accumulator: Vec3::zeros(),
             body_type: BodyType::Dynamic,
             state: BodyState::Active,
-            linear_damping: 0.01,
-            angular_damping: 0.01,
+            linear_damping: 0.0,
+            angular_damping: 0.0,
             gravity_scale: 1.0,
             sleep_timer: 0.0,
             kinematic_target: None,
@@ -94,8 +98,16 @@ impl RigidBody {
     }
     /// Merge two bodies into one combined body (at center of mass).
     ///
-    /// The resulting body has combined mass, weighted center of mass,
-    /// and momentum-conserving velocity.
+    /// The resulting body has the combined mass, the mass-weighted center of
+    /// mass, the momentum-conserving velocity and the identity orientation.
+    ///
+    /// Angular quantities are evaluated in the world frame, in which both
+    /// angular velocities are expressed: each part contributes its world-space
+    /// inertia tensor [`RigidBody::world_inertia`] shifted to the combined
+    /// center of mass with the parallel-axis theorem, and the merged angular
+    /// velocity conserves the total angular momentum about that center of mass
+    /// (the spin `I_w * omega` of each part plus its orbital contribution
+    /// `m * d x (v - v_com)`).
     pub fn merge(a: &RigidBody, b: &RigidBody) -> RigidBody {
         let total_mass = a.mass + b.mass;
         if total_mass < 1e-30 {
@@ -104,9 +116,17 @@ impl RigidBody {
         let inv_total = 1.0 / total_mass;
         let com = (a.transform.position * a.mass + b.transform.position * b.mass) * inv_total;
         let combined_velocity = (a.velocity * a.mass + b.velocity * b.mass) * inv_total;
-        let combined_angular_momentum =
-            a.local_inertia * a.angular_velocity + b.local_inertia * b.angular_velocity;
-        let combined_inertia = a.local_inertia + b.local_inertia;
+        let mut combined_inertia = Mat3::zeros();
+        let mut combined_angular_momentum = Vec3::zeros();
+        for part in [a, b] {
+            let world_inertia = part.world_inertia();
+            let offset = part.transform.position - com;
+            let part_properties =
+                MassProperties::new(part.mass, part.transform.position, world_inertia);
+            combined_inertia += part_properties.shifted_inertia(offset);
+            combined_angular_momentum += world_inertia * part.angular_velocity
+                + offset.cross(&((part.velocity - combined_velocity) * part.mass));
+        }
         let mut merged = RigidBody::new(total_mass);
         merged.transform.position = com;
         merged.velocity = combined_velocity;

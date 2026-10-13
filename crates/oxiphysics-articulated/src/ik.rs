@@ -38,9 +38,9 @@ use crate::{model::ArticulatedModel, spatial::SpatialTransform};
 pub struct IkOptions {
     /// Maximum number of Newton iterations.  Default: 50.
     pub max_iterations: usize,
-    /// Position convergence tolerance [m].  Default: 1e-3.
+    /// Position convergence tolerance \[m\].  Default: 1e-3.
     pub position_tol: f64,
-    /// Orientation convergence tolerance [rad].  Default: 1.75e-3 (~0.1°).
+    /// Orientation convergence tolerance \[rad\].  Default: 1.75e-3 (~0.1°).
     pub orientation_tol: f64,
     /// Levenberg-Marquardt damping coefficient λ.  Default: 1e-2.
     pub damping_lambda: f64,
@@ -70,9 +70,10 @@ pub struct IkResult {
     pub success: bool,
     /// Joint positions at the final iteration.
     pub joint_positions: Vec<f64>,
-    /// Final Euclidean position error [m].
+    /// Final Euclidean position error \[m\].
     pub position_error: f64,
-    /// Final rotation error (norm of axis-angle residual) [rad].
+    /// Final rotation error: geodesic angle `θ ∈ [0, π]` between the EE and
+    /// target orientations \[rad\].
     pub orientation_error: f64,
     /// Number of iterations executed.
     pub iterations: usize,
@@ -260,6 +261,8 @@ fn invert_nn(a: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, &'static str> {
 /// - `T_world[i].trans` is the position of body-i's origin in world
 ///   coordinates.
 ///
+/// `q` is the configuration vector of length [`ArticulatedModel::total_nq`].
+///
 /// Bodies must be stored in topological order (parent index < child index),
 /// as guaranteed by [`ArticulatedModel`].
 pub fn forward_kinematics(model: &ArticulatedModel, q: &[f64]) -> Vec<SpatialTransform> {
@@ -271,15 +274,13 @@ pub fn forward_kinematics(model: &ArticulatedModel, q: &[f64]) -> Vec<SpatialTra
         let joint = &model.joints[i];
         let qi = model.q_slice(q, i);
 
-        // Full parent-to-child transform: X_T (fixed offset) composed with X_J (joint motion)
+        // Pose of body i in its parent: X_T (fixed offset) composed with X_J (joint motion)
         let x_j = joint.transform(qi);
         let x_full = body.parent_transform.compose(&x_j);
 
-        // T_world[i] = T_world[parent].compose(x_full), where x_full is from
-        // parent to child. compose(a, b) = apply b first then a, so:
-        // T_world[i] = T_world[parent] . x_full
-        // meaning: to go from body-i frame to world, first apply x_full (body-i→parent),
-        // then apply T_world[parent] (parent→world).
+        // Chain poses: T_world[i] = T_world[parent] ∘ x_full, i.e. map body-i
+        // coordinates to the parent with x_full, then to the world with
+        // T_world[parent].
         t_world[i] = match body.parent_id {
             None => x_full,
             Some(pid) => t_world[pid].compose(&x_full),
@@ -309,7 +310,9 @@ pub fn forward_kinematics(model: &ArticulatedModel, q: &[f64]) -> Vec<SpatialTra
 /// column in the body frame, and `r_{b→ee}` is the vector from body `b`'s
 /// origin to the EE origin, expressed in world coordinates.
 ///
-/// Off-path DOFs contribute a zero column.
+/// Off-path DOFs contribute a zero column. `q` has length
+/// [`ArticulatedModel::total_nq`]; the Jacobian has `total_dof()` columns (one
+/// per velocity coordinate).
 pub fn geometric_jacobian(model: &ArticulatedModel, q: &[f64], ee_body: usize) -> Vec<f64> {
     let n_dof = model.total_dof();
     let n_bodies = model.num_bodies();
@@ -375,16 +378,73 @@ pub fn geometric_jacobian(model: &ArticulatedModel, q: &[f64], ee_body: usize) -
 
 // ─── Damped least-squares IK solver ──────────────────────────────────────────
 
+/// SO(3) logarithm: the rotation vector `θ·axis` (with `θ ∈ [0, π]`) of a
+/// rotation matrix `r`, i.e. `exp([log(r)]×) = r`.
+///
+/// Uses `θ = atan2(|vee(R − Rᵀ)|/2, (tr R − 1)/2)`, which is well conditioned
+/// over the whole range, and handles the two singular regimes explicitly:
+///
+/// - `θ → 0`: `log(R) ≈ vee(R − Rᵀ)/2` (first-order series),
+/// - `θ → π`: `R − Rᵀ → 0`, so the axis is recovered from the symmetric part
+///   `(R + I)/2 = cos θ·I/2 + … ≈ a aᵀ`, taking the column with the largest
+///   diagonal entry and fixing its sign with `vee(R − Rᵀ)` when that is still
+///   informative.
+fn so3_log(r: [[f64; 3]; 3]) -> [f64; 3] {
+    // vee(R − Rᵀ) = 2·sin θ·axis.
+    let w = [r[2][1] - r[1][2], r[0][2] - r[2][0], r[1][0] - r[0][1]];
+    let sin_theta = 0.5 * norm3(w);
+    let cos_theta = (0.5 * (r[0][0] + r[1][1] + r[2][2] - 1.0)).clamp(-1.0, 1.0);
+    let theta = sin_theta.atan2(cos_theta);
+
+    if theta < 1e-8 {
+        // log(R) ≈ vee(R − Rᵀ)/2, exact to O(θ³).
+        return [0.5 * w[0], 0.5 * w[1], 0.5 * w[2]];
+    }
+
+    if theta > std::f64::consts::PI - 1e-6 {
+        // Near π: R ≈ 2 a aᵀ − I ⇒ (R + I)/2 ≈ a aᵀ.
+        let b = [
+            [0.5 * (r[0][0] + 1.0), 0.5 * r[0][1], 0.5 * r[0][2]],
+            [0.5 * r[1][0], 0.5 * (r[1][1] + 1.0), 0.5 * r[1][2]],
+            [0.5 * r[2][0], 0.5 * r[2][1], 0.5 * (r[2][2] + 1.0)],
+        ];
+        let mut k = 0;
+        for idx in 1..3 {
+            if b[idx][idx] > b[k][k] {
+                k = idx;
+            }
+        }
+        // Column k = a_k · a; symmetrise with row k for robustness.
+        let col = [
+            0.5 * (b[0][k] + b[k][0]),
+            0.5 * (b[1][k] + b[k][1]),
+            0.5 * (b[2][k] + b[k][2]),
+        ];
+        let n = norm3(col);
+        if n < 1e-300 {
+            return [0.0; 3];
+        }
+        let mut axis = [col[0] / n, col[1] / n, col[2] / n];
+        // Resolve the ± ambiguity with the (tiny) antisymmetric part.
+        let s = axis[0] * w[0] + axis[1] * w[1] + axis[2] * w[2];
+        if s < 0.0 {
+            axis = [-axis[0], -axis[1], -axis[2]];
+        }
+        return [theta * axis[0], theta * axis[1], theta * axis[2]];
+    }
+
+    // Generic case: log(R) = θ / (2 sin θ) · vee(R − Rᵀ).
+    let k = theta / (2.0 * sin_theta);
+    [k * w[0], k * w[1], k * w[2]]
+}
+
 /// Compute the 6-D task-space error `[e_rot; e_pos]` between the current EE
 /// transform and the target pose.
 ///
-/// `e_rot` is the axis-angle residual extracted from `R_err = R_target * R_current^T`:
-///
-/// ```text
-/// e_rot = [ R_err[2][1] - R_err[1][2],
-///           R_err[0][2] - R_err[2][0],
-///           R_err[1][0] - R_err[0][1] ] / 2
-/// ```
+/// `e_rot` is the world-frame rotation vector of
+/// `R_err = R_target · R_currentᵀ`, i.e. `e_rot = log(R_err)` (see
+/// [`so3_log`]); its norm is the geodesic angle `θ ∈ [0, π]` between the two
+/// orientations, so a 180° flip yields `|e_rot| = π`, not zero.
 fn task_error(
     t_ee: &SpatialTransform,
     target_position: [f64; 3],
@@ -399,12 +459,7 @@ fn task_error(
     let r_curr_t = mat3_transpose(r_curr);
     let r_err = mat3_mul(r_target, r_curr_t);
 
-    // Skew-vee extraction: axis-angle from skew-symmetric part
-    let e_rot = [
-        (r_err[2][1] - r_err[1][2]) * 0.5,
-        (r_err[0][2] - r_err[2][0]) * 0.5,
-        (r_err[1][0] - r_err[0][1]) * 0.5,
-    ];
+    let e_rot = so3_log(r_err);
 
     let e_pos = sub3(target_position, t_ee.trans);
 
@@ -417,15 +472,26 @@ fn task_error(
 ///
 /// - `model`: Articulated model (topological order, joints match bodies).
 /// - `ee_body`: Body index of the end-effector.
-/// - `target_position`: Desired EE position in world coordinates [m].
+/// - `target_position`: Desired EE position in world coordinates \[m\].
 /// - `target_rotation`: Desired EE rotation matrix (R_{world←body}).
-/// - `q_init`: Initial joint configuration; length must equal `model.total_dof()`.
-/// - `rest_q`: Secondary posture target for null-space projection.
+/// - `q_init`: Initial joint configuration; length must equal `model.total_nq()`.
+/// - `rest_q`: Secondary posture target (a configuration, length
+///   `model.total_nq()`) for null-space projection.
 /// - `opts`: Solver options.
+///
+/// Each step is a tangent-space increment `Δq` (length `model.total_dof()`),
+/// applied with [`ArticulatedModel::integrate`] so quaternion joints stay
+/// normalised; the posture error is the tangent difference
+/// [`ArticulatedModel::difference`]`(q, rest_q)`.
 ///
 /// # Returns
 ///
 /// An [`IkResult`] with the solution quality metrics and the final `q`.
+///
+/// # Panics
+///
+/// Panics if `q_init` or `rest_q` do not have length `model.total_nq()`, or if
+/// `ee_body >= model.num_bodies()`.
 pub fn solve_ik_dls(
     model: &ArticulatedModel,
     ee_body: usize,
@@ -436,6 +502,8 @@ pub fn solve_ik_dls(
     opts: &IkOptions,
 ) -> IkResult {
     let n = model.total_dof();
+    assert_eq!(q_init.len(), model.total_nq(), "q_init length mismatch");
+    assert_eq!(rest_q.len(), model.total_nq(), "rest_q length mismatch");
     let mut q = q_init.to_vec();
 
     let mut position_error = f64::INFINITY;
@@ -494,15 +562,19 @@ pub fn solve_ik_dls(
 
         // ── 7. Null-space projection ──────────────────────────────────────────
         //
-        // z = null_space_gain * (rest_q - q)
+        // z = null_space_gain * (rest_q ⊖ q)
         // J⁺ = Jᵀ (JJᵀ + λ²I)⁻¹  [6×n → n×6 shaped]
         // Δq_null = (I - J⁺J) z
-        let dq_null = compute_dq_null(&j_flat, &q, rest_q, n, lambda2, opts.null_space_gain);
+        let posture_error = model.difference(&q, rest_q);
+        let dq_null = compute_dq_null(&j_flat, &posture_error, n, lambda2, opts.null_space_gain);
 
-        // ── 8. Update q ───────────────────────────────────────────────────────
-        for i in 0..n {
-            q[i] += dq_dls[i] + dq_null[i];
-        }
+        // ── 8. Update q on the configuration manifold ─────────────────────────
+        let dq: Vec<f64> = dq_dls
+            .iter()
+            .zip(dq_null.iter())
+            .map(|(a, b)| a + b)
+            .collect();
+        q = model.integrate(&q, &dq, 1.0);
     }
 
     // Ran out of iterations
@@ -561,26 +633,22 @@ fn compute_dq_dls(j_flat: &[f64], e: &[f64; 6], n: usize, lambda2: f64) -> Vec<f
 /// Compute the null-space component of the IK step.
 ///
 /// ```text
-/// z        = gain * (rest_q - q)
+/// z        = gain * (rest_q ⊖ q)
 /// J⁺       = Jᵀ (JJᵀ + λ²I)⁻¹       [n×6]
 /// Δq_null  = (I - J⁺J) z
 /// ```
 ///
+/// `posture_error` is the tangent-space difference `rest_q ⊖ q` (length `n`).
 /// `JJᵀ + λ²I` is a 6×6 system; we invert it via Gauss-Jordan.
 fn compute_dq_null(
     j_flat: &[f64],
-    q: &[f64],
-    rest_q: &[f64],
+    posture_error: &[f64],
     n: usize,
     lambda2: f64,
     gain: f64,
 ) -> Vec<f64> {
-    // z = gain * (rest_q - q)
-    let z: Vec<f64> = rest_q
-        .iter()
-        .zip(q.iter())
-        .map(|(r, qi)| gain * (r - qi))
-        .collect();
+    // z = gain * (rest_q ⊖ q)
+    let z: Vec<f64> = posture_error.iter().map(|e| gain * e).collect();
 
     // Build JJᵀ (6×6) and add λ²I
     let mut jjt = vec![vec![0.0f64; 6]; 6];
@@ -983,5 +1051,246 @@ mod tests {
             "far-start position error {:.2e} m",
             result.position_error
         );
+    }
+
+    // ── Test 6: SO(3) log over the full angle range ───────────────────────────
+
+    #[test]
+    fn test_so3_log_recovers_rotation_vector() {
+        let axis = [
+            0.267_261_241_912_424_4,
+            -0.534_522_483_824_848_8,
+            0.801_783_725_737_273_2,
+        ];
+        for &theta in &[
+            0.0,
+            1e-10,
+            1e-5,
+            0.3,
+            1.5,
+            3.0,
+            std::f64::consts::PI - 1e-7,
+            std::f64::consts::PI,
+        ] {
+            let r = SpatialTransform::from_axis_angle(axis, theta).rot;
+            let phi = so3_log(r);
+            let expected = [theta * axis[0], theta * axis[1], theta * axis[2]];
+            // At exactly π the sign of the axis is ambiguous.
+            let err_pos = norm3(sub3(phi, expected));
+            let err_neg = norm3(add3(phi, expected));
+            let err = if theta >= std::f64::consts::PI {
+                err_pos.min(err_neg)
+            } else {
+                err_pos
+            };
+            assert!(
+                err < 1e-9,
+                "θ={theta}: log={phi:?} expected {expected:?} (err {err:.2e})"
+            );
+            assert!(
+                (norm3(phi) - theta).abs() < 1e-9,
+                "θ={theta}: |log|={}",
+                norm3(phi)
+            );
+        }
+    }
+
+    // ── Test 7: a 180° orientation flip is not reported as converged ─────────
+
+    #[test]
+    fn test_ik_half_turn_flip_is_not_success() {
+        let model = build_7dof_chain();
+        let ee_body = 6;
+        let q0: Vec<f64> = vec![0.3, -0.4, 0.5, -0.3, 0.2, -0.5, 0.1];
+        let fk = forward_kinematics(&model, &q0);
+        let target_position = fk[ee_body].trans;
+        // Target = current orientation rotated by π about world z.
+        let r_pi = SpatialTransform::from_axis_angle([0.0, 0.0, 1.0], std::f64::consts::PI).rot;
+        let target_rotation = mat3_mul(r_pi, fk[ee_body].rot);
+
+        let opts = IkOptions {
+            max_iterations: 1,
+            ..IkOptions::default()
+        };
+        let result = solve_ik_dls(
+            &model,
+            ee_body,
+            target_position,
+            target_rotation,
+            &q0,
+            &q0,
+            &opts,
+        );
+        assert!(
+            !result.success,
+            "a 180° flip must not be reported as success"
+        );
+        assert!(
+            (result.orientation_error - std::f64::consts::PI).abs() < 1e-9,
+            "orientation error should be π, got {}",
+            result.orientation_error
+        );
+        assert!(result.position_error < 1e-12);
+
+        // Given iterations, DLS rotates the EE all the way round.
+        let opts = IkOptions {
+            max_iterations: 300,
+            ..IkOptions::default()
+        };
+        let solved = solve_ik_dls(
+            &model,
+            ee_body,
+            target_position,
+            target_rotation,
+            &q0,
+            &q0,
+            &opts,
+        );
+        assert!(
+            solved.success,
+            "half-turn IK did not converge: pos={:.2e} rot={:.2e}",
+            solved.position_error, solved.orientation_error
+        );
+    }
+
+    // ── Test 8: IK through a quaternion (spherical) joint ────────────────────
+
+    #[test]
+    fn test_ik_with_spherical_joint_stays_on_manifold() {
+        use crate::joint::SphericalJoint;
+        let mut model = ArticulatedModel::new([0.0, 0.0, -9.81]);
+        let inertia = SpatialInertia::from_com(1.0, [0.0, 0.0, 0.25], [[0.01; 3]; 3]);
+        model.add_body(
+            RigidBody::new("base", inertia, None, SpatialTransform::IDENTITY),
+            Box::new(RevoluteJoint::new([0.0, 0.0, 1.0])),
+        );
+        model.add_body(
+            RigidBody::new(
+                "shoulder",
+                inertia,
+                Some(0),
+                SpatialTransform::from_translation([0.0, 0.0, 0.5]),
+            ),
+            Box::new(SphericalJoint),
+        );
+        model.add_body(
+            RigidBody::new(
+                "forearm",
+                inertia,
+                Some(1),
+                SpatialTransform::from_translation([0.0, 0.0, 0.6]),
+            ),
+            Box::new(RevoluteJoint::new([0.0, 1.0, 0.0])),
+        );
+        model.add_body(
+            RigidBody::new(
+                "hand",
+                inertia,
+                Some(2),
+                SpatialTransform::from_translation([0.0, 0.0, 0.4]),
+            ),
+            Box::new(crate::joint::FixedJoint),
+        );
+        assert_eq!(model.total_nq(), 6);
+        assert_eq!(model.total_dof(), 5);
+
+        let h = 0.4_f64;
+        let q_target = vec![0.5, h.cos(), h.sin() * 0.6, 0.0, h.sin() * 0.8, 0.7];
+        let fk = forward_kinematics(&model, &q_target);
+        let rest = model.neutral_configuration();
+        let q_init = model.integrate(&q_target, &[0.1, -0.15, 0.1, 0.2, -0.1], 1.0);
+
+        let opts = IkOptions {
+            max_iterations: 200,
+            ..IkOptions::default()
+        };
+        let result = solve_ik_dls(&model, 3, fk[3].trans, fk[3].rot, &q_init, &rest, &opts);
+        assert!(
+            result.success,
+            "IK through spherical joint failed: pos={:.2e} rot={:.2e}",
+            result.position_error, result.orientation_error
+        );
+        let quat = &result.joint_positions[1..5];
+        let norm = quat.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-12, "quaternion drifted: |q|={norm}");
+    }
+
+    // ── Test 9: Jacobian FD validation through quaternion joints ─────────────
+
+    /// The geometric Jacobian of a chain containing a free-floating base and a
+    /// spherical joint matches central finite differences of forward
+    /// kinematics taken along tangent directions (`q ⊕ ±h·e_j` via
+    /// [`ArticulatedModel::integrate`]).
+    #[test]
+    fn test_jacobian_finite_difference_quaternion_joints() {
+        use crate::joint::{FreeFloatingJoint, SphericalJoint};
+        let mut model = ArticulatedModel::new([0.0, 0.0, -9.81]);
+        let inertia = SpatialInertia::from_com(1.0, [0.0, 0.0, 0.2], [[0.01; 3]; 3]);
+        model.add_body(
+            RigidBody::new("base", inertia, None, SpatialTransform::IDENTITY),
+            Box::new(FreeFloatingJoint),
+        );
+        model.add_body(
+            RigidBody::new(
+                "shoulder",
+                inertia,
+                Some(0),
+                SpatialTransform::from_translation([0.1, -0.2, 0.5])
+                    .compose(&SpatialTransform::from_axis_angle([0.0, 1.0, 0.0], 0.4)),
+            ),
+            Box::new(SphericalJoint),
+        );
+        model.add_body(
+            RigidBody::new(
+                "forearm",
+                inertia,
+                Some(1),
+                SpatialTransform::from_translation([0.0, 0.3, 0.6]),
+            ),
+            Box::new(RevoluteJoint::new([1.0, 0.0, 0.0])),
+        );
+        assert_eq!(model.total_nq(), 7 + 4 + 1);
+        assert_eq!(model.total_dof(), 6 + 3 + 1);
+
+        let n = model.total_dof();
+        let q = model.integrate(
+            &model.neutral_configuration(),
+            &[0.3, -0.1, 0.8, 0.5, -0.7, 0.2, 0.9, -0.4, 0.6, 0.35],
+            1.0,
+        );
+        let ee_body = 2;
+        let h = 1e-6;
+        let j_analytic = geometric_jacobian(&model, &q, ee_body);
+
+        let mut delta = vec![0.0; n];
+        for d in 0..n {
+            delta[d] = 1.0;
+            let t_plus = forward_kinematics(&model, &model.integrate(&q, &delta, h))[ee_body];
+            let t_minus = forward_kinematics(&model, &model.integrate(&q, &delta, -h))[ee_body];
+            delta[d] = 0.0;
+
+            let v_fd = [
+                (t_plus.trans[0] - t_minus.trans[0]) / (2.0 * h),
+                (t_plus.trans[1] - t_minus.trans[1]) / (2.0 * h),
+                (t_plus.trans[2] - t_minus.trans[2]) / (2.0 * h),
+            ];
+            // World-frame angular velocity: log(R₊·R₋ᵀ) / (2h).
+            let phi = so3_log(mat3_mul(t_plus.rot, mat3_transpose(t_minus.rot)));
+            let omega_fd = [phi[0] / (2.0 * h), phi[1] / (2.0 * h), phi[2] / (2.0 * h)];
+            for k in 0..3 {
+                let j_ang = j_analytic[k * n + d];
+                let j_lin = j_analytic[(3 + k) * n + d];
+                assert!(
+                    (j_ang - omega_fd[k]).abs() < 1e-6,
+                    "col {d} angular[{k}]: J={j_ang:.9} FD={:.9}",
+                    omega_fd[k]
+                );
+                assert!(
+                    (j_lin - v_fd[k]).abs() < 1e-6,
+                    "col {d} linear[{k}]: J={j_lin:.9} FD={:.9}",
+                    v_fd[k]
+                );
+            }
+        }
     }
 }

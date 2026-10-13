@@ -665,3 +665,143 @@ Last Updated: 2026-06-11 — version 0.1.3
   - Priority: P2 | Scope: trivial | Hint: none
 - [ ] `oxiphysics-core`: `crates/oxiphysics-core/src/exact_predicates.rs:348,400,469,562` — implement Shewchuk adaptive intermediate stages (C-stage for orient2d, B/C/D for incircle, adaptive stages for insphere)
   - Priority: P2 | Scope: medium | Hint: none
+
+<!-- AUDIT-2026-10-12 BEGIN -->
+## Phase 32: Production-Grade Audit Remediation (audit 2026-10-12)
+
+> **Source:** multi-agent production-readiness audit of 2026-10-12 (74 code slices × 3 lenses + 19 API-hygiene + 9 cross-cutting audits, every reported finding adversarially re-verified by an independent reviewer). Full ledger (JSON + per-crate markdown) is kept outside the repo under `/tmp/oxiphysics-audit-2026-10-12/`; per-crate TODO.md files carry the verified critical/high/medium items with stable IDs `Fxxxx`.
+
+**Remediation plan:** Wave 1 = verified critical+high (Sonnet effort=max parallel packages; Opus for the hardest large-scope packages, ≤2 concurrent) → Wave 2 = verified medium + second-round verified items → Wave 3 = low / docs / API hygiene / workspace items → final gate (clippy -D warnings, nextest, cargo deny, doctests) + gatekeeper review.
+
+| Crate | verified | critical | high | medium | low | done | pending re-verification |
+|---|---|---|---|---|---|---|---|
+| oxiphysics | 65 | 3 | 18 | 27 | 17 | 10 | 14 |
+| oxiphysics-articulated | 39 | 3 | 7 | 15 | 14 | 10 | 2 |
+| oxiphysics-collision | 225 | 1 | 85 | 107 | 32 | 29 | 20 |
+| oxiphysics-constraints | 182 | 2 | 46 | 101 | 33 | 16 | 30 |
+| oxiphysics-core | 432 | 2 | 118 | 242 | 70 | 64 | 70 |
+| oxiphysics-fem | 363 | 8 | 122 | 177 | 56 | 23 | 57 |
+| oxiphysics-geometry | 263 | 3 | 86 | 150 | 24 | 9 | 42 |
+| oxiphysics-gpu | 195 | 6 | 44 | 98 | 47 | 21 | 36 |
+| oxiphysics-io | 387 | 0 | 109 | 224 | 54 | 23 | 61 |
+| oxiphysics-lbm | 330 | 4 | 124 | 151 | 51 | 17 | 48 |
+| oxiphysics-materials | 232 | 1 | 82 | 119 | 30 | 11 | 65 |
+| oxiphysics-md | 429 | 13 | 124 | 218 | 74 | 19 | 66 |
+| oxiphysics-python | 111 | 4 | 27 | 59 | 21 | 0 | 21 |
+| oxiphysics-rigid | 269 | 10 | 70 | 148 | 41 | 13 | 32 |
+| oxiphysics-softbody | 294 | 5 | 100 | 150 | 39 | 5 | 61 |
+| oxiphysics-sph | 333 | 11 | 116 | 169 | 37 | 41 | 33 |
+| oxiphysics-vehicle | 178 | 2 | 38 | 107 | 31 | 11 | 29 |
+| oxiphysics-viz | 246 | 2 | 49 | 138 | 57 | 0 | 89 |
+| oxiphysics-wasm | 107 | 4 | 21 | 61 | 21 | 17 | 26 |
+| workspace | 17 | 0 | 2 | 8 | 7 | 0 | 0 |
+| **total** | **4697** | **84** | **1388** | **2469** | **756** | **339** | **802** |
+
+### 32.A Workspace / release-readiness items (verified)
+- [ ] **F0002** (high, bug, easy/trivial) `.github/workflows/pypi-publish.yml:136` — PyPI workflow ignores publish_target=none and version_tag
+- [ ] **F0014** (high, policy, easy/small) `TODO.md:416` — No deny.toml; COOLJAPAN banned-crate policy unenforced
+- [ ] **F0001** (low, bug, easy/small) `.github/workflows/npm-publish.yml:61` — npm workflow: masked install, constant cache key, bundler-only publish
+- [ ] **F0008** (low, docs, easy/trivial) `README.md:35` — URDF import listed as 'still planned' though it ships in oxiphysics-io
+- [ ] **F0009** (low, docs, easy/medium) `README.md:52` — 8 crates lack missing_docs, so 'no missing-docs warnings' is vacuous
+- [ ] **F0010** (low, docs, easy/small) `README.md:62` — Root README overclaims Rosenbrock ODE, arch SIMD, MessagePack
+- [ ] **F0012** (low, missing-feature, easy/medium) `README.md:142` — No runnable examples for articulated/URDF, GPU, collision queries, IO, Python
+- [ ] **F0015** (low, docs, easy/trivial) `TODO.md:646` — TODO marks false scirs2-core SIMD/RNG claims as done
+- [ ] **F0016** (low, docs, easy/trivial) `TODO.md:654` — Root TODO 'Stubs to implement' list is mostly stale
+- [ ] **F0003** (medium, bug, easy/trivial) `.gitignore:33` — `*.html` rule silently untracks all wasm web-demo pages
+- [ ] **F0004** (medium, policy, easy/trivial) `.gitignore:81` — 363-file build dir target-sbtask/ is committed to git
+- [ ] **F0005** (medium, policy, medium/medium) `Cargo.toml:1` — No workspace lints; missing_docs/unsafe_code unenforced in 8 crates
+- [ ] **F0006** (medium, policy, easy/small) `Cargo.toml:8` — No rust-version; real MSRV floor is 1.89 (nalgebra 0.35)
+- [ ] **F0007** (medium, perf, easy/small) `Cargo.toml:60` — Default wgpu leaks into constraints/viz that only use CPU stub
+- [ ] **F0011** (medium, docs, hard/large) `README.md:75` — HDF5/netCDF advertised, but only in-memory mock and CDL text
+- [ ] **F0013** (medium, docs, easy/small) `SECURITY.md:33` — SECURITY/README name the wrong unsafe sites; scan writes via as_ptr
+- [ ] **F0017** (medium, policy, medium/large) `clippy.toml:1` — About 110 unseeded rand::rng() calls in library code; no lint guard
+
+### 32.B Verified CRITICAL findings (all crates)
+- [ ] **F5440** (critical, fabrication, easy/small) `coupling/mod.rs:296` — CouplingRuntime::step samples zero sites, so every coupling is a no-op
+- [x] **F5472** (critical, bug, medium/small) `profiler.rs:220` — ScopeGuard raw pointer makes safe profiler API unsound
+- [x] **F5473** (critical, bug, medium/small) `profiler.rs:323` — ScopeGuard raw pointer makes safe profiler API unsound
+- [x] **F0038** (critical, bug, hard/large) `joint.rs:302` — Spherical/FreeFloating orientation always identity inside every algorithm
+- [x] **F0045** (critical, bug, medium/small) `model.rs:38` — Gravity applied as +g root acceleration; bodies fall upward
+- [x] **F0056** (critical, bug, hard/medium) `spatial.rs:350` — Plücker transforms use rot untransposed; dynamics inconsistent with kinematics
+- [x] **F0198** (critical, bug, medium/small) `narrowphase/specialized/functions.rs:177` — specialized::box_box_sat: A→B normal, centre-based points, unnormalized edge depth
+- [ ] **F0381** (critical, bug, medium/small) `joints/fixedjoint_traits.rs:136` — Joint orientation correction has inverted sign and wrong units
+- [ ] **F0481** (critical, bug, easy/small) `six_dof_constraint.rs:610` — SixDof solve_position correction has wrong sign, amplifies error
+- [x] **F0775** (critical, bug, medium/small) `numerics/functions_2.rs:446` — boys_fn Taylor series diverges for x>8, corrupting md integrals
+- [x] **F0885** (critical, bug, medium/small) `sparse/functions.rs:615` — minres_solve wrong recurrence; reports converged with large residual
+- [x] **F1037** (critical, bug, easy/small) `analysis.rs:724` — Newmark-beta solves displacement-form K_eff but treats result as acceleration
+- [x] **F1038** (critical, bug, medium/small) `analysis.rs:788` — Wilson-theta solves displacement system, uses result as acceleration
+- [ ] **F1140** (critical, bug, medium/small) `dynamics.rs:151` — HHT-α parameters sign-flipped (γ<½, energy growth), not HHT
+- [ ] **F1142** (critical, bug, medium/medium) `dynamics.rs:193` — NewmarkIntegrator::step is explicit yet claims unconditional stability
+- [ ] **F1152** (critical, bug, medium/medium) `eigenvalue.rs:382` — solve_smallest/ModalAnalysis return k-step Lanczos Ritz values, not smallest modes
+- [ ] **F1174** (critical, bug, medium/small) `explicit_fem/types.rs:135` — 3D node-to-segment gap is unsigned, so contact force is always zero
+- [x] **F1346** (critical, bug, medium/medium) `solvers/functions.rs:378` — MINRES recurrence wrong; returns garbage flagged converged=true
+- [ ] **F1378** (critical, bug, easy/small) `thermal_fem.rs:163` — Tet shape gradients use J^-T rows; fails linear patch test
+- [ ] **F1546** (critical, fabrication, easy/small) `implicit_geometry/functions.rs:202` — extract_isosurface uses garbage edge table and fan triangulation
+- [ ] **F1555** (critical, stub, easy/small) `level_set/functions.rs:123` — Level-set MC tri table truncated (223/256 cases empty); edge table corrupt
+- [ ] **F1723** (critical, bug, medium/small) `torus.rs:620` — Torus quartic solver mixes Ferrari conventions; ray casts wrong/miss
+- [ ] **F1794** (critical, fabrication, medium/medium) `fluid_gpu.rs:499` — LBMGpuKernels: fake velocities, no-op streaming, identity bounce-back
+- [ ] **F1799** (critical, fabrication, medium/medium) `fluid_sim_gpu/functions.rs:402` — FLIP G2P: x-only transfer, zero FLIP delta, advects by dx
+- [ ] **F1831** (critical, bug, easy/trivial) `gpu_md_solver.rs:167` — LJ pair force sign inverted: repulsion becomes attraction
+- [x] **F1882** (critical, fabrication, hard/medium) `lbm_gpu.rs:192` — LBM GPU kernel ignores body force, solid walls and lid velocity
+- [x] **F1883** (critical, bug, hard/large) `lbm_gpu.rs:376` — Default GPU LBM step drops walls, body force and lid
+- [x] **F1885** (critical, bug, hard/medium) `lbm_gpu.rs:423` — LbmSimulation GPU path ignores walls, Guo forcing and lid velocity
+- [x] **F2480** (critical, bug, easy/small) `d3q19_full.rs:49` — D3Q19_OPP maps edge directions to non-opposites
+- [ ] **F2601** (critical, fabrication, hard/medium) `magnetohydrodynamics_lbm.rs:1064` — MhdLbm shrinks B threefold per step and has no Lorentz coupling
+- [ ] **F2612** (critical, fabrication, hard/medium) `mrt.rs:1339` — CascadedCollision2D::collide reverses momentum; fake back-transform
+- [ ] **F2785** (critical, bug, easy/small) `wall_model.rs:387` — u_tau_newton Jacobian wrong: u_tau collapses to 1e-15 in log layer
+- [ ] **F2963** (critical, bug, easy/small) `hyperelastic/functions.rs:86` — principal_stretches uses wrong acos sign, returns reflected eigenvalues
+- [ ] **F3151** (critical, bug, easy/trivial) `charmm.rs:644` — CHARMM angle forces have inverted sign (anti-restoring)
+- [x] **F3166** (critical, bug, easy/trivial) `coarse_grained/types.rs:247` — CgSystem LJ force applied toward partner (repulsion becomes attraction)
+- [x] **F3168** (critical, bug, easy/trivial) `coarse_grained_md.rs:179` — angle_cg_force sign error opens bent angles
+- [x] **F3202** (critical, bug, easy/small) `electrostatics/coulomb.rs:15` — COULOMB_K is 10x too small for Å units (nm value used)
+- [ ] **F3220** (critical, bug, easy/trivial) `enhanced_sampling_md.rs:357` — RemdController::try_swap Metropolis criterion is inverted
+- [ ] **F3236** (critical, bug, easy/trivial) `ewald/summation.rs:370` — EwaldSummation reciprocal-space forces have inverted sign (+dE/dr)
+- [ ] **F3239** (critical, bug, medium/small) `fep.rs:313` — Bar::delta_f_estimate uses wrong BAR iteration (sign, missing +C, units)
+- [ ] **F3247** (critical, bug, easy/trivial) `forcefield/angleforcefield_traits.rs:43` — AngleForceField forces have reversed sign (equal +∇E)
+- [ ] **F3248** (critical, bug, easy/small) `forcefield/dihedralforcefield_traits.rs:49` — Dihedral forces have wrong sign on i/l and a wrong fj projection
+- [ ] **F3253** (critical, bug, medium/small) `free_energy/functions.rs:65` — fep_bar solves the wrong BAR equation (ΔF=0 for a constant shift)
+- [ ] **F3307** (critical, bug, easy/trivial) `metal_alloy_md/types.rs:165` — EAM compute_forces returns +∇E (force sign flipped)
+- [x] **F3387** (critical, bug, easy/trivial) `polymer_sim.rs:269` — Kremer-Grest FENE bond force has wrong sign (bonds repel)
+- [ ] **F3543** (critical, bug, medium/small) `thermostat/types.rs:236` — SvrThermostat::rescale_factor misimplements Bussi; equilibrates near T/2
+- [ ] **F3634** (critical, bug, easy/trivial) `lbm_api.rs:832` — Python 3D LBM bounce-back uses wrong D3Q19 opposite table
+- [ ] **F3672** (critical, fabrication, medium/medium) `vehicle_api.rs:1190` — Vehicle step never writes slip_ratio; throttle gives zero traction
+- [ ] **F3703** (critical, fabrication, medium/medium) `world_api/mod.rs:768` — PhysicsWorld: spheres only, inverted impulse sign, no friction
+- [ ] **F3705** (critical, bug, easy/small) `world_api/mod.rs:846` — Contact impulse gate inverted: approaching spheres get no impulse
+- [ ] **F3833** (critical, bug, easy/small) `granular_media.rs:189` — GranularPacking normal spring is attractive; tangential sign reversed
+- [ ] **F3838** (critical, bug, easy/trivial) `granular_rigid.rs:525` — Hertz-Mindlin force_j breaks Newton's third law (-3x tangential)
+- [ ] **F3862** (critical, bug, easy/trivial) `impulse/types.rs:601` — Sequential-impulse friction (t1/t2) pushes sliding faster
+- [ ] **F3898** (critical, bug, easy/trivial) `multibody_dynamics.rs:435` — gravity_torques omits joint position and has inverted sign
+- [ ] **F3914** (critical, bug, hard/medium) `orbital_mechanics.rs:654` — lambert_problem uses wrong λ, ρ and T(x); test vacuous
+- [ ] **F3941** (critical, bug, easy/trivial) `satellite_dynamics.rs:565` — AttitudeControl::pd_controller torque sign drives attitude away from target
+- [x] **F4017** (critical, fabrication, hard/large) `world/types.rs:969` — PhysicsWorld ignores colliders; mass-cbrt spheres and sign-inverted contact solve
+- [x] **F4018** (critical, fabrication, hard/large) `world/types.rs:979` — PhysicsWorld ignores Collider shapes; contact radius fabricated from mass
+- [x] **F4019** (critical, fabrication, hard/large) `world/types.rs:1007` — PhysicsWorld collision ignores colliders, uses mass-cube-root spheres
+- [x] **F4021** (critical, bug, medium/medium) `world/types.rs:1094` — Default PhysicsWorld solver skips approaching contacts and attracts separating ones
+- [ ] **F4071** (critical, fabrication, hard/medium) `constraint/neohookeanconstraint_traits.rs:66` — Neo-Hookean XPBD projection fabricated: y-shift, radial push, inverted alpha
+- [ ] **F4078** (critical, bug, easy/small) `cosserat_rods.rs:555` — Cosserat rod internal force sign flipped; stretch and shear self-amplify
+- [ ] **F4175** (critical, fabrication, medium/medium) `material_point/functions.rs:185` — mat3_svd is not an SVD; snow/sand plasticity squares stretch
+- [ ] **F4198** (critical, bug, easy/small) `metamorphic_mesh.rs:209` — polar_decomp_r iterates (R+R^-1)/2, collapsing rotations to identity
+- [ ] **F4273** (critical, bug, easy/small) `pbd_system/types.rs:471` — Tet volume-constraint gradients negated; projection diverges
+- [x] **F4428** (critical, bug, medium/small) `dfsph.rs:198` — DFSPH kappa divides by alpha instead of multiplying
+- [x] **F4436** (critical, bug, medium/small) `dfsph_solver.rs:684` — DFSPH stiffness divides by alpha instead of multiplying, all DFSPH solvers
+- [x] **F4496** (critical, bug, hard/medium) `iisph.rs:379` — IISPH Jacobi uses positive a_ii: compressed fluid gets zero pressure
+- [ ] **F4574** (critical, bug, easy/trivial) `particle/functions.rs:16` — Cubic-spline gradient 1.5× too large versus its kernel
+- [ ] **F4580** (critical, bug, easy/trivial) `particle/types.rs:1293` — WCSPH pressure force double-counts every fluid-fluid pair
+- [ ] **F4582** (critical, bug, easy/trivial) `particle/types.rs:1339` — Morris viscosity uses dynamic μ in kinematic formula (ρ₀× too viscous)
+- [x] **F4698** (critical, bug, easy/small) `transport_sph/types.rs:852` — DiffusionSph Brookshaw Laplacian sign inverted: anti-diffusive
+- [x] **F4700** (critical, bug, easy/trivial) `transport_sph/types.rs:1215` — ThermalConduction::compute_dtdt anti-diffusive: heat flows cold to hot
+- [x] **F4715** (critical, bug, medium/small) `turbulence_sph.rs:904` — TurbulentViscosityForce is anti-viscous and fakes mass as ρh³
+- [ ] **F4726** (critical, bug, easy/trivial) `viscosity.rs:1218` — delta_sph_diffusion_contribution anti-diffusive; test only checks finiteness
+- [ ] **F4739** (critical, bug, easy/small) `wcsph/functions.rs:1158` — fourtakas_density_diffusion is anti-diffusive; test checks unaffected particles
+- [x] **F4847** (critical, bug, easy/small) `powertrain_advanced.rs:971` — Hybrid battery current sign inverted: motoring charges, regen drains SOC
+- [ ] **F4882** (critical, bug, easy/small) `suspension/types.rs:233` — QuarterCarModel::step: wrong unsprung reaction sign, bogus road input, wrong static deflection
+- [ ] **F5176** (critical, fabrication, easy/small) `scientific_viz.rs:466` — bootstrap_ci circular 'resampling' always yields zero-width CI
+- [ ] **F5204** (critical, fabrication, easy/small) `stress_viz/functions.rs:376` — principal_eigenvectors discards eigen-solve, always returns identity axes
+- [x] **F5318** (critical, bug, easy/small) `engine/mod.rs:936` — Sphere-sphere contact normal inverted: approaching spheres pass through
+- [x] **F5319** (critical, bug, medium/medium) `engine/mod.rs:1007` — WASM narrowphase: sphere-sphere normal reversed; boxes/capsules never collide
+- [x] **F5368** (critical, panic, easy/small) `profiler_bridge.rs:158` — Profiler uses std::time::Instant, which panics on wasm32-unknown-unknown
+- [x] **F5380** (critical, bug, easy/small) `rope_bridge.rs:201` — Rope Verlet 'damping' amplifies velocity by (1+d) each step
+
+### 32.C Per-crate detail
+See the `Audit 2026-10-12` block at the end of each `crates/<crate>/TODO.md` (critical/high/medium listed individually; low-severity items are counted and kept in the external ledger).
+<!-- AUDIT-2026-10-12 END -->

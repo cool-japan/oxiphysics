@@ -13,6 +13,7 @@
 
 use oxiphysics_core::math::Vec3;
 
+use crate::boundary::eliminate_prescribed_dofs;
 use crate::constitutive::LinearElasticMaterial;
 use crate::element::LinearTetrahedron;
 use crate::mesh::TetrahedralMesh;
@@ -142,41 +143,23 @@ pub fn assemble_force_vector(n_nodes: usize, nodal_forces: &[(usize, Vec3)]) -> 
 /// - Row `i` is replaced by an identity row: `K[i, i] = 1`, `K[i, j] = 0` for `j ≠ i`.
 /// - Column `i` is zeroed: `K[j, i] = 0` for `j ≠ i`.
 /// - `f[i] = 0`.
-pub fn apply_dirichlet_bc(k: &mut CsrMatrix, f: &mut [f64], fixed_dofs: &[usize]) {
-    for &dof in fixed_dofs {
-        assert!(
-            dof < k.nrows,
-            "fixed DOF {dof} out of range ({} rows)",
-            k.nrows
-        );
-
-        // Zero row `dof`, set diagonal = 1.
-        let start = k.row_ptr[dof];
-        let end = k.row_ptr[dof + 1];
-        for idx in start..end {
-            if k.col_indices[idx] == dof {
-                k.values[idx] = 1.0;
-            } else {
-                k.values[idx] = 0.0;
-            }
-        }
-
-        // Zero column `dof` in every other row.
-        for row in 0..k.nrows {
-            if row == dof {
-                continue;
-            }
-            let rs = k.row_ptr[row];
-            let re = k.row_ptr[row + 1];
-            for idx in rs..re {
-                if k.col_indices[idx] == dof {
-                    k.values[idx] = 0.0;
-                }
-            }
-        }
-
-        f[dof] = 0.0;
-    }
+///
+/// The system is processed in a single `O(nnz + n_fixed)` sweep (see
+/// [`crate::boundary::apply_dirichlet`] for the shared algorithm).  Listing a
+/// DOF more than once is harmless.
+///
+/// # Errors
+///
+/// Returns [`crate::Error::DofOutOfRange`] if a fixed DOF is `>= k.nrows`, and
+/// [`crate::Error::InvalidInput`] if `k` is not square or `f.len() != k.nrows`.
+/// All DOFs are validated first, so `k` and `f` are untouched on error.
+pub fn apply_dirichlet_bc(
+    k: &mut CsrMatrix,
+    f: &mut [f64],
+    fixed_dofs: &[usize],
+) -> crate::error::Result<()> {
+    let prescribed: Vec<(usize, f64)> = fixed_dofs.iter().map(|&dof| (dof, 0.0)).collect();
+    eliminate_prescribed_dofs(k, f, &prescribed)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -431,8 +414,17 @@ impl<'a> LinearElasticAssembler<'a> {
 
     /// Apply Dirichlet (zero-displacement) boundary conditions to the given
     /// stiffness matrix and load vector in-place.
-    pub fn apply_dirichlet(&self, k: &mut CsrMatrix, f: &mut [f64], fixed_dofs: &[usize]) {
-        apply_dirichlet_bc(k, f, fixed_dofs);
+    ///
+    /// # Errors
+    ///
+    /// See [`apply_dirichlet_bc`].
+    pub fn apply_dirichlet(
+        &self,
+        k: &mut CsrMatrix,
+        f: &mut [f64],
+        fixed_dofs: &[usize],
+    ) -> crate::error::Result<()> {
+        apply_dirichlet_bc(k, f, fixed_dofs)
     }
 }
 
@@ -551,39 +543,22 @@ pub fn build_dof_connectivity_graph(nodes: &[Vec3], elements: &[[usize; 4]]) -> 
 /// - `f[dof] = val`.
 ///
 /// This is the symmetric "penalty-free" approach that preserves matrix symmetry.
-pub fn apply_dirichlet_bc_values(k: &mut CsrMatrix, f: &mut [f64], fixed_dofs: &[(usize, f64)]) {
-    for &(dof, val) in fixed_dofs {
-        assert!(dof < k.nrows, "fixed DOF {dof} out of range");
-
-        // Transfer column contributions to RHS: f[j] -= K[j, dof] * val
-        for (row, f_row) in f.iter_mut().enumerate().take(k.nrows) {
-            if row == dof {
-                continue;
-            }
-            let rs = k.row_ptr[row];
-            let re = k.row_ptr[row + 1];
-            for idx in rs..re {
-                if k.col_indices[idx] == dof {
-                    *f_row -= k.values[idx] * val;
-                    k.values[idx] = 0.0;
-                }
-            }
-        }
-
-        // Zero row `dof` and set diagonal = 1.
-        let start = k.row_ptr[dof];
-        let end = k.row_ptr[dof + 1];
-        for idx in start..end {
-            if k.col_indices[idx] == dof {
-                k.values[idx] = 1.0;
-            } else {
-                k.values[idx] = 0.0;
-            }
-        }
-
-        // Set prescribed value in RHS.
-        f[dof] = val;
-    }
+/// It is a single `O(nnz + n_fixed)` sweep (see [`crate::boundary::apply_dirichlet`]
+/// for the shared algorithm).  The same DOF may be listed several times with the
+/// same value.
+///
+/// # Errors
+///
+/// Returns [`crate::Error::DofOutOfRange`] if a DOF is `>= k.nrows`, and
+/// [`crate::Error::InvalidInput`] if a value is not finite, one DOF is given two
+/// different values, `k` is not square, or `f.len() != k.nrows`.  All input is
+/// validated first, so `k` and `f` are untouched on error.
+pub fn apply_dirichlet_bc_values(
+    k: &mut CsrMatrix,
+    f: &mut [f64],
+    fixed_dofs: &[(usize, f64)],
+) -> crate::error::Result<()> {
+    eliminate_prescribed_dofs(k, f, fixed_dofs)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1006,7 +981,7 @@ mod tests {
         let mut k = CsrMatrix::from_triplets(3, 3, &triplets);
         let mut f = vec![1.0, 2.0, 3.0];
 
-        apply_dirichlet_bc(&mut k, &mut f, &[0]);
+        apply_dirichlet_bc(&mut k, &mut f, &[0]).expect("valid fixed DOFs");
 
         assert!((k.get(0, 0) - 1.0).abs() < 1e-12, "K[0,0] should be 1");
         assert!(k.get(0, 1).abs() < 1e-12, "K[0,1] should be 0");
@@ -1092,7 +1067,7 @@ mod tests {
             .flat_map(|(i, _)| [i * 3, i * 3 + 1, i * 3 + 2])
             .collect();
 
-        apply_dirichlet_bc(&mut k, &mut f, &fixed_dofs);
+        apply_dirichlet_bc(&mut k, &mut f, &fixed_dofs).expect("valid fixed DOFs");
 
         let (u, _iters, res) = conjugate_gradient(&k, &f, 1e-10, 10000);
 
@@ -1304,7 +1279,7 @@ mod tests {
             })
             .collect();
 
-        apply_dirichlet_bc(&mut k, &mut f, &fixed_dofs);
+        apply_dirichlet_bc(&mut k, &mut f, &fixed_dofs).expect("valid fixed DOFs");
 
         // Set prescribed values: only x-displacement follows eps*x, rest zero
         for i in 0..n_nodes {
@@ -1372,7 +1347,7 @@ mod tests {
         let mut f = assemble_force_vector(mesh.n_nodes(), &nodal_forces);
 
         let fixed = cantilever_fixed_dofs(&mesh, 1e-9);
-        apply_dirichlet_bc(&mut k, &mut f, &fixed);
+        apply_dirichlet_bc(&mut k, &mut f, &fixed).expect("valid fixed DOFs");
 
         let solver = StaticSolver::new(50_000, 1e-12);
         let (u, _iters, res) = solver.solve_cg(&k, &f);
@@ -1469,7 +1444,7 @@ mod tests {
         ];
         let mut k = CsrMatrix::from_triplets(3, 3, &triplets);
         let mut f = vec![0.0, 5.0, 5.0];
-        apply_dirichlet_bc_values(&mut k, &mut f, &[(0, 2.0)]);
+        apply_dirichlet_bc_values(&mut k, &mut f, &[(0, 2.0)]).expect("valid DOFs");
         // Row 0 should be identity.
         assert!((k.get(0, 0) - 1.0).abs() < 1e-12);
         assert!(k.get(0, 1).abs() < 1e-12);
@@ -1491,11 +1466,11 @@ mod tests {
         let triplets = vec![(0, 0, 10.0), (0, 1, 2.0), (1, 0, 2.0), (1, 1, 8.0)];
         let mut k1 = CsrMatrix::from_triplets(2, 2, &triplets);
         let mut f1 = vec![3.0, 4.0];
-        apply_dirichlet_bc(&mut k1, &mut f1, &[0]);
+        apply_dirichlet_bc(&mut k1, &mut f1, &[0]).expect("valid DOFs");
 
         let mut k2 = CsrMatrix::from_triplets(2, 2, &triplets);
         let mut f2 = vec![3.0, 4.0];
-        apply_dirichlet_bc_values(&mut k2, &mut f2, &[(0, 0.0)]);
+        apply_dirichlet_bc_values(&mut k2, &mut f2, &[(0, 0.0)]).expect("valid DOFs");
 
         for i in 0..2 {
             for j in 0..2 {
@@ -1730,7 +1705,7 @@ mod tests {
             .filter(|&i| mesh.nodes[i].z.abs() < 1e-9)
             .flat_map(|i| [i * 3, i * 3 + 1, i * 3 + 2])
             .collect();
-        apply_dirichlet_bc(&mut k, &mut f, &fixed);
+        apply_dirichlet_bc(&mut k, &mut f, &fixed).expect("valid fixed DOFs");
 
         let solver = StaticSolver::new(10_000, 1e-10);
         let (u, _iters, res) = solver.solve_cg(&k, &f);

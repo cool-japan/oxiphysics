@@ -155,7 +155,7 @@ pub fn eye(n: usize) -> Vec<Vec<f64>> {
 /// Returns `(d, e, q)` where:
 /// - `d` is the diagonal of T (length n)
 /// - `e` is the subdiagonal of T (length n, `e[0]` unused)
-/// - `q` is the accumulated orthogonal matrix (n×n) stored as q[row][col]
+/// - `q` is the accumulated orthogonal matrix (n×n) stored as `q[row][col]`
 fn householder_tridiag(a: &[Vec<f64>]) -> (Vec<f64>, Vec<f64>, Vec<Vec<f64>>) {
     let n = a.len();
     let mut d = vec![0.0_f64; n];
@@ -237,7 +237,7 @@ fn householder_tridiag(a: &[Vec<f64>]) -> (Vec<f64>, Vec<f64>, Vec<Vec<f64>>) {
 /// Diagonalizes a symmetric tridiagonal matrix in-place using the implicit QL
 /// algorithm with Wilkinson shift (tql2 algorithm, Numerical Recipes §11.3).
 ///
-/// On entry `d` contains the diagonal and `e` the subdiagonal (e[0] unused).
+/// On entry `d` contains the diagonal and `e` the subdiagonal (`e[0]` unused).
 /// On exit `d` holds eigenvalues (sorted ascending) and `q` the eigenvectors.
 /// Maximum 30 iterations per eigenvalue; continues best-effort if not converged.
 fn implicit_ql(d: &mut [f64], e: &mut [f64], q: &mut [Vec<f64>]) {
@@ -331,11 +331,89 @@ fn implicit_ql(d: &mut [f64], e: &mut [f64], q: &mut [Vec<f64>]) {
 ///
 /// Algorithm: Householder tridiagonalisation followed by implicit-shift QL.
 pub fn symmetric_eigen_n(a: &[Vec<f64>]) -> (Vec<f64>, Vec<Vec<f64>>) {
+    if a.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
     let (mut d, mut e, mut q) = householder_tridiag(a);
     implicit_ql(&mut d, &mut e, &mut q);
     let n = d.len();
     let eigvecs: Vec<Vec<f64>> = (0..n).map(|j| (0..n).map(|i| q[i][j]).collect()).collect();
     (d, eigvecs)
+}
+/// Runs the implicit QL iteration on the symmetric tridiagonal matrix with the
+/// given diagonal and off-diagonal, rotating the rows of `rows` along the way.
+///
+/// `off_diag[i]` couples the indices `i` and `i + 1`; missing entries count as
+/// zero and surplus entries are ignored.  On return the eigenvalues are in
+/// ascending order and every row of `rows` has been multiplied from the right by
+/// the same orthogonal matrix that diagonalises the tridiagonal matrix, with its
+/// columns ordered like the eigenvalues.
+fn tridiagonal_ql_rows(diag: &[f64], off_diag: &[f64], rows: &mut [Vec<f64>]) -> Vec<f64> {
+    let n = diag.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut d = diag.to_vec();
+    // `implicit_ql` expects the sub-diagonal in `e[1..n]` (`e[0]` is unused).
+    let mut e = vec![0.0_f64; n];
+    for (slot, &value) in e.iter_mut().skip(1).zip(off_diag.iter()) {
+        *slot = value;
+    }
+    implicit_ql(&mut d, &mut e, rows);
+    d
+}
+/// Eigenvalues of the real symmetric tridiagonal matrix with diagonal `diag` and
+/// off-diagonal `off_diag`, in ascending order.
+///
+/// `off_diag[i]` is the entry coupling rows `i` and `i + 1`; it needs
+/// `diag.len() - 1` entries.  Missing entries count as zero and surplus entries
+/// are ignored.  Only the eigenvalues are accumulated, so the cost is `O(n²)`
+/// (implicit QL with Wilkinson shifts).
+pub fn symmetric_tridiagonal_eigenvalues(diag: &[f64], off_diag: &[f64]) -> Vec<f64> {
+    tridiagonal_ql_rows(diag, off_diag, &mut [])
+}
+/// Eigenvalues and orthonormal eigenvectors of the real symmetric tridiagonal
+/// matrix with diagonal `diag` and off-diagonal `off_diag`.
+///
+/// The conventions of [`symmetric_eigen_n`] apply: eigenvalues ascend and
+/// `eigenvectors[i]` is the unit eigenvector belonging to `eigenvalues[i]`.  See
+/// [`symmetric_tridiagonal_eigenvalues`] for the meaning of `off_diag`.
+pub fn symmetric_tridiagonal_eigen(diag: &[f64], off_diag: &[f64]) -> (Vec<f64>, Vec<Vec<f64>>) {
+    let n = diag.len();
+    let mut q: Vec<Vec<f64>> = (0..n)
+        .map(|i| {
+            let mut row = vec![0.0_f64; n];
+            row[i] = 1.0;
+            row
+        })
+        .collect();
+    let values = tridiagonal_ql_rows(diag, off_diag, &mut q);
+    let vectors: Vec<Vec<f64>> = (0..n).map(|j| (0..n).map(|i| q[i][j]).collect()).collect();
+    (values, vectors)
+}
+/// Eigenvalues of a real symmetric tridiagonal matrix together with the **last
+/// component** of every unit eigenvector, in `O(n²)`.
+///
+/// Returns `(eigenvalues, last_components)` with ascending eigenvalues and
+/// `last_components[i]` the last entry of the eigenvector of `eigenvalues[i]`.
+/// For a Lanczos factorisation `A Vₘ = Vₘ Tₘ + βₘ qₘ₊₁ eₘᵀ` the residual of the
+/// Ritz pair `(θᵢ, Vₘ yᵢ)` is exactly `|βₘ|·|yᵢ[m-1]|`, so this is all that is needed
+/// to monitor convergence without forming the eigenvectors.  See
+/// [`symmetric_tridiagonal_eigenvalues`] for the meaning of `off_diag`.
+pub fn symmetric_tridiagonal_eigen_last_components(
+    diag: &[f64],
+    off_diag: &[f64],
+) -> (Vec<f64>, Vec<f64>) {
+    let n = diag.len();
+    if n == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    let mut last_row = vec![0.0_f64; n];
+    last_row[n - 1] = 1.0;
+    let mut rows = vec![last_row];
+    let values = tridiagonal_ql_rows(diag, off_diag, &mut rows);
+    let last_components = rows.pop().unwrap_or_default();
+    (values, last_components)
 }
 /// Invert a lower-triangular matrix by forward substitution.
 ///

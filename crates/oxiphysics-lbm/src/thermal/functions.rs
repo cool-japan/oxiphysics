@@ -68,17 +68,23 @@ pub const D3Q7_WEIGHTS: [f64; 7] = [
     1.0 / 8.0,
     1.0 / 8.0,
 ];
+/// Squared lattice speed of sound of the D3Q7 thermal lattice,
+/// cs² = Σ_i w_i c_ix² = 2 · (1/8) = 1/4.
+pub const D3Q7_CS2: f64 = 1.0 / 4.0;
 /// Equilibrium distribution for D3Q7 thermal lattice:
 ///
-/// g_eq_i = w_i * T * (1 + (c_i · u) / (2 * cs2_t))
+/// g_eq_i = w_i * T * (1 + (c_i · u) / cs2_t)
 ///
 /// where cs2_t = 1/4 for D3Q7.
+///
+/// The zeroth moment is Σ_i g_eq_i = T and the first moment is
+/// Σ_i c_i g_eq_i = T · u, which is what the advection-diffusion equation
+/// ∂T/∂t + ∇·(T u) = α ∇²T requires.
 pub fn d3q7_thermal_equilibrium(t: f64, u: [f64; 3], i: usize) -> f64 {
-    pub(super) const CS2_T: f64 = 1.0 / 4.0;
     let w = D3Q7_WEIGHTS[i];
     let c = D3Q7_VELOCITIES[i];
     let cu = c[0] as f64 * u[0] + c[1] as f64 * u[1] + c[2] as f64 * u[2];
-    w * t * (1.0 + cu / (2.0 * CS2_T))
+    w * t * (1.0 + cu / D3Q7_CS2)
 }
 /// BGK collision step for a single D3Q7 node.
 ///
@@ -98,8 +104,7 @@ pub fn d3q7_temperature(g: &[f64; 7]) -> f64 {
 /// Thermal diffusivity from D3Q7 relaxation time:
 /// α = cs2_t * (tau_t - 0.5)
 pub fn d3q7_thermal_diffusivity(tau_t: f64) -> f64 {
-    pub(super) const CS2_T: f64 = 1.0 / 4.0;
-    CS2_T * (tau_t - 0.5)
+    D3Q7_CS2 * (tau_t - 0.5)
 }
 /// Air dynamic viscosity (Pa·s) using Sutherland's law:
 ///
@@ -1606,5 +1611,140 @@ mod tests_thermal_extended {
     #[test]
     fn test_is_rb_convective_above_critical_true() {
         assert!(is_rb_convective(2000.0), "Ra=2000 > 1708 → convection");
+    }
+}
+#[cfg(test)]
+mod tests_d3q7_advection {
+    use super::*;
+
+    /// One collide-and-stream step of a periodic line of D3Q7 nodes along x.
+    ///
+    /// The line has a single node in y and z, so the transverse populations
+    /// stream back onto the same node (periodic wrap of a unit-size axis).
+    fn line_step(g: &mut [[f64; 7]], u: [f64; 3], tau_t: f64) {
+        let nx = g.len();
+        let mut next = vec![[0.0_f64; 7]; nx];
+        for (x, node) in g.iter().enumerate() {
+            let t = d3q7_temperature(node);
+            let post = d3q7_bgk_collision(node, t, u, tau_t);
+            for (i, &g_post) in post.iter().enumerate() {
+                let cx = D3Q7_VELOCITIES[i][0];
+                let dest = (x as i64 + cx as i64).rem_euclid(nx as i64) as usize;
+                next[dest][i] = g_post;
+            }
+        }
+        g.copy_from_slice(&next);
+    }
+
+    fn gaussian_line(nx: usize, centre: f64, sigma: f64, u: [f64; 3]) -> Vec<[f64; 7]> {
+        (0..nx)
+            .map(|x| {
+                let d = x as f64 - centre;
+                let t = (-d * d / (2.0 * sigma * sigma)).exp();
+                std::array::from_fn(|i| d3q7_thermal_equilibrium(t, u, i))
+            })
+            .collect()
+    }
+
+    fn moments(g: &[[f64; 7]]) -> (f64, f64, f64) {
+        let mut m0 = 0.0;
+        let mut m1 = 0.0;
+        let mut m2 = 0.0;
+        for (x, node) in g.iter().enumerate() {
+            let t = d3q7_temperature(node);
+            m0 += t;
+            m1 += t * x as f64;
+            m2 += t * (x * x) as f64;
+        }
+        let mean = m1 / m0;
+        (m0, mean, m2 / m0 - mean * mean)
+    }
+
+    #[test]
+    fn d3q7_equilibrium_moments_match_advection_diffusion() {
+        let t = 1.7;
+        let u = [0.05, -0.03, 0.02];
+        let zeroth: f64 = (0..7).map(|i| d3q7_thermal_equilibrium(t, u, i)).sum();
+        assert!(
+            (zeroth - t).abs() < 1e-14,
+            "sum g_eq = {zeroth}, expected {t}"
+        );
+        for axis in 0..3 {
+            let first: f64 = (0..7)
+                .map(|i| D3Q7_VELOCITIES[i][axis] as f64 * d3q7_thermal_equilibrium(t, u, i))
+                .sum();
+            assert!(
+                (first - t * u[axis]).abs() < 1e-14,
+                "axis {axis}: sum c g_eq = {first}, expected {}",
+                t * u[axis]
+            );
+        }
+    }
+
+    #[test]
+    fn d3q7_second_moment_is_cs2_times_temperature() {
+        // Σ c_a c_b g_eq = cs² T δ_ab (no O(u²) term for the linear equilibrium).
+        let t = 0.9;
+        let u = [0.04, 0.01, -0.02];
+        for a in 0..3 {
+            for b in 0..3 {
+                let second: f64 = (0..7)
+                    .map(|i| {
+                        let c = D3Q7_VELOCITIES[i];
+                        c[a] as f64 * c[b] as f64 * d3q7_thermal_equilibrium(t, u, i)
+                    })
+                    .sum();
+                let expected = if a == b { D3Q7_CS2 * t } else { 0.0 };
+                assert!(
+                    (second - expected).abs() < 1e-14,
+                    "({a},{b}): {second} vs {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn d3q7_gaussian_pulse_advects_at_the_imposed_velocity() {
+        let nx = 200;
+        let u = [0.05, 0.0, 0.0];
+        let tau_t = 0.8;
+        let mut g = gaussian_line(nx, 60.0, 5.0, u);
+        let (m0_start, mean_start, _) = moments(&g);
+        for _ in 0..200 {
+            line_step(&mut g, u, tau_t);
+        }
+        let (m0_end, mean_end, _) = moments(&g);
+        let shift = mean_end - mean_start;
+        assert!(
+            (shift - 10.0).abs() < 0.05,
+            "centroid moved {shift} cells, expected u*t = 10.0 (half-velocity bug gives 5.0)"
+        );
+        assert!(
+            (m0_end - m0_start).abs() < 1e-10 * m0_start,
+            "thermal energy not conserved: {m0_start} -> {m0_end}"
+        );
+    }
+
+    #[test]
+    fn d3q7_pure_diffusion_variance_grows_as_two_alpha_t() {
+        let nx = 240;
+        let tau_t = 0.9;
+        let u = [0.0; 3];
+        let alpha = d3q7_thermal_diffusivity(tau_t);
+        let mut g = gaussian_line(nx, 120.0, 6.0, u);
+        for _ in 0..40 {
+            line_step(&mut g, u, tau_t);
+        }
+        let (_, _, var_a) = moments(&g);
+        let steps = 300;
+        for _ in 0..steps {
+            line_step(&mut g, u, tau_t);
+        }
+        let (_, _, var_b) = moments(&g);
+        let measured = (var_b - var_a) / (2.0 * steps as f64);
+        assert!(
+            (measured - alpha).abs() < 0.01 * alpha,
+            "measured diffusivity {measured}, expected cs2*(tau-1/2) = {alpha}"
+        );
     }
 }

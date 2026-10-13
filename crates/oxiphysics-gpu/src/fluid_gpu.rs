@@ -8,6 +8,8 @@
 //! in-memory `Vec`f64` buffers so that the logic can be unit-tested without
 //! a real GPU device.
 
+use crate::lbm_gpu::{D3Q19_EX, D3Q19_EY, D3Q19_EZ, D3Q19_OPP};
+
 // ── FluidGpuBuffer ────────────────────────────────────────────────────────────
 
 /// A double-buffered GPU field for ping-pong updates.
@@ -355,7 +357,8 @@ fn trilinear_sample(
 /// D3Q19 LBM velocity directions (19 discrete velocities).
 pub const D3Q19_Q: usize = 19;
 
-/// D3Q19 lattice weights.
+/// D3Q19 lattice weights, in the velocity order of
+/// [`crate::lbm_gpu::D3Q19_EX`] / `EY` / `EZ`.
 pub const D3Q19_WEIGHTS: [f64; D3Q19_Q] = [
     1.0 / 3.0, // 0: rest
     1.0 / 18.0,
@@ -383,9 +386,10 @@ pub const D3Q19_WEIGHTS: [f64; D3Q19_Q] = [
 pub struct LBMCollisionKernelSpec {
     /// Relaxation parameter τ (tau).  Viscosity ν = cs² (τ − 0.5) dt.
     pub tau: f64,
-    /// Sound speed squared (lattice units).
+    /// Sound speed squared (lattice units, `1/3` for D3Q19).
     pub cs2: f64,
-    /// Number of discrete velocity directions.
+    /// Number of discrete velocity directions ([`D3Q19_Q`] for the D3Q19
+    /// kernels of this module).
     pub q: usize,
 }
 
@@ -394,7 +398,8 @@ pub struct LBMCollisionKernelSpec {
 pub struct LBMStreamingSpec {
     /// Grid dimensions `[nx, ny, nz]`.
     pub dims: [usize; 3],
-    /// Whether to apply periodic boundary conditions.
+    /// Whether to apply periodic boundary conditions.  When `false`, the
+    /// domain faces are half-way bounce-back walls.
     pub periodic: bool,
 }
 
@@ -420,10 +425,45 @@ pub enum LBMBoundaryKind {
     ZouHeOutlet,
 }
 
+/// Density `ρ = Σ f_i` and velocity `u = Σ f_i e_i / ρ` of one cell's D3Q19
+/// populations (`u = 0` for a vacuum cell with `ρ <= 1e-12`).
+fn d3q19_moments(f: &[f64]) -> (f64, [f64; 3]) {
+    let mut rho = 0.0_f64;
+    let mut momentum = [0.0_f64; 3];
+    for (i, &fi) in f.iter().enumerate().take(D3Q19_Q) {
+        rho += fi;
+        momentum[0] += fi * f64::from(D3Q19_EX[i]);
+        momentum[1] += fi * f64::from(D3Q19_EY[i]);
+        momentum[2] += fi * f64::from(D3Q19_EZ[i]);
+    }
+    if rho > 1e-12 {
+        (
+            rho,
+            [momentum[0] / rho, momentum[1] / rho, momentum[2] / rho],
+        )
+    } else {
+        (rho, [0.0; 3])
+    }
+}
+
+/// Second-order equilibrium of direction `i`:
+/// `w_i ρ [1 + (e_i·u)/cs² + (e_i·u)²/(2 cs⁴) − |u|²/(2 cs²)]`
+/// (`inv_cs2 = 1/cs²`).
+fn d3q19_equilibrium(i: usize, rho: f64, u: [f64; 3], inv_cs2: f64) -> f64 {
+    let eu = f64::from(D3Q19_EX[i]) * u[0]
+        + f64::from(D3Q19_EY[i]) * u[1]
+        + f64::from(D3Q19_EZ[i]) * u[2];
+    let u_sq = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
+    let eu_c = eu * inv_cs2;
+    D3Q19_WEIGHTS[i] * rho * (1.0 + eu_c + 0.5 * eu_c * eu_c - 0.5 * u_sq * inv_cs2)
+}
+
 /// GPU kernel manager for a Lattice Boltzmann Method simulation.
 ///
 /// Stores distribution functions for all cells in a ping-pong buffer and
-/// exposes collision, streaming, and boundary dispatch methods.
+/// exposes collision, streaming, and boundary dispatch methods that run the
+/// D3Q19 BGK algorithm on the CPU.  One time step is
+/// `dispatch_collision` → `dispatch_streaming` → `dispatch_boundary`.
 #[derive(Debug, Clone)]
 pub struct LBMGpuKernels {
     /// Double-buffered distribution functions: `Q` components per cell.
@@ -474,50 +514,90 @@ impl LBMGpuKernels {
         }
     }
 
-    /// Execute one BGK collision step (CPU mock).
+    /// Boolean mask over the grid cells: `true` for every distinct, in-range
+    /// entry of `boundary.solid_cells`.
+    fn solid_mask(&self) -> Vec<bool> {
+        let n_cells = self.f.width * self.f.height * self.f.depth;
+        let mut mask = vec![false; n_cells];
+        for &cell in &self.boundary.solid_cells {
+            if let Some(flag) = mask.get_mut(cell) {
+                *flag = true;
+            }
+        }
+        mask
+    }
+
+    /// Execute one BGK collision step (CPU mock of the collision kernel).
     ///
-    /// Updates each cell's distribution functions toward local equilibrium.
+    /// For every fluid cell the density `ρ = Σ f_i` and velocity
+    /// `u = Σ f_i e_i / ρ` are computed from the D3Q19 populations, and each
+    /// population relaxes towards
+    /// `f_i^eq = w_i ρ [1 + (e_i·u)/cs² + (e_i·u)²/(2 cs⁴) − |u|²/(2 cs²)]`
+    /// as `f_i ← f_i − (f_i − f_i^eq)/τ`.  Mass and momentum are conserved
+    /// exactly.  Solid cells are skipped so that the bounce-back of
+    /// [`dispatch_boundary`](Self::dispatch_boundary) reverses the arrived
+    /// populations unchanged.
     pub fn dispatch_collision(&mut self) {
-        let nx = self.f.width;
-        let ny = self.f.height;
-        let nz = self.f.depth;
         let tau = self.collision.tau;
-        let cs2 = self.collision.cs2;
-        let q = self.collision.q;
+        let inv_cs2 = 1.0 / self.collision.cs2;
+        let solid = self.solid_mask();
+
+        for (cell, &is_solid) in solid.iter().enumerate() {
+            let base = cell * D3Q19_Q;
+            let src = &self.f.front[base..base + D3Q19_Q];
+            let dst = &mut self.f.back[base..base + D3Q19_Q];
+            if is_solid {
+                dst.copy_from_slice(src);
+                continue;
+            }
+            let (rho, u) = d3q19_moments(src);
+            for (i, (out, &fi)) in dst.iter_mut().zip(src.iter()).enumerate() {
+                let feq = d3q19_equilibrium(i, rho, u, inv_cs2);
+                *out = fi - (fi - feq) / tau;
+            }
+        }
+        self.f.swap();
+    }
+
+    /// Execute one streaming step (CPU mock of the pull-streaming kernel).
+    ///
+    /// Every population moves one lattice link along its velocity:
+    /// `f_i(x, t+1) = f_i(x − e_i, t)`.  With `streaming.periodic` the source
+    /// cell wraps around the domain; otherwise a population that would have
+    /// to come from outside the domain is the one that left through the wall
+    /// and is reflected back (half-way bounce-back), so mass is conserved
+    /// exactly in both cases.
+    pub fn dispatch_streaming(&mut self) {
+        let (nx, ny, nz) = (self.f.width, self.f.height, self.f.depth);
+        let periodic = self.streaming.periodic;
+        let dims = [nx as isize, ny as isize, nz as isize];
+        let cell_base = |x: usize, y: usize, z: usize| ((z * ny + y) * nx + x) * D3Q19_Q;
 
         for z in 0..nz {
             for y in 0..ny {
                 for x in 0..nx {
-                    // compute macroscopic ρ and u
-                    let mut rho = 0.0_f64;
-                    let mut ux = 0.0_f64;
-                    let mut uy = 0.0_f64;
-                    let mut uz = 0.0_f64;
-                    for i in 0..q {
-                        let fi = self.f.read(x, y, z, i);
-                        rho += fi;
-                        // simplified: use direction index as proxy velocity
-                        ux += fi * (i as f64 / q as f64 - 0.5);
-                        uy += fi * ((i * 7 % q) as f64 / q as f64 - 0.5);
-                        uz += fi * ((i * 13 % q) as f64 / q as f64 - 0.5);
-                    }
-                    if rho > 1e-12 {
-                        ux /= rho;
-                        uy /= rho;
-                        uz /= rho;
-                    }
-
-                    // BGK relaxation toward equilibrium
-                    for (i, &w) in D3Q19_WEIGHTS.iter().enumerate().take(q) {
-                        let u_sq = ux * ux + uy * uy + uz * uz;
-                        let feq = rho
-                            * w
-                            * (1.0
-                                + (ux + uy + uz) / cs2
-                                + (u_sq / (2.0 * cs2)) * ((ux + uy + uz) / cs2)
-                                - u_sq / (2.0 * cs2));
-                        let fi = self.f.read(x, y, z, i);
-                        self.f.write(x, y, z, i, fi - (fi - feq) / tau);
+                    let base = cell_base(x, y, z);
+                    for i in 0..D3Q19_Q {
+                        let mut src = [
+                            x as isize - D3Q19_EX[i] as isize,
+                            y as isize - D3Q19_EY[i] as isize,
+                            z as isize - D3Q19_EZ[i] as isize,
+                        ];
+                        let mut inside = true;
+                        for (s, &n) in src.iter_mut().zip(dims.iter()) {
+                            if periodic {
+                                *s = s.rem_euclid(n);
+                            } else if *s < 0 || *s >= n {
+                                inside = false;
+                            }
+                        }
+                        self.f.back[base + i] = if inside {
+                            let src_base =
+                                cell_base(src[0] as usize, src[1] as usize, src[2] as usize);
+                            self.f.front[src_base + i]
+                        } else {
+                            self.f.front[base + D3Q19_OPP[i]]
+                        };
                     }
                 }
             }
@@ -525,46 +605,47 @@ impl LBMGpuKernels {
         self.f.swap();
     }
 
-    /// Execute one streaming step (CPU mock).
+    /// Apply the no-slip full-way bounce-back to every cell of
+    /// `boundary.solid_cells`: the populations that streamed into a solid cell
+    /// are reversed (`f_i ← f_opp(i)`), so the next streaming step sends each
+    /// of them back where it came from.
     ///
-    /// Propagates distribution functions to neighbouring cells.
-    pub fn dispatch_streaming(&mut self) {
-        let nx = self.f.width;
-        let ny = self.f.height;
-        let nz = self.f.depth;
-        self.f.copy_front_to_back();
-        // simplified: just copy (full streaming would shift along directions)
-        for _z in 0..nz {
-            for _y in 0..ny {
-                for _x in 0..nx {
-                    // mock streaming: no-op copy already done above
-                }
-            }
-        }
-        self.f.swap();
-    }
-
-    /// Apply bounce-back boundary conditions on solid cells.
+    /// Each distinct solid cell is reflected exactly once (a duplicated index
+    /// does not undo itself) and out-of-range indices are ignored.  The pass is
+    /// the same for every [`LBMBoundaryKind`]: the inlet, outlet and
+    /// moving-wall variants carry no velocity or density data and are treated
+    /// as stationary no-slip walls here.
     pub fn dispatch_boundary(&mut self) {
-        for &cell_idx in &self.boundary.solid_cells.clone() {
-            let q = self.collision.q;
-            for c in 0..q {
-                let i = cell_idx * q + c;
-                if i < self.f.front.len() {
-                    // bounce-back: reverse distribution
-                    let opp = q - 1 - c;
-                    let opp_i = cell_idx * q + opp;
-                    if opp_i < self.f.front.len() {
-                        self.f.front.swap(i, opp_i);
-                    }
-                }
+        let solid = self.solid_mask();
+        let mut reflected = [0.0_f64; D3Q19_Q];
+        for (cell, &is_solid) in solid.iter().enumerate() {
+            if !is_solid {
+                continue;
             }
+            let base = cell * D3Q19_Q;
+            let populations = &mut self.f.front[base..base + D3Q19_Q];
+            for (i, r) in reflected.iter_mut().enumerate() {
+                *r = populations[D3Q19_OPP[i]];
+            }
+            populations.copy_from_slice(&reflected);
         }
     }
 
     /// Compute macroscopic density at cell `(x, y, z)`.
     pub fn density_at(&self, x: usize, y: usize, z: usize) -> f64 {
         (0..self.collision.q).map(|i| self.f.read(x, y, z, i)).sum()
+    }
+
+    /// Momentum `Σ f_i e_i` at cell `(x, y, z)`.
+    pub fn momentum_at(&self, x: usize, y: usize, z: usize) -> [f64; 3] {
+        let mut momentum = [0.0_f64; 3];
+        for i in 0..self.collision.q.min(D3Q19_Q) {
+            let fi = self.f.read(x, y, z, i);
+            momentum[0] += fi * f64::from(D3Q19_EX[i]);
+            momentum[1] += fi * f64::from(D3Q19_EY[i]);
+            momentum[2] += fi * f64::from(D3Q19_EZ[i]);
+        }
+        momentum
     }
 }
 
@@ -1212,64 +1293,6 @@ mod tests {
         assert!(max_omega > 0.0);
     }
 
-    // ── LBMGpuKernels tests ───────────────────────────────────────────────
-
-    #[test]
-    fn lbm_new_equilibrium_weights() {
-        let lbm = LBMGpuKernels::new(4, 4, 4, 1.0, true, vec![]);
-        // sum of weights over all Q directions at one cell should equal 1
-        let rho = lbm.density_at(0, 0, 0);
-        assert!((rho - 1.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn lbm_collision_preserves_mass() {
-        let mut lbm = LBMGpuKernels::new(4, 4, 1, 1.0, false, vec![]);
-        let rho_before = lbm.density_at(2, 2, 0);
-        lbm.dispatch_collision();
-        let rho_after = lbm.density_at(2, 2, 0);
-        // Mock BGK uses a simplified proxy-velocity formula; the total density
-        // of the collided state is finite (no NaN/Inf produced).
-        assert!(
-            rho_before.is_finite(),
-            "rho_before not finite: {rho_before}"
-        );
-        assert!(rho_after.is_finite(), "rho_after not finite: {rho_after}");
-    }
-
-    #[test]
-    fn lbm_streaming_no_panic() {
-        let mut lbm = LBMGpuKernels::new(4, 4, 4, 1.0, true, vec![]);
-        lbm.dispatch_streaming();
-    }
-
-    #[test]
-    fn lbm_boundary_no_panic() {
-        let mut lbm = LBMGpuKernels::new(4, 4, 4, 1.0, false, vec![0, 5, 10]);
-        lbm.dispatch_boundary();
-    }
-
-    #[test]
-    fn lbm_density_at_single_cell() {
-        let lbm = LBMGpuKernels::new(2, 2, 1, 1.0, false, vec![]);
-        let rho = lbm.density_at(0, 0, 0);
-        assert!(rho > 0.0);
-    }
-
-    #[test]
-    fn lbm_boundary_kind_eq() {
-        assert_eq!(LBMBoundaryKind::BounceBack, LBMBoundaryKind::BounceBack);
-        assert_ne!(LBMBoundaryKind::BounceBack, LBMBoundaryKind::MovingWall);
-    }
-
-    #[test]
-    fn lbm_full_step_no_panic() {
-        let mut lbm = LBMGpuKernels::new(4, 4, 4, 1.0, true, vec![]);
-        lbm.dispatch_collision();
-        lbm.dispatch_streaming();
-        lbm.dispatch_boundary();
-    }
-
     // ── SPHGpuKernels tests ───────────────────────────────────────────────
 
     fn two_particle_sph() -> SPHGpuKernels {
@@ -1496,3 +1519,6 @@ mod tests {
         assert_eq!(D3Q19_Q, 19);
     }
 }
+
+#[cfg(test)]
+mod lbm_tests;

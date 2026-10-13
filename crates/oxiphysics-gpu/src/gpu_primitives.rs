@@ -9,6 +9,18 @@
 //! is present) and fall back to the CPU reference implementation otherwise.
 //! The public signatures never change between feature configurations.
 //!
+//! One GPU dispatch spans at most 65 535 workgroups of 256 elements, so inputs
+//! longer than 16 776 960 elements (and histograms with more than 256 bins) are
+//! computed by the CPU reference implementation instead.
+//!
+//! All entry points of this module and of [`crate::gpu_radix`] share one
+//! process-wide backend that is created on first use: the wgpu instance,
+//! adapter and device and every compiled pipeline are reused by later calls
+//! instead of being rebuilt each time, and a host without a GPU is probed only
+//! once.  Every call releases the scratch buffers it allocated before it
+//! returns, so the long-lived backend does not accumulate buffers.  Calls from
+//! several threads are serialised on the backend.
+//!
 //! The CPU implementations in [`crate::gpu_reduction`] and
 //! [`crate::grid_reduce`] act as the parity oracles for the GPU kernels.
 
@@ -18,8 +30,8 @@
 pub fn exclusive_scan_u32(data: &[u32]) -> Vec<u32> {
     #[cfg(feature = "wgpu-backend")]
     {
-        if let Ok(mut backend) = crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
-            && let Ok(result) = gpu::exclusive_scan_u32(&mut backend, data)
+        if data.len() >= 2
+            && let Some(result) = shared::run(|gpu| gpu::exclusive_scan_u32(gpu, data))
         {
             return result;
         }
@@ -31,8 +43,8 @@ pub fn exclusive_scan_u32(data: &[u32]) -> Vec<u32> {
 pub fn reduce_sum_f32(data: &[f32]) -> f32 {
     #[cfg(feature = "wgpu-backend")]
     {
-        if let Ok(mut backend) = crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
-            && let Ok(result) = gpu::reduce_sum_f32(&mut backend, data)
+        if !data.is_empty()
+            && let Some(result) = shared::run(|gpu| gpu::reduce_sum_f32(gpu, data))
         {
             return result;
         }
@@ -44,8 +56,8 @@ pub fn reduce_sum_f32(data: &[f32]) -> f32 {
 pub fn reduce_max_f32(data: &[f32]) -> f32 {
     #[cfg(feature = "wgpu-backend")]
     {
-        if let Ok(mut backend) = crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
-            && let Ok(result) = gpu::reduce_max_f32(&mut backend, data)
+        if !data.is_empty()
+            && let Some(result) = shared::run(|gpu| gpu::reduce_max_f32(gpu, data))
         {
             return result;
         }
@@ -62,8 +74,8 @@ pub fn compact_u32(values: &[u32], keep: &[u32]) -> Vec<u32> {
     }
     #[cfg(feature = "wgpu-backend")]
     {
-        if let Ok(mut backend) = crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
-            && let Ok(result) = gpu::compact_u32(&mut backend, values, keep)
+        if !values.is_empty()
+            && let Some(result) = shared::run(|gpu| gpu::compact_u32(gpu, values, keep))
         {
             return result;
         }
@@ -72,11 +84,16 @@ pub fn compact_u32(values: &[u32], keep: &[u32]) -> Vec<u32> {
 }
 
 /// Histogram over `u32`: value `v` increments bin `min(v, num_bins - 1)`.
+///
+/// The GPU kernel supports up to 256 bins; a histogram with more bins is
+/// computed on the CPU.
 pub fn histogram_u32(data: &[u32], num_bins: usize) -> Vec<u32> {
     #[cfg(feature = "wgpu-backend")]
     {
-        if let Ok(mut backend) = crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
-            && let Ok(result) = gpu::histogram_u32(&mut backend, data, num_bins)
+        // The histogram kernel keeps its bins in 256 workgroup-local counters.
+        if !data.is_empty()
+            && (1..=256).contains(&num_bins)
+            && let Some(result) = shared::run(|gpu| gpu::histogram_u32(gpu, data, num_bins))
         {
             return result;
         }
@@ -86,8 +103,9 @@ pub fn histogram_u32(data: &[u32], num_bins: usize) -> Vec<u32> {
 
 // ── CPU reference (parity oracle) ─────────────────────────────────────────────
 
-mod cpu {
-    pub(super) fn exclusive_scan_u32(data: &[u32]) -> Vec<u32> {
+pub(crate) mod cpu {
+    /// Wrapping exclusive prefix sum; also the host-side scan of the radix sort.
+    pub(crate) fn exclusive_scan_u32(data: &[u32]) -> Vec<u32> {
         let mut out = Vec::with_capacity(data.len());
         let mut acc: u32 = 0;
         for &v in data {
@@ -132,10 +150,198 @@ mod cpu {
     }
 }
 
+// ── Shared backend (real wgpu) ────────────────────────────────────────────────
+
+/// The process-wide wgpu backend and the per-call scratch buffers used by the public
+/// primitives of this module and of [`crate::gpu_radix`].
+///
+/// Creating a wgpu instance, adapter and device and compiling the WGSL pipelines is
+/// orders of magnitude more expensive than the work of a primitive on a few thousand
+/// elements, so the backend is created once, on first use, and kept for the life of
+/// the process.  The pipeline cache of the backend then makes every later call a plain
+/// upload / dispatch / readback.  A missing adapter is remembered as well: a host
+/// without a GPU probes for one exactly once.
+///
+/// Calls serialise on the backend's mutex.  A closure given to [`shared::run`] holds
+/// that mutex, so it must never call a public primitive itself (that would deadlock);
+/// nested GPU work has to go through the [`shared::Scratch`] it receives.
+#[cfg(feature = "wgpu-backend")]
+pub(crate) mod shared {
+    use crate::compute::wgpu_backend::real::WgpuBackendReal;
+    use crate::compute::wgpu_backend::{WgpuBufferHandle, WgpuInitError};
+    use std::ops::Deref;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Mutex, OnceLock, PoisonError};
+
+    /// The one backend of the process; `None` records that no usable adapter exists.
+    static BACKEND: OnceLock<Option<Mutex<WgpuBackendReal>>> = OnceLock::new();
+
+    /// How many times the backend creation ran (at most once).
+    static INIT_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+
+    /// How many primitive calls completed on the GPU.
+    static GPU_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+    /// The backend shared by all GPU primitives, created on first use.
+    ///
+    /// Returns `None` when no GPU adapter or device is available; that outcome is
+    /// cached, so callers can ask on every call without probing the host again.
+    pub(crate) fn shared_backend() -> Option<&'static Mutex<WgpuBackendReal>> {
+        BACKEND
+            .get_or_init(|| {
+                INIT_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+                WgpuBackendReal::try_new().ok().map(Mutex::new)
+            })
+            .as_ref()
+    }
+
+    /// Run `body` on the shared backend inside a [`Scratch`] scope.
+    ///
+    /// Every scratch buffer `body` allocates is destroyed when it returns — also when
+    /// it fails or panics — so the long-lived backend does not accumulate buffers.
+    ///
+    /// Returns `None` when there is no GPU or when `body` fails; the caller then
+    /// takes its CPU path.  A mutex poisoned by a panic in an earlier call is
+    /// recovered: the scope of that call has already released its buffers.
+    pub(crate) fn run<T>(
+        body: impl FnOnce(&mut Scratch<'_>) -> Result<T, WgpuInitError>,
+    ) -> Option<T> {
+        let mutex = shared_backend()?;
+        let mut guard = mutex.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut scratch = Scratch::new(&mut guard);
+        let result = body(&mut scratch).ok();
+        if result.is_some() {
+            GPU_RUNS.fetch_add(1, Ordering::Relaxed);
+        }
+        result
+    }
+
+    /// Most workgroups one dispatch may span along a single dimension on every
+    /// WebGPU implementation (`maxComputeWorkgroupsPerDimension` default).
+    pub(crate) const MAX_WORKGROUPS_PER_DIMENSION: usize = 65_535;
+
+    /// Refuse a dispatch of `workgroups` groups along x that exceeds
+    /// [`MAX_WORKGROUPS_PER_DIMENSION`].
+    ///
+    /// wgpu reports such a dispatch as a validation error, which panics; returning
+    /// an error instead lets the caller take its CPU path for very large inputs.
+    pub(crate) fn check_workgroups(workgroups: usize) -> Result<(), WgpuInitError> {
+        if workgroups > MAX_WORKGROUPS_PER_DIMENSION {
+            return Err(WgpuInitError::DeviceRequestFailed(format!(
+                "a dispatch of {workgroups} workgroups exceeds the limit of \
+                 {MAX_WORKGROUPS_PER_DIMENSION} per dimension"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Number of times the shared backend was created: `1` once it has been asked
+    /// for, whether or not an adapter was found.
+    #[cfg(test)]
+    pub(crate) fn init_attempts() -> usize {
+        INIT_ATTEMPTS.load(Ordering::Relaxed)
+    }
+
+    /// Number of primitive calls that ran to completion on the GPU.
+    #[cfg(test)]
+    pub(crate) fn gpu_runs() -> usize {
+        GPU_RUNS.load(Ordering::Relaxed)
+    }
+
+    /// Scope that owns the scratch buffers of one primitive call.
+    ///
+    /// Buffers come from [`alloc`](Self::alloc) and are destroyed when the scope is
+    /// dropped.  Every other backend operation (uploads, dispatches) is available
+    /// through `Deref`.
+    pub(crate) struct Scratch<'a> {
+        backend: &'a mut WgpuBackendReal,
+        owned: Vec<WgpuBufferHandle>,
+    }
+
+    impl<'a> Scratch<'a> {
+        /// Open a scope over `backend`.
+        pub(crate) fn new(backend: &'a mut WgpuBackendReal) -> Self {
+            Self {
+                backend,
+                owned: Vec::new(),
+            }
+        }
+
+        /// Allocate a storage buffer of `size_bytes` bytes that lives until the scope ends.
+        pub(crate) fn alloc(&mut self, size_bytes: u64) -> WgpuBufferHandle {
+            let handle = self.backend.create_buffer_storage(size_bytes);
+            self.owned.push(handle);
+            handle
+        }
+
+        /// Read the first `words` `u32` values of `handle`.
+        ///
+        /// A readback that fails, or that comes back shorter than `words`, is an
+        /// error - never silently padded or truncated data.  Reading zero words
+        /// needs no readback and always succeeds.
+        pub(crate) fn read_u32(
+            &self,
+            handle: WgpuBufferHandle,
+            words: usize,
+        ) -> Result<Vec<u32>, WgpuInitError> {
+            if words == 0 {
+                return Ok(Vec::new());
+            }
+            let mut data = self.backend.read_buffer_u32(handle)?;
+            if data.len() < words {
+                return Err(short_readback(handle, data.len(), words));
+            }
+            data.truncate(words);
+            Ok(data)
+        }
+
+        /// Read the first `words` `f32` values of `handle`; see [`read_u32`](Self::read_u32).
+        pub(crate) fn read_f32(
+            &self,
+            handle: WgpuBufferHandle,
+            words: usize,
+        ) -> Result<Vec<f32>, WgpuInitError> {
+            if words == 0 {
+                return Ok(Vec::new());
+            }
+            let mut data = self.backend.read_buffer_f32(handle)?;
+            if data.len() < words {
+                return Err(short_readback(handle, data.len(), words));
+            }
+            data.truncate(words);
+            Ok(data)
+        }
+    }
+
+    fn short_readback(handle: WgpuBufferHandle, got: usize, expected: usize) -> WgpuInitError {
+        WgpuInitError::DeviceRequestFailed(format!(
+            "readback of GPU buffer {} returned {got} words, expected {expected}",
+            handle.0
+        ))
+    }
+
+    impl Deref for Scratch<'_> {
+        type Target = WgpuBackendReal;
+
+        fn deref(&self) -> &WgpuBackendReal {
+            self.backend
+        }
+    }
+
+    impl Drop for Scratch<'_> {
+        fn drop(&mut self) {
+            for handle in self.owned.drain(..) {
+                self.backend.destroy_buffer(handle);
+            }
+        }
+    }
+}
+
 // ── GPU implementation (real wgpu) ────────────────────────────────────────────
 
 #[cfg(feature = "wgpu-backend")]
 mod gpu {
+    use super::shared::{Scratch, check_workgroups};
     use crate::compute::wgpu_backend::WgpuInitError;
     use crate::compute::wgpu_backend::real::WgpuBackendReal;
     use crate::kernels_wgsl::{
@@ -158,7 +364,7 @@ mod gpu {
     }
 
     pub(super) fn exclusive_scan_u32(
-        backend: &mut WgpuBackendReal,
+        gpu: &mut Scratch<'_>,
         data: &[u32],
     ) -> Result<Vec<u32>, WgpuInitError> {
         let n = data.len();
@@ -170,20 +376,21 @@ mod gpu {
         }
 
         let num_blocks = n.div_ceil(BLOCK);
+        check_workgroups(num_blocks)?;
         let padded = num_blocks * BLOCK;
 
         let mut padded_in = vec![0u32; padded];
         padded_in[..n].copy_from_slice(data);
 
-        let input_buf = backend.create_buffer_storage((padded * 4) as u64);
-        let output_buf = backend.create_buffer_storage((padded * 4) as u64);
-        let block_sums_buf = backend.create_buffer_storage((num_blocks.max(1) * 4) as u64);
-        let params_buf = backend.create_buffer_storage(16);
+        let input_buf = gpu.alloc((padded * 4) as u64);
+        let output_buf = gpu.alloc((padded * 4) as u64);
+        let block_sums_buf = gpu.alloc((num_blocks.max(1) * 4) as u64);
+        let params_buf = gpu.alloc(16);
 
-        backend.queue_write_buffer_raw(&input_buf, bytemuck::cast_slice(&padded_in));
-        backend.queue_write_buffer_raw(&params_buf, &params_bytes(n as u32, 0));
+        gpu.queue_write_buffer_raw(&input_buf, bytemuck::cast_slice(&padded_in));
+        gpu.queue_write_buffer_raw(&params_buf, &params_bytes(n as u32, 0));
 
-        backend.dispatch_wgsl(
+        gpu.dispatch_wgsl(
             SCAN_WGSL,
             "scan_block",
             &[
@@ -196,14 +403,13 @@ mod gpu {
         )?;
 
         if num_blocks > 1 {
-            let block_sums = backend.read_buffer_u32(block_sums_buf);
-            let block_sums = &block_sums[..num_blocks.min(block_sums.len())];
-            let block_offsets = exclusive_scan_u32(backend, block_sums)?;
+            let block_sums = gpu.read_u32(block_sums_buf, num_blocks)?;
+            let block_offsets = exclusive_scan_u32(gpu, &block_sums)?;
 
-            let offsets_buf = backend.create_buffer_storage((num_blocks * 4) as u64);
-            backend.queue_write_buffer_raw(&offsets_buf, bytemuck::cast_slice(&block_offsets));
+            let offsets_buf = gpu.alloc((num_blocks * 4) as u64);
+            gpu.queue_write_buffer_raw(&offsets_buf, bytemuck::cast_slice(&block_offsets));
 
-            backend.dispatch_wgsl(
+            gpu.dispatch_wgsl(
                 SCAN_ADD_WGSL,
                 "add_block_offsets",
                 &[(output_buf, rw()), (offsets_buf, ro()), (params_buf, ro())],
@@ -211,13 +417,11 @@ mod gpu {
             )?;
         }
 
-        let mut out = backend.read_buffer_u32(output_buf);
-        out.truncate(n);
-        Ok(out)
+        gpu.read_u32(output_buf, n)
     }
 
     pub(super) fn reduce_sum_f32(
-        backend: &mut WgpuBackendReal,
+        gpu: &mut Scratch<'_>,
         data: &[f32],
     ) -> Result<f32, WgpuInitError> {
         if data.is_empty() {
@@ -227,36 +431,36 @@ mod gpu {
         loop {
             let n = current.len();
             let num_blocks = n.div_ceil(BLOCK);
+            check_workgroups(num_blocks)?;
             let padded = num_blocks * BLOCK;
 
             let mut padded_in = vec![0f32; padded];
             padded_in[..n].copy_from_slice(&current);
 
-            let in_buf = backend.create_buffer_storage((padded * 4) as u64);
-            let partials_buf = backend.create_buffer_storage((num_blocks * 4) as u64);
-            let params_buf = backend.create_buffer_storage(16);
+            let in_buf = gpu.alloc((padded * 4) as u64);
+            let partials_buf = gpu.alloc((num_blocks * 4) as u64);
+            let params_buf = gpu.alloc(16);
 
-            backend.queue_write_buffer_raw(&in_buf, bytemuck::cast_slice(&padded_in));
-            backend.queue_write_buffer_raw(&params_buf, &params_bytes(n as u32, 0));
+            gpu.queue_write_buffer_raw(&in_buf, bytemuck::cast_slice(&padded_in));
+            gpu.queue_write_buffer_raw(&params_buf, &params_bytes(n as u32, 0));
 
-            backend.dispatch_wgsl(
+            gpu.dispatch_wgsl(
                 REDUCE_WGSL,
                 "reduce_sum_block",
                 &[(in_buf, ro()), (partials_buf, rw()), (params_buf, ro())],
                 [num_blocks as u32, 1, 1],
             )?;
 
-            let partials = backend.read_buffer_f32(partials_buf);
+            let partials = gpu.read_f32(partials_buf, num_blocks)?;
             if num_blocks <= 1 {
                 return Ok(partials.first().copied().unwrap_or(0.0));
             }
             current = partials;
-            current.truncate(num_blocks);
         }
     }
 
     pub(super) fn reduce_max_f32(
-        backend: &mut WgpuBackendReal,
+        gpu: &mut Scratch<'_>,
         data: &[f32],
     ) -> Result<f32, WgpuInitError> {
         if data.is_empty() {
@@ -267,36 +471,36 @@ mod gpu {
         loop {
             let n = current.len();
             let num_blocks = n.div_ceil(BLOCK);
+            check_workgroups(num_blocks)?;
             let padded = num_blocks * BLOCK;
 
             let mut padded_in = vec![NEG_FLT_MAX; padded];
             padded_in[..n].copy_from_slice(&current);
 
-            let in_buf = backend.create_buffer_storage((padded * 4) as u64);
-            let partials_buf = backend.create_buffer_storage((num_blocks * 4) as u64);
-            let params_buf = backend.create_buffer_storage(16);
+            let in_buf = gpu.alloc((padded * 4) as u64);
+            let partials_buf = gpu.alloc((num_blocks * 4) as u64);
+            let params_buf = gpu.alloc(16);
 
-            backend.queue_write_buffer_raw(&in_buf, bytemuck::cast_slice(&padded_in));
-            backend.queue_write_buffer_raw(&params_buf, &params_bytes(n as u32, 0));
+            gpu.queue_write_buffer_raw(&in_buf, bytemuck::cast_slice(&padded_in));
+            gpu.queue_write_buffer_raw(&params_buf, &params_bytes(n as u32, 0));
 
-            backend.dispatch_wgsl(
+            gpu.dispatch_wgsl(
                 REDUCE_WGSL,
                 "reduce_max_block",
                 &[(in_buf, ro()), (partials_buf, rw()), (params_buf, ro())],
                 [num_blocks as u32, 1, 1],
             )?;
 
-            let partials = backend.read_buffer_f32(partials_buf);
+            let partials = gpu.read_f32(partials_buf, num_blocks)?;
             if num_blocks <= 1 {
                 return Ok(partials.first().copied().unwrap_or(f32::NEG_INFINITY));
             }
             current = partials;
-            current.truncate(num_blocks);
         }
     }
 
     pub(super) fn compact_u32(
-        backend: &mut WgpuBackendReal,
+        gpu: &mut Scratch<'_>,
         values: &[u32],
         keep: &[u32],
     ) -> Result<Vec<u32>, WgpuInitError> {
@@ -304,28 +508,33 @@ mod gpu {
         if n == 0 {
             return Ok(Vec::new());
         }
+        check_workgroups(n.div_ceil(BLOCK))?;
 
-        let positions = exclusive_scan_u32(backend, keep)?;
+        // The scan sums raw values and the kernel tests `keep == 1`, while the CPU
+        // reference keeps every non-zero flag: normalise the flags to 0/1 so both
+        // paths agree for any flag value.
+        let flags: Vec<u32> = keep.iter().map(|&k| u32::from(k != 0)).collect();
+        let positions = exclusive_scan_u32(gpu, &flags)?;
         let last_pos = positions.get(n - 1).copied().unwrap_or(0) as usize;
-        let last_keep = keep.get(n - 1).copied().unwrap_or(0) as usize;
-        let total_kept = last_pos + if last_keep != 0 { 1 } else { 0 };
+        let last_keep = flags.get(n - 1).copied().unwrap_or(0) as usize;
+        let total_kept = last_pos + last_keep;
         if total_kept == 0 {
             return Ok(Vec::new());
         }
 
-        let values_buf = backend.create_buffer_storage((n * 4) as u64);
-        let keep_buf = backend.create_buffer_storage((n * 4) as u64);
-        let positions_buf = backend.create_buffer_storage((n * 4) as u64);
-        let output_buf = backend.create_buffer_storage((total_kept * 4) as u64);
-        let params_buf = backend.create_buffer_storage(16);
+        let values_buf = gpu.alloc((n * 4) as u64);
+        let keep_buf = gpu.alloc((n * 4) as u64);
+        let positions_buf = gpu.alloc((n * 4) as u64);
+        let output_buf = gpu.alloc((total_kept * 4) as u64);
+        let params_buf = gpu.alloc(16);
 
-        backend.queue_write_buffer_raw(&values_buf, bytemuck::cast_slice(values));
-        backend.queue_write_buffer_raw(&keep_buf, bytemuck::cast_slice(keep));
-        backend.queue_write_buffer_raw(&positions_buf, bytemuck::cast_slice(&positions));
-        backend.queue_write_buffer_raw(&params_buf, &params_bytes(n as u32, 0));
+        gpu.queue_write_buffer_raw(&values_buf, bytemuck::cast_slice(values));
+        gpu.queue_write_buffer_raw(&keep_buf, bytemuck::cast_slice(&flags));
+        gpu.queue_write_buffer_raw(&positions_buf, bytemuck::cast_slice(&positions));
+        gpu.queue_write_buffer_raw(&params_buf, &params_bytes(n as u32, 0));
 
-        let workgroups = WgpuBackendReal::dispatch_count_for(n, 256);
-        backend.dispatch_wgsl(
+        let workgroups = WgpuBackendReal::dispatch_count_for(n, 256)?;
+        gpu.dispatch_wgsl(
             COMPACT_WGSL,
             "scatter_kept",
             &[
@@ -338,13 +547,11 @@ mod gpu {
             workgroups,
         )?;
 
-        let mut out = backend.read_buffer_u32(output_buf);
-        out.truncate(total_kept);
-        Ok(out)
+        gpu.read_u32(output_buf, total_kept)
     }
 
     pub(super) fn histogram_u32(
-        backend: &mut WgpuBackendReal,
+        gpu: &mut Scratch<'_>,
         data: &[u32],
         num_bins: usize,
     ) -> Result<Vec<u32>, WgpuInitError> {
@@ -358,18 +565,19 @@ mod gpu {
         if n == 0 {
             return Ok(vec![0u32; num_bins]);
         }
+        check_workgroups(n.div_ceil(BLOCK))?;
 
-        let data_buf = backend.create_buffer_storage((n.max(1) * 4) as u64);
-        let global_bins_buf = backend.create_buffer_storage((num_bins * 4) as u64);
-        let params_buf = backend.create_buffer_storage(16);
+        let data_buf = gpu.alloc((n.max(1) * 4) as u64);
+        let global_bins_buf = gpu.alloc((num_bins * 4) as u64);
+        let params_buf = gpu.alloc(16);
 
-        backend.queue_write_buffer_raw(&data_buf, bytemuck::cast_slice(data));
+        gpu.queue_write_buffer_raw(&data_buf, bytemuck::cast_slice(data));
         let zero_bins = vec![0u32; num_bins];
-        backend.queue_write_buffer_raw(&global_bins_buf, bytemuck::cast_slice(&zero_bins));
-        backend.queue_write_buffer_raw(&params_buf, &params_bytes(n as u32, num_bins as u32));
+        gpu.queue_write_buffer_raw(&global_bins_buf, bytemuck::cast_slice(&zero_bins));
+        gpu.queue_write_buffer_raw(&params_buf, &params_bytes(n as u32, num_bins as u32));
 
-        let workgroups = WgpuBackendReal::dispatch_count_for(n, 256);
-        backend.dispatch_wgsl(
+        let workgroups = WgpuBackendReal::dispatch_count_for(n, 256)?;
+        gpu.dispatch_wgsl(
             HISTOGRAM_WGSL,
             "histogram_main",
             &[
@@ -380,9 +588,7 @@ mod gpu {
             workgroups,
         )?;
 
-        let mut out = backend.read_buffer_u32(global_bins_buf);
-        out.truncate(num_bins);
-        Ok(out)
+        gpu.read_u32(global_bins_buf, num_bins)
     }
 }
 
@@ -429,5 +635,262 @@ mod tests {
         assert_eq!(exclusive_scan_u32(&data), cpu::exclusive_scan_u32(&data));
         let f: Vec<f32> = (0..1000u32).map(|i| (i % 5) as f32).collect();
         assert_eq!(reduce_max_f32(&f), cpu::reduce_max_f32(&f));
+    }
+
+    /// Deterministic pseudo-random data (numerical-recipes LCG) in `0..modulus`.
+    fn lcg_data(n: usize, modulus: u32) -> Vec<u32> {
+        let mut state = 0x9E37_79B9u32;
+        (0..n)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                state % modulus
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cpu_exclusive_scan_wraps_on_overflow() {
+        assert_eq!(
+            cpu::exclusive_scan_u32(&[u32::MAX, 2, 3]),
+            vec![0, u32::MAX, 1]
+        );
+    }
+
+    #[test]
+    fn compact_treats_every_nonzero_flag_as_keep() {
+        let values = [10u32, 20, 30, 40, 50];
+        // The CPU reference keeps `keep[i] != 0`; the GPU path must agree even
+        // for flags other than 1.
+        assert_eq!(compact_u32(&values, &[2, 0, 7, 0, 1]), vec![10, 30, 50]);
+        assert_eq!(compact_u32(&values, &[0, 0, 0, 0, 0]), Vec::<u32>::new());
+        assert_eq!(compact_u32(&values, &[u32::MAX; 5]), values.to_vec());
+        assert_eq!(
+            compact_u32(&values, &[1, 2]),
+            Vec::<u32>::new(),
+            "length mismatch yields an empty vec"
+        );
+    }
+
+    #[test]
+    fn public_primitives_match_the_cpu_reference_across_block_boundaries() {
+        for &n in &[0usize, 1, 2, 255, 256, 257, 511, 512, 513, 1000, 5000] {
+            let data = lcg_data(n, 1000);
+            assert_eq!(
+                exclusive_scan_u32(&data),
+                cpu::exclusive_scan_u32(&data),
+                "scan n={n}"
+            );
+            let floats: Vec<f32> = data.iter().map(|&v| (v % 11) as f32).collect();
+            assert_eq!(
+                reduce_sum_f32(&floats),
+                cpu::reduce_sum_f32(&floats),
+                "sum n={n}"
+            );
+            assert_eq!(
+                reduce_max_f32(&floats),
+                cpu::reduce_max_f32(&floats),
+                "max n={n}"
+            );
+            let keep: Vec<u32> = data.iter().map(|&v| u32::from(v % 3 == 0)).collect();
+            assert_eq!(
+                compact_u32(&data, &keep),
+                cpu::compact_u32(&data, &keep),
+                "compact n={n}"
+            );
+            for &bins in &[1usize, 7, 200, 256, 300] {
+                assert_eq!(
+                    histogram_u32(&data, bins),
+                    cpu::histogram_u32(&data, bins),
+                    "histogram n={n} bins={bins}"
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "wgpu-backend")]
+    mod shared_backend {
+        use super::*;
+        use crate::compute::wgpu_backend::{WgpuBufferHandle, WgpuInitError};
+        use std::sync::PoisonError;
+
+        #[test]
+        fn backend_is_created_once_for_all_threads_and_calls() {
+            let workers: Vec<_> = (0..4usize)
+                .map(|t| {
+                    std::thread::spawn(move || {
+                        for round in 0..3usize {
+                            let data = lcg_data(3000 + 17 * t + round, 97);
+                            assert_eq!(exclusive_scan_u32(&data), cpu::exclusive_scan_u32(&data));
+                            assert_eq!(histogram_u32(&data, 97), cpu::histogram_u32(&data, 97));
+                        }
+                    })
+                })
+                .collect();
+            for worker in workers {
+                worker.join().expect("worker thread panicked");
+            }
+            let first = shared::shared_backend().map(|b| b as *const _);
+            let second = shared::shared_backend().map(|b| b as *const _);
+            assert_eq!(first, second, "every call must see the same backend");
+            assert_eq!(
+                shared::init_attempts(),
+                1,
+                "the backend (or the failure to find one) must be created exactly once"
+            );
+        }
+
+        #[test]
+        fn pipelines_are_compiled_once_and_reused_by_later_calls() {
+            // The whole measurement runs inside one scope.  It holds the lock of the
+            // shared backend, so no other test thread can compile a pipeline in between.
+            let measured = shared::run(|gpu| {
+                let data = lcg_data(3000, 100);
+                let floats: Vec<f32> = data.iter().map(|&v| v as f32).collect();
+                let keep: Vec<u32> = data.iter().map(|&v| u32::from(v % 2 == 0)).collect();
+                // Warm-up: one call of every kernel compiles all of its pipelines.
+                gpu::exclusive_scan_u32(gpu, &data)?;
+                gpu::reduce_sum_f32(gpu, &floats)?;
+                gpu::reduce_max_f32(gpu, &floats)?;
+                gpu::compact_u32(gpu, &data, &keep)?;
+                gpu::histogram_u32(gpu, &data, 100)?;
+                let warm = gpu.compiled_pipeline_count();
+                // Later calls with other sizes (including a multi-level scan that needs
+                // the block-offset pass) must find every pipeline in the cache.
+                for n in [1000usize, 5000, 70_000] {
+                    let data = lcg_data(n, 100);
+                    let floats: Vec<f32> = data.iter().map(|&v| v as f32).collect();
+                    let keep: Vec<u32> = data.iter().map(|&v| u32::from(v % 3 == 0)).collect();
+                    gpu::exclusive_scan_u32(gpu, &data)?;
+                    gpu::reduce_sum_f32(gpu, &floats)?;
+                    gpu::reduce_max_f32(gpu, &floats)?;
+                    gpu::compact_u32(gpu, &data, &keep)?;
+                    gpu::histogram_u32(gpu, &data, 100)?;
+                }
+                Ok::<_, WgpuInitError>((warm, gpu.compiled_pipeline_count()))
+            });
+            let Some((warm, after_reuse)) = measured else {
+                eprintln!("SKIPPED: no GPU adapter");
+                return;
+            };
+            // scan_block, add_block_offsets, reduce_sum_block, reduce_max_block,
+            // scatter_kept and histogram_main.
+            assert!(warm >= 6, "expected at least six pipelines, got {warm}");
+            assert_eq!(
+                warm, after_reuse,
+                "repeated calls must reuse the cached pipelines instead of recompiling"
+            );
+        }
+
+        #[test]
+        fn scratch_buffers_are_released_after_every_call() {
+            let Some(backend) = shared::shared_backend() else {
+                eprintln!("SKIPPED: no GPU adapter");
+                return;
+            };
+            let runs_before = shared::gpu_runs();
+            let data = lcg_data(5000, 255);
+            let floats: Vec<f32> = data.iter().map(|&v| v as f32).collect();
+            let keep: Vec<u32> = data.iter().map(|&v| u32::from(v % 2 == 0)).collect();
+            for _ in 0..3 {
+                assert_eq!(exclusive_scan_u32(&data), cpu::exclusive_scan_u32(&data));
+                assert_eq!(reduce_sum_f32(&floats), cpu::reduce_sum_f32(&floats));
+                assert_eq!(reduce_max_f32(&floats), cpu::reduce_max_f32(&floats));
+                assert_eq!(compact_u32(&data, &keep), cpu::compact_u32(&data, &keep));
+                assert_eq!(histogram_u32(&data, 255), cpu::histogram_u32(&data, 255));
+            }
+            assert!(
+                shared::gpu_runs() >= runs_before + 15,
+                "all fifteen calls must have run on the GPU"
+            );
+            let guard = backend.lock().unwrap_or_else(PoisonError::into_inner);
+            assert_eq!(guard.live_buffer_count(), 0, "scratch buffers leaked");
+            assert_eq!(guard.live_buffer_bytes(), 0, "scratch buffers leaked");
+        }
+
+        #[test]
+        fn scope_releases_buffers_when_the_body_panics_and_the_lock_recovers() {
+            let Some(backend) = shared::shared_backend() else {
+                eprintln!("SKIPPED: no GPU adapter");
+                return;
+            };
+            let outcome = std::thread::spawn(|| {
+                shared::run(|gpu| -> Result<(), WgpuInitError> {
+                    let _scratch_buffer = gpu.alloc(4096);
+                    panic!("simulated failure inside a GPU scope");
+                })
+            })
+            .join();
+            assert!(outcome.is_err(), "the panic must propagate to the joiner");
+            // The panic poisoned the mutex; later calls recover it and still work.
+            let data = lcg_data(1000, 50);
+            let runs_before = shared::gpu_runs();
+            assert_eq!(exclusive_scan_u32(&data), cpu::exclusive_scan_u32(&data));
+            assert!(shared::gpu_runs() > runs_before);
+            let guard = backend.lock().unwrap_or_else(PoisonError::into_inner);
+            assert_eq!(guard.live_buffer_count(), 0, "the unwound scope leaked");
+        }
+
+        #[test]
+        fn workgroup_limit_is_checked_exactly_at_the_dimension_limit() {
+            let limit = shared::MAX_WORKGROUPS_PER_DIMENSION;
+            assert!(shared::check_workgroups(0).is_ok());
+            assert!(shared::check_workgroups(limit).is_ok());
+            assert!(matches!(
+                shared::check_workgroups(limit + 1),
+                Err(WgpuInitError::DeviceRequestFailed(_))
+            ));
+        }
+
+        #[test]
+        fn dispatches_wider_than_one_dimension_fall_back_to_the_cpu() {
+            if shared::shared_backend().is_none() {
+                eprintln!("SKIPPED: no GPU adapter");
+                return;
+            }
+            // 65 536 blocks of 256 elements: one workgroup more than a dimension allows.
+            let too_wide = 256 * (shared::MAX_WORKGROUPS_PER_DIMENSION + 1);
+            let data = vec![1u32; too_wide];
+            let floats = vec![1.0f32; too_wide];
+            let refused = shared::run(|gpu| {
+                let scan = gpu::exclusive_scan_u32(gpu, &data).is_err();
+                let hist = gpu::histogram_u32(gpu, &data, 4).is_err();
+                let keep = gpu::compact_u32(gpu, &data, &data).is_err();
+                let sum = gpu::reduce_sum_f32(gpu, &floats).is_err();
+                let max = gpu::reduce_max_f32(gpu, &floats).is_err();
+                Ok::<_, WgpuInitError>((scan, hist, keep, sum, max, gpu.live_buffer_count()))
+            });
+            assert_eq!(
+                refused,
+                Some((true, true, true, true, true, 0)),
+                "every kernel must refuse the oversized dispatch before allocating anything"
+            );
+            // The public entry points still answer correctly, through the CPU path.
+            let scan = exclusive_scan_u32(&data);
+            assert_eq!(scan.len(), too_wide);
+            assert_eq!(scan.last().copied(), Some(too_wide as u32 - 1));
+            assert_eq!(histogram_u32(&data, 4), vec![0, too_wide as u32, 0, 0]);
+            assert_eq!(reduce_sum_f32(&floats), too_wide as f32);
+            assert_eq!(compact_u32(&data, &data).len(), too_wide);
+        }
+
+        #[test]
+        fn short_readback_is_an_error_not_silent_data() {
+            let seen = shared::run(|gpu| {
+                Ok::<_, WgpuInitError>((
+                    gpu.read_u32(WgpuBufferHandle(usize::MAX), 4).is_err(),
+                    gpu.read_f32(WgpuBufferHandle(usize::MAX), 1).is_err(),
+                    gpu.read_u32(WgpuBufferHandle(usize::MAX), 0).is_ok(),
+                ))
+            });
+            match seen {
+                Some(flags) => assert_eq!(flags, (true, true, true)),
+                None => eprintln!("SKIPPED: no GPU adapter"),
+            }
+            // `run` turns a failing body into `None` so that callers take the CPU path.
+            if shared::shared_backend().is_some() {
+                let failed = shared::run(|gpu| gpu.read_u32(WgpuBufferHandle(usize::MAX), 4));
+                assert!(failed.is_none());
+            }
+        }
     }
 }

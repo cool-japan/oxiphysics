@@ -5,6 +5,7 @@
 use crate::grid::{LbmGrid2D, LbmGrid3D, equilibrium_2d, equilibrium_3d};
 use crate::lattice::{CS2, D3Q19_OPPOSITES, D3Q19_VELOCITIES, D3Q19_WEIGHTS};
 
+use super::central_moments::central_moments_to_populations_d3q19;
 use super::types::EntropicCollision;
 
 /// Compute the D3Q19 equilibrium distribution for a given macroscopic state.
@@ -201,38 +202,6 @@ pub fn min_entropy_margin(pre: &[[f64; 19]], post: &[[f64; 19]]) -> f64 {
         .zip(post.iter())
         .map(|(fp, fq)| entropy_production(fp, fq))
         .fold(f64::INFINITY, f64::min)
-}
-/// Compute a 19-component central-moment vector from a distribution.
-///
-/// Uses the velocity-shifted moments: `κ_{abc} = Σ_i f_i (c_x - u_x)^a (c_y - u_y)^b (c_z - u_z)^c`.
-pub(super) fn compute_central_moments(f: &[f64; 19], u: [f64; 3], _inv_rho: f64) -> [f64; 19] {
-    let mut cm = [0.0f64; 19];
-    for (i, &fi) in f.iter().enumerate() {
-        let c = D3Q19_VELOCITIES[i];
-        let dx = c[0] as f64 - u[0];
-        let dy = c[1] as f64 - u[1];
-        let dz = c[2] as f64 - u[2];
-        cm[0] += fi;
-        cm[1] += fi * dx;
-        cm[2] += fi * dy;
-        cm[3] += fi * dz;
-        cm[4] += fi * dx * dx;
-        cm[5] += fi * dy * dy;
-        cm[6] += fi * dz * dz;
-        cm[7] += fi * dx * dy;
-        cm[8] += fi * dx * dz;
-        cm[9] += fi * dy * dz;
-        cm[10] += fi * dx * dx * dy;
-        cm[11] += fi * dx * dx * dz;
-        cm[12] += fi * dy * dy * dx;
-        cm[13] += fi * dy * dy * dz;
-        cm[14] += fi * dz * dz * dx;
-        cm[15] += fi * dz * dz * dy;
-        cm[16] += fi * dx * dx * dy * dy;
-        cm[17] += fi * dx * dx * dz * dz;
-        cm[18] += fi * dy * dy * dz * dz;
-    }
-    cm
 }
 /// BGK-ELBM blended collision: weighted combination.
 ///
@@ -714,7 +683,7 @@ mod tests {
         let f_out = cmc.collide(&f, rho_in, u_in);
         let rho_out: f64 = f_out.iter().sum();
         assert!(
-            (rho_out - rho_in).abs() < 1e-3,
+            (rho_out - rho_in).abs() < 1e-12,
             "Central moment mass error too large: {rho_out} vs {rho_in}"
         );
     }
@@ -1120,35 +1089,12 @@ pub fn compute_central_moments_cumulant(f: &[f64; 19], u: [f64; 3]) -> [f64; 19]
 }
 /// Reconstruct a D3Q19 distribution from its central moments.
 ///
-/// Uses the regularized equilibrium approach: constructs feq at (rho, u),
-/// then adds the non-equilibrium correction from the second-order central moments.
-pub fn central_moments_to_f_cumulant(cm: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
-    let feq = compute_equilibrium_d3q19(rho, u);
-    let cm_eq = compute_central_moments_cumulant(&feq, u);
-    let cs4 = (1.0 / 3.0_f64).powi(2);
-    let dxx = cm[4] - cm_eq[4];
-    let dyy = cm[5] - cm_eq[5];
-    let dzz = cm[6] - cm_eq[6];
-    let dxy = cm[7] - cm_eq[7];
-    let dxz = cm[8] - cm_eq[8];
-    let dyz = cm[9] - cm_eq[9];
-    let mut f_out = feq;
-    for (i, f_out_i) in f_out.iter_mut().enumerate() {
-        let c = D3Q19_VELOCITIES[i];
-        let cx = c[0] as f64 - u[0];
-        let cy = c[1] as f64 - u[1];
-        let cz = c[2] as f64 - u[2];
-        let w = D3Q19_WEIGHTS[i];
-        let correction = w / (2.0 * cs4)
-            * (cx * cx * dxx
-                + cy * cy * dyy
-                + cz * cz * dzz
-                + 2.0 * cx * cy * dxy
-                + 2.0 * cx * cz * dxz
-                + 2.0 * cy * cz * dyz);
-        *f_out_i += correction;
-    }
-    f_out
+/// Exact inverse of [`compute_central_moments_cumulant`] for the same `u` (see
+/// [`central_moments_to_populations_d3q19`]): mass and momentum of the result are those encoded
+/// in the zeroth and first central moments. The density is carried by `cm[0]`, so the `_rho`
+/// argument is ignored; it is kept only so that existing callers keep compiling.
+pub fn central_moments_to_f_cumulant(cm: &[f64; 19], _rho: f64, u: [f64; 3]) -> [f64; 19] {
+    central_moments_to_populations_d3q19(cm, u)
 }
 /// Compute the entropic equilibrium distribution for D3Q19.
 ///
@@ -1895,7 +1841,7 @@ mod tests_advanced_collision {
                 .map(|(fi, &ci)| fi * ci as f64)
                 .sum();
             assert!(
-                (p_out - p_in).abs() < 1e-3,
+                (p_out - p_in).abs() < 1e-12,
                 "Cumulant momentum not conserved in direction {alpha}: {p_in} vs {p_out}"
             );
         }

@@ -327,6 +327,11 @@ mod tests {
         let b = rhs(5);
         let res = IterativeSolver::tfqmr(&lap, &b, None, 1e-6, 100);
         assert!(res.iterations > 0);
+        assert!(res.converged, "TFQMR residual {}", res.residual);
+        let ax = lap.matvec(&res.x);
+        for i in 0..5 {
+            assert!((ax[i] - b[i]).abs() < 1e-5, "TFQMR residual at {i}");
+        }
     }
     #[test]
     fn test_jacobi_preconditioner() {
@@ -391,7 +396,18 @@ mod tests {
     fn test_arnoldi_returns_k_values() {
         let lap = laplacian(8);
         let res = EigenSolver::arnoldi(&lap, 3, 6, 1e-8);
-        assert!(!res.eigenvalues.is_empty());
+        assert_eq!(res.eigenvalues.len(), 3);
+        assert_eq!(res.eigenvectors.len(), 3);
+        for w in res.eigenvalues.windows(2) {
+            assert!(w[0] <= w[1], "eigenvalues not sorted");
+        }
+        // Ritz values are enclosed by the spectrum of the 8-point Laplacian.
+        let upper = 2.0 - 2.0 * (8.0 * std::f64::consts::PI / 9.0).cos();
+        assert!(
+            res.eigenvalues
+                .iter()
+                .all(|&v| v > 0.0 && v < upper + 1e-12)
+        );
     }
     #[test]
     fn test_hessenberg_eigenvalues_symmetric_2x2() {
@@ -436,9 +452,19 @@ mod tests {
     fn test_lanczos_symmetric() {
         let lap = laplacian(8);
         let res = EigenSolver::lanczos(&lap, 4, 8, 1e-8);
-        assert!(!res.eigenvalues.is_empty());
+        assert_eq!(res.eigenvalues.len(), 4);
+        assert!(res.converged);
         for w in res.eigenvalues.windows(2) {
             assert!(w[0] <= w[1] + 1e-10, "eigenvalues not sorted");
+        }
+        // The four largest eigenvalues 2 - 2 cos(j pi / 9), j = 5..8.
+        for (idx, j) in (5..=8).enumerate() {
+            let want = 2.0 - 2.0 * (j as f64 * std::f64::consts::PI / 9.0).cos();
+            assert!(
+                (res.eigenvalues[idx] - want).abs() < 1e-8,
+                "j = {j}: {} vs {want}",
+                res.eigenvalues[idx]
+            );
         }
     }
     #[test]
@@ -446,7 +472,12 @@ mod tests {
         let lap = laplacian(6);
         let res = EigenSolver::lobpcg(&lap, 2, 1e-6, 100);
         assert_eq!(res.eigenvalues.len(), 2);
-        assert!(res.eigenvalues.iter().all(|v| v.is_finite()));
+        assert!(res.converged);
+        // The two smallest eigenvalues 2 - 2 cos(j pi / 7), j = 1, 2.
+        for j in 1..=2 {
+            let want = 2.0 - 2.0 * (j as f64 * std::f64::consts::PI / 7.0).cos();
+            assert!((res.eigenvalues[j - 1] - want).abs() < 1e-6, "j = {j}");
+        }
     }
     #[test]
     fn test_expm_identity() {
@@ -633,13 +664,15 @@ mod tests {
         assert!(log_a[0].is_finite(), "log_a[0] = {}", log_a[0]);
         assert!(log_a[3].is_finite(), "log_a[3] = {}", log_a[3]);
         assert!(
-            log_a[0] > 0.0,
-            "log(4) should be positive, got {}",
+            (log_a[0] - 4.0_f64.ln()).abs() < 1e-9,
+            "log(4) = {}, got {}",
+            4.0_f64.ln(),
             log_a[0]
         );
         assert!(
-            log_a[3] > 0.0,
-            "log(9) should be positive, got {}",
+            (log_a[3] - 9.0_f64.ln()).abs() < 1e-9,
+            "log(9) = {}, got {}",
+            9.0_f64.ln(),
             log_a[3]
         );
     }

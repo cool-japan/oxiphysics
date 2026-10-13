@@ -357,8 +357,10 @@ pub fn underwater_landslide_volume(rho_s: f64, rho_f: f64, v_slide: f64) -> f64 
 
 /// 1-D tidal flat wetting/drying model.
 ///
-/// Evolves the water depth h = η − z_bed on a flat-bed grid using a simple
-/// explicit continuity update with volume fluxes at the boundaries.
+/// Evolves the free-surface elevation η (water depth h = η − z_bed) with a
+/// conservative finite-volume continuity update.  Volume enters and leaves
+/// through boundary discharges and moves between neighbouring cells with a
+/// diffusion-wave Manning flux directed down the free-surface gradient.
 pub struct TidalFlat {
     /// Bed elevation z_bed at each cell (m above datum).
     pub bed: Vec<f64>,
@@ -398,9 +400,28 @@ impl TidalFlat {
 
     /// Advance the tidal flat by one explicit time step using volume conservation.
     ///
-    /// Volume enters from the left at rate `q_in` (m²/s per unit width)
-    /// and leaves from the right at rate `q_out`.  Internal fluxes use a
-    /// simple upwind depth-averaged Manning formula.
+    /// Volume enters from the left at rate `q_in` (m²/s per unit width) and
+    /// leaves from the right at rate `q_out` (a negative value reverses the
+    /// direction of the respective boundary flux).  Interior edges carry a
+    /// diffusion-wave Manning flux
+    ///
+    /// ```text
+    /// q = −sign(∂η/∂x) · (1/n) · h^(5/3) · |∂η/∂x|^(1/2)
+    /// ```
+    ///
+    /// directed **down** the free-surface gradient, i.e. from the higher to
+    /// the lower η (positive = towards +x).  `h` is the depth of the upwind
+    /// (donor) cell above the sill `max(z_left, z_right)`, so a dry donor or a
+    /// sill above the water surface blocks the flow.
+    ///
+    /// Two limiters keep the explicit update physical:
+    ///
+    /// * an edge never moves more than half of the free-surface difference
+    ///   between its two cells in one step, so the exchange cannot overshoot
+    ///   and profiles relax monotonically;
+    /// * a cell never releases more volume than it holds (the boundary
+    ///   discharge `q_out` is limited the same way), so the final clamp to the
+    ///   bed only absorbs rounding errors and never creates water.
     ///
     /// # Arguments
     /// * `dt`    – time step (s)
@@ -409,33 +430,64 @@ impl TidalFlat {
     pub fn step(&mut self, dt: f64, q_in: f64, q_out: f64) {
         let nx = self.nx;
         let dx = self.dx;
-        let n = self.manning_n;
+        if nx == 0 || dt <= 0.0 || dx <= 0.0 {
+            return;
+        }
+        let conductance = if self.manning_n > 0.0 {
+            1.0 / self.manning_n
+        } else {
+            f64::INFINITY
+        };
 
-        // Compute edge fluxes (nx+1 edges)
+        // Volume flux per unit width through each of the nx + 1 edges,
+        // positive towards +x; flux[0] and flux[nx] are the boundary discharges.
         let mut flux = vec![0.0f64; nx + 1];
         flux[0] = q_in;
         flux[nx] = q_out;
 
-        for (fe, e) in flux[1..nx].iter_mut().zip(1..nx) {
-            let hl = self.depth(e - 1);
-            let hr = self.depth(e);
-            let h_avg = 0.5 * (hl + hr);
-            if h_avg < 1e-6 {
+        for (e, flux_e) in flux.iter_mut().enumerate().take(nx).skip(1) {
+            let left = e - 1;
+            let d_eta = self.water[e] - self.water[left];
+            let slope = d_eta / dx;
+            if slope.abs() < 1e-12 {
                 continue;
             }
-            let deta = self.water[e] - self.water[e - 1];
-            let slope = deta / dx;
-            // Manning: q = (1/n) h^(5/3) S^(1/2)  (sign from slope)
-            let s_abs = slope.abs().max(1e-12);
-            let sign_s = if slope >= 0.0 { 1.0 } else { -1.0 };
-            *fe = sign_s * (1.0 / n) * h_avg.powf(5.0 / 3.0) * s_abs.sqrt();
+            // Water runs downhill: from the higher free surface to the lower.
+            let (donor, direction) = if d_eta < 0.0 { (left, 1.0) } else { (e, -1.0) };
+            let sill = self.bed[left].max(self.bed[e]);
+            let h_flow = self.water[donor] - sill;
+            if h_flow < 1e-6 {
+                continue;
+            }
+            let manning = conductance * h_flow.powf(5.0 / 3.0) * slope.abs().sqrt();
+            // Transferring more than half of the surface difference would
+            // reverse the gradient within a single step.
+            let equalising = 0.5 * dx * d_eta.abs() / dt;
+            *flux_e = direction * manning.min(equalising);
         }
 
-        // Update water surface
+        // A cell cannot release more water than it holds: scale all fluxes
+        // leaving a cell (through either edge) by the available fraction.
+        let mut keep = vec![1.0f64; nx];
+        for (i, k) in keep.iter_mut().enumerate() {
+            let outflow = (-flux[i]).max(0.0) + flux[i + 1].max(0.0);
+            let available = self.depth(i) * dx / dt;
+            if outflow > available {
+                *k = available / outflow;
+            }
+        }
+        for (e, f) in flux.iter_mut().enumerate() {
+            if *f > 0.0 && e >= 1 {
+                *f *= keep[e - 1];
+            } else if *f < 0.0 && e < nx {
+                *f *= keep[e];
+            }
+        }
+
+        // Conservative update of the free surface.
         for (i, (water, &bed)) in self.water.iter_mut().zip(self.bed.iter()).enumerate() {
-            let dh = -dt * (flux[i + 1] - flux[i]) / dx;
-            *water += dh;
-            // Wetting/drying: clamp to bed
+            *water -= dt * (flux[i + 1] - flux[i]) / dx;
+            // Rounding guard only: the limiters keep the depth non-negative.
             if *water < bed {
                 *water = bed;
             }
@@ -807,6 +859,192 @@ mod tests {
         tf.step(0.1, 0.0, 0.0);
         // Water should not go below bed
         assert!(tf.water.iter().zip(tf.bed.iter()).all(|(w, b)| w >= b));
+    }
+
+    /// Total water volume per unit width: Σ (η − z_bed) Δx.
+    fn tidal_flat_volume(tf: &TidalFlat) -> f64 {
+        tf.water
+            .iter()
+            .zip(tf.bed.iter())
+            .map(|(w, b)| (w - b) * tf.dx)
+            .sum()
+    }
+
+    #[test]
+    fn test_tidal_flat_flow_runs_downhill() {
+        // Surface 1.0 m on the left, 0.5 m on the right: water must move from
+        // the high cells into the low cells, never uphill.
+        let mut tf = TidalFlat::new(4, 100.0, 0.0, 0.03);
+        tf.water = vec![1.0, 1.0, 0.5, 0.5];
+        tf.step(1.0, 0.0, 0.0);
+        assert!(tf.water[1] < 1.0, "high cell must drain: {:?}", tf.water);
+        assert!(tf.water[2] > 0.5, "low cell must fill: {:?}", tf.water);
+        // Cells whose neighbours have the same surface are untouched.
+        assert!((tf.water[0] - 1.0).abs() < 1.0e-15);
+        assert!((tf.water[3] - 0.5).abs() < 1.0e-15);
+        // Manning magnitude for the first step: q = h^(5/3) sqrt(S) / n with the
+        // donor depth 1 m and S = 0.5 / 100.
+        let q = (0.5_f64 / 100.0).sqrt() / 0.03;
+        let expected_drop = q * 1.0 / 100.0;
+        assert!(
+            (1.0 - tf.water[1] - expected_drop).abs() < 1.0e-12,
+            "drop {} vs expected {expected_drop}",
+            1.0 - tf.water[1]
+        );
+    }
+
+    #[test]
+    fn test_tidal_flat_flow_runs_downhill_in_both_directions() {
+        // Mirror image: high surface on the right, flow towards the left.
+        let mut tf = TidalFlat::new(4, 100.0, 0.0, 0.03);
+        tf.water = vec![0.5, 0.5, 1.0, 1.0];
+        tf.step(1.0, 0.0, 0.0);
+        assert!(tf.water[1] > 0.5, "{:?}", tf.water);
+        assert!(tf.water[2] < 1.0, "{:?}", tf.water);
+    }
+
+    #[test]
+    fn test_tidal_flat_step_profile_relaxes_monotonically_and_conserves_volume() {
+        // A 1.0 m to 0.5 m surface step with closed boundaries.
+        let mut tf = TidalFlat::new(20, 100.0, 0.0, 0.03);
+        for (i, w) in tf.water.iter_mut().enumerate() {
+            *w = if i < 10 { 1.0 } else { 0.5 };
+        }
+        let volume0 = tidal_flat_volume(&tf);
+        let mut prev_spread = f64::MAX;
+        for _ in 0..2000 {
+            tf.step(20.0, 0.0, 0.0);
+            let volume = tidal_flat_volume(&tf);
+            assert!(
+                (volume - volume0).abs() <= 1.0e-9 * volume0,
+                "volume {volume} drifted from {volume0}"
+            );
+            // The profile stays monotone: no overshoot, no oscillation.
+            for pair in tf.water.windows(2) {
+                assert!(pair[1] <= pair[0] + 1.0e-12, "non-monotone: {:?}", tf.water);
+            }
+            // Extrema never grow: 0.5 <= η <= 1.0 at all times.
+            assert!(
+                tf.water
+                    .iter()
+                    .all(|&w| (0.5 - 1.0e-12..=1.0 + 1.0e-12).contains(&w))
+            );
+            let spread = tf.water[0] - tf.water[tf.nx - 1];
+            assert!(spread <= prev_spread + 1.0e-12, "spread grew");
+            prev_spread = spread;
+        }
+        // Finally the flat settles at the mean level 0.75 m.
+        for &w in &tf.water {
+            assert!((w - 0.75).abs() < 1.0e-6, "final level {w}");
+        }
+    }
+
+    #[test]
+    fn test_tidal_flat_boundary_discharges_change_volume_exactly() {
+        let mut tf = TidalFlat::new(5, 100.0, 0.0, 0.03);
+        tf.water = vec![0.8; 5];
+        let volume0 = tidal_flat_volume(&tf);
+        for _ in 0..10 {
+            tf.step(1.0, 1.0, 0.4);
+        }
+        let expected = volume0 + 10.0 * (1.0 - 0.4);
+        assert!(
+            (tidal_flat_volume(&tf) - expected).abs() < 1.0e-9,
+            "volume {} expected {expected}",
+            tidal_flat_volume(&tf)
+        );
+    }
+
+    #[test]
+    fn test_tidal_flat_never_releases_more_water_than_a_cell_holds() {
+        // Cell 0 holds only 1 mm of water on a high bed next to an empty,
+        // much lower cell: the raw Manning flux would remove far more than
+        // that.  The scaled flux must keep total volume exactly conserved
+        // instead of letting the bed clamp create water.
+        let mut tf = TidalFlat::new(2, 1.0, 0.0, 0.03);
+        tf.bed = vec![0.0, -1.0];
+        tf.water = vec![0.001, -1.0];
+        let volume0 = tidal_flat_volume(&tf);
+        assert!((volume0 - 0.001).abs() < 1.0e-15);
+        tf.step(100.0, 0.0, 0.0);
+        let volume = tidal_flat_volume(&tf);
+        assert!(
+            (volume - volume0).abs() < 1.0e-12,
+            "volume changed from {volume0} to {volume}"
+        );
+        assert!(tf.water[0] >= tf.bed[0] && tf.water[1] >= tf.bed[1]);
+        assert!(tf.water[1] > -1.0, "water must reach the empty cell");
+    }
+
+    #[test]
+    fn test_tidal_flat_outflow_boundary_is_limited_by_available_water() {
+        // The right boundary asks for 5 m²/s (5 m² in this step) but the last
+        // cell only holds a 2 cm film (2 m²): the level may not drop below the
+        // bed and the volume removed cannot exceed what was stored.
+        let mut tf = TidalFlat::new(3, 100.0, 0.0, 0.03);
+        tf.water = vec![0.0, 0.0, 0.02];
+        let volume0 = tidal_flat_volume(&tf);
+        assert!((volume0 - 2.0).abs() < 1.0e-12);
+        tf.step(1.0, 0.0, 5.0);
+        assert!(tf.water.iter().zip(tf.bed.iter()).all(|(w, b)| w >= b));
+        let volume = tidal_flat_volume(&tf);
+        assert!(volume >= -1.0e-12, "negative stored volume {volume}");
+        assert!(
+            volume0 - volume <= 2.0 + 1.0e-9,
+            "removed {} m² from a cell that held 2 m²",
+            volume0 - volume
+        );
+        // The film is drained completely: all of it left through the boundary
+        // or moved to the neighbouring cell.
+        assert!(tf.water[2].abs() < 1.0e-9, "{:?}", tf.water);
+    }
+
+    #[test]
+    fn test_tidal_flat_dry_high_ground_does_not_flow() {
+        // Wet cell next to dry ground whose bed lies above the water surface.
+        let mut tf = TidalFlat::new(2, 50.0, 0.0, 0.03);
+        tf.bed = vec![0.0, 1.0];
+        tf.water = vec![0.5, 1.0];
+        tf.step(10.0, 0.0, 0.0);
+        assert_eq!(tf.water, vec![0.5, 1.0]);
+    }
+
+    #[test]
+    fn test_tidal_flat_overtopping_a_sill_uses_depth_above_the_sill() {
+        // Water at η = 1.2 m beside dry ground at z = 1.0 m flows onto it.
+        let mut tf = TidalFlat::new(2, 50.0, 0.0, 0.03);
+        tf.bed = vec![0.0, 1.0];
+        tf.water = vec![1.2, 1.0];
+        let volume0 = tidal_flat_volume(&tf);
+        tf.step(1.0, 0.0, 0.0);
+        assert!(tf.water[0] < 1.2 && tf.water[1] > 1.0, "{:?}", tf.water);
+        // Flux uses the 0.2 m depth above the sill, not the 1.2 m cell depth.
+        let q_sill = 0.2_f64.powf(5.0 / 3.0) * (0.2_f64 / 50.0).sqrt() / 0.03;
+        let moved = (1.2 - tf.water[0]) * 50.0;
+        assert!(
+            (moved - q_sill).abs() < 1.0e-12,
+            "moved {moved}, q {q_sill}"
+        );
+        assert!((tidal_flat_volume(&tf) - volume0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn test_tidal_flat_step_handles_degenerate_inputs() {
+        let mut empty = TidalFlat::new(0, 10.0, 0.0, 0.03);
+        empty.step(1.0, 1.0, 1.0);
+        let mut tf = TidalFlat::new(3, 10.0, 0.0, 0.03);
+        tf.water = vec![1.0, 0.5, 0.2];
+        let before = tf.water.clone();
+        tf.step(0.0, 1.0, 1.0);
+        assert_eq!(tf.water, before);
+        // Frictionless flat (n = 0) still relaxes monotonically thanks to the
+        // equalising limiter.
+        let mut ice = TidalFlat::new(3, 10.0, 0.0, 0.0);
+        ice.water = vec![1.0, 0.5, 0.2];
+        for _ in 0..50 {
+            ice.step(1.0, 0.0, 0.0);
+            assert!(ice.water.windows(2).all(|p| p[1] <= p[0] + 1.0e-12));
+        }
     }
 
     #[test]

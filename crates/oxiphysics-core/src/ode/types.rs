@@ -2,7 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use super::functions::{OdeSystem, rk45_step, solve_linear_system};
+use super::functions::{OdeSystem, rk45_step_fsal, solve_linear_system};
 
 /// Dormand-Prince RK45 integrator (struct form).
 ///
@@ -19,20 +19,60 @@ impl DormandPrince45 {
     pub fn new(atol: f64, rtol: f64) -> Self {
         Self { atol, rtol }
     }
-    /// Perform a single step of length `dt` starting from state `y`.
+    /// Error tolerance `max(atol, atol + rtol * max_i |y_i|)` against which the
+    /// RMS error estimate of a step starting from `y` is compared.
+    fn error_tolerance(&self, y: &[f64]) -> f64 {
+        (self.atol + self.rtol * y.iter().map(|v| v.abs()).fold(0.0_f64, f64::max)).max(self.atol)
+    }
+    /// Perform a single step of length `dt` starting from state `y` of an
+    /// **autonomous** system `dy/dt = f(y)`.
     ///
     /// Returns a [`StepResult`] indicating whether the step should be accepted.
+    /// Use [`step_t`](Self::step_t) when the right-hand side depends on time.
     pub fn step(&self, y: &[f64], f: impl Fn(&[f64]) -> Vec<f64>, dt: f64) -> StepResult {
-        let (y_new, err) = rk45_step(y, f, dt, self.atol);
-        let tol_norm = (self.atol + self.rtol * y.iter().map(|v| v.abs()).fold(0.0_f64, f64::max))
-            .max(self.atol);
-        let err_norm = err / tol_norm;
+        self.step_t(0.0, y, |_t, yv| f(yv), dt)
+    }
+    /// Perform a single step of length `dt` from `(t, y)` of the system
+    /// `dy/dt = f(t, y)`; each Runge-Kutta stage is evaluated at its own time
+    /// `t + c_i * dt`.
+    ///
+    /// Returns a [`StepResult`] indicating whether the step should be accepted.
+    pub fn step_t(
+        &self,
+        t: f64,
+        y: &[f64],
+        f: impl Fn(f64, &[f64]) -> Vec<f64>,
+        dt: f64,
+    ) -> StepResult {
+        let k1 = f(t, y);
+        self.step_fsal(t, y, &k1, f, dt).0
+    }
+    /// Like [`step_t`](Self::step_t) but with the first stage `k1 = f(t, y)`
+    /// supplied by the caller, and returning the last stage
+    /// `f(t + dt, y_new)` next to the [`StepResult`].
+    ///
+    /// The Dormand-Prince pair is FSAL: after an accepted step the returned
+    /// derivative is exactly the first stage of the next step, which saves one
+    /// evaluation of `f` per step.
+    pub fn step_fsal(
+        &self,
+        t: f64,
+        y: &[f64],
+        k1: &[f64],
+        f: impl Fn(f64, &[f64]) -> Vec<f64>,
+        dt: f64,
+    ) -> (StepResult, Vec<f64>) {
+        let (y_new, err, k_last) = rk45_step_fsal(t, y, k1, f, dt);
+        let err_norm = err / self.error_tolerance(y);
         let accepted = err_norm <= 1.0 || err == 0.0;
-        StepResult {
-            y: y_new,
-            error_estimate: err,
-            accepted,
-        }
+        (
+            StepResult {
+                y: y_new,
+                error_estimate: err,
+                accepted,
+            },
+            k_last,
+        )
     }
 }
 /// Basic position-Verlet integrator (Störmer's method).
@@ -81,31 +121,48 @@ impl DormandPrince {
     }
     /// Integrate `f(t, y) -> dy/dt` from `t0` to `tf` starting at `y0`.
     ///
-    /// Returns a vector of `(t, y)` pairs at every accepted step.
+    /// Every Runge-Kutta stage is evaluated at its own time `t + c_i * h`, so a
+    /// right-hand side that depends explicitly on `t` is integrated with the full
+    /// 5th-order accuracy.  The first-same-as-last property of the pair is used:
+    /// an accepted step hands its last derivative to the next step, so only six
+    /// new evaluations of `f` are needed per accepted step.
+    ///
+    /// A step is accepted when its RMS error estimate does not exceed
+    /// `atol + rtol * max_i |y_i|`; the step size is then rescaled by a safety
+    /// factor times `(tolerance / error)^(1/5)`.  The integration stops early if
+    /// the step size underflows or becomes `NaN` (for example for `NaN`
+    /// tolerances), or if the error estimate is not finite.
+    ///
+    /// Returns a vector of `(t, y)` pairs at every accepted step; the last pair
+    /// has `t == tf` exactly unless the integration stopped early.
     pub fn integrate<F>(&self, f: F, t0: f64, tf: f64, y0: Vec<f64>) -> Vec<(f64, Vec<f64>)>
     where
         F: Fn(f64, &[f64]) -> Vec<f64>,
     {
-        let _n = y0.len();
         let mut t = t0;
         let mut y = y0;
         let mut h = ((tf - t0) / 100.0).min(self.h_max).max(1e-12);
         let mut result = vec![(t, y.clone())];
+        if t >= tf {
+            return result;
+        }
         let safety = 0.9_f64;
         let min_scale = 0.2_f64;
         let max_scale = 10.0_f64;
+        let mut k1 = f(t, &y);
         while t < tf {
-            if t + h > tf {
+            let reaches_end = t + h >= tf;
+            if reaches_end {
                 h = tf - t;
             }
-            let f_at_t = |yv: &[f64]| f(t, yv);
-            let (y_new, err) = rk45_step(&y, f_at_t, h, self.atol);
+            let (y_new, err, k_last) = rk45_step_fsal(t, &y, &k1, &f, h);
             let tol_norm = (self.atol
                 + self.rtol * y.iter().map(|v| v.abs()).fold(0.0_f64, f64::max))
             .max(self.atol);
-            if err <= tol_norm || err == 0.0 {
-                t += h;
+            if err.is_finite() && (err <= tol_norm || err == 0.0) {
+                t = if reaches_end { tf } else { t + h };
                 y = y_new;
+                k1 = k_last;
                 result.push((t, y.clone()));
                 let factor = if err == 0.0 {
                     max_scale
@@ -115,11 +172,15 @@ impl DormandPrince {
                 };
                 h = (h * factor).min(self.h_max);
             } else {
-                let en = err / tol_norm;
-                let factor = (safety * en.powf(-0.25)).clamp(min_scale, 1.0);
+                let factor = if err.is_finite() {
+                    let en = err / tol_norm;
+                    (safety * en.powf(-0.25)).clamp(min_scale, 1.0)
+                } else {
+                    min_scale
+                };
                 h *= factor;
             }
-            if h < 1e-15 * (tf - t0).abs().max(1.0) {
+            if h.is_nan() || h < 1e-15 * (tf - t0).abs().max(1.0) {
                 break;
             }
         }
@@ -660,8 +721,10 @@ impl AdamsBashforthMoulton4 {
 /// Adaptive ODE integrator built on top of [`DormandPrince45`].
 ///
 /// Wraps any [`OdeSystem`] and integrates it from `t0` to `t_end` with
-/// automatic step-size control via error estimation and the PI controller
-/// safety factors from DormandPrince45.
+/// automatic step-size control via error estimation and the safety factors
+/// of the Dormand-Prince pair.  The system's right-hand side is evaluated at the
+/// stage times of the Runge-Kutta scheme, so explicit time dependence is
+/// integrated accurately.
 pub struct AdaptiveIntegrator {
     /// Absolute tolerance.
     pub atol: f64,
@@ -685,7 +748,16 @@ impl AdaptiveIntegrator {
     /// Integrate `system` from time `t0` to `t_end` starting at state `y0`
     /// with initial step `dt_init`.
     ///
-    /// Returns a `Vec<(t, y)>` of accepted steps including the start point.
+    /// `system.ode_rhs(t, y, dydt)` is called with the time of each
+    /// Runge-Kutta stage (`t + c_i * dt`), not with the start time of the step.
+    /// Only six new right-hand-side evaluations are needed per accepted step
+    /// (the last stage of an accepted step is the first stage of the next one).
+    /// The integration stops early if the step size falls below `dt_min` or
+    /// becomes `NaN` (for example for `NaN` tolerances), or if the error estimate
+    /// is not finite.
+    ///
+    /// Returns a `Vec<(t, y)>` of accepted steps including the start point; the
+    /// last pair has `t == t_end` exactly unless the integration stopped early.
     pub fn integrate(
         &self,
         system: &impl OdeSystem,
@@ -700,26 +772,30 @@ impl AdaptiveIntegrator {
         let mut y = y0;
         let mut dt = dt_init.min(self.dt_max);
         let mut result = vec![(t, y.clone())];
+        if t >= t_end {
+            return result;
+        }
         let safety = 0.9_f64;
         let min_scale = 0.2_f64;
         let max_scale = 10.0_f64;
+        let rhs = |tt: f64, yv: &[f64]| {
+            let mut dydt = vec![0.0_f64; n];
+            system.ode_rhs(tt, yv, &mut dydt);
+            dydt
+        };
+        let mut k1 = rhs(t, &y);
         while t < t_end {
-            if t + dt > t_end {
+            let reaches_end = t + dt >= t_end;
+            if reaches_end {
                 dt = t_end - t;
             }
-            let f_closure = |yv: &[f64]| {
-                let mut dydt = vec![0.0_f64; n];
-                system.ode_rhs(t, yv, &mut dydt);
-                dydt
-            };
-            let res = stepper.step(&y, f_closure, dt);
-            let tol_norm = (self.atol
-                + self.rtol * y.iter().map(|v| v.abs()).fold(0.0_f64, f64::max))
-            .max(self.atol);
+            let (res, k_last) = stepper.step_fsal(t, &y, &k1, rhs, dt);
+            let tol_norm = stepper.error_tolerance(&y);
             let err_norm = res.error_estimate / tol_norm;
-            if res.accepted {
-                t += dt;
+            if res.accepted && res.error_estimate.is_finite() {
+                t = if reaches_end { t_end } else { t + dt };
                 y = res.y;
+                k1 = k_last;
                 result.push((t, y.clone()));
                 let scale = if res.error_estimate == 0.0 {
                     max_scale
@@ -728,10 +804,14 @@ impl AdaptiveIntegrator {
                 };
                 dt = (dt * scale).min(self.dt_max);
             } else {
-                let scale = (safety * err_norm.powf(-0.25)).clamp(min_scale, 1.0);
+                let scale = if res.error_estimate.is_finite() {
+                    (safety * err_norm.powf(-0.25)).clamp(min_scale, 1.0)
+                } else {
+                    min_scale
+                };
                 dt *= scale;
             }
-            if dt < self.dt_min {
+            if dt.is_nan() || dt < self.dt_min {
                 break;
             }
         }

@@ -268,3 +268,209 @@ mod tests_gjk_extended {
         assert_eq!(e.distance, 0.0);
     }
 }
+#[cfg(test)]
+mod tests_gjk_distance_termination {
+    use super::super::*;
+
+    fn sphere_sup(center: [f64; 3], radius: f64, dir: [f64; 3]) -> [f64; 3] {
+        let l = len3_arr(dir);
+        if l < 1e-12 {
+            return [center[0] + radius, center[1], center[2]];
+        }
+        let n = scale3_arr(dir, radius / l);
+        [center[0] + n[0], center[1] + n[1], center[2] + n[2]]
+    }
+
+    fn box_sup(center: [f64; 3], half: [f64; 3], dir: [f64; 3]) -> [f64; 3] {
+        let sign = |d: f64| if d >= 0.0 { 1.0 } else { -1.0 };
+        [
+            center[0] + half[0] * sign(dir[0]),
+            center[1] + half[1] * sign(dir[1]),
+            center[2] + half[2] * sign(dir[2]),
+        ]
+    }
+
+    fn sphere_pair_distance(c1: [f64; 3], c2: [f64; 3], r1: f64, r2: f64) -> GjkDistanceResult {
+        let mut cache = GjkCache::new();
+        let termination = GjkTermination::default_criteria();
+        gjk_distance(
+            &mut |dir: [f64; 3]| {
+                CachedSupport::new(sphere_sup(c1, r1, dir), sphere_sup(c2, r2, negate3(dir)))
+            },
+            &mut cache,
+            &termination,
+        )
+    }
+
+    #[test]
+    fn spheres_offset_along_y_report_the_true_gap() {
+        // The initial search direction (1, 0, 0) is not along the line of centres,
+        // so the first support point is far from the closest one.
+        let result = sphere_pair_distance([0.0; 3], [0.0, 5.0, 0.0], 1.0, 1.0);
+        assert!(!result.intersecting);
+        assert!(
+            (result.distance - 3.0).abs() < 1e-6,
+            "expected 3, got {}",
+            result.distance
+        );
+        let gap = sub3_arr(result.point_b, result.point_a);
+        assert!(
+            (len3_arr(gap) - 3.0).abs() < 1e-6 && gap[1] > 2.99,
+            "witness gap {gap:?}"
+        );
+    }
+
+    #[test]
+    fn spheres_offset_along_the_diagonal_report_the_true_gap() {
+        let result = sphere_pair_distance([0.0; 3], [3.0, 3.0, 3.0], 1.0, 0.5);
+        let expected = 27.0_f64.sqrt() - 1.5;
+        assert!(
+            (result.distance - expected).abs() < 1e-6,
+            "expected {expected}, got {}",
+            result.distance
+        );
+    }
+
+    #[test]
+    fn random_sphere_pairs_match_the_closed_form_distance() {
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..200 {
+            let c2 = [
+                next() * 12.0 - 6.0,
+                next() * 12.0 - 6.0,
+                next() * 12.0 - 6.0,
+            ];
+            let (r1, r2) = (0.2 + next(), 0.2 + next());
+            let gap = len3_arr(c2) - r1 - r2;
+            if gap < 1e-3 {
+                continue;
+            }
+            let result = sphere_pair_distance([0.0; 3], c2, r1, r2);
+            assert!(!result.intersecting);
+            assert!(
+                (result.distance - gap).abs() < 1e-6,
+                "gap {gap}, got {}",
+                result.distance
+            );
+        }
+    }
+
+    #[test]
+    fn separated_boxes_match_the_axis_gaps() {
+        let mut cache = GjkCache::new();
+        let termination = GjkTermination::default_criteria();
+        let half = [0.5, 0.5, 0.5];
+        let c2 = [3.0, 4.0, 0.0];
+        let result = gjk_distance(
+            &mut |dir: [f64; 3]| {
+                CachedSupport::new(
+                    box_sup([0.0; 3], half, dir),
+                    box_sup(c2, half, negate3(dir)),
+                )
+            },
+            &mut cache,
+            &termination,
+        );
+        // Gaps of 2 (x), 3 (y) and 0 (z) between the boxes.
+        assert!(!result.intersecting);
+        assert!(
+            (result.distance - 13.0_f64.sqrt()).abs() < 1e-9,
+            "got {}",
+            result.distance
+        );
+    }
+
+    #[test]
+    fn overlapping_boxes_are_reported_as_intersecting() {
+        let mut cache = GjkCache::new();
+        let termination = GjkTermination::default_criteria();
+        let half = [1.0, 1.0, 1.0];
+        let c2 = [0.7, 0.4, -0.2];
+        let result = gjk_distance(
+            &mut |dir: [f64; 3]| {
+                CachedSupport::new(
+                    box_sup([0.0; 3], half, dir),
+                    box_sup(c2, half, negate3(dir)),
+                )
+            },
+            &mut cache,
+            &termination,
+        );
+        assert!(result.intersecting, "{result:?}");
+        assert_eq!(result.distance, 0.0);
+    }
+
+    #[test]
+    fn warm_started_query_returns_the_same_distance() {
+        let mut cache = GjkCache::new();
+        let termination = GjkTermination::default_criteria();
+        let c2 = [0.0, 0.0, 4.0];
+        let mut support = |dir: [f64; 3]| {
+            CachedSupport::new(
+                sphere_sup([0.0; 3], 0.75, dir),
+                sphere_sup(c2, 0.5, negate3(dir)),
+            )
+        };
+        let cold = gjk_distance(&mut support, &mut cache, &termination);
+        let warm = gjk_distance(&mut support, &mut cache, &termination);
+        assert!(!cold.warm_started && warm.warm_started);
+        assert!(
+            (cold.distance - 2.75).abs() < 1e-6,
+            "cold {}",
+            cold.distance
+        );
+        assert!(
+            (warm.distance - cold.distance).abs() < 1e-9,
+            "warm {}",
+            warm.distance
+        );
+        assert!(warm.iterations <= cold.iterations);
+    }
+
+    #[test]
+    fn proximity_and_registry_queries_inherit_the_fixed_distance() {
+        let mut registry = GjkCacheRegistry::new();
+        let c1 = [0.0; 3];
+        let c2 = [0.0, 5.0, 0.0];
+        for _ in 0..2 {
+            let result = registry.query(1, 2, &mut |dir| sphere_sup(c1, 1.0, dir), &mut |dir| {
+                sphere_sup(c2, 1.0, dir)
+            });
+            assert!(!result.overlapping);
+            assert!((result.distance - 3.0).abs() < 1e-6, "{}", result.distance);
+            assert!(result.normal[1].abs() > 0.999, "{:?}", result.normal);
+        }
+    }
+
+    #[test]
+    fn pruning_keeps_exactly_the_vertices_that_carry_the_closest_point() {
+        let make = |x: f64| CachedSupport::new([x, 0.0, 0.0], [0.0; 3]);
+        let mut simplex = vec![make(1.0), make(2.0), make(3.0), make(4.0)];
+        prune_simplex_to_active(&mut simplex, &[0.5, 0.0, 0.5, 0.0], 2);
+        let xs: Vec<f64> = simplex.iter().map(|s| s.minkowski_point[0]).collect();
+        assert_eq!(xs, vec![1.0, 3.0]);
+        // Numerically vanishing weights never empty the simplex.
+        let mut simplex = vec![make(1.0), make(2.0)];
+        prune_simplex_to_active(&mut simplex, &[0.0, 0.0, 0.0, 0.0], 2);
+        assert_eq!(simplex.len(), 1);
+    }
+
+    #[test]
+    fn johnson_reports_the_vertices_of_the_closest_feature() {
+        // The closest point of this triangle to the origin lies on the edge ab.
+        let a = CachedSupport::new([1.0, -1.0, 1.0], [0.0; 3]);
+        let b = CachedSupport::new([1.0, 1.0, 1.0], [0.0; 3]);
+        let c = CachedSupport::new([4.0, 0.0, 4.0], [0.0; 3]);
+        let result = johnson_closest_point(&[a, b, c]);
+        assert_eq!(result.num_active, 2);
+        assert!(result.bary[2] < 1e-12);
+        let edge_only = johnson_closest_point(&[a, b]);
+        assert_eq!(edge_only.num_active, 2);
+    }
+}

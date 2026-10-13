@@ -6,6 +6,14 @@ use std::f64::consts::PI;
 
 use super::types::{AlloySystem, CrystalStructure, DislocationCore, EamParams, MixingRule, SimBox};
 
+/// Conversion from a force-over-mass ratio in eV/(Å·amu) to an acceleration in Å/ps².
+///
+/// `1 eV / (1 Å · 1 amu) = 1.602176634e-19 J / (1e-10 m · 1.66053906660e-27 kg)
+/// = 9.64853322e17 m/s² = 9648.533 Å/ps²` (CODATA 2018).  Its reciprocal converts
+/// `amu · Å²/ps²` into eV, so the integrator and the kinetic energy use one
+/// consistent unit system.
+pub const EV_PER_ANGSTROM_AMU_TO_ANGSTROM_PER_PS2: f64 = 9_648.533_216;
+
 /// Add two 3-vectors.
 pub(super) fn vadd(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]

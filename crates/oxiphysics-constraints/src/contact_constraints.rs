@@ -215,6 +215,12 @@ pub struct FrictionlessContact {
     /// Effective mass for the normal constraint.
     pub eff_mass_normal: f64,
     /// Baumgarte stabilization bias velocity.
+    ///
+    /// Stored with the sign convention of [`baumgarte_contact_bias`]:
+    /// `-(beta / dt) * depth`, which is non-positive for a penetrating contact.
+    /// [`FrictionlessContact::solve_impulse`] drives the normal relative
+    /// velocity (positive = separating) towards `-bias`, i.e. the penetration
+    /// is pushed out at the speed `beta * depth / dt`.
     pub bias: f64,
     /// Restitution coefficient.
     pub restitution: f64,
@@ -222,6 +228,11 @@ pub struct FrictionlessContact {
 
 impl FrictionlessContact {
     /// Create a frictionless contact constraint.
+    ///
+    /// A penetrating contact (`depth > 0`) is pushed out at the Baumgarte speed
+    /// `beta * depth / dt`; the stored [`FrictionlessContact::bias`] is its
+    /// negative.  A non-positive or non-finite `dt` defines no such speed, so
+    /// the bias is then zero.
     pub fn new(
         contact: ContactPoint,
         inv_mass_a: f64,
@@ -246,8 +257,9 @@ impl FrictionlessContact {
             *j_vb,
             *j_wb,
         );
-        // Baumgarte bias: correct penetration
-        let bias = if contact.depth > 0.0 {
+        // Baumgarte bias: correct penetration.  Without a positive, finite time
+        // step there is no correction speed, so no bias is applied.
+        let bias = if contact.depth > 0.0 && dt.is_finite() && dt > 0.0 {
             -(beta / dt) * contact.depth
         } else {
             0.0
@@ -265,6 +277,12 @@ impl FrictionlessContact {
     ///
     /// Velocities are updated in-place via the returned delta impulse.
     /// Returns the scalar delta impulse applied.
+    ///
+    /// The Jacobian row is `[n, ra x n, -n, -rb x n]`, so `cdot > 0` means the
+    /// bodies separate.  The accumulated impulse is chosen such that the normal
+    /// relative velocity reaches the target separation speed
+    /// `-bias + restitution_bias` (Baumgarte push-out plus bounce), clamped to
+    /// non-negative accumulated impulse.
     pub fn solve_impulse(
         &mut self,
         va: Vec3,
@@ -282,7 +300,9 @@ impl FrictionlessContact {
         } else {
             0.0
         };
-        let rhs = cdot - self.bias - restitution_bias;
+        // `bias` is stored non-positive (see `baumgarte_contact_bias`); the
+        // target separation speed is `-bias + restitution_bias`.
+        let rhs = cdot + self.bias - restitution_bias;
         let raw = -self.eff_mass_normal * rhs;
         let old = self.impulse_normal;
         self.impulse_normal = (old + raw).max(0.0);
@@ -576,12 +596,15 @@ pub fn lemke_solve(lcp: &Lcp, max_iter: usize) -> LemkeResult {
 
     // Entering variable: z_0 (column 2n)
     // Choose leaving variable: most negative q
-    let (leaving_row, _) = lcp
+    let Some((leaving_row, _)) = lcp
         .q
         .iter()
         .enumerate()
         .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .expect("operation should succeed");
+    else {
+        // An empty problem has the trivial solution (also caught above).
+        return LemkeResult::Solution(vec![0.0; n]);
+    };
 
     // Pivot z_0 into basis at leaving_row
     // Save the variable that is leaving before we overwrite the basis entry
@@ -695,9 +718,13 @@ fn extract_solution(tab: &[Vec<f64>], basis: &[usize], n: usize, total_cols: usi
 ///
 /// * `depth` - Penetration depth (positive = overlapping).
 /// * `beta`  - Position error correction factor (0.1–0.3 typical).
-/// * `dt`    - Time step.
+/// * `dt`    - Time step.  A non-positive or non-finite step defines no
+///   correction speed: the bias is `0.0` (never `NaN` or infinite).
 /// * `slop`  - Allowed penetration before correction kicks in.
 pub fn baumgarte_contact_bias(depth: f64, beta: f64, dt: f64, slop: f64) -> f64 {
+    if !(dt.is_finite() && dt > 0.0) {
+        return 0.0;
+    }
     let correctable = (depth - slop).max(0.0);
     -(beta / dt) * correctable
 }
@@ -989,6 +1016,12 @@ impl SequentialImpulseSolver {
         }
     }
 
+    /// Baumgarte bias for a contact of penetration `depth`, honouring the
+    /// solver's slop (no correction inside the allowed penetration).
+    fn contact_bias(&self, depth: f64, dt: f64) -> f64 {
+        baumgarte_contact_bias(depth, self.beta, dt, self.slop)
+    }
+
     /// Solve a single frictionless contact between two bodies.
     ///
     /// Mutates body velocities in-place.
@@ -1013,6 +1046,7 @@ impl SequentialImpulseSolver {
             self.beta,
             dt,
         );
+        con.bias = self.contact_bias(contact.depth, dt);
         for _ in 0..self.iterations {
             let delta =
                 con.solve_impulse(body_a.vel, body_a.omega, body_b.vel, body_b.omega, ra, rb);
@@ -1050,6 +1084,7 @@ impl SequentialImpulseSolver {
             beta: self.beta,
             dt,
         });
+        con.frictionless.bias = self.contact_bias(contact.depth, dt);
         for _ in 0..self.iterations {
             let (dn, dt1, dt2) =
                 con.solve(body_a.vel, body_a.omega, body_b.vel, body_b.omega, ra, rb);
@@ -1370,6 +1405,11 @@ mod tests {
     }
 
     // T20: Sequential impulse solver separates penetrating bodies (frictionless).
+    //
+    // The Baumgarte bias is a *target separation speed*: after convergence the
+    // normal relative velocity must equal `beta * (depth - slop) / dt`, i.e. the
+    // bodies are driven apart (the previous sign error drove them together and
+    // this test only asserted `vel >= -0.5`).
     #[test]
     fn test_si_solver_separates_bodies_frictionless() {
         let mut a = RigidBodyState::new(
@@ -1383,10 +1423,17 @@ mod tests {
         let cp = ContactPoint::new([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.01, 0, 1);
         let solver = SequentialImpulseSolver::new(10, 0.2, 0.001);
         solver.solve_frictionless(&mut a, &mut b, &cp, 0.016);
-        // Body A's downward velocity should be reduced
+        // Body A must be pushed out of the penetration (positive separating
+        // velocity), not merely have its approach speed reduced.
+        let expected = 0.2 * (0.01 - 0.001) / 0.016;
         assert!(
-            a.vel[1] >= -0.5,
-            "Velocity should be corrected, got {}",
+            a.vel[1] > 0.1,
+            "Body A must be pushed out of the penetration, got {}",
+            a.vel[1]
+        );
+        assert!(
+            (a.vel[1] - expected).abs() < 1e-9,
+            "separation speed {} != beta*(depth-slop)/dt = {expected}",
             a.vel[1]
         );
     }
@@ -1630,5 +1677,214 @@ mod tests {
         let islands = mgr.build_islands(&pairs); // should not panic
         let total: usize = islands.iter().map(|i| i.bodies.len()).sum();
         assert_eq!(total, 2);
+    }
+
+    // T36: A resting (cdot = 0) penetrating contact must generate a positive
+    // normal impulse of `eff_mass * beta * depth / dt`.
+    #[test]
+    fn test_frictionless_resting_penetration_pushes_apart() {
+        let cp = ContactPoint::new([0.0; 3], [0.0, 1.0, 0.0], 0.05, 0, 1);
+        let mut con = FrictionlessContact::new(
+            cp,
+            1.0,
+            zero_inertia(),
+            0.0,
+            zero_inertia(),
+            [0.0; 3],
+            [0.0; 3],
+            0.0,
+            0.2,
+            0.016,
+        );
+        let delta = con.solve_impulse([0.0; 3], [0.0; 3], [0.0; 3], [0.0; 3], [0.0; 3], [0.0; 3]);
+        let expected = 0.2 * 0.05 / 0.016;
+        assert!(
+            delta > 0.0,
+            "resting penetration must push apart, got {delta}"
+        );
+        assert!(
+            (delta - expected).abs() < EPS,
+            "delta={delta}, expected={expected}"
+        );
+        assert!((con.impulse_normal - expected).abs() < EPS);
+    }
+
+    // T37: Restitution and Baumgarte are both target separation speeds and add up.
+    #[test]
+    fn test_frictionless_restitution_and_baumgarte_combine() {
+        let cp = ContactPoint::new([0.0; 3], [0.0, 1.0, 0.0], 0.05, 0, 1);
+        let mut con = FrictionlessContact::new(
+            cp,
+            1.0,
+            zero_inertia(),
+            0.0,
+            zero_inertia(),
+            [0.0; 3],
+            [0.0; 3],
+            0.5,
+            0.2,
+            0.016,
+        );
+        // Approaching at 4 m/s along -n.
+        let delta = con.solve_impulse(
+            [0.0, -4.0, 0.0],
+            [0.0; 3],
+            [0.0; 3],
+            [0.0; 3],
+            [0.0; 3],
+            [0.0; 3],
+        );
+        // Target separation speed: e * |cdot| + beta * depth / dt = 2 + 0.625.
+        let expected = 4.0 + 0.5 * 4.0 + 0.2 * 0.05 / 0.016;
+        assert!(
+            (delta - expected).abs() < EPS,
+            "delta={delta}, expected={expected}"
+        );
+    }
+
+    // T38: Penetration within the allowed slop produces no positional push.
+    #[test]
+    fn test_si_solver_slop_suppresses_correction() {
+        let mut a = RigidBodyState::new([0.0; 3], [0.0; 3], 1.0, zero_inertia(), [0.0, 0.1, 0.0]);
+        let mut b = RigidBodyState::static_body([0.0; 3]);
+        let cp = ContactPoint::new([0.0; 3], [0.0, 1.0, 0.0], 0.005, 0, 1);
+        let solver = SequentialImpulseSolver::new(10, 0.2, 0.01);
+        solver.solve_frictionless(&mut a, &mut b, &cp, 0.016);
+        for c in a.vel {
+            assert!(c.abs() < EPS, "no push expected inside the slop, got {c}");
+        }
+    }
+
+    // T39: Slop is honoured when the push is active: beta * (depth - slop) / dt.
+    #[test]
+    fn test_si_solver_slop_reduces_push_speed() {
+        let mut a = RigidBodyState::new([0.0; 3], [0.0; 3], 1.0, zero_inertia(), [0.0, 0.1, 0.0]);
+        let mut b = RigidBodyState::static_body([0.0; 3]);
+        let cp = ContactPoint::new([0.0; 3], [0.0, 1.0, 0.0], 0.05, 0, 1);
+        let solver = SequentialImpulseSolver::new(8, 0.2, 0.01);
+        solver.solve_frictionless(&mut a, &mut b, &cp, 0.016);
+        let expected = 0.2 * (0.05 - 0.01) / 0.016;
+        assert!(
+            (a.vel[1] - expected).abs() < 1e-9,
+            "vel={}, expected={expected}",
+            a.vel[1]
+        );
+    }
+
+    // T40: The frictional path shares the normal solve and must push apart too,
+    // without inventing tangential motion.
+    #[test]
+    fn test_si_solver_frictional_resting_penetration_pushes_apart() {
+        let mut a = RigidBodyState::new([0.0; 3], [0.0; 3], 1.0, zero_inertia(), [0.0, 0.1, 0.0]);
+        let mut b = RigidBodyState::static_body([0.0; 3]);
+        let cp = ContactPoint::new([0.0; 3], [0.0, 1.0, 0.0], 0.05, 0, 1);
+        let solver = SequentialImpulseSolver::new(10, 0.2, 0.001);
+        solver.solve_frictional(&mut a, &mut b, &cp, 0.5, 0.016);
+        let expected = 0.2 * (0.05 - 0.001) / 0.016;
+        assert!(
+            (a.vel[1] - expected).abs() < 1e-9,
+            "vel={}, expected={expected}",
+            a.vel[1]
+        );
+        assert!(a.vel[0].abs() < EPS && a.vel[2].abs() < EPS);
+    }
+
+    // T41: A body approaching the static world is stopped (restitution 0, no
+    // penetration): the post-solve normal velocity is exactly zero.
+    #[test]
+    fn test_si_solver_stops_approaching_body_without_penetration() {
+        let mut a = RigidBodyState::new(
+            [0.0, -3.0, 0.0],
+            [0.0; 3],
+            2.0,
+            zero_inertia(),
+            [0.0, 0.1, 0.0],
+        );
+        let mut b = RigidBodyState::static_body([0.0; 3]);
+        let cp = ContactPoint::new([0.0; 3], [0.0, 1.0, 0.0], 0.0, 0, 1);
+        let solver = SequentialImpulseSolver::new(10, 0.2, 0.001);
+        solver.solve_frictionless(&mut a, &mut b, &cp, 0.016);
+        assert!(a.vel[1].abs() < 1e-9, "vel={}", a.vel[1]);
+    }
+
+    // T42: A non-positive or non-finite time step defines no Baumgarte
+    // correction speed: the bias is exactly zero (not NaN / infinite) and a
+    // resting penetrating contact generates no impulse.
+    #[test]
+    fn test_frictionless_non_positive_dt_applies_no_bias() {
+        for dt in [0.0, -0.016, f64::NAN, f64::INFINITY] {
+            let cp = ContactPoint::new([0.0; 3], [0.0, 1.0, 0.0], 0.05, 0, 1);
+            let mut con = FrictionlessContact::new(
+                cp,
+                1.0,
+                zero_inertia(),
+                0.0,
+                zero_inertia(),
+                [0.0; 3],
+                [0.0; 3],
+                0.0,
+                0.2,
+                dt,
+            );
+            assert_eq!(con.bias, 0.0, "dt={dt}");
+            let delta =
+                con.solve_impulse([0.0; 3], [0.0; 3], [0.0; 3], [0.0; 3], [0.0; 3], [0.0; 3]);
+            assert_eq!(delta, 0.0, "dt={dt}: delta={delta}");
+            assert_eq!(con.impulse_normal, 0.0, "dt={dt}");
+        }
+    }
+
+    // T43: The frictional constructor shares the guard.
+    #[test]
+    fn test_frictional_non_positive_dt_applies_no_bias() {
+        for dt in [0.0, -1.0, f64::NAN] {
+            let cp = ContactPoint::new([0.0; 3], [0.0, 1.0, 0.0], 0.05, 0, 1);
+            let mut con = FrictionalContact::new(FrictionalContactParams {
+                contact: cp,
+                inv_mass_a: 1.0,
+                inv_inertia_a: zero_inertia(),
+                inv_mass_b: 0.0,
+                inv_inertia_b: zero_inertia(),
+                ra: [0.0; 3],
+                rb: [0.0; 3],
+                restitution: 0.0,
+                friction: 0.5,
+                beta: 0.2,
+                dt,
+            });
+            assert_eq!(con.frictionless.bias, 0.0, "dt={dt}");
+            let (dn, dt1, dt2) =
+                con.solve([0.0; 3], [0.0; 3], [0.0; 3], [0.0; 3], [0.0; 3], [0.0; 3]);
+            assert_eq!((dn, dt1, dt2), (0.0, 0.0, 0.0), "dt={dt}");
+        }
+    }
+
+    // T44: The public bias helper never returns NaN / infinity for a bad step.
+    #[test]
+    fn test_baumgarte_contact_bias_guards_the_time_step() {
+        for dt in [0.0, -0.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            // Both a penetrating contact and one inside the slop (where the
+            // unguarded `-(beta / 0) * 0` evaluates to NaN).
+            assert_eq!(baumgarte_contact_bias(0.05, 0.2, dt, 0.001), 0.0, "dt={dt}");
+            assert_eq!(baumgarte_contact_bias(0.0, 0.2, dt, 0.001), 0.0, "dt={dt}");
+        }
+        // A valid step keeps the documented value.
+        let bias = baumgarte_contact_bias(0.05, 0.2, 0.01, 0.0);
+        assert!((bias + 1.0).abs() < EPS, "bias={bias}");
+    }
+
+    // T45: A solver step with dt = 0 leaves a resting body untouched (the
+    // solver zeroes the bias instead of dividing by the time step).
+    #[test]
+    fn test_si_solver_zero_dt_does_not_blow_up() {
+        let mut a = RigidBodyState::new([0.0; 3], [0.0; 3], 1.0, zero_inertia(), [0.0, 0.1, 0.0]);
+        let mut b = RigidBodyState::static_body([0.0; 3]);
+        let cp = ContactPoint::new([0.0; 3], [0.0, 1.0, 0.0], 0.05, 0, 1);
+        let solver = SequentialImpulseSolver::new(4, 0.2, 0.001);
+        solver.solve_frictionless(&mut a, &mut b, &cp, 0.0);
+        solver.solve_frictional(&mut a, &mut b, &cp, 0.5, 0.0);
+        for c in a.vel {
+            assert!(c.abs() < EPS, "velocity must stay zero, got {c}");
+        }
     }
 }

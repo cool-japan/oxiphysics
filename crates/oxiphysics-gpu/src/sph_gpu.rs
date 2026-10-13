@@ -4,8 +4,10 @@
 //! GPU-accelerated Smoothed Particle Hydrodynamics (SPH) simulation.
 //!
 //! This module runs a Weakly Compressible SPH (WCSPH) density–pressure solve on
-//! the GPU through the real [`WgpuBackendReal`] dispatch path, falling back to a
-//! clean CPU implementation when no GPU is available.
+//! the GPU through the real
+//! [`WgpuBackendReal`](crate::compute::wgpu_backend::real::WgpuBackendReal)
+//! dispatch path, falling back to a clean CPU implementation when no GPU is
+//! available.
 //!
 //! # Physical model
 //!
@@ -17,16 +19,18 @@
 //!
 //! ## GPU dispatch strategy
 //!
-//! The GPU path is a real resident pipeline. Each `step` uploads the current
-//! particle state, then dispatches the full kernel sequence:
+//! The GPU path is a real resident pipeline on one long-lived device. Each
+//! `step` uploads the current particle state, then dispatches the full kernel
+//! sequence without any host round-trip in between:
 //!
 //! 1. **cell-list**: hash each particle into a spatial-hash bucket
 //!    (`sph_cell_list` kernel → `cell_keys[]`, `particle_ids[]`).
 //! 2. **sort**: stable radix-sort the `(cell_key, particle_id)` pairs on the GPU
-//!    (`gpu_radix::radix_sort_pairs_gpu`) so each bucket's particles are
-//!    contiguous in `sorted_ids[]`.
-//! 3. **bucket bounds**: `histogram_u32` + `exclusive_scan_u32` (GPU primitives)
-//!    yield `cell_count[]` and `cell_start[]`.
+//!    (one pass per 8 key bits, with a multi-level GPU scan of the per-tile digit
+//!    counts) so each bucket's particles are contiguous in `sorted_ids[]`.
+//! 3. **bucket bounds**: `sph_cell_histogram` (global atomic counts, any bucket
+//!    count up to 65536) and a GPU exclusive scan yield `cell_count[]` and
+//!    `cell_start[]`.
 //! 4. **density**: `sph_density` walks the 27 neighbor buckets per particle,
 //!    distance-filtering candidates (collision-safe) and summing W.
 //! 5. **force**: `sph_force` computes Tait-EOS pressure and accumulates the
@@ -34,15 +38,17 @@
 //! 6. **integrate**: `sph_integrate` advances velocity then position (symplectic).
 //! 7. **boundary**: `sph_boundary` clamps to the domain AABB and reflects walls.
 //!
-//! The positions/velocities/densities/acceleration buffers stay GPU-resident
-//! across all sub-steps of a `step`; only the spatial-hash rebuild round-trips
-//! through the reused GPU radix-sort/scan primitives (mirroring the shipped
-//! hybrid LBVH's "GPU sort → host orchestration" structure). Results are read
-//! back into the structure-of-arrays [`SphParticleState`] at the end of `step`.
+//! All buffers (particle state, cell list, sort/scan scratch and one parameter
+//! buffer per kernel) are allocated once when the simulation is created, and the
+//! shader pipelines are compiled once by the first step, so a step costs only the
+//! particle-state upload, the dispatches and the final readback; the GPU buffer
+//! count is constant for the lifetime of the simulation. Results are read back
+//! into the structure-of-arrays [`SphParticleState`] at the end of `step`.
 //!
-//! When the kernel support radius exceeds the cell size the neighbor sweep would
-//! be incomplete, so the GPU path validates `support ≤ cell_size` and otherwise
-//! falls back to the exact CPU solve for that step.
+//! The hash grid spacing is the kernel support (2h), so the 27-cell sweep always
+//! covers every neighbor. A non-positive or NaN support (or a particle count the
+//! 1-D dispatches cannot address) makes the GPU path inapplicable; the exact CPU
+//! solve then runs instead.
 //!
 //! ## Usage
 //!
@@ -385,9 +391,10 @@ impl SphSimulation {
     /// Attempt the full GPU-resident pipeline for one step.
     ///
     /// Returns `false` (so the caller falls back to CPU for this step) when the
-    /// GPU path is not applicable — e.g. the cell size cannot cover the kernel
-    /// support, or a dispatch/readback failed. The GPU buffers stay resident
-    /// across calls; particle state is uploaded at entry and read back at exit.
+    /// GPU path is not applicable: the smoothing length is NaN or not positive,
+    /// the particle arrays are shorter than the resident buffers, or a dispatch
+    /// or readback failed. The GPU buffers stay resident across calls; particle
+    /// state is uploaded at entry and read back at exit.
     #[cfg(feature = "wgpu-backend")]
     fn try_step_gpu(&mut self, dt: f64) -> bool {
         let cfg = self.config.clone();
@@ -536,18 +543,37 @@ impl SphSimulation {
 // ── GPU pipeline implementation ─────────────────────────────────────────────
 
 #[cfg(feature = "wgpu-backend")]
+mod resident;
+
+#[cfg(feature = "wgpu-backend")]
 mod gpu_pipeline {
+    use super::resident::ResidentCellList;
     use super::{SphConfig, SphParticleState};
     use crate::compute::wgpu_backend::WgpuBufferHandle;
     use crate::compute::wgpu_backend::real::WgpuBackendReal;
     use crate::kernels_wgsl::{
-        SPH_BOUNDARY_WGSL, SPH_CELL_LIST_WGSL, SPH_DENSITY_GRID_WGSL, SPH_FORCE_GRID_WGSL,
-        SPH_INTEGRATE_WGSL,
+        SPH_BOUNDARY_WGSL, SPH_DENSITY_GRID_WGSL, SPH_FORCE_GRID_WGSL, SPH_INTEGRATE_WGSL,
     };
 
-    /// Maximum spatial-hash table size (keeps histogram bins ≤ device limits and
-    /// memory bounded; larger particle counts reuse buckets via hashing).
+    /// Maximum spatial-hash table size (keeps the bucket scan at two levels and
+    /// the memory bounded; larger particle counts reuse buckets via hashing).
     const MAX_CELLS: usize = 1 << 16;
+
+    /// Threads per workgroup of the SPH kernels.
+    const SPH_WORKGROUP: usize = 64;
+
+    /// Largest particle count the 1-D SPH dispatches can address (65535
+    /// workgroups per dimension); bigger problems stay on the CPU path.
+    const MAX_GPU_PARTICLES: usize = 65_535 * SPH_WORKGROUP;
+
+    /// Byte size of the `SphGridParams` buffer (12 words, see [`density_params_bytes`]).
+    const DENSITY_PARAM_BYTES: u64 = 12 * 4;
+    /// Byte size of the `SphForceParams` buffer (16 words, see [`force_params_bytes`]).
+    const FORCE_PARAM_BYTES: u64 = 16 * 4;
+    /// Byte size of the `IntegrateParams` buffer (4 words, see [`integrate_params_bytes`]).
+    const INTEGRATE_PARAM_BYTES: u64 = 4 * 4;
+    /// Byte size of the `BoundaryParams` buffer (8 words, see [`boundary_params_bytes`]).
+    const BOUNDARY_PARAM_BYTES: u64 = 8 * 4;
 
     fn ro() -> wgpu::BufferBindingType {
         wgpu::BufferBindingType::Storage { read_only: true }
@@ -557,7 +583,12 @@ mod gpu_pipeline {
         wgpu::BufferBindingType::Storage { read_only: false }
     }
 
-    /// GPU-resident SPH pipeline buffers and backend.
+    /// GPU-resident SPH pipeline: one long-lived backend and every buffer of the
+    /// step, allocated once in [`SphGpuState::try_init`].
+    ///
+    /// A step only rewrites buffer contents (particle state, per-kernel
+    /// parameters) and dispatches kernels; it neither creates a device, nor
+    /// compiles a pipeline after the first step, nor allocates a GPU buffer.
     pub(super) struct SphGpuState {
         backend: WgpuBackendReal,
         n: usize,
@@ -569,32 +600,44 @@ mod gpu_pipeline {
         densities: WgpuBufferHandle,
         /// Interleaved xyz acceleration (3·n f32).
         accel: WgpuBufferHandle,
-        /// Sorted particle index list (n u32), produced by the radix sort.
-        sorted_ids: WgpuBufferHandle,
-        /// Per-bucket start offset (num_cells u32).
-        cell_start: WgpuBufferHandle,
-        /// Per-bucket particle count (num_cells u32).
-        cell_count: WgpuBufferHandle,
-        /// Number of hash buckets.
-        num_cells: usize,
+        /// Spatial-hash cell list: sorted ids, bucket starts and bucket counts.
+        cells: ResidentCellList,
+        /// `SphGridParams` words of the density kernel.
+        density_params: WgpuBufferHandle,
+        /// `SphForceParams` words of the force kernel.
+        force_params: WgpuBufferHandle,
+        /// `IntegrateParams` words of the integration kernel.
+        integrate_params: WgpuBufferHandle,
+        /// `BoundaryParams` words of the boundary kernel.
+        boundary_params: WgpuBufferHandle,
+        /// Host staging for the SoA → interleaved position upload.
+        host_pos: Vec<f32>,
+        /// Host staging for the SoA → interleaved velocity upload.
+        host_vel: Vec<f32>,
     }
 
     impl SphGpuState {
         /// Try to construct the GPU state, allocating all resident buffers.
         ///
-        /// Returns `None` if no GPU adapter is available.
+        /// Returns `None` if no GPU adapter is available or the particle count is
+        /// beyond what the dispatches can address.
         pub(super) fn try_init(n: usize) -> Option<Self> {
-            let mut backend = WgpuBackendReal::try_new().ok()?;
             let n_eff = n.max(1);
+            if n_eff > MAX_GPU_PARTICLES {
+                return None;
+            }
+            let mut backend = WgpuBackendReal::try_new().ok()?;
             let num_cells = n_eff.next_power_of_two().clamp(1, MAX_CELLS);
+            let cells = ResidentCellList::new(&mut backend, n_eff, num_cells).ok()?;
 
             let positions = backend.create_buffer_storage((n_eff * 3 * 4) as u64);
             let velocities = backend.create_buffer_storage((n_eff * 3 * 4) as u64);
             let densities = backend.create_buffer_storage((n_eff * 4) as u64);
             let accel = backend.create_buffer_storage((n_eff * 3 * 4) as u64);
-            let sorted_ids = backend.create_buffer_storage((n_eff * 4) as u64);
-            let cell_start = backend.create_buffer_storage((num_cells * 4) as u64);
-            let cell_count = backend.create_buffer_storage((num_cells * 4) as u64);
+            let density_params = backend.create_buffer_storage(DENSITY_PARAM_BYTES);
+            let force_params = backend.create_buffer_storage(FORCE_PARAM_BYTES);
+            let integrate_params = backend.create_buffer_storage(INTEGRATE_PARAM_BYTES);
+            let boundary_params = backend.create_buffer_storage(BOUNDARY_PARAM_BYTES);
 
             Some(Self {
                 backend,
@@ -603,11 +646,32 @@ mod gpu_pipeline {
                 velocities,
                 densities,
                 accel,
-                sorted_ids,
-                cell_start,
-                cell_count,
-                num_cells,
+                cells,
+                density_params,
+                force_params,
+                integrate_params,
+                boundary_params,
+                host_pos: vec![0.0; n * 3],
+                host_vel: vec![0.0; n * 3],
             })
+        }
+
+        /// Number of GPU buffers currently alive on this state's backend.
+        #[cfg(test)]
+        pub(super) fn live_buffer_count(&self) -> usize {
+            self.backend.live_buffer_count()
+        }
+
+        /// Total size in bytes of the live GPU buffers of this state's backend.
+        #[cfg(test)]
+        pub(super) fn live_buffer_bytes(&self) -> u64 {
+            self.backend.live_buffer_bytes()
+        }
+
+        /// Number of compute pipelines this state's backend has compiled so far.
+        #[cfg(test)]
+        pub(super) fn compiled_pipeline_count(&self) -> usize {
+            self.backend.compiled_pipeline_count()
         }
 
         /// Run one full GPU step. Returns `false` if the GPU path is not
@@ -622,29 +686,42 @@ mod gpu_pipeline {
             if n == 0 {
                 return true;
             }
+            if state.pos_x.len() < n
+                || state.pos_y.len() < n
+                || state.pos_z.len() < n
+                || state.vel_x.len() < n
+                || state.vel_y.len() < n
+                || state.vel_z.len() < n
+                || state.density.len() < n
+                || state.pressure.len() < n
+            {
+                return false;
+            }
 
             // The 27-cell neighbor sweep requires the support radius to fit in
             // one cell; otherwise the GPU result would miss neighbors. The cell
             // size is set to the support (= 2h) so neighbors always lie in the
-            // 27 cells. A non-positive support means the GPU path is inapplicable.
+            // 27 cells. A non-positive (or NaN) support means the GPU path is
+            // inapplicable.
             let support = 2.0 * cfg.smoothing_h as f32;
-            if support <= 0.0 {
+            if support.is_nan() || support <= 0.0 {
                 return false;
             }
 
-            // Upload current particle state (SoA → interleaved f32).
-            let mut pos = vec![0.0f32; n * 3];
-            let mut vel = vec![0.0f32; n * 3];
+            // Upload current particle state (SoA → interleaved f32) through the
+            // reused host staging vectors.
             for i in 0..n {
-                pos[i * 3] = state.pos_x[i] as f32;
-                pos[i * 3 + 1] = state.pos_y[i] as f32;
-                pos[i * 3 + 2] = state.pos_z[i] as f32;
-                vel[i * 3] = state.vel_x[i] as f32;
-                vel[i * 3 + 1] = state.vel_y[i] as f32;
-                vel[i * 3 + 2] = state.vel_z[i] as f32;
+                self.host_pos[i * 3] = state.pos_x[i] as f32;
+                self.host_pos[i * 3 + 1] = state.pos_y[i] as f32;
+                self.host_pos[i * 3 + 2] = state.pos_z[i] as f32;
+                self.host_vel[i * 3] = state.vel_x[i] as f32;
+                self.host_vel[i * 3 + 1] = state.vel_y[i] as f32;
+                self.host_vel[i * 3 + 2] = state.vel_z[i] as f32;
             }
-            self.backend.queue_write_buffer_f32(&self.positions, &pos);
-            self.backend.queue_write_buffer_f32(&self.velocities, &vel);
+            self.backend
+                .queue_write_buffer_f32(&self.positions, &self.host_pos);
+            self.backend
+                .queue_write_buffer_f32(&self.velocities, &self.host_vel);
 
             // 1–3: rebuild the spatial-hash cell list on the GPU.
             if !self.rebuild_cell_list(cfg) {
@@ -660,7 +737,7 @@ mod gpu_pipeline {
                 return false;
             }
             // 6: integrate (symplectic Euler).
-            if !self.dispatch_integrate(cfg, dt) {
+            if !self.dispatch_integrate(dt) {
                 return false;
             }
             // 7: boundary enforcement.
@@ -669,9 +746,13 @@ mod gpu_pipeline {
             }
 
             // Read back state (interleaved f32 → SoA).
-            let pos_out = self.backend.read_buffer_f32(self.positions);
-            let vel_out = self.backend.read_buffer_f32(self.velocities);
-            let dens_out = self.backend.read_buffer_f32(self.densities);
+            let (Ok(pos_out), Ok(vel_out), Ok(dens_out)) = (
+                self.backend.read_buffer_f32(self.positions),
+                self.backend.read_buffer_f32(self.velocities),
+                self.backend.read_buffer_f32(self.densities),
+            ) else {
+                return false;
+            };
             if pos_out.len() < n * 3 || vel_out.len() < n * 3 || dens_out.len() < n {
                 return false;
             }
@@ -695,111 +776,65 @@ mod gpu_pipeline {
             let h = cfg.smoothing_h as f32;
             StepScalars {
                 n: self.n as u32,
-                num_cells: self.num_cells as u32,
+                num_cells: self.cells.num_cells() as u32,
                 h,
                 support: 2.0 * h,
             }
         }
 
-        /// CELL_LIST → radix sort → histogram → scan, writing `sorted_ids`,
-        /// `cell_start`, `cell_count` on the GPU. The positions buffer is already
-        /// uploaded by [`Self::step`]. Returns `false` on failure.
-        fn rebuild_cell_list(&mut self, cfg: &SphConfig) -> bool {
-            let n = self.n;
-
-            // Scratch key/payload buffers.
-            let cell_keys = self.backend.create_buffer_storage((n * 4) as u64);
-            let particle_ids = self.backend.create_buffer_storage((n * 4) as u64);
-
-            let scalars = self.step_scalars(cfg);
-            let params = cell_params_bytes(cfg, &scalars);
-            let params_buf = self.backend.create_buffer_storage(params.len() as u64);
-            self.backend.queue_write_buffer_raw(&params_buf, &params);
-
-            let wg = WgpuBackendReal::dispatch_count_for(n, 64);
-            if self
-                .backend
-                .dispatch_wgsl(
-                    SPH_CELL_LIST_WGSL,
-                    "sph_cell_list",
-                    &[
-                        (self.positions, ro()),
-                        (cell_keys, rw()),
-                        (particle_ids, rw()),
-                        (params_buf, ro()),
-                    ],
-                    wg,
-                )
-                .is_err()
-            {
-                return false;
-            }
-
-            // Read keys+ids, sort the pairs on the GPU, derive bucket bounds.
-            let keys = self.backend.read_buffer_u32(cell_keys);
-            let ids = self.backend.read_buffer_u32(particle_ids);
-            if keys.len() < n || ids.len() < n {
-                return false;
-            }
-            let keys = &keys[..n];
-            let ids = &ids[..n];
-
-            let (sorted_keys, sorted_ids) = crate::gpu_radix::radix_sort_pairs_gpu(keys, ids);
-            let counts = crate::gpu_primitives::histogram_u32(&sorted_keys, self.num_cells);
-            let starts = crate::gpu_primitives::exclusive_scan_u32(&counts);
-            if sorted_ids.len() < n
-                || counts.len() < self.num_cells
-                || starts.len() < self.num_cells
-            {
-                return false;
-            }
-
-            self.backend
-                .queue_write_buffer_raw(&self.sorted_ids, bytemuck::cast_slice(&sorted_ids[..n]));
-            self.backend.queue_write_buffer_raw(
-                &self.cell_start,
-                bytemuck::cast_slice(&starts[..self.num_cells]),
-            );
-            self.backend.queue_write_buffer_raw(
-                &self.cell_count,
-                bytemuck::cast_slice(&counts[..self.num_cells]),
-            );
-            true
+        /// Workgroup counts of the 1-D per-particle SPH dispatches, or `None` if
+        /// the particle count cannot be covered by any dispatch shape.
+        fn particle_workgroups(&self) -> Option<[u32; 3]> {
+            WgpuBackendReal::dispatch_count_for(self.n, SPH_WORKGROUP as u32).ok()
         }
 
-        fn dispatch_density(&mut self, cfg: &SphConfig) -> bool {
-            let n = self.n;
-            let scalars = self.step_scalars(cfg);
-            let params = density_params_bytes(cfg, &scalars);
-            let params_buf = self.backend.create_buffer_storage(params.len() as u64);
-            self.backend.queue_write_buffer_raw(&params_buf, &params);
+        /// Hash kernel → radix sort → bucket histogram → bucket scan, leaving
+        /// `sorted_ids`, `cell_start` and `cell_count` on the GPU. The positions
+        /// buffer is already uploaded by [`Self::step`]. Returns `false` on
+        /// failure.
+        fn rebuild_cell_list(&self, cfg: &SphConfig) -> bool {
+            let support = 2.0 * cfg.smoothing_h as f32;
+            let origin = [
+                cfg.domain_min[0] as f32,
+                cfg.domain_min[1] as f32,
+                cfg.domain_min[2] as f32,
+            ];
+            self.cells
+                .build(&self.backend, self.positions, support, origin)
+                .is_ok()
+        }
 
-            let wg = WgpuBackendReal::dispatch_count_for(n, 64);
+        fn dispatch_density(&self, cfg: &SphConfig) -> bool {
+            let Some(workgroups) = self.particle_workgroups() else {
+                return false;
+            };
+            let scalars = self.step_scalars(cfg);
+            self.backend
+                .queue_write_buffer_raw(&self.density_params, &density_params_bytes(cfg, &scalars));
             self.backend
                 .dispatch_wgsl(
                     SPH_DENSITY_GRID_WGSL,
                     "sph_density",
                     &[
                         (self.positions, ro()),
-                        (self.sorted_ids, ro()),
-                        (self.cell_start, ro()),
-                        (self.cell_count, ro()),
+                        (self.cells.sorted_ids(), ro()),
+                        (self.cells.cell_start(), ro()),
+                        (self.cells.cell_count(), ro()),
                         (self.densities, rw()),
-                        (params_buf, ro()),
+                        (self.density_params, ro()),
                     ],
-                    wg,
+                    workgroups,
                 )
                 .is_ok()
         }
 
-        fn dispatch_force(&mut self, cfg: &SphConfig) -> bool {
-            let n = self.n;
+        fn dispatch_force(&self, cfg: &SphConfig) -> bool {
+            let Some(workgroups) = self.particle_workgroups() else {
+                return false;
+            };
             let scalars = self.step_scalars(cfg);
-            let params = force_params_bytes(cfg, &scalars);
-            let params_buf = self.backend.create_buffer_storage(params.len() as u64);
-            self.backend.queue_write_buffer_raw(&params_buf, &params);
-
-            let wg = WgpuBackendReal::dispatch_count_for(n, 64);
+            self.backend
+                .queue_write_buffer_raw(&self.force_params, &force_params_bytes(cfg, &scalars));
             self.backend
                 .dispatch_wgsl(
                     SPH_FORCE_GRID_WGSL,
@@ -808,24 +843,25 @@ mod gpu_pipeline {
                         (self.positions, ro()),
                         (self.velocities, ro()),
                         (self.densities, ro()),
-                        (self.sorted_ids, ro()),
-                        (self.cell_start, ro()),
-                        (self.cell_count, ro()),
+                        (self.cells.sorted_ids(), ro()),
+                        (self.cells.cell_start(), ro()),
+                        (self.cells.cell_count(), ro()),
                         (self.accel, rw()),
-                        (params_buf, ro()),
+                        (self.force_params, ro()),
                     ],
-                    wg,
+                    workgroups,
                 )
                 .is_ok()
         }
 
-        fn dispatch_integrate(&mut self, _cfg: &SphConfig, dt: f64) -> bool {
-            let n = self.n;
-            let params = integrate_params_bytes(n as u32, dt as f32);
-            let params_buf = self.backend.create_buffer_storage(params.len() as u64);
-            self.backend.queue_write_buffer_raw(&params_buf, &params);
-
-            let wg = WgpuBackendReal::dispatch_count_for(n, 64);
+        fn dispatch_integrate(&self, dt: f64) -> bool {
+            let Some(workgroups) = self.particle_workgroups() else {
+                return false;
+            };
+            self.backend.queue_write_buffer_raw(
+                &self.integrate_params,
+                &integrate_params_bytes(self.n as u32, dt as f32),
+            );
             self.backend
                 .dispatch_wgsl(
                     SPH_INTEGRATE_WGSL,
@@ -834,20 +870,21 @@ mod gpu_pipeline {
                         (self.positions, rw()),
                         (self.velocities, rw()),
                         (self.accel, ro()),
-                        (params_buf, ro()),
+                        (self.integrate_params, ro()),
                     ],
-                    wg,
+                    workgroups,
                 )
                 .is_ok()
         }
 
-        fn dispatch_boundary(&mut self, cfg: &SphConfig) -> bool {
-            let n = self.n;
-            let params = boundary_params_bytes(cfg, n as u32);
-            let params_buf = self.backend.create_buffer_storage(params.len() as u64);
-            self.backend.queue_write_buffer_raw(&params_buf, &params);
-
-            let wg = WgpuBackendReal::dispatch_count_for(n, 64);
+        fn dispatch_boundary(&self, cfg: &SphConfig) -> bool {
+            let Some(workgroups) = self.particle_workgroups() else {
+                return false;
+            };
+            self.backend.queue_write_buffer_raw(
+                &self.boundary_params,
+                &boundary_params_bytes(cfg, self.n as u32),
+            );
             self.backend
                 .dispatch_wgsl(
                     SPH_BOUNDARY_WGSL,
@@ -855,9 +892,9 @@ mod gpu_pipeline {
                     &[
                         (self.positions, rw()),
                         (self.velocities, rw()),
-                        (params_buf, ro()),
+                        (self.boundary_params, ro()),
                     ],
-                    wg,
+                    workgroups,
                 )
                 .is_ok()
         }
@@ -865,81 +902,44 @@ mod gpu_pipeline {
 
     /// Standalone GPU cell-list build for parity testing (see [`super::gpu_cell_list`]).
     ///
-    /// Allocates a throwaway backend, hashes the particles with the cell-list
-    /// kernel, sorts the pairs and buckets them, and returns the GPU-produced
-    /// layout. Returns `None` if no adapter is present or any dispatch fails.
+    /// Allocates a throwaway backend and runs the same resident cell-list code the
+    /// stepping pipeline uses (hash kernel, GPU radix sort, GPU bucket histogram
+    /// and scan), then reads the layout back. Returns `None` if no adapter is
+    /// present or any dispatch fails.
     pub(super) fn build_cell_list_standalone(
         positions: &[f32],
         smoothing_h: f64,
         domain_min: [f64; 3],
     ) -> Option<super::GpuCellList> {
         let n = positions.len() / 3;
-        if n == 0 {
+        if n == 0 || n > MAX_GPU_PARTICLES {
             return None;
         }
         let support = 2.0 * smoothing_h as f32;
-        if support <= 0.0 {
+        if support.is_nan() || support <= 0.0 {
             return None;
         }
         let num_cells = n.next_power_of_two().clamp(1, MAX_CELLS);
 
         let mut backend = WgpuBackendReal::try_new().ok()?;
+        let cells = ResidentCellList::new(&mut backend, n, num_cells).ok()?;
         let pos_buf = backend.create_buffer_storage((n * 3 * 4) as u64);
-        let cell_keys = backend.create_buffer_storage((n * 4) as u64);
-        let particle_ids = backend.create_buffer_storage((n * 4) as u64);
-        backend.queue_write_buffer_f32(&pos_buf, positions);
-
-        let params = ParamWords::new()
-            .u32(n as u32)
-            .u32(num_cells as u32)
-            .f32(support)
-            .f32(domain_min[0] as f32)
-            .f32(domain_min[1] as f32)
-            .f32(domain_min[2] as f32)
-            .pad(2)
-            .build();
-        let params_buf = backend.create_buffer_storage(params.len() as u64);
-        backend.queue_write_buffer_raw(&params_buf, &params);
-
-        let wg = WgpuBackendReal::dispatch_count_for(n, 64);
-        backend
-            .dispatch_wgsl(
-                SPH_CELL_LIST_WGSL,
-                "sph_cell_list",
-                &[
-                    (pos_buf, ro()),
-                    (cell_keys, rw()),
-                    (particle_ids, rw()),
-                    (params_buf, ro()),
-                ],
-                wg,
-            )
-            .ok()?;
-
-        let keys = backend.read_buffer_u32(cell_keys);
-        let ids = backend.read_buffer_u32(particle_ids);
-        if keys.len() < n || ids.len() < n {
-            return None;
-        }
-        let (sorted_keys, sorted_ids) =
-            crate::gpu_radix::radix_sort_pairs_gpu(&keys[..n], &ids[..n]);
-        let cell_count = crate::gpu_primitives::histogram_u32(&sorted_keys, num_cells);
-        let cell_start = crate::gpu_primitives::exclusive_scan_u32(&cell_count);
-        if sorted_ids.len() < n || cell_count.len() < num_cells || cell_start.len() < num_cells {
-            return None;
-        }
+        backend.queue_write_buffer_f32(&pos_buf, &positions[..n * 3]);
+        let origin = [
+            domain_min[0] as f32,
+            domain_min[1] as f32,
+            domain_min[2] as f32,
+        ];
+        cells.build(&backend, pos_buf, support, origin).ok()?;
+        let host = cells.read_back(&backend)?;
 
         Some(super::GpuCellList {
-            sorted_ids: sorted_ids[..n].to_vec(),
-            cell_start: cell_start[..num_cells].to_vec(),
-            cell_count: cell_count[..num_cells].to_vec(),
+            sorted_ids: host.sorted_ids,
+            cell_start: host.cell_start,
+            cell_count: host.cell_count,
             num_cells: num_cells as u32,
             cell_size: support,
-            origin: [
-                domain_min[0] as f32,
-                domain_min[1] as f32,
-                domain_min[2] as f32,
-            ],
+            origin,
         })
     }
 
@@ -985,17 +985,6 @@ mod gpu_pipeline {
         num_cells: u32,
         h: f32,
         support: f32,
-    }
-
-    /// `CellParams`: n, num_cells, cell_size, origin.xyz, + 2 pad = 8 words.
-    fn cell_params_bytes(cfg: &SphConfig, s: &StepScalars) -> Vec<u8> {
-        ParamWords::new()
-            .u32(s.n)
-            .u32(s.num_cells)
-            .f32(s.support) // cell_size = support
-            .vec3(cfg.domain_min)
-            .pad(2)
-            .build()
     }
 
     /// `SphGridParams`: n, num_cells, h, support, mass, cell_size, origin.xyz,
@@ -1045,6 +1034,269 @@ mod gpu_pipeline {
             .vec3(cfg.domain_min)
             .vec3(cfg.domain_max)
             .build()
+    }
+
+    // ── tests ──────────────────────────────────────────────────────────────────
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::sph_gpu::{GpuCellList, SphSimulation};
+
+        /// Deterministic LCG in `[0, 1)`.
+        fn lcg_unit(state: &mut u32) -> f32 {
+            *state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (*state >> 8) as f32 / (1u32 << 24) as f32
+        }
+
+        fn adapter_available() -> bool {
+            if WgpuBackendReal::try_new().is_err() {
+                eprintln!("SKIPPED: no GPU adapter available");
+                return false;
+            }
+            true
+        }
+
+        /// A block of particles on a jittered lattice inside the default domain.
+        fn lattice_particles(sim: &mut SphSimulation, per_axis: [usize; 3], spacing: f64) {
+            let mut rng = 0x00BA_DCAB_u32;
+            let [nx, ny, nz] = per_axis;
+            for ix in 0..nx {
+                for iy in 0..ny {
+                    for iz in 0..nz {
+                        let idx = (ix * ny + iy) * nz + iz;
+                        let jitter = |rng: &mut u32| f64::from(lcg_unit(rng) - 0.5) * 0.1 * spacing;
+                        sim.state.pos_x[idx] = -0.5 + ix as f64 * spacing + jitter(&mut rng);
+                        sim.state.pos_y[idx] = 0.3 + iy as f64 * spacing + jitter(&mut rng);
+                        sim.state.pos_z[idx] = -0.5 + iz as f64 * spacing + jitter(&mut rng);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn param_packers_match_the_declared_buffer_sizes() {
+            let cfg = SphConfig::default();
+            let scalars = StepScalars {
+                n: 8,
+                num_cells: 8,
+                h: 0.05,
+                support: 0.1,
+            };
+            assert_eq!(
+                density_params_bytes(&cfg, &scalars).len() as u64,
+                DENSITY_PARAM_BYTES
+            );
+            assert_eq!(
+                force_params_bytes(&cfg, &scalars).len() as u64,
+                FORCE_PARAM_BYTES
+            );
+            assert_eq!(
+                integrate_params_bytes(8, 0.01).len() as u64,
+                INTEGRATE_PARAM_BYTES
+            );
+            assert_eq!(
+                boundary_params_bytes(&cfg, 8).len() as u64,
+                BOUNDARY_PARAM_BYTES
+            );
+        }
+
+        /// F2095 regression: the old pipeline created 7 buffers per step and kept
+        /// them forever. The buffer table must now be constant over 1000 steps.
+        #[test]
+        fn gpu_steps_do_not_grow_the_buffer_table() {
+            if !adapter_available() {
+                return;
+            }
+            let n = 64usize;
+            let cfg = SphConfig {
+                n_particles: n,
+                smoothing_h: 0.1,
+                domain_min: [-1.0, 0.0, -1.0],
+                domain_max: [1.0, 2.0, 1.0],
+                ..SphConfig::default()
+            };
+            let mut sim = SphSimulation::new(cfg.clone());
+            lattice_particles(&mut sim, [4, 4, 4], 0.12);
+            let Some(gpu) = sim.gpu.as_mut() else {
+                return;
+            };
+
+            assert!(gpu.step(&cfg, &mut sim.state, 1.0 / 240.0));
+            let count_after_first = gpu.live_buffer_count();
+            let bytes_after_first = gpu.live_buffer_bytes();
+            assert!(count_after_first > 0);
+            for step in 1..1000 {
+                assert!(
+                    gpu.step(&cfg, &mut sim.state, 1.0 / 240.0),
+                    "GPU step {step} reported failure"
+                );
+            }
+            assert_eq!(
+                gpu.live_buffer_count(),
+                count_after_first,
+                "buffer count grew over 1000 steps"
+            );
+            assert_eq!(gpu.live_buffer_bytes(), bytes_after_first);
+            assert!(sim.state.pos_y.iter().all(|y| y.is_finite()));
+        }
+
+        /// F2096 regression: the old step created three wgpu devices (the sort, the
+        /// bucket histogram and the scan each called `WgpuBackendReal::try_new`), so
+        /// every fresh backend recompiled its pipelines on every step.  The resident
+        /// pipeline owns one device: the first step fills its pipeline cache and the
+        /// following steps must not add to it.
+        #[test]
+        fn gpu_steps_compile_every_pipeline_exactly_once() {
+            if !adapter_available() {
+                return;
+            }
+            let n = 600usize; // three radix tiles -> a two-level scan hierarchy
+            let cfg = SphConfig {
+                n_particles: n,
+                smoothing_h: 0.1,
+                ..SphConfig::default()
+            };
+            let mut sim = SphSimulation::new(cfg.clone());
+            lattice_particles(&mut sim, [10, 10, 6], 0.12);
+            let Some(gpu) = sim.gpu.as_mut() else {
+                return;
+            };
+
+            assert_eq!(
+                gpu.compiled_pipeline_count(),
+                0,
+                "nothing is compiled before the first step"
+            );
+            assert!(gpu.step(&cfg, &mut sim.state, 1.0 / 480.0));
+            // sph_cell_list, radix_histogram, scan_block, add_block_offsets,
+            // radix_scatter_pairs, sph_cell_histogram, sph_density, sph_force,
+            // sph_integrate and sph_boundary.
+            let compiled = gpu.compiled_pipeline_count();
+            assert_eq!(compiled, 10, "the first step compiles the ten step kernels");
+            for step in 1..=20 {
+                assert!(
+                    gpu.step(&cfg, &mut sim.state, 1.0 / 480.0),
+                    "GPU step {step} reported failure"
+                );
+                assert_eq!(
+                    gpu.compiled_pipeline_count(),
+                    compiled,
+                    "step {step} compiled another pipeline"
+                );
+            }
+        }
+
+        /// One step on more than 256 buckets (the case the old GPU histogram could
+        /// not handle) must agree with the CPU reference.
+        #[test]
+        fn gpu_step_matches_cpu_reference_beyond_256_buckets() {
+            if !adapter_available() {
+                return;
+            }
+            let (nx, ny, nz) = (12usize, 10usize, 10usize);
+            let n = nx * ny * nz; // 1200 particles -> 2048 buckets
+            let h = 0.05_f64;
+            let spacing = 0.6 * 2.0 * h;
+            let make_config = || SphConfig {
+                n_particles: n,
+                smoothing_h: h,
+                rest_density: 1000.0,
+                pressure_k: 50.0,
+                viscosity: 0.02,
+                gravity: 9.81,
+                particle_mass: 0.0,
+                domain_min: [-1.0, 0.0, -1.0],
+                domain_max: [1.0, 2.0, 1.0],
+                boundary_restitution: 0.2,
+            };
+            let mut gpu_sim = SphSimulation::new(make_config());
+            lattice_particles(&mut gpu_sim, [nx, ny, nz], spacing);
+            if !gpu_sim.has_gpu() {
+                return;
+            }
+            let mut cpu_sim = SphSimulation::new(make_config());
+            lattice_particles(&mut cpu_sim, [nx, ny, nz], spacing);
+            cpu_sim.gpu = None;
+
+            let dt = 1.0 / 480.0;
+            gpu_sim.step(dt);
+            cpu_sim.step(dt);
+
+            let mut sq = 0.0;
+            for (g, c) in gpu_sim.state.density.iter().zip(&cpu_sim.state.density) {
+                sq += (g - c) * (g - c);
+            }
+            let l2 = (sq / n as f64).sqrt() / 1000.0;
+            assert!(
+                l2 < 1e-2,
+                "density L2 {l2} between GPU and CPU is too large"
+            );
+            for i in 0..n {
+                let dy = (gpu_sim.state.pos_y[i] - cpu_sim.state.pos_y[i]).abs();
+                assert!(dy < 1e-3, "particle {i}: y differs by {dy}");
+            }
+        }
+
+        /// Multi-tile / multi-block / > 256-bucket cell list: for every particle
+        /// the GPU layout must reproduce the brute-force neighbor set. Particles
+        /// sit near cell centers so f32 floor rounding cannot differ between host
+        /// and shader.
+        #[test]
+        fn cell_list_neighbors_match_brute_force_at_scale() {
+            if !adapter_available() {
+                return;
+            }
+            let smoothing_h = 0.05_f64;
+            let support = 2.0 * smoothing_h as f32;
+            let cells_per_axis = 12usize;
+            let mut rng = 0x00DD_BA11_u32;
+            let mut positions: Vec<f32> = Vec::new();
+            for cx in 0..cells_per_axis {
+                for cy in 0..cells_per_axis {
+                    for cz in 0..cells_per_axis {
+                        let count = 1 + (lcg_unit(&mut rng) * 2.0) as usize;
+                        for _ in 0..count {
+                            for c in [cx, cy, cz] {
+                                let jitter = (lcg_unit(&mut rng) - 0.5) * 0.6;
+                                positions.push((c as f32 + 0.5 + jitter) * support);
+                            }
+                        }
+                    }
+                }
+            }
+            let n = positions.len() / 3;
+            assert!(n > 1500, "need a few thousand particles, got {n}");
+
+            let Some(list): Option<GpuCellList> =
+                build_cell_list_standalone(&positions, smoothing_h, [0.0; 3])
+            else {
+                return;
+            };
+            assert!(list.num_cells > 256, "must exercise more than 256 buckets");
+            assert_eq!(list.cell_count.iter().sum::<u32>(), n as u32);
+            let mut seen = list.sorted_ids.clone();
+            seen.sort_unstable();
+            assert_eq!(seen, (0..n as u32).collect::<Vec<_>>());
+
+            let support2 = support * support;
+            for i in 0..n {
+                let mut expected: Vec<u32> = Vec::new();
+                for j in 0..n {
+                    let rx = positions[i * 3] - positions[j * 3];
+                    let ry = positions[i * 3 + 1] - positions[j * 3 + 1];
+                    let rz = positions[i * 3 + 2] - positions[j * 3 + 2];
+                    if rx * rx + ry * ry + rz * rz < support2 {
+                        expected.push(j as u32);
+                    }
+                }
+                assert_eq!(
+                    list.neighbors_of(i, &positions, support),
+                    expected,
+                    "neighbor set of particle {i} differs from brute force"
+                );
+            }
+        }
     }
 }
 

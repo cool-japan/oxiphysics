@@ -35,4 +35,8 @@ impl SoftConstraint for DistanceConstraint {
         particles[self.i].position += correction * w1;
         particles[self.j].position -= correction * w2;
     }
+
+    fn reset_lambda(&mut self) {
+        Self::reset_lambda(self);
+    }
 }

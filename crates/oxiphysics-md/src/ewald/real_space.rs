@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn test_coulomb_energy_direct_known_value() {
-        // K * 1 * 1 / 1.0 = 138.935
+        // K * 1 * 1 / 1.0 = 1389.354576 kJ/mol
         let positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
         let charges = [1.0, 1.0];
         let e = coulomb_energy_direct(&positions, &charges);

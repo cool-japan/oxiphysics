@@ -434,15 +434,28 @@ impl ArtificialViscositySph {
         xi * cs * negative_div * h
     }
 
-    /// Apply Monaghan AV to a particle pair: update accelerations and du/dt.
+    /// Apply the pressure-gradient and Monaghan viscosity terms of one particle
+    /// pair: update both accelerations and both `du/dt`.
     ///
-    /// `grad_w_ij`: gradient of smoothing kernel W(r_ij, h) evaluated at r_ij.
+    /// `grad_w_ij` is `∇_i W(r_ij, h)`, the gradient of the smoothing kernel
+    /// with respect to the position of particle `pi` (it points along
+    /// `r_i − r_j`; see [`cubic_spline_kernel_grad`]).  With
+    /// `S_ij = P_i/ρ_i² + P_j/ρ_j² + Π_ij` the pair adds
+    ///
+    /// ```text
+    /// a_i     −= m_j S_ij ∇_i W_ij
+    /// a_j     += m_i S_ij ∇_i W_ij          (= −m_i S_ij ∇_j W_ji)
+    /// du_i/dt += m_j (P_i/ρ_i² + ½ Π_ij) v_ij · ∇_i W_ij
+    /// du_j/dt += m_i (P_j/ρ_j² + ½ Π_ij) v_ij · ∇_i W_ij
+    /// ```
+    ///
+    /// so every pair conserves linear momentum
+    /// (`m_i a_i + m_j a_j = 0`) and the sum of kinetic and thermal energy.
     pub fn apply_pair(
         &self,
         pi: &mut AstroSphParticle,
         pj: &mut AstroSphParticle,
         grad_w_ij: [f64; 3],
-        gamma: f64,
     ) {
         let pi_ij = self.pi_ij(ViscoPairSph {
             vi: pi.vel,
@@ -459,25 +472,26 @@ impl ArtificialViscositySph {
         // Pressure gradient + AV terms
         let pi_press = pi.pressure / (pi.density * pi.density);
         let pj_press = pj.pressure / (pj.density * pj.density);
-        let coeff_i = -(pi_press + pj_press + pi_ij);
-        let coeff_j = pi_press + pj_press + pi_ij;
-        // Symmetric gradient: force on i from j, and vice versa
+        let coeff = pi_press + pj_press + pi_ij;
+        // Equal and opposite momentum exchange: a_i = −m_j S ∇_iW_ij and
+        // a_j = +m_i S ∇_iW_ij (since ∇_jW_ji = −∇_iW_ij).
         for ((ai, aj), &gw) in pi
             .accel
             .iter_mut()
             .zip(pj.accel.iter_mut())
             .zip(grad_w_ij.iter())
         {
-            *ai += pj.mass * coeff_i * gw;
-            *aj -= coeff_j * pi.mass * gw;
+            *ai -= pj.mass * coeff * gw;
+            *aj += pi.mass * coeff * gw;
         }
-        // Thermal energy change
+        // Thermal energy change: v_ji · ∇_jW_ji = v_ij · ∇_iW_ij, so both
+        // particles share the same dot product.
         let dvx = pi.vel[0] - pj.vel[0];
         let dvy = pi.vel[1] - pj.vel[1];
         let dvz = pi.vel[2] - pj.vel[2];
         let vdotgw = dvx * grad_w_ij[0] + dvy * grad_w_ij[1] + dvz * grad_w_ij[2];
         pi.du_dt += pj.mass * (pi_press + 0.5 * pi_ij) * vdotgw;
-        let _ = gamma;
+        pj.du_dt += pi.mass * (pj_press + 0.5 * pi_ij) * vdotgw;
     }
 }
 
@@ -1341,6 +1355,106 @@ mod tests {
             "Alpha should grow with positive source: {}",
             alpha_new
         );
+    }
+
+    // ── ArtificialViscositySph::apply_pair tests ──────────────────────────────
+
+    /// Two unequal particles with distinct thermodynamic states; `vi`/`vj` set
+    /// the relative motion.
+    fn unequal_pair(vi: [f64; 3], vj: [f64; 3]) -> (AstroSphParticle, AstroSphParticle) {
+        let gamma = 5.0 / 3.0;
+        let a = AstroSphParticle::new(0, 2.0, [0.0, 0.0, 0.0], vi, 1.0, 0.5, 1.0, gamma);
+        let b = AstroSphParticle::new(1, 3.0, [0.1, 0.0, 0.0], vj, 2.0, 0.5, 1.2, gamma);
+        (a, b)
+    }
+
+    fn pair_energy_rate(a: &AstroSphParticle, b: &AstroSphParticle) -> f64 {
+        let rate = |p: &AstroSphParticle| {
+            let v_dot_a: f64 = p.vel.iter().zip(p.accel.iter()).map(|(v, g)| v * g).sum();
+            p.mass * (v_dot_a + p.du_dt)
+        };
+        rate(a) + rate(b)
+    }
+
+    #[test]
+    fn test_apply_pair_conserves_momentum_for_approaching_pair() {
+        let av = ArtificialViscositySph::new(1.0, 2.0);
+        let (mut a, mut b) = unequal_pair([1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]);
+        let grad = cubic_spline_kernel_grad(a.pos, b.pos, 0.5);
+        av.apply_pair(&mut a, &mut b, grad);
+        for d in 0..3 {
+            let total = a.mass * a.accel[d] + b.mass * b.accel[d];
+            let scale = (a.mass * a.accel[d]).abs().max(1.0e-30);
+            assert!(
+                total.abs() <= 1.0e-12 * scale,
+                "dim {d}: m_i a_i + m_j a_j = {total}"
+            );
+        }
+        // The pair force is repulsive: i (left) is pushed to -x, j to +x.
+        assert!(a.accel[0] < 0.0, "a_i = {:?}", a.accel);
+        assert!(b.accel[0] > 0.0, "a_j = {:?}", b.accel);
+    }
+
+    #[test]
+    fn test_apply_pair_heats_both_particles_when_compressed() {
+        let av = ArtificialViscositySph::new(1.0, 2.0);
+        let (mut a, mut b) = unequal_pair([1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]);
+        let grad = cubic_spline_kernel_grad(a.pos, b.pos, 0.5);
+        av.apply_pair(&mut a, &mut b, grad);
+        assert!(a.du_dt > 0.0, "du_i/dt = {}", a.du_dt);
+        assert!(b.du_dt > 0.0, "du_j/dt = {}", b.du_dt);
+
+        // Explicit check of both energy equations.
+        let pi_ij = av.pi_ij(ViscoPairSph {
+            vi: a.vel,
+            vj: b.vel,
+            ri: a.pos,
+            rj: b.pos,
+            ci: a.sound_speed,
+            cj: b.sound_speed,
+            rho_i: a.density,
+            rho_j: b.density,
+            hi: a.smoothing_length,
+            hj: b.smoothing_length,
+        });
+        assert!(pi_ij > 0.0);
+        let v_dot_gw = (a.vel[0] - b.vel[0]) * grad[0];
+        let expected_i = b.mass * (a.pressure / a.density.powi(2) + 0.5 * pi_ij) * v_dot_gw;
+        let expected_j = a.mass * (b.pressure / b.density.powi(2) + 0.5 * pi_ij) * v_dot_gw;
+        assert!((a.du_dt - expected_i).abs() <= 1.0e-12 * expected_i.abs());
+        assert!((b.du_dt - expected_j).abs() <= 1.0e-12 * expected_j.abs());
+    }
+
+    #[test]
+    fn test_apply_pair_conserves_total_energy_rate() {
+        let av = ArtificialViscositySph::new(1.0, 2.0);
+        for (vi, vj) in [
+            ([1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]),
+            ([-0.5, 0.2, 0.0], [0.7, -0.1, 0.3]),
+            ([0.0; 3], [0.0; 3]),
+        ] {
+            let (mut a, mut b) = unequal_pair(vi, vj);
+            let grad = cubic_spline_kernel_grad(a.pos, b.pos, 0.5);
+            av.apply_pair(&mut a, &mut b, grad);
+            let scale = (a.mass * a.du_dt).abs() + (b.mass * b.du_dt).abs() + 1.0e-30;
+            let rate = pair_energy_rate(&a, &b);
+            assert!(
+                rate.abs() <= 1.0e-12 * scale,
+                "dE/dt = {rate} (scale {scale}) for vi = {vi:?}, vj = {vj:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_apply_pair_receding_pair_has_no_viscosity_but_conserves_momentum() {
+        let av = ArtificialViscositySph::new(1.0, 2.0);
+        let (mut a, mut b) = unequal_pair([-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        let grad = cubic_spline_kernel_grad(a.pos, b.pos, 0.5);
+        av.apply_pair(&mut a, &mut b, grad);
+        // Receding: pure pressure interaction, expansion cools both particles.
+        assert!(a.du_dt < 0.0 && b.du_dt < 0.0);
+        let total = a.mass * a.accel[0] + b.mass * b.accel[0];
+        assert!(total.abs() <= 1.0e-12 * (a.mass * a.accel[0]).abs());
     }
 
     // ── AdiabticSph tests ─────────────────────────────────────────────────────

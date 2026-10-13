@@ -177,12 +177,17 @@ mod tests {
         let initial_vx = body.velocity.x;
         let gravity = Vec3::zeros();
         body.integrate_forces(dt, &gravity);
-        let expected_vx = initial_vx * (1.0 - 0.1_f64 as Real);
+        // Damping rate in 1/s, implicit-Euler discretisation: v / (1 + dt * c).
+        let expected_vx = initial_vx / (1.0 + dt * 0.1);
         assert!(
-            (body.velocity.x - expected_vx).abs() < 1e-6,
+            (body.velocity.x - expected_vx).abs() < 1e-12,
             "velocity.x={} expected={}",
             body.velocity.x,
             expected_vx
+        );
+        assert!(
+            body.velocity.x < initial_vx,
+            "damping must reduce the speed"
         );
     }
     #[test]
@@ -733,6 +738,373 @@ mod tests {
             interp.push(i as Real, Vec3::zeros(), Quat::identity());
         }
         assert_eq!(interp.sample_count(), 3);
+    }
+    // ── F3976: damping is a rate in 1/s, off by default ──────────────────────
+    #[test]
+    fn test_default_damping_is_zero() {
+        let body = RigidBody::new(1.0);
+        assert_eq!(body.linear_damping, 0.0);
+        assert_eq!(body.angular_damping, 0.0);
+        let stat = RigidBody::new_static();
+        assert_eq!(stat.linear_damping, 0.0);
+        assert_eq!(stat.angular_damping, 0.0);
+    }
+    #[test]
+    fn test_default_body_free_fall_is_step_size_independent() {
+        // A default body must fall with v = -g t for any step size; the old
+        // per-step 0.99 factor saturated near 99 g dt (about 16 m/s at 60 Hz)
+        // and lost 91 % of the speed per second at 240 Hz.
+        let g = 9.81_f64;
+        let gravity = Vec3::new(0.0, -g, 0.0);
+        for steps_per_second in [60_u32, 240, 1000] {
+            let dt = 1.0 / steps_per_second as Real;
+            let mut body = RigidBody::new(1.0);
+            for _ in 0..steps_per_second {
+                body.integrate_forces(dt, &gravity);
+            }
+            let elapsed = dt * steps_per_second as Real;
+            let expected = -g * elapsed;
+            assert!(
+                ((body.velocity.y - expected) / expected).abs() < 1e-9,
+                "dt=1/{steps_per_second}: vy={} expected={expected}",
+                body.velocity.y
+            );
+            assert!(body.velocity.x.abs() < 1e-12 && body.velocity.z.abs() < 1e-12);
+        }
+    }
+    #[test]
+    fn test_linear_damping_matches_closed_form_decay() {
+        let rate = 0.7_f64 as Real;
+        let dt = 0.01_f64 as Real;
+        let steps = 100;
+        let mut body = RigidBody::new(2.0);
+        body.linear_damping = rate;
+        body.gravity_scale = 0.0;
+        body.velocity = Vec3::new(8.0, -3.0, 2.0);
+        let v0 = body.velocity;
+        for _ in 0..steps {
+            body.integrate_forces(dt, &Vec3::zeros());
+        }
+        let factor = (1.0 / (1.0 + dt * rate)).powi(steps);
+        assert!(
+            (body.velocity - v0 * factor).norm() < 1e-12,
+            "v={:?} expected={:?}",
+            body.velocity,
+            v0 * factor
+        );
+    }
+    #[test]
+    fn test_linear_damping_decay_is_nearly_step_size_independent() {
+        // The decay over one second must be (almost) independent of the step
+        // size and approach exp(-rate * t) as dt -> 0 (first-order accurate).
+        let rate = 0.5_f64 as Real;
+        let exact = (-rate).exp();
+        let mut previous_error = Real::INFINITY;
+        for steps_per_second in [60_u32, 240, 960] {
+            let dt = 1.0 / steps_per_second as Real;
+            let mut body = RigidBody::new(1.0);
+            body.linear_damping = rate;
+            body.gravity_scale = 0.0;
+            body.velocity = Vec3::new(1.0, 0.0, 0.0);
+            for _ in 0..steps_per_second {
+                body.integrate_forces(dt, &Vec3::zeros());
+            }
+            let error = (body.velocity.x - exact).abs() / exact;
+            assert!(
+                error < 5e-3,
+                "dt=1/{steps_per_second}: vx={} exact={exact}",
+                body.velocity.x
+            );
+            assert!(
+                error < previous_error,
+                "the decay error must shrink with dt: {error} !< {previous_error}"
+            );
+            previous_error = error;
+        }
+    }
+    #[test]
+    fn test_terminal_velocity_is_independent_of_the_step_size() {
+        // dv/dt = -g - c v settles at v = -g / c. The implicit-Euler damping
+        // factor reproduces that fixed point exactly for every step size; the
+        // old per-step factor settled at g dt (1 - d) / d, which depends on dt.
+        let g = 9.81_f64 as Real;
+        let rate = 2.0_f64 as Real;
+        let gravity = Vec3::new(0.0, -g, 0.0);
+        let terminal = -g / rate;
+        for steps_per_second in [30_u32, 60, 240, 1000] {
+            let dt = 1.0 / steps_per_second as Real;
+            let mut body = RigidBody::new(1.0);
+            body.linear_damping = rate;
+            // 20 s is 40 time constants (1 / rate = 0.5 s).
+            for _ in 0..(20 * steps_per_second) {
+                body.integrate_forces(dt, &gravity);
+            }
+            assert!(
+                ((body.velocity.y - terminal) / terminal).abs() < 1e-9,
+                "dt=1/{steps_per_second}: vy={} terminal={terminal}",
+                body.velocity.y
+            );
+        }
+    }
+    #[test]
+    fn test_angular_damping_matches_closed_form_decay() {
+        let rate = 1.3_f64 as Real;
+        let dt = 1.0 / 120.0;
+        let steps = 240;
+        let mut body = RigidBody::new(1.0);
+        body.angular_damping = rate;
+        body.gravity_scale = 0.0;
+        body.angular_velocity = Vec3::new(0.0, 4.0, -2.0);
+        let w0 = body.angular_velocity;
+        for _ in 0..steps {
+            body.integrate_forces(dt, &Vec3::zeros());
+        }
+        let factor = (1.0 / (1.0 + dt * rate)).powi(steps);
+        assert!(
+            (body.angular_velocity - w0 * factor).norm() < 1e-12,
+            "w={:?} expected={:?}",
+            body.angular_velocity,
+            w0 * factor
+        );
+        // The linear velocity is untouched by the angular damping rate.
+        assert!(body.velocity.norm() < 1e-14);
+    }
+    #[test]
+    fn test_negative_damping_never_injects_energy() {
+        let mut body = RigidBody::new(1.0);
+        body.linear_damping = -5.0;
+        body.angular_damping = -5.0;
+        body.gravity_scale = 0.0;
+        body.velocity = Vec3::new(3.0, 0.0, 0.0);
+        body.angular_velocity = Vec3::new(0.0, 2.0, 0.0);
+        body.integrate_forces(0.1, &Vec3::zeros());
+        assert!((body.velocity.x - 3.0).abs() < 1e-14);
+        assert!((body.angular_velocity.y - 2.0).abs() < 1e-14);
+    }
+    #[test]
+    fn test_huge_damping_never_reverses_velocity() {
+        let mut body = RigidBody::new(1.0);
+        body.linear_damping = 1.0e6;
+        body.gravity_scale = 0.0;
+        body.velocity = Vec3::new(5.0, 0.0, 0.0);
+        body.integrate_forces(0.1, &Vec3::zeros());
+        assert!(body.velocity.x > 0.0 && body.velocity.x < 1e-4);
+    }
+    // ── F3973: world-frame omega pairs with the world-space inertia ──────────
+    fn anisotropic_body() -> RigidBody {
+        use oxiphysics_core::math::Mat3;
+        let mut body = RigidBody::new(1.0);
+        body.local_inertia = Mat3::from_diagonal(&Vec3::new(1.0, 2.0, 3.0));
+        body.update_world_inertia();
+        body
+    }
+    #[test]
+    fn test_kinetic_energy_and_angular_momentum_use_world_inertia() {
+        let mut body = anisotropic_body();
+        body.transform.rotation = Quat::from_axis_angle(
+            &Unit::new_normalize(Vec3::new(0.0, 0.0, 1.0)),
+            std::f64::consts::FRAC_PI_2,
+        );
+        body.angular_velocity = Vec3::new(1.0, 0.0, 0.0);
+        // 90 degrees about z maps the body y axis (I = 2) onto the world x axis,
+        // so a world-x spin sees I_w = 2: KE = 0.5 * 2 * 1 and L = (2, 0, 0).
+        let ke = body.kinetic_energy();
+        assert!((ke - 1.0).abs() < 1e-12, "KE should be 1.0, got {ke}");
+        let l = body.angular_momentum();
+        assert!(
+            (l - Vec3::new(2.0, 0.0, 0.0)).norm() < 1e-12,
+            "L should be (2,0,0), got {l:?}"
+        );
+        // Unrotated body: world and local frames coincide.
+        let mut unrotated = anisotropic_body();
+        unrotated.angular_velocity = Vec3::new(1.0, 0.0, 0.0);
+        assert!((unrotated.kinetic_energy() - 0.5).abs() < 1e-12);
+        assert!((unrotated.angular_momentum() - Vec3::new(1.0, 0.0, 0.0)).norm() < 1e-12);
+    }
+    #[test]
+    fn test_rotational_invariants_do_not_depend_on_orientation() {
+        // Spin a fixed body-frame angular velocity and rotate the body by an
+        // arbitrary orientation: the world omega rotates with it, so the energy
+        // is invariant and the angular momentum rotates along.
+        let omega_local = Vec3::new(0.3, -0.5, 0.8);
+        let reference = anisotropic_body();
+        let ke_local = 0.5 * omega_local.dot(&(reference.local_inertia * omega_local));
+        let l_local = reference.local_inertia * omega_local;
+        for (axis, angle) in [
+            (Vec3::new(1.0, 2.0, -0.5), 0.7_f64),
+            (Vec3::new(-0.3, 0.1, 1.0), 2.4),
+            (Vec3::new(0.0, 1.0, 0.0), -1.9),
+        ] {
+            let mut body = anisotropic_body();
+            body.transform.rotation = Quat::from_axis_angle(&Unit::new_normalize(axis), angle);
+            body.angular_velocity = body.transform.rotation * omega_local;
+            assert!(
+                (body.kinetic_energy() - ke_local).abs() < 1e-12,
+                "KE {} vs {ke_local} for axis {axis:?}",
+                body.kinetic_energy()
+            );
+            let expected_l = body.transform.rotation * l_local;
+            assert!(
+                (body.angular_momentum() - expected_l).norm() < 1e-12,
+                "L {:?} vs {expected_l:?} for axis {axis:?}",
+                body.angular_momentum()
+            );
+        }
+    }
+    #[test]
+    fn test_world_inertia_is_consistent_with_world_inverse_inertia() {
+        let mut body = anisotropic_body();
+        body.transform.rotation =
+            Quat::from_axis_angle(&Unit::new_normalize(Vec3::new(1.0, 1.0, 0.0)), 1.1);
+        body.update_world_inertia();
+        let i_w = body.world_inertia();
+        assert!(
+            (i_w - i_w.transpose()).norm() < 1e-12,
+            "I_w must be symmetric"
+        );
+        assert!(
+            (i_w.trace() - body.local_inertia.trace()).abs() < 1e-12,
+            "the trace is rotation invariant"
+        );
+        let product = i_w * body.world_inverse_inertia;
+        assert!(
+            (product - oxiphysics_core::math::Mat3::identity()).norm() < 1e-12,
+            "I_w * I_w^-1 must be the identity, got {product:?}"
+        );
+    }
+    #[test]
+    fn test_static_and_kinematic_bodies_have_no_rotational_energy() {
+        for mut body in [RigidBody::new_static(), RigidBody::new_kinematic()] {
+            body.angular_velocity = Vec3::new(1.0, 2.0, 3.0);
+            assert_eq!(body.kinetic_energy(), 0.0);
+            assert_eq!(body.angular_momentum(), Vec3::zeros());
+        }
+    }
+    // ── F3973 (sibling): merge pairs the world-frame omega with I_w ──────────
+    fn spinning_anisotropic_body(
+        mass: Real,
+        position: Vec3,
+        axis: Vec3,
+        angle: Real,
+        omega: Vec3,
+    ) -> RigidBody {
+        use oxiphysics_core::math::Mat3;
+        let mut body = RigidBody::new(mass);
+        body.local_inertia = Mat3::from_diagonal(&Vec3::new(1.0, 2.0, 3.0)) * mass;
+        body.transform.position = position;
+        body.transform.rotation = Quat::from_axis_angle(&Unit::new_normalize(axis), angle);
+        body.angular_velocity = omega;
+        body.update_world_inertia();
+        body
+    }
+    #[test]
+    fn test_merge_of_colocated_rotated_bodies_adds_the_world_inertias() {
+        // Without any offset there is no parallel-axis or orbital term, so the
+        // merged tensor is I_w,a + I_w,b and the merged momentum is the sum of
+        // the spins I_w * omega (a local-frame product would give a different,
+        // orientation-independent answer).
+        let a = spinning_anisotropic_body(
+            2.0,
+            Vec3::new(1.0, -2.0, 0.5),
+            Vec3::new(0.0, 0.0, 1.0),
+            std::f64::consts::FRAC_PI_2,
+            Vec3::new(1.0, 0.0, 0.0),
+        );
+        let b = spinning_anisotropic_body(
+            3.0,
+            Vec3::new(1.0, -2.0, 0.5),
+            Vec3::new(1.0, 1.0, 0.0),
+            0.9,
+            Vec3::new(0.0, -0.5, 0.25),
+        );
+        let merged = RigidBody::merge(&a, &b);
+        let expected_inertia = a.world_inertia() + b.world_inertia();
+        assert!(
+            (merged.world_inertia() - expected_inertia).norm() < 1e-12,
+            "I_merged = {:?}, expected {expected_inertia:?}",
+            merged.world_inertia()
+        );
+        let expected_momentum = a.angular_momentum() + b.angular_momentum();
+        assert!(
+            (merged.angular_momentum() - expected_momentum).norm() < 1e-12,
+            "L_merged = {:?}, expected {expected_momentum:?}",
+            merged.angular_momentum()
+        );
+        // The first part alone: 90 degrees about z maps its body y axis (I = 2 m)
+        // onto world x, so spinning about world x gives L = (4, 0, 0).
+        assert!((a.angular_momentum() - Vec3::new(4.0, 0.0, 0.0)).norm() < 1e-12);
+    }
+    #[test]
+    fn test_merge_of_orbiting_bodies_conserves_angular_momentum_about_the_com() {
+        use oxiphysics_core::math::Mat3;
+        // Two unit masses 2 m apart on the x axis, moving in opposite directions
+        // along y: orbital angular momentum m d x v = (0, 0, 1) each, in total
+        // (0, 0, 2) about the combined centre of mass.
+        let mut a = RigidBody::new(1.0);
+        a.local_inertia = Mat3::identity() * 0.4;
+        a.transform.position = Vec3::new(1.0, 0.0, 0.0);
+        a.velocity = Vec3::new(0.0, 1.0, 0.0);
+        let mut b = RigidBody::new(1.0);
+        b.local_inertia = Mat3::identity() * 0.4;
+        b.transform.position = Vec3::new(-1.0, 0.0, 0.0);
+        b.velocity = Vec3::new(0.0, -1.0, 0.0);
+        let merged = RigidBody::merge(&a, &b);
+        assert!(merged.velocity.norm() < 1e-14, "no net linear momentum");
+        assert!(merged.transform.position.norm() < 1e-14);
+        // Parallel-axis theorem: I = 2 * 0.4 + sum m (|d|^2 1 - d d^T)
+        //                          = diag(0.8, 0.8 + 2, 0.8 + 2).
+        let expected_inertia = Mat3::from_diagonal(&Vec3::new(0.8, 2.8, 2.8));
+        assert!(
+            (merged.local_inertia - expected_inertia).norm() < 1e-12,
+            "I = {:?}",
+            merged.local_inertia
+        );
+        assert!(
+            (merged.angular_momentum() - Vec3::new(0.0, 0.0, 2.0)).norm() < 1e-12,
+            "L = {:?}",
+            merged.angular_momentum()
+        );
+        assert!((merged.angular_velocity.z - 2.0 / 2.8).abs() < 1e-12);
+        assert!(merged.angular_velocity.x.abs() < 1e-14 && merged.angular_velocity.y.abs() < 1e-14);
+    }
+    #[test]
+    fn test_merge_conserves_total_momentum_for_general_rotated_bodies() {
+        // Generic state: the angular momentum of the merged body about the
+        // combined centre of mass equals the parts' spin plus orbital momentum.
+        let mut a = spinning_anisotropic_body(
+            1.5,
+            Vec3::new(0.5, 1.0, -0.25),
+            Vec3::new(0.3, -1.0, 0.7),
+            1.3,
+            Vec3::new(0.4, -0.2, 0.9),
+        );
+        a.velocity = Vec3::new(1.0, -0.5, 2.0);
+        let mut b = spinning_anisotropic_body(
+            0.5,
+            Vec3::new(-1.5, 0.25, 2.0),
+            Vec3::new(1.0, 0.2, -0.4),
+            -0.6,
+            Vec3::new(-0.7, 0.1, 0.3),
+        );
+        b.velocity = Vec3::new(-2.0, 0.25, 0.5);
+        let merged = RigidBody::merge(&a, &b);
+        let total_mass = a.mass + b.mass;
+        let com = (a.transform.position * a.mass + b.transform.position * b.mass) / total_mass;
+        let v_com = (a.velocity * a.mass + b.velocity * b.mass) / total_mass;
+        let mut expected = Vec3::zeros();
+        for part in [&a, &b] {
+            expected += part.world_inertia() * part.angular_velocity
+                + (part.transform.position - com).cross(&(part.mass * (part.velocity - v_com)));
+        }
+        assert!((merged.transform.position - com).norm() < 1e-12);
+        assert!((merged.velocity - v_com).norm() < 1e-12);
+        assert!(
+            (merged.angular_momentum() - expected).norm() < 1e-10,
+            "L = {:?}, expected {expected:?}",
+            merged.angular_momentum()
+        );
+        let linear_momentum = a.mass * a.velocity + b.mass * b.velocity;
+        assert!((merged.mass * merged.velocity - linear_momentum).norm() < 1e-12);
     }
 }
 #[cfg(test)]

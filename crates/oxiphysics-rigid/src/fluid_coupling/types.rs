@@ -438,7 +438,19 @@ impl BuoyancyForce {
     }
     /// Buoyancy force on a horizontal cylinder partially submerged.
     ///
-    /// The submerged cross-section area is computed from the chord geometry.
+    /// The cylinder axis is horizontal and `submerged_depth` is the depth of
+    /// the water surface above the lowest generator of the cylinder, clamped
+    /// to `[0, 2r]`.  The wetted cross-section is the circular segment of
+    /// height `h`:
+    ///
+    /// `A(h) = r² · acos((r − h) / r) − (r − h) · sqrt(2 r h − h²)`
+    ///
+    /// which is `0` for `h = 0`, `π r² / 2` for `h = r` and `π r²` for
+    /// `h = 2 r`.  The displaced volume is `A(h) · cyl_length` and the force is
+    /// the Archimedes force `−ρ V g`.
+    ///
+    /// A non-positive or non-finite `radius` describes no cylinder and yields
+    /// a zero force.
     pub fn cylinder_partial_buoyancy(
         radius: f64,
         submerged_depth: f64,
@@ -446,11 +458,14 @@ impl BuoyancyForce {
         fluid_density: f64,
         gravity: [f64; 3],
     ) -> [f64; 3] {
-        let h = submerged_depth.clamp(0.0, 2.0 * radius);
+        if !radius.is_finite() || radius <= 0.0 {
+            return Self::archimedes(fluid_density, 0.0, gravity);
+        }
         let r = radius;
-        let area = r * r * ((r - h + r).max(0.0) / r).min(1.0).acos()
+        let h = submerged_depth.clamp(0.0, 2.0 * r);
+        let area = r * r * ((r - h) / r).clamp(-1.0, 1.0).acos()
             - (r - h) * (2.0 * r * h - h * h).max(0.0).sqrt();
-        let vol = area.abs() * cyl_length;
+        let vol = area.max(0.0) * cyl_length;
         Self::archimedes(fluid_density, vol, gravity)
     }
 }

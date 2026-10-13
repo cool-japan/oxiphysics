@@ -79,12 +79,17 @@ fn ray_aabb_tnear(
 }
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
     let n_nodes  = params[0];
     let n_rays   = params[1];
     let n_prims  = params[2];
 
-    let ray_id = gid.x;
+    // A dispatch wider than one dimension allows is folded into y (see
+    // `dispatch_count_for`): linearise the ray index.
+    let ray_id = gid.x + gid.y * nwg.x * 64u;
     if ray_id >= n_rays || n_nodes == 0u {
         return;
     }

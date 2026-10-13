@@ -2,7 +2,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use super::types::{CsrMatrix, SparseLu};
+use super::krylov_solvers::cg_with_operator;
+use super::types::CsrMatrix;
+
+/// These solvers moved to [`super::krylov_solvers`]; the re-export keeps the
+/// old `sparse::functions::` paths working.
+pub use super::krylov_solvers::{minres_solve, ritz_values, saddle_point_solve};
 
 /// Return the n×n identity matrix in CSR format.
 pub fn identity_csr(n: usize) -> CsrMatrix {
@@ -287,20 +292,30 @@ pub fn sparse_eig_power(a: &CsrMatrix, tol: f64, max_iter: usize) -> Option<(f64
     Some((eigenvalue, v))
 }
 /// Compute the smallest eigenvalue of a sparse SPD matrix using inverse
-/// iteration (shift-and-invert with the ILU preconditioner).
+/// iteration.
 ///
-/// Returns `(eigenvalue, eigenvector)` or `None` if not converged.
+/// Every step applies `A^{-1}` through a conjugate-gradient solve with relative
+/// tolerance `max(1e-3 * tol, 1e-14)` (an incomplete factorisation such as
+/// ILU(0) is only an approximate inverse and would not converge to the smallest
+/// eigenpair of `A`).
+///
+/// Returns `(eigenvalue, eigenvector)`, or `None` for an empty matrix, a
+/// vanishing iterate, or a failed inner solve (the budget of `max(10 n, 100)`
+/// conjugate-gradient iterations is exhausted, or positive definiteness is lost
+/// because `A` is not SPD).  If the eigenvalue estimate has not settled to
+/// `tol` after `max_iter` steps, the current estimate is returned.
 pub fn sparse_eig_smallest(a: &CsrMatrix, tol: f64, max_iter: usize) -> Option<(f64, Vec<f64>)> {
     let n = a.nrows;
     assert_eq!(n, a.ncols, "Matrix must be square");
     if n == 0 {
         return None;
     }
-    let lu = SparseLu::ilu0(a);
+    let inner_tol = (tol * 1e-3).max(1e-14);
+    let inner_max_iter = (10 * n).max(100);
     let mut v: Vec<f64> = vec![1.0 / (n as f64).sqrt(); n];
     let mut eigenvalue = 0.0f64;
     for _ in 0..max_iter {
-        let w = lu.solve(&v);
+        let w = cg_with_operator(|p| Ok(a.matvec(p)), &v, inner_tol, inner_max_iter).ok()?;
         let norm: f64 = w.iter().map(|x| x * x).sum::<f64>().sqrt();
         if norm < 1e-30 {
             return None;
@@ -566,99 +581,6 @@ pub fn bicgstab_solve(
     };
     (x, r_final / b_norm < tol, max_iter)
 }
-/// Minimum Residual (MINRES) method for symmetric (possibly indefinite) systems A x = b.
-///
-/// Returns `(solution, converged, iterations)`.
-pub fn minres_solve(
-    a: &CsrMatrix,
-    b: &[f64],
-    tol: f64,
-    max_iter: usize,
-) -> (Vec<f64>, bool, usize) {
-    let n = a.nrows;
-    assert_eq!(b.len(), n);
-    let mut x = vec![0.0f64; n];
-    let mut r = b.to_vec();
-    let b_norm: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt().max(1e-30);
-    let mut v_old = vec![0.0f64; n];
-    let mut beta: f64 = r.iter().map(|x| x * x).sum::<f64>().sqrt();
-    if beta < 1e-30 {
-        return (x, true, 0);
-    }
-    let mut v = r.iter().map(|x| x / beta).collect::<Vec<f64>>();
-    let mut d = vec![0.0f64; n];
-    let mut d_old = vec![0.0f64; n];
-    let mut phi_bar = beta;
-    let mut c_old = 1.0f64;
-    let mut s_old = 0.0f64;
-    let mut c = 1.0f64;
-    let mut s = 0.0f64;
-    for iter in 0..max_iter {
-        let av = a.matvec(&v);
-        let alpha: f64 = v.iter().zip(av.iter()).map(|(vi, avi)| vi * avi).sum();
-        let mut v_new: Vec<f64> = av
-            .iter()
-            .enumerate()
-            .map(|(i, &avi)| avi - alpha * v[i] - beta * v_old[i])
-            .collect();
-        let beta_new: f64 = v_new.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if beta_new > 1e-30 {
-            for vi in &mut v_new {
-                *vi /= beta_new;
-            }
-        }
-        let eps = s_old * beta;
-        let delta = c_old * c * beta + s * alpha;
-        let gamma_bar = -s_old * s * beta + c * alpha - c_old * delta * s_old;
-        let rhs = phi_bar * c;
-        let phi = phi_bar * s;
-        let _ = eps;
-        let _ = delta;
-        let _ = gamma_bar;
-        let _ = rhs;
-        let _ = phi;
-        let gamma: f64 = (c * alpha + s * beta_new).hypot(beta_new);
-        if gamma < 1e-30 {
-            break;
-        }
-        let c_new = (c * alpha + s * beta_new) / gamma;
-        let s_new = beta_new / gamma;
-        let d_new: Vec<f64> = v
-            .iter()
-            .enumerate()
-            .map(|(i, &vi)| (vi - c * d[i] - s * d_old[i]) / gamma)
-            .collect();
-        let eta = c_new * phi_bar;
-        for (xi, &dni) in x.iter_mut().zip(d_new.iter()) {
-            *xi += eta * dni;
-        }
-        phi_bar *= s_new;
-        if phi_bar / b_norm < tol {
-            return (x, true, iter + 1);
-        }
-        let _ = c_old;
-        let _ = s_old;
-        c_old = c;
-        s_old = s;
-        c = c_new;
-        s = s_new;
-        d_old = d;
-        d = d_new;
-        v_old = v;
-        v = v_new;
-        beta = beta_new;
-        r = b
-            .iter()
-            .zip(a.matvec(&x).iter())
-            .map(|(bi, ai)| bi - ai)
-            .collect();
-        let r_norm: f64 = r.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if r_norm / b_norm < tol {
-            return (x, true, iter + 1);
-        }
-    }
-    (x, false, max_iter)
-}
 /// Gauss-Seidel iterative solver for A x = b.
 ///
 /// Requires A to have non-zero diagonal entries.
@@ -831,63 +753,6 @@ pub fn multi_rhs_cg(
         })
         .collect()
 }
-/// Solve the saddle-point system:
-///   \[ A   B^T \] \[ x \]   \[ f \]
-///   \[ B   0   \] \[ p \] = \[ g \]
-///
-/// Uses a Schur complement approach with CG on the pressure sub-system.
-///
-/// # Arguments
-/// * `a`        – (n×n) SPD matrix
-/// * `bt`       – (n×m) matrix B^T
-/// * `b`        – (m×n) matrix B
-/// * `f`        – RHS vector of length n
-/// * `g`        – RHS vector of length m
-/// * `tol`      – solver tolerance
-/// * `max_iter` – max iterations
-pub fn saddle_point_solve(
-    a: &CsrMatrix,
-    bt: &CsrMatrix,
-    b: &CsrMatrix,
-    f: &[f64],
-    g: &[f64],
-    tol: f64,
-    max_iter: usize,
-) -> (Vec<f64>, Vec<f64>) {
-    let n = a.nrows;
-    let m = b.nrows;
-    assert_eq!(f.len(), n);
-    assert_eq!(g.len(), m);
-    let x0_init = vec![0.0f64; n];
-    let (x0, _iters0, _res0) = cg_solve(a, f, &x0_init, tol, max_iter);
-    let b_x0 = b.matvec(&x0);
-    let schur_rhs: Vec<f64> = g
-        .iter()
-        .zip(b_x0.iter())
-        .map(|(gi, bxi)| gi - bxi)
-        .collect();
-    let s_diag: Vec<f64> = (0..m)
-        .map(|i| {
-            let mut e = vec![0.0f64; m];
-            e[i] = 1.0;
-            let bt_e = bt.matvec(&e);
-            let x0_schur = vec![0.0f64; n];
-            let (a_inv_bt_e, _, _) = cg_solve(a, &bt_e, &x0_schur, tol * 0.1, max_iter);
-            let b_a_inv = b.matvec(&a_inv_bt_e);
-            b_a_inv[i]
-        })
-        .collect();
-    let p: Vec<f64> = schur_rhs
-        .iter()
-        .zip(s_diag.iter())
-        .map(|(r, s)| if s.abs() > 1e-30 { r / s } else { 0.0 })
-        .collect();
-    let bt_p = bt.matvec(&p);
-    let f_corr: Vec<f64> = f.iter().zip(bt_p.iter()).map(|(fi, bi)| fi - bi).collect();
-    let x0_final = vec![0.0f64; n];
-    let (x, _, _) = cg_solve(a, &f_corr, &x0_final, tol, max_iter);
-    (x, p)
-}
 /// Lanczos iteration: build a tridiagonal approximation of a symmetric matrix A.
 ///
 /// Returns `(alphas, betas, Q)` where:
@@ -927,51 +792,6 @@ pub fn lanczos(a: &CsrMatrix, b0: &[f64], k: usize) -> (Vec<f64>, Vec<f64>, Vec<
         q.push(w.iter().map(|x| x / beta).collect());
     }
     (alphas, betas, q)
-}
-/// Compute Ritz values from a Lanczos tridiagonal matrix via QR iteration.
-///
-/// Given `alphas` (diagonal) and `betas` (subdiagonal), returns approximate eigenvalues.
-pub fn ritz_values(alphas: &[f64], betas: &[f64]) -> Vec<f64> {
-    let m = alphas.len();
-    if m == 0 {
-        return Vec::new();
-    }
-    let mut diag = alphas.to_vec();
-    let mut off = betas[..betas.len().min(m - 1)].to_vec();
-    for _ in 0..500 {
-        let shift = diag[m - 1];
-        for d in &mut diag {
-            *d -= shift;
-        }
-        let mut c = vec![1.0f64; m];
-        let mut s_vec = vec![0.0f64; m];
-        let mut d_new = diag.clone();
-        let mut off_new = off.clone();
-        for i in 0..m - 1 {
-            let r = (diag[i] * diag[i] + off[i] * off[i]).sqrt();
-            if r < 1e-30 {
-                continue;
-            }
-            c[i] = diag[i] / r;
-            s_vec[i] = off[i] / r;
-            let new_d = c[i] * diag[i] + s_vec[i] * off[i];
-            d_new[i] = new_d;
-            if i + 1 < m {
-                off_new[i] = c[i] * off[i] - s_vec[i] * diag[i];
-                d_new[i + 1] = -s_vec[i] * off[i] + c[i] * diag[i + 1];
-            }
-        }
-        diag = d_new;
-        off = off_new;
-        for d in &mut diag {
-            *d += shift;
-        }
-        let off_norm: f64 = off.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if off_norm < 1e-10 {
-            break;
-        }
-    }
-    diag
 }
 /// Invert a small dense matrix (size × size) stored row-major using Gauss-Jordan.
 /// Returns `None` if singular.
@@ -1039,6 +859,7 @@ mod tests {
     use super::*;
     use crate::sparse::CscMatrix;
     use crate::sparse::IncompleteCholesky;
+    use crate::sparse::SparseLu;
     use crate::sparse::SparseQr;
     use crate::sparse::SsorPreconditioner;
     pub(super) const TOL: f64 = 1e-10;
@@ -1541,14 +1362,62 @@ mod tests {
     }
     #[test]
     fn test_sparse_eig_smallest_laplacian() {
-        let lap = laplacian_1d(5, 1.0 / 6.0);
-        let result = sparse_eig_smallest(&lap, 1e-6, 500);
-        if let Some((lam, _)) = result {
-            assert!(
-                lam > 0.0,
-                "smallest eigenvalue of Laplacian should be positive, got {lam}"
-            );
-        }
+        let n = 5;
+        let dx = 1.0 / (n as f64 + 1.0);
+        let lap = laplacian_1d(n, dx);
+        let (lam, v) =
+            sparse_eig_smallest(&lap, 1e-10, 500).expect("inverse iteration must converge");
+        let exact = (2.0 - 2.0 * (std::f64::consts::PI / (n as f64 + 1.0)).cos()) / (dx * dx);
+        assert!(
+            (lam - exact).abs() < 1e-6 * exact,
+            "lambda = {lam}, exact = {exact}"
+        );
+        let av = lap.matvec(&v);
+        let res: f64 = av
+            .iter()
+            .zip(v.iter())
+            .map(|(a, b)| (a - lam * b).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        assert!(res < 1e-4 * exact, "eigen-residual = {res}");
+    }
+    #[test]
+    fn test_sparse_eig_smallest_laplacian_2d_matches_analytic_value() {
+        // ILU(0) is not exact on a 2-D grid, so this fails with an
+        // incomplete-factorisation "inverse".
+        let (nx, ny) = (6usize, 6usize);
+        let lap = laplacian_2d(nx, ny, 1.0);
+        let (lam, v) =
+            sparse_eig_smallest(&lap, 1e-12, 500).expect("inverse iteration must converge");
+        let exact = 4.0
+            - 2.0 * (std::f64::consts::PI / (nx as f64 + 1.0)).cos()
+            - 2.0 * (std::f64::consts::PI / (ny as f64 + 1.0)).cos();
+        assert!(
+            (lam - exact).abs() < 1e-8,
+            "lambda = {lam}, exact = {exact}"
+        );
+        let av = lap.matvec(&v);
+        let res: f64 = av
+            .iter()
+            .zip(v.iter())
+            .map(|(a, b)| (a - lam * b).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        assert!(res < 1e-6, "eigen-residual = {res}");
+    }
+    #[test]
+    fn test_sparse_eig_smallest_rejects_a_failed_inner_solve() {
+        // diag(1, -1) is indefinite: CG breaks down on the start vector
+        // (p^T A p = 0), the inner solve misses its target by far and no
+        // eigenpair may be reported.
+        let a = CsrMatrix::from_triplets(2, 2, &[0, 1], &[0, 1], &[1.0, -1.0]);
+        assert!(sparse_eig_smallest(&a, 1e-10, 100).is_none());
+        // The same routine still succeeds for a positive-definite diagonal matrix.
+        let spd = CsrMatrix::from_triplets(2, 2, &[0, 1], &[0, 1], &[3.0, 1.5]);
+        let (lambda, v) =
+            sparse_eig_smallest(&spd, 1e-12, 100).expect("SPD diagonal matrix must converge");
+        assert!((lambda - 1.5).abs() < 1e-9, "lambda = {lambda}");
+        assert!(v[1].abs() > 0.999 && v[0].abs() < 1e-2, "v = {v:?}");
     }
     #[test]
     fn test_csc_from_csr_identity() {

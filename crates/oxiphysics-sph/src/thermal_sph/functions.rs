@@ -88,11 +88,35 @@ pub fn brookshaw_laplacian(
     }
     result
 }
-/// Compute enthalpy from temperature for a material with latent heat.
+/// Liquid (melt) fraction `f_l(T)` of the enthalpy-method phase-change model.
 ///
-/// Below melting: H = c_p * T
-/// In mushy zone: H = c_p * T_melt + L * (T - T_melt) / (T_liquidus - T_melt)
-/// Above liquidus: H = c_p * T + L
+/// * `T <= t_melt`: solid, `f_l = 0`
+/// * `t_melt < T < t_liquidus`: mushy zone, `f_l = (T - t_melt) / (t_liquidus - t_melt)`
+/// * `T >= t_liquidus`: liquid, `f_l = 1`
+///
+/// For an isothermal transition (`t_liquidus <= t_melt`) the fraction jumps
+/// from 0 to 1 just above `t_melt`; the melting temperature itself belongs to
+/// the solid side.
+pub fn liquid_fraction_from_temp(temp: f64, t_melt: f64, t_liquidus: f64) -> f64 {
+    if temp <= t_melt {
+        0.0
+    } else if temp >= t_liquidus {
+        1.0
+    } else {
+        (temp - t_melt) / (t_liquidus - t_melt)
+    }
+}
+/// Specific enthalpy (J/kg) of a material with latent heat, from temperature.
+///
+/// `H(T) = c_p T + L f_l(T)` with the liquid fraction `f_l` of
+/// [`liquid_fraction_from_temp`]:
+///
+/// * below melting: `H = c_p T`
+/// * mushy zone: `H = c_p T + L (T - T_melt) / (T_liquidus - T_melt)`
+/// * above the liquidus: `H = c_p T + L`
+///
+/// `H` is continuous and increasing in `T` (it only jumps by `L` at `T_melt`
+/// for an isothermal transition), and [`temp_from_enthalpy`] is its inverse.
 pub fn enthalpy_from_temp(
     temp: f64,
     c_p: f64,
@@ -100,13 +124,44 @@ pub fn enthalpy_from_temp(
     t_liquidus: f64,
     latent_heat: f64,
 ) -> f64 {
-    if temp < t_melt {
-        c_p * temp
-    } else if temp < t_liquidus {
-        let range = (t_liquidus - t_melt).max(1e-300);
-        c_p * t_melt + latent_heat * (temp - t_melt) / range
+    c_p * temp + latent_heat * liquid_fraction_from_temp(temp, t_melt, t_liquidus)
+}
+/// Temperature from specific enthalpy (J/kg): the inverse of [`enthalpy_from_temp`].
+///
+/// With the solidus enthalpy `H_s = c_p T_melt`, the liquidus enthalpy
+/// `H_l = c_p T_liquidus + L` and the melting range `ΔT = T_liquidus - T_melt`:
+///
+/// * `H <= H_s`: `T = H / c_p`
+/// * `H_s < H < H_l`: `T = T_melt + (H - H_s) / (c_p + L / ΔT)`, i.e. the
+///   mushy zone behaves like a material with the apparent heat capacity
+///   `c_p + L / ΔT`
+/// * `H >= H_l`: `T = (H - L) / c_p`
+///
+/// For an isothermal transition (`ΔT <= 0`) every `H_s < H < H_l` maps to
+/// exactly `T_melt` (the temperature plateau while the latent heat is
+/// absorbed).  The temperature alone then cannot encode the melt fraction, so
+/// a time integration must advance the enthalpy and derive `T` from it, as
+/// [`crate::thermal_sph::ThermalSphSimulation::step`] does.
+pub fn temp_from_enthalpy(
+    enthalpy: f64,
+    c_p: f64,
+    t_melt: f64,
+    t_liquidus: f64,
+    latent_heat: f64,
+) -> f64 {
+    let cp = c_p.max(1e-300);
+    let t_liq = t_liquidus.max(t_melt);
+    let width = t_liq - t_melt;
+    let h_solidus = cp * t_melt;
+    let h_liquidus = cp * t_liq + latent_heat;
+    if enthalpy <= h_solidus {
+        enthalpy / cp
+    } else if enthalpy >= h_liquidus {
+        (enthalpy - latent_heat) / cp
+    } else if width > 0.0 {
+        t_melt + (enthalpy - h_solidus) / (cp + latent_heat / width)
     } else {
-        c_p * temp + latent_heat
+        t_melt
     }
 }
 /// Boussinesq buoyancy force per unit mass: f = -g β ΔT ê_z.

@@ -4,6 +4,9 @@
 
 use std::f64::consts::PI;
 
+use nalgebra::{DMatrix, DVector};
+
+use super::response::{C64, SisoRealization, polynomial_from_roots, real_polynomial, sample_count};
 use super::types::{Complex, PidController, StateSpaceModel, TransferFunction};
 
 /// Evaluate a polynomial with coefficients `[a_n, a_{n-1}, ..., a_0]` at complex z.
@@ -691,40 +694,69 @@ pub fn observability_matrix(a: &[f64], c: &[f64], n: usize, p: usize) -> Vec<f64
     }
     result
 }
-/// Estimate the rank of an n-by-m matrix via column pivoting.
+/// Rank of an `n`-by-`m` row-major matrix by Gaussian elimination.
+///
+/// The columns are processed left to right while a *separate* pivot-row
+/// counter tracks the rows already used: a column without a usable pivot is
+/// skipped without consuming a row, and columns beyond `min(n, m)` are still
+/// examined.  Rank-deficient and wide matrices (such as controllability
+/// matrices `[B, AB, ...]` whose first columns vanish) are therefore ranked
+/// correctly.  A pivot is accepted when its magnitude is at least
+/// `1e-10 * max(1, max |a_ij|)`.
+///
+/// Entries missing from a slice shorter than `n * m` are treated as zero and
+/// surplus entries are ignored.
 pub fn matrix_rank(mat: &[f64], n: usize, m: usize) -> usize {
-    let mut work = mat.to_vec();
-    let min_dim = n.min(m);
-    let mut rank = 0;
-    for col in 0..min_dim {
+    let Some(size) = n.checked_mul(m) else {
+        return 0;
+    };
+    if size == 0 {
+        return 0;
+    }
+    let mut work: Vec<f64> = mat
+        .iter()
+        .copied()
+        .chain(std::iter::repeat(0.0))
+        .take(size)
+        .collect();
+    let scale = work.iter().fold(1.0_f64, |acc, v| acc.max(v.abs()));
+    let tol = 1e-10 * scale;
+    let mut pivot_row = 0;
+    for col in 0..m {
+        if pivot_row == n {
+            break;
+        }
         let mut max_val = 0.0_f64;
-        let mut max_row = col;
-        for row in col..n {
+        let mut max_row = pivot_row;
+        for row in pivot_row..n {
             let v = work[row * m + col].abs();
             if v > max_val {
                 max_val = v;
                 max_row = row;
             }
         }
-        if max_val < 1e-10 {
+        if max_val < tol {
             continue;
         }
-        rank += 1;
-        if max_row != col {
+        if max_row != pivot_row {
             for j in 0..m {
-                work.swap(col * m + j, max_row * m + j);
+                work.swap(pivot_row * m + j, max_row * m + j);
             }
         }
-        let pivot = work[col * m + col];
-        for row in (col + 1)..n {
+        let pivot = work[pivot_row * m + col];
+        for row in (pivot_row + 1)..n {
             let factor = work[row * m + col] / pivot;
+            if factor == 0.0 {
+                continue;
+            }
             for j in col..m {
-                let v = work[col * m + j];
+                let v = work[pivot_row * m + j];
                 work[row * m + j] -= factor * v;
             }
         }
+        pivot_row += 1;
     }
-    rank
+    pivot_row
 }
 /// Check if the system is controllable (rank of controllability matrix == n).
 pub fn is_controllable(a: &[f64], b: &[f64], n: usize, m: usize) -> bool {
@@ -775,45 +807,85 @@ pub fn lag_compensator(crossover_freq: f64, dc_gain_boost: f64) -> (f64, f64) {
     let pole = zero / beta;
     (zero, pole)
 }
-/// Observer gain via Ackermann's formula (works for 1-D systems).
+/// Observer gain via Ackermann's formula for a single-output system.
 ///
-/// For higher dimensions, returns a heuristic gain vector.
+/// Returns the gain `L` (length `n`) for which the eigenvalues of `A - L C`
+/// are exactly `desired_poles`, using the dual Ackermann formula
+///
+/// ```text
+/// L = phi(A) * O^-1 * e_n,
+/// O = [C; C A; ...; C A^(n-1)],   phi(s) = prod_i (s - p_i),
+/// ```
+///
+/// where `e_n = [0, ..., 0, 1]^T`.  `a` is `n x n`, `c` is the single output
+/// row (`1 x n`) and `desired_poles` holds one `[re, im]` entry per pole, so a
+/// complex pole must be listed together with its conjugate.
+///
+/// Returns `None` when
+/// * `c` does not have exactly one row of length `n`, `a` is not square, or
+///   `desired_poles.len() != n`,
+/// * any input is not finite,
+/// * the pole set is not closed under complex conjugation (`phi` would have
+///   complex coefficients, so no real gain exists), or
+/// * the pair `(A, C)` is not observable (`O` is singular).
+///
+/// For `n == 0` the empty gain `Some(vec![])` is returned when `c` and
+/// `desired_poles` are empty as well.
 pub fn observer_gain_ackermann(
     a: &[Vec<f64>],
     c: &[Vec<f64>],
     desired_poles: &[[f64; 2]],
-) -> Vec<f64> {
+) -> Option<Vec<f64>> {
     let n = a.len();
     if n == 0 {
-        return vec![];
+        return (c.is_empty() && desired_poles.is_empty()).then(Vec::new);
     }
-    if n == 1 {
-        let a_val = a[0][0];
-        let c_val = if !c.is_empty() && !c[0].is_empty() {
-            c[0][0]
-        } else {
-            1.0
-        };
-        let desired_re = if !desired_poles.is_empty() {
-            desired_poles[0][0]
-        } else {
-            -1.0
-        };
-        if c_val.abs() < 1e-300 {
-            return vec![0.0];
-        }
-        return vec![(a_val - desired_re) / c_val];
+    if a.iter().any(|row| row.len() != n)
+        || c.len() != 1
+        || c[0].len() != n
+        || desired_poles.len() != n
+    {
+        return None;
     }
-    let mut l = vec![0.0; n];
-    for i in 0..n {
-        let desired_re = if i < desired_poles.len() {
-            desired_poles[i][0]
-        } else {
-            -1.0
-        };
-        l[i] = a[i][i] - desired_re;
+    if a.iter()
+        .flatten()
+        .chain(c[0].iter())
+        .chain(desired_poles.iter().flatten())
+        .any(|v| !v.is_finite())
+    {
+        return None;
     }
-    l
+
+    // Desired characteristic polynomial phi(s) = prod (s - p_i), real coefficients.
+    let roots: Vec<C64> = desired_poles.iter().map(|p| C64::new(p[0], p[1])).collect();
+    let phi = polynomial_from_roots(C64::new(1.0, 0.0), &roots);
+    let magnitude = phi.iter().map(|c| c.re.abs()).fold(1.0_f64, f64::max);
+    if phi.iter().any(|c| c.im.abs() > 1e-9 * magnitude) {
+        return None;
+    }
+
+    // phi(A) by Horner's scheme: ((I A + phi_1 I) A + phi_2 I) ... + phi_n I.
+    let a_mat = DMatrix::from_fn(n, n, |i, j| a[i][j]);
+    let identity = DMatrix::<f64>::identity(n, n);
+    let mut phi_a = identity.clone();
+    for coefficient in phi.iter().skip(1) {
+        phi_a = &phi_a * &a_mat + &identity * coefficient.re;
+    }
+
+    // v = O^-1 e_n through an LU solve (never an explicit inverse).
+    let a_flat: Vec<f64> = a.iter().flatten().copied().collect();
+    let observability = observability_matrix(&a_flat, &c[0], n, 1);
+    if matrix_rank(&observability, n, n) < n {
+        return None;
+    }
+    let mut e_n = DVector::<f64>::zeros(n);
+    e_n[n - 1] = 1.0;
+    let v = DMatrix::from_row_slice(n, n, &observability)
+        .lu()
+        .solve(&e_n)?;
+
+    let gain: Vec<f64> = (phi_a * v).iter().copied().collect();
+    gain.iter().all(|g| g.is_finite()).then_some(gain)
 }
 /// Check if all poles have negative real part (stable).
 pub fn pole_placement_check(eigs: &[[f64; 2]]) -> bool {
@@ -877,49 +949,51 @@ pub fn solve_lyapunov_1x1(a: f64, q: f64) -> f64 {
 }
 /// Step response of a transfer function (via state-space simulation).
 ///
-/// Returns `(time_vec, output_vec)`.
-pub fn step_response(tf: &TransferFunction, t_final: f64, dt: f64) -> (Vec<f64>, Vec<f64>) {
-    let n_steps = (t_final / dt).ceil() as usize;
-    let mut times = Vec::with_capacity(n_steps);
-    let mut outputs = Vec::with_capacity(n_steps);
-    for k in 0..n_steps {
-        let t = k as f64 * dt;
-        times.push(t);
-        let h0 = tf.dc_gain();
-        let poles = tf.poles();
-        let mut y = h0;
-        for pole in &poles {
-            if pole.re.abs() < 1e-12 && pole.im.abs() < 1e-12 {
-                continue;
-            }
-            let decay = (pole.re * t).exp();
-            let osc = (pole.im * t).cos();
-            y -= h0 * decay * osc / poles.len() as f64;
-        }
-        outputs.push(y);
-    }
-    (times, outputs)
-}
-/// Impulse response of a transfer function.
+/// The transfer function is realised in controllable canonical form and
+/// discretised with the exact zero-order hold, so the returned samples equal
+/// the true unit-step response `y(k * dt)` (up to rounding) for any pole
+/// pattern, including repeated, complex, unstable and integrating poles.
 ///
-/// Returns `(time_vec, output_vec)`.
+/// Returns `(time_vec, output_vec)` with `ceil(t_final / dt)` samples at
+/// `t_k = k * dt`.  Both vectors are empty when no sampled response exists:
+/// non-positive or non-finite `dt` / `t_final`, a transfer function that is
+/// improper (numerator degree above the denominator degree), has a zero
+/// denominator or non-finite coefficients.
+pub fn step_response(tf: &TransferFunction, t_final: f64, dt: f64) -> (Vec<f64>, Vec<f64>) {
+    sampled_response(tf, t_final, dt, SisoRealization::step_samples)
+}
+/// Impulse response of a transfer function (via state-space simulation).
+///
+/// Uses the same exact realisation as [`step_response`]: the unit impulse
+/// moves the state to `B` and the system then evolves freely, so the samples
+/// equal the true impulse response `g(k * dt)` up to rounding.  A direct
+/// feedthrough term `D * delta(t)` of a biproper transfer function is a Dirac
+/// impulse that cannot be represented by samples and is omitted.
+///
+/// Returns `(time_vec, output_vec)`; both are empty in the same situations as
+/// for [`step_response`].
 pub fn impulse_response(tf: &TransferFunction, t_final: f64, dt: f64) -> (Vec<f64>, Vec<f64>) {
-    let n_steps = (t_final / dt).ceil() as usize;
-    let mut times = Vec::with_capacity(n_steps);
-    let mut outputs = Vec::with_capacity(n_steps);
-    for k in 0..n_steps {
-        let t = k as f64 * dt;
-        times.push(t);
-        let poles = tf.poles();
-        let mut y = 0.0;
-        for pole in &poles {
-            let decay = (pole.re * t).exp();
-            let osc = (pole.im * t).cos();
-            y += decay * osc;
-        }
-        outputs.push(y);
+    sampled_response(tf, t_final, dt, SisoRealization::impulse_samples)
+}
+/// Shared driver of [`step_response`] and [`impulse_response`].
+fn sampled_response(
+    tf: &TransferFunction,
+    t_final: f64,
+    dt: f64,
+    sampler: fn(&SisoRealization, f64, usize) -> Option<Vec<f64>>,
+) -> (Vec<f64>, Vec<f64>) {
+    let Some(count) = sample_count(t_final, dt) else {
+        return (Vec::new(), Vec::new());
+    };
+    let Some(realization) =
+        SisoRealization::new(&real_polynomial(&tf.num), &real_polynomial(&tf.den))
+    else {
+        return (Vec::new(), Vec::new());
+    };
+    match sampler(&realization, dt, count) {
+        Some(outputs) => ((0..count).map(|k| k as f64 * dt).collect(), outputs),
+        None => (Vec::new(), Vec::new()),
     }
-    (times, outputs)
 }
 /// Compute the H2 norm of a stable SISO system via numerical integration.
 ///
@@ -1380,13 +1454,173 @@ mod tests {
         let a = vec![vec![2.0]];
         let c = vec![vec![1.0]];
         let desired = [[-1.0, 0.0]];
-        let l = observer_gain_ackermann(&a, &c, &desired);
+        let l = observer_gain_ackermann(&a, &c, &desired).expect("observable 1-D system");
+        assert_eq!(l.len(), 1);
         assert!((l[0] - 3.0).abs() < 1e-10);
     }
     #[test]
     fn test_observer_gain_empty() {
         let l = observer_gain_ackermann(&[], &[], &[]);
-        assert!(l.is_empty());
+        assert_eq!(l, Some(Vec::new()));
+    }
+    /// Coefficients `[1, c_{n-1}, ..., c_0]` of `det(sI - M)` (Faddeev-LeVerrier).
+    fn characteristic_polynomial(m: &DMatrix<f64>) -> Vec<f64> {
+        let n = m.nrows();
+        let identity = DMatrix::<f64>::identity(n, n);
+        let mut coefficients = vec![1.0];
+        let mut mk = DMatrix::<f64>::zeros(n, n);
+        for k in 1..=n {
+            mk = m * &mk + &identity * coefficients[k - 1];
+            coefficients.push(-(m * &mk).trace() / k as f64);
+        }
+        coefficients
+    }
+    fn closed_loop_matrix(a: &[Vec<f64>], c: &[Vec<f64>], l: &[f64]) -> DMatrix<f64> {
+        let n = a.len();
+        DMatrix::from_fn(n, n, |i, j| a[i][j] - l[i] * c[0][j])
+    }
+    #[test]
+    fn test_observer_gain_double_integrator_places_poles() {
+        // A = [[0, 1], [0, 0]], C = [1, 0], poles {-1, -2}: the old diagonal
+        // heuristic gave L = [1, 2] (eig(A - LC) = -0.5 +- 1.32j); the correct
+        // gain is L = [3, 2].
+        let a = vec![vec![0.0, 1.0], vec![0.0, 0.0]];
+        let c = vec![vec![1.0, 0.0]];
+        let l = observer_gain_ackermann(&a, &c, &[[-1.0, 0.0], [-2.0, 0.0]])
+            .expect("observable system");
+        assert!((l[0] - 3.0).abs() < 1e-12, "L = {l:?}");
+        assert!((l[1] - 2.0).abs() < 1e-12, "L = {l:?}");
+        let cp = characteristic_polynomial(&closed_loop_matrix(&a, &c, &l));
+        for (got, want) in cp.iter().zip([1.0, 3.0, 2.0]) {
+            assert!((got - want).abs() < 1e-12, "char poly {cp:?}");
+        }
+    }
+    #[test]
+    fn test_observer_gain_complex_pole_pair() {
+        // Poles -1 +- 2j: phi(s) = s^2 + 2 s + 5, phi(A) = [[5, 2], [0, 5]], O = I
+        // => L = phi(A) e_2 = [2, 5].
+        let a = vec![vec![0.0, 1.0], vec![0.0, 0.0]];
+        let c = vec![vec![1.0, 0.0]];
+        let l = observer_gain_ackermann(&a, &c, &[[-1.0, 2.0], [-1.0, -2.0]])
+            .expect("conjugate pair is realisable");
+        assert!(
+            (l[0] - 2.0).abs() < 1e-12 && (l[1] - 5.0).abs() < 1e-12,
+            "L = {l:?}"
+        );
+    }
+    #[test]
+    fn test_observer_gain_three_states_matches_requested_spectrum() {
+        let a = vec![
+            vec![1.0, 2.0, 0.0],
+            vec![0.0, -1.0, 3.0],
+            vec![1.0, 0.0, 2.0],
+        ];
+        let c = vec![vec![1.0, 0.0, 1.0]];
+        let poles = [[-2.0, 0.0], [-3.0, 1.0], [-3.0, -1.0]];
+        let l = observer_gain_ackermann(&a, &c, &poles).expect("observable system");
+        let closed_loop = closed_loop_matrix(&a, &c, &l);
+        // (s + 2)(s^2 + 6 s + 10) = s^3 + 8 s^2 + 22 s + 20.
+        let cp = characteristic_polynomial(&closed_loop);
+        for (got, want) in cp.iter().zip([1.0, 8.0, 22.0, 20.0]) {
+            assert!((got - want).abs() < 1e-9, "char poly {cp:?}");
+        }
+        let eigenvalues = closed_loop.complex_eigenvalues();
+        for pole in &poles {
+            let nearest = eigenvalues
+                .iter()
+                .map(|e| ((e.re - pole[0]).powi(2) + (e.im - pole[1]).powi(2)).sqrt())
+                .fold(f64::MAX, f64::min);
+            assert!(nearest < 1e-9, "pole {pole:?} missing, nearest {nearest}");
+        }
+    }
+    #[test]
+    fn test_observer_gain_rejects_unrealisable_requests() {
+        let a = vec![vec![0.0, 1.0], vec![0.0, 0.0]];
+        let c = vec![vec![1.0, 0.0]];
+        let real_poles = [[-1.0, 0.0], [-2.0, 0.0]];
+        // Wrong number of poles.
+        assert!(observer_gain_ackermann(&a, &c, &real_poles[..1]).is_none());
+        // Two output rows: Ackermann's formula is single-output only.
+        let c2 = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        assert!(observer_gain_ackermann(&a, &c2, &real_poles).is_none());
+        // Output row of the wrong length / ragged A.
+        assert!(observer_gain_ackermann(&a, &[vec![1.0]], &real_poles).is_none());
+        assert!(observer_gain_ackermann(&[vec![0.0, 1.0], vec![0.0]], &c, &real_poles).is_none());
+        // Unobservable pair: x2 is not seen through y = x1 when A = diag(1, 2).
+        let diag = vec![vec![1.0, 0.0], vec![0.0, 2.0]];
+        assert!(observer_gain_ackermann(&diag, &c, &real_poles).is_none());
+        // A lone complex pole has no real realisation.
+        assert!(observer_gain_ackermann(&[vec![2.0]], &[vec![1.0]], &[[-1.0, 1.0]]).is_none());
+        // Non-finite data.
+        assert!(observer_gain_ackermann(&a, &c, &[[f64::NAN, 0.0], [-2.0, 0.0]]).is_none());
+    }
+    // ── matrix_rank / controllability (pivot row decoupled from column) ──────
+    #[test]
+    fn test_matrix_rank_wide_matrix_with_late_pivot_columns() {
+        // Controllability matrix [B, AB] of A = [[0, 1], [0, 0]], B = [[0, 0], [0, 1]].
+        // The old column-index pivot row reported rank 1 here.
+        let m = vec![0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0];
+        assert_eq!(matrix_rank(&m, 2, 4), 2);
+    }
+    #[test]
+    fn test_matrix_rank_leading_zero_columns() {
+        // [[0, 1, 0], [0, 0, 1]] has rank 2 (the old code returned 0).
+        let m = vec![0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        assert_eq!(matrix_rank(&m, 2, 3), 2);
+    }
+    #[test]
+    fn test_matrix_rank_assorted_shapes() {
+        assert_eq!(matrix_rank(&[0.0; 6], 2, 3), 0);
+        assert_eq!(matrix_rank(&[], 0, 3), 0);
+        // Tall 4x2 with interleaved zero rows.
+        assert_eq!(
+            matrix_rank(&[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0], 4, 2),
+            2
+        );
+        // Tall rank-1: rows are multiples of (1, 2).
+        assert_eq!(matrix_rank(&[1.0, 2.0, 2.0, 4.0, 3.0, 6.0], 3, 2), 1);
+        // Classic 3x3 of rank 2.
+        let m = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        assert_eq!(matrix_rank(&m, 3, 3), 2);
+        // Row swap needed: first column starts with zero.
+        assert_eq!(matrix_rank(&[0.0, 1.0, 1.0, 0.0], 2, 2), 2);
+    }
+    #[test]
+    fn test_matrix_rank_is_scale_aware() {
+        // Rank-1 matrix of large entries: elimination residue ~1e-6 must not
+        // be mistaken for a second pivot.
+        let big = 1e8;
+        let m = vec![big, 2.0 * big, 3.0 * big, 6.000_000_000_001 * big];
+        assert_eq!(matrix_rank(&m, 2, 2), 1);
+        // A genuinely small but well separated second pivot still counts.
+        assert_eq!(matrix_rank(&[1.0, 0.0, 0.0, 1e-6], 2, 2), 2);
+    }
+    #[test]
+    fn test_matrix_rank_short_slice_is_zero_padded() {
+        assert_eq!(matrix_rank(&[1.0, 0.0, 0.0], 2, 2), 1);
+    }
+    #[test]
+    fn test_is_controllable_with_two_inputs_and_late_pivots() {
+        // The auditor's example: the controllability matrix is [[0,0,0,1],[0,1,0,0]].
+        let a = vec![0.0, 1.0, 0.0, 0.0];
+        let b = vec![0.0, 0.0, 0.0, 1.0];
+        assert!(is_controllable(&a, &b, 2, 2));
+        // A single input acting on x2 drives the chain x2 -> x1: controllable.
+        let b_single = vec![0.0, 1.0];
+        assert!(is_controllable(&a, &b_single, 2, 1));
+        // A single input acting on x1 never reaches x2: not controllable.
+        let b_dead = vec![1.0, 0.0];
+        assert!(!is_controllable(&a, &b_dead, 2, 1));
+    }
+    #[test]
+    fn test_is_observable_tall_observability_matrix() {
+        // Two outputs: O = [C; CA] is 4x2.
+        let a = vec![0.0, 1.0, 0.0, 0.0];
+        let c = vec![0.0, 1.0, 0.0, 1.0];
+        // Both rows measure x2 only; x1 never influences the output.
+        assert!(!is_observable(&a, &c, 2, 2));
+        let c_good = vec![1.0, 0.0, 0.0, 0.0];
+        assert!(is_observable(&a, &c_good, 2, 2));
     }
     #[test]
     fn test_pole_placement_stable() {

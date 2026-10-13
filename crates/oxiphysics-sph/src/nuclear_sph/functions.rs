@@ -124,7 +124,12 @@ pub fn pauli_potential(
 }
 /// Pauli exclusion force on particle i due to particle j.
 ///
-/// F = −∇_i V_Pauli(r_ij, p_ij)
+/// `F_i = −∇_{r_i} V_Pauli(r_ij, p_ij) = + V_Pauli · q₀⁻² · r_ij`
+///
+/// with `r_ij = r_i − r_j` and `V_Pauli` from [`pauli_potential`].  The strength
+/// `V₀` is positive, so the force on particle `i` points along `+r_ij`, i.e.
+/// **away** from particle `j`: identical nucleons that overlap in phase space
+/// repel each other.  The force is zero for nucleons of different type.
 pub fn pauli_force(
     params: &PauliParams,
     r_ij: [f64; 3],
@@ -135,7 +140,7 @@ pub fn pauli_force(
         return [0.0; 3];
     }
     let v = pauli_potential(params, r_ij, p_ij, same_type);
-    let coeff = -v * params.q0_fm_inv * params.q0_fm_inv;
+    let coeff = v * params.q0_fm_inv * params.q0_fm_inv;
     scale3(r_ij, coeff)
 }
 /// Gaussian wavepacket overlap function ρ_{ij}(r).
@@ -660,12 +665,93 @@ mod tests {
         assert_eq!(v, 0.0);
     }
     #[test]
-    fn test_pauli_force_opposite_direction() {
+    fn test_pauli_force_is_repulsive() {
         let params = PauliParams::default();
         let r_ij = [0.2, 0.0, 0.0];
         let p_ij = [5.0, 0.0, 0.0];
         let f = pauli_force(&params, r_ij, p_ij, true);
-        assert!(f[0] < 0.0 || f[0] >= 0.0);
+        assert!(f[0] > 0.0, "force on i must point away from j: {f:?}");
+        assert_eq!(f[1], 0.0);
+        assert_eq!(f[2], 0.0);
+        // Newton's third law: swapping the roles flips both r_ij and p_ij.
+        let f_ji = pauli_force(&params, [-0.2, 0.0, 0.0], [-5.0, 0.0, 0.0], true);
+        assert!((f[0] + f_ji[0]).abs() < 1e-12 * f[0].abs());
+    }
+    #[test]
+    fn test_pauli_force_matches_negative_potential_gradient() {
+        // F_x must equal -dV/dx at fixed relative momentum (central difference).
+        let params = PauliParams::default();
+        let p_ij = [5.0, -3.0, 2.0];
+        let eps = 1.0e-6;
+        for &r in &[0.2_f64, 0.9, 1.7, 3.1] {
+            let base = [r, 0.4 * r, -0.3 * r];
+            let force = pauli_force(&params, base, p_ij, true);
+            for axis in 0..3 {
+                let mut plus = base;
+                let mut minus = base;
+                plus[axis] += eps;
+                minus[axis] -= eps;
+                let v_plus = pauli_potential(&params, plus, p_ij, true);
+                let v_minus = pauli_potential(&params, minus, p_ij, true);
+                let numeric = -(v_plus - v_minus) / (2.0 * eps);
+                let scale = force[axis].abs().max(1.0e-12);
+                assert!(
+                    (force[axis] - numeric).abs() <= 1.0e-6 * scale,
+                    "r={r} axis={axis}: analytic {} vs finite difference {numeric}",
+                    force[axis]
+                );
+            }
+        }
+    }
+    #[test]
+    fn test_pauli_force_zero_for_different_nucleon_types() {
+        let params = PauliParams::default();
+        let f = pauli_force(&params, [0.2, 0.1, -0.3], [5.0, 0.0, 0.0], false);
+        assert_eq!(f, [0.0; 3]);
+    }
+    #[test]
+    fn test_pauli_force_decays_with_separation() {
+        let params = PauliParams::default();
+        let near = pauli_force(&params, [4.0, 0.0, 0.0], [0.0; 3], true);
+        let far = pauli_force(&params, [12.0, 0.0, 0.0], [0.0; 3], true);
+        assert!(near[0] > 0.0);
+        assert!(far[0] >= 0.0 && far[0] < near[0], "{far:?} vs {near:?}");
+    }
+    #[test]
+    fn test_simulation_pauli_force_pushes_identical_nucleons_apart() {
+        // Two protons at rest, 1 fm apart.  The Skyrme and viscous terms do not
+        // depend on the Pauli strength, so the difference between a run with and
+        // without Pauli exclusion isolates the Pauli contribution, which must
+        // push the left proton to -x and the right proton to +x.
+        let build = |strength_mev: f64| {
+            let mut sim = NuclearSphSimulation::new(SkyrmeParams::soft(), 2.0, 0.1);
+            sim.pauli.strength_mev = strength_mev;
+            let mut left = NuclearParticle::new([0.0; 3], [0.0; 3], 2.0, 1.0, NucleonType::Proton);
+            let mut right =
+                NuclearParticle::new([1.0, 0.0, 0.0], [0.0; 3], 2.0, 1.0, NucleonType::Proton);
+            left.rho = RHO_0;
+            right.rho = RHO_0;
+            sim.add_particle(left);
+            sim.add_particle(right);
+            sim.update_forces();
+            sim
+        };
+        let reference = PauliParams::default();
+        let without = build(0.0);
+        let with = build(reference.strength_mev);
+        let delta_left = with.particles[0].force[0] - without.particles[0].force[0];
+        let delta_right = with.particles[1].force[0] - without.particles[1].force[0];
+        let expected = pauli_force(&reference, [-1.0, 0.0, 0.0], [0.0; 3], true);
+        assert!(
+            delta_left < 0.0,
+            "left proton pushed towards -x: {delta_left}"
+        );
+        assert!(
+            delta_right > 0.0,
+            "right proton pushed towards +x: {delta_right}"
+        );
+        assert!((delta_left - expected[0]).abs() <= 1e-9 * expected[0].abs());
+        assert!((delta_right + expected[0]).abs() <= 1e-9 * expected[0].abs());
     }
     #[test]
     fn test_wavepacket_overlap_decreases_with_distance() {

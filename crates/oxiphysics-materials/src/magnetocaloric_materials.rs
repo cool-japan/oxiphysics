@@ -124,6 +124,28 @@ pub struct MagneticEntropy {
     pub effective_moment: f64,
 }
 
+/// Derivative at node `k` of the quadratic interpolating the three points
+/// `(x[i], y[i])`.
+///
+/// Exact for quadratic data on arbitrary (non-uniform) node spacing; with
+/// `k = 1` and nodes `x[0] < x[1] < x[2]` it is the centred second-order
+/// difference, with `k = 0` or `k = 2` the one-sided second-order difference
+/// used at the ends of a table.
+fn three_point_derivative(x: [f64; 3], y: [f64; 3], k: usize) -> f64 {
+    let (a, b) = match k {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (0, 1),
+    };
+    let (xk, xa, xb) = (x[k], x[a], x[b]);
+    let (yk, ya, yb) = (y[k], y[a], y[b]);
+    let d_ka = xk - xa;
+    let d_kb = xk - xb;
+    yk * (1.0 / d_ka + 1.0 / d_kb)
+        + ya * d_kb / ((xa - xk) * (xa - xb))
+        + yb * d_ka / ((xb - xk) * (xb - xa))
+}
+
 impl MagneticEntropy {
     /// Create a new `MagneticEntropy`.
     pub fn new(molar_mass: f64, effective_moment: f64) -> Self {
@@ -135,11 +157,14 @@ impl MagneticEntropy {
 
     /// Maxwell relation for isothermal entropy change:
     ///
-    /// ΔS_M = ∫₀^H (∂M/∂T)_H dH ≈ (∂M/∂T)_H · ΔH
+    /// ΔS_M = μ₀ ∫_{H₁}^{H₂} (∂M/∂T)_H dH ≈ μ₀ · (∂M/∂T)_H · ΔH
     ///
-    /// `dm_dt` is the measured (∂M/∂T)_H in \[A·m²/kg·K\] and `delta_h` in A/m.
+    /// `dm_dt` is the measured (∂M/∂T)_H in \[A·m²/(kg·K)\] and `delta_h` the
+    /// field change in A/m.  The vacuum permeability μ₀ converts the field
+    /// integral to the thermodynamic work variable, so the result is in
+    /// J/(kg·K).
     pub fn maxwell_relation_entropy_change(&self, dm_dt: f64, delta_h: f64) -> f64 {
-        dm_dt * delta_h
+        MU_0 * dm_dt * delta_h
     }
 
     /// Clausius-Clapeyron slope dT_C/dH for a first-order magnetic transition:
@@ -165,25 +190,100 @@ impl MagneticEntropy {
         R_GAS * g.ln() / self.molar_mass
     }
 
-    /// Numerical entropy change from tabulated M(T) data using the Maxwell relation.
+    /// Numerical isothermal entropy change from tabulated isofield M(T) data
+    /// using the Maxwell relation.
     ///
-    /// `m_values` is a slice of (T, M) pairs measured at two fields H1 and H2.
-    /// `delta_h` = H2 − H1 \[A/m\].
+    /// `m_low` and `m_high` are slices of (T, M) pairs measured at the fields
+    /// H₁ and H₂ on the same temperature grid; `delta_h` = H₂ − H₁ \[A/m\] and
+    /// M is the (specific) magnetisation, e.g. in \[A·m²/kg\].  The Maxwell
+    /// relation gives
+    ///
+    /// ΔS_M(T) = μ₀ ∫_{H₁}^{H₂} (∂M/∂T)_H dH
+    ///         ≈ μ₀ · ½ [(∂M/∂T)_{H₁} + (∂M/∂T)_{H₂}] · ΔH,
+    ///
+    /// with the temperature derivatives taken by second-order three-point
+    /// differences (centred in the interior, one-sided at the two ends; exact
+    /// for quadratic M(T) on non-uniform grids) and the field integral by the
+    /// trapezoidal rule.  Returns the (T, ΔS_M) pairs in J/(kg·K) when M is
+    /// specific.
+    ///
+    /// # Errors
+    /// * [`crate::Error::DimensionMismatch`] if the two tables differ in length.
+    /// * [`crate::Error::ParameterOutOfRange`] if fewer than three points are given.
+    /// * [`crate::Error::General`] if any value is non-finite, the temperature
+    ///   grids differ, or the temperatures are not strictly monotonic.
     pub fn numerical_maxwell_entropy(
         &self,
         m_low: &[(f64, f64)],
         m_high: &[(f64, f64)],
         delta_h: f64,
-    ) -> Vec<(f64, f64)> {
-        let n = m_low.len().min(m_high.len());
-        let mut result = Vec::with_capacity(n);
-        for i in 0..n {
-            let (t_low, m_l) = m_low[i];
-            let (_t_high, m_h) = m_high[i];
-            let dm_dh = (m_h - m_l) / delta_h;
-            result.push((t_low, dm_dh * delta_h));
+    ) -> crate::Result<Vec<(f64, f64)>> {
+        use crate::Error;
+        if m_low.len() != m_high.len() {
+            return Err(Error::DimensionMismatch {
+                expected: format!("{} (T, M) points at the low field", m_low.len()),
+                actual: format!("{} (T, M) points at the high field", m_high.len()),
+            });
         }
-        result
+        let n = m_low.len();
+        if n < 3 {
+            return Err(Error::ParameterOutOfRange {
+                param: "number of (T, M) points",
+                value: n as f64,
+                min: 3.0,
+                max: f64::INFINITY,
+            });
+        }
+        let all_finite = delta_h.is_finite()
+            && m_low
+                .iter()
+                .chain(m_high.iter())
+                .all(|&(t, m)| t.is_finite() && m.is_finite());
+        if !all_finite {
+            return Err(Error::General(
+                "numerical_maxwell_entropy: delta_h, temperatures and magnetisations must be finite"
+                    .to_string(),
+            ));
+        }
+        let grids_match = m_low
+            .iter()
+            .zip(m_high.iter())
+            .all(|(&(t_l, _), &(t_h, _))| {
+                (t_l - t_h).abs() <= 1.0e-9 * t_l.abs().max(t_h.abs()).max(1.0)
+            });
+        if !grids_match {
+            return Err(Error::General(
+                "numerical_maxwell_entropy: the two isofield tables must share one temperature grid"
+                    .to_string(),
+            ));
+        }
+        let increasing = m_low[1].0 > m_low[0].0;
+        let monotonic = m_low.windows(2).all(|w| {
+            if increasing {
+                w[1].0 > w[0].0
+            } else {
+                w[1].0 < w[0].0
+            }
+        });
+        if !monotonic {
+            return Err(Error::General(
+                "numerical_maxwell_entropy: temperatures must be strictly monotonic".to_string(),
+            ));
+        }
+        let mut result = Vec::with_capacity(n);
+        for (i, &(t, _)) in m_low.iter().enumerate() {
+            // Stencil of three consecutive nodes that contains node i; k is i's slot in it.
+            let first = i.saturating_sub(1).min(n - 3);
+            let k = i - first;
+            let x = [m_low[first].0, m_low[first + 1].0, m_low[first + 2].0];
+            let y_low = [m_low[first].1, m_low[first + 1].1, m_low[first + 2].1];
+            let y_high = [m_high[first].1, m_high[first + 1].1, m_high[first + 2].1];
+            let dm_dt_low = three_point_derivative(x, y_low, k);
+            let dm_dt_high = three_point_derivative(x, y_high, k);
+            let mean_dm_dt = 0.5 * (dm_dt_low + dm_dt_high);
+            result.push((t, MU_0 * mean_dm_dt * delta_h));
+        }
+        Ok(result)
     }
 
     /// Integrated entropy change over a temperature span \[T1, T2\].
@@ -985,6 +1085,156 @@ mod tests {
             (ds2 - 2.0 * ds1).abs() < EPS,
             "Maxwell ΔS should be proportional to dM/dT"
         );
+    }
+
+    // 4b. The Maxwell relation carries the factor μ₀ and yields J/(kg·K).
+    #[test]
+    fn test_maxwell_relation_includes_mu0() {
+        let me = MagneticEntropy::new(0.1574, 7.0);
+        // dM/dT = -0.5 A·m²/(kg·K), ΔH = 1.6e6 A/m (about 2 T).
+        let ds = me.maxwell_relation_entropy_change(-0.5, 1.6e6);
+        let expected = MU_0 * (-0.5) * 1.6e6;
+        assert!(
+            (ds - expected).abs() < 1e-12,
+            "ΔS = {ds}, expected {expected}"
+        );
+        // μ₀ · 0.5 · 1.6e6 ≈ 1.005 J/(kg·K), not 8e5.
+        assert!((ds + 1.005).abs() < 1e-3, "ΔS = {ds} J/(kg·K)");
+    }
+
+    // 4c. numerical_maxwell_entropy recovers ΔS = μ₀ a (H1+H2)/2 · ΔH for M = a T H.
+    #[test]
+    fn test_numerical_maxwell_entropy_linear_in_t_and_h() {
+        let me = MagneticEntropy::new(0.1574, 7.0);
+        let a = 2.0e-6;
+        let (h1, h2) = (1.0e5, 5.0e5);
+        let temps: Vec<f64> = (0..21).map(|i| 100.0 + 10.0 * i as f64).collect();
+        let low: Vec<(f64, f64)> = temps.iter().map(|&t| (t, a * t * h1)).collect();
+        let high: Vec<(f64, f64)> = temps.iter().map(|&t| (t, a * t * h2)).collect();
+        let ds = me
+            .numerical_maxwell_entropy(&low, &high, h2 - h1)
+            .expect("valid isofield tables");
+        assert_eq!(ds.len(), temps.len());
+        let expected = MU_0 * a * 0.5 * (h1 + h2) * (h2 - h1);
+        for (&t, &(t_out, s)) in temps.iter().zip(ds.iter()) {
+            assert_eq!(t, t_out);
+            assert!(
+                (s - expected).abs() / expected.abs() < 1e-10,
+                "ΔS(T = {t}) = {s}, expected {expected}"
+            );
+        }
+        // The former implementation returned M(H2) - M(H1) = a T ΔH, which grows linearly with T;
+        // the entropy change of this magnetisation law is independent of temperature.
+        assert!((ds[0].1 - ds[20].1).abs() < 1e-10 * expected.abs());
+    }
+
+    // 4d. Second-order stencils are exact for quadratic M(T), also on non-uniform grids and at the ends.
+    #[test]
+    fn test_numerical_maxwell_entropy_exact_for_quadratic_on_nonuniform_grid() {
+        let me = MagneticEntropy::new(0.1574, 7.0);
+        let c = 3.0e-9;
+        let (h1, h2) = (2.0e5, 8.0e5);
+        let temps = [150.0, 152.0, 157.0, 165.0, 170.5, 181.0, 200.0, 230.0];
+        let low: Vec<(f64, f64)> = temps.iter().map(|&t| (t, c * t * t * h1)).collect();
+        let high: Vec<(f64, f64)> = temps.iter().map(|&t| (t, c * t * t * h2)).collect();
+        let ds = me.numerical_maxwell_entropy(&low, &high, h2 - h1).unwrap();
+        for (&t, &(_, s)) in temps.iter().zip(ds.iter()) {
+            // ∂M/∂T = 2 c T H, mean over H1,H2 = c T (H1 + H2).
+            let expected = MU_0 * c * t * (h1 + h2) * (h2 - h1);
+            assert!(
+                (s - expected).abs() / expected.abs() < 1e-10,
+                "ΔS(T = {t}) = {s}, expected {expected}"
+            );
+        }
+    }
+
+    // 4e. A ferromagnet (M falls with T) loses entropy on magnetisation: ΔS < 0, peaked near T_C.
+    #[test]
+    fn test_numerical_maxwell_entropy_negative_peak_at_curie_point() {
+        let me = MagneticEntropy::new(0.1574, 7.0);
+        let t_c = 293.0;
+        // Smoothed mean-field-like magnetisation: M = M0 [1 + tanh((T_C - T)/w)] / 2 + chi H.
+        let m_of = |t: f64, h: f64| {
+            150.0 * 0.5 * (1.0 + ((t_c - t) / 12.0).tanh()) * (h / (h + 2.0e5)) + 1.0e-6 * h
+        };
+        let temps: Vec<f64> = (0..121).map(|i| 230.0 + i as f64).collect();
+        let (h1, h2) = (0.0, 1.6e6);
+        let low: Vec<(f64, f64)> = temps.iter().map(|&t| (t, m_of(t, h1))).collect();
+        let high: Vec<(f64, f64)> = temps.iter().map(|&t| (t, m_of(t, h2))).collect();
+        let ds = me.numerical_maxwell_entropy(&low, &high, h2 - h1).unwrap();
+        assert!(
+            ds.iter().all(|&(_, s)| s < 0.0),
+            "ΔS must be negative everywhere here"
+        );
+        let (t_peak, s_peak) = ds
+            .iter()
+            .copied()
+            .fold((0.0, 0.0), |acc, p| if p.1 < acc.1 { p } else { acc });
+        assert!(
+            (t_peak - t_c).abs() <= 2.0,
+            "peak at {t_peak} K, T_C = {t_c} K"
+        );
+        assert!(
+            s_peak.abs() > 1.0 && s_peak.abs() < 50.0,
+            "peak ΔS = {s_peak} J/(kg·K)"
+        );
+        // Integrated entropy over T is finite and negative.
+        assert!(me.integrated_entropy(&ds) < 0.0);
+    }
+
+    // 4f. Invalid tables are reported, not silently truncated.
+    #[test]
+    fn test_numerical_maxwell_entropy_rejects_invalid_tables() {
+        use crate::Error;
+        let me = MagneticEntropy::new(0.1574, 7.0);
+        let grid = |scale: f64| -> Vec<(f64, f64)> {
+            (0..5)
+                .map(|i| (100.0 + 10.0 * i as f64, scale * (i as f64)))
+                .collect()
+        };
+        let ok_low = grid(1.0);
+        let ok_high = grid(2.0);
+        assert!(
+            me.numerical_maxwell_entropy(&ok_low, &ok_high, 1.0e5)
+                .is_ok()
+        );
+        // Length mismatch.
+        let err = me
+            .numerical_maxwell_entropy(&ok_low, &ok_high[..4], 1.0e5)
+            .unwrap_err();
+        assert!(matches!(err, Error::DimensionMismatch { .. }), "{err}");
+        // Fewer than three points.
+        let err = me
+            .numerical_maxwell_entropy(&ok_low[..2], &ok_high[..2], 1.0e5)
+            .unwrap_err();
+        assert!(matches!(err, Error::ParameterOutOfRange { .. }), "{err}");
+        // Different temperature grids.
+        let mut shifted = ok_high.clone();
+        shifted[2].0 += 0.5;
+        let err = me
+            .numerical_maxwell_entropy(&ok_low, &shifted, 1.0e5)
+            .unwrap_err();
+        assert!(matches!(err, Error::General(_)), "{err}");
+        // Non-monotonic temperatures.
+        let mut bad_low = ok_low.clone();
+        let mut bad_high = ok_high.clone();
+        bad_low[3].0 = bad_low[1].0;
+        bad_high[3].0 = bad_high[1].0;
+        let err = me
+            .numerical_maxwell_entropy(&bad_low, &bad_high, 1.0e5)
+            .unwrap_err();
+        assert!(matches!(err, Error::General(_)), "{err}");
+        // Non-finite input.
+        let mut nan_high = ok_high.clone();
+        nan_high[1].1 = f64::NAN;
+        let err = me
+            .numerical_maxwell_entropy(&ok_low, &nan_high, 1.0e5)
+            .unwrap_err();
+        assert!(matches!(err, Error::General(_)), "{err}");
+        let err = me
+            .numerical_maxwell_entropy(&ok_low, &ok_high, f64::INFINITY)
+            .unwrap_err();
+        assert!(matches!(err, Error::General(_)), "{err}");
     }
 
     // 5. Clausius-Clapeyron slope has correct sign (negative for MnAs-like).

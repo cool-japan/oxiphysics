@@ -209,9 +209,10 @@ pub fn latin_hypercube_sample(n: usize, d: usize, rng: &mut impl rand::Rng) -> V
     }
     result
 }
-/// Sobol' quasi-random sequence: `n` points in `d` dimensions (up to 3 dims).
+/// Sobol' quasi-random sequence: the first `n` points in `d` dimensions.
 ///
-/// Uses the same direction numbers as [`SobolSequence`].
+/// Uses the Joe-Kuo direction numbers of [`SobolSequence`], which are tabulated
+/// for up to 128 dimensions; `d` is clamped to `1..=128`.  Point 0 is the origin.
 pub fn sobol_sequence(n: usize, d: usize) -> Vec<Vec<f64>> {
     SobolSequence::new(d).sample(n)
 }
@@ -298,156 +299,14 @@ where
 pub fn halton_sequence(n: usize, base: u32) -> Vec<f64> {
     HaltonSequence::sample(n, base)
 }
-/// Direction numbers for dimensions 1–10 of the Sobol sequence.
-///
-/// These are the standard Joe & Kuo direction numbers for `s ≤ 10` dimensions.
-/// Dimension 0 is the trivial sequence `1<<(BITS-1-i)`.
-/// Dimensions 1–9 use the published primitive polynomials and initialisation
-/// values from Joe & Kuo (2003).
-pub(super) fn sobol10_direction_numbers(dim: usize) -> Vec<u32> {
-    pub(super) const BITS: usize = 32;
-    match dim {
-        0 => (0..BITS).map(|i| 1u32 << (BITS - 1 - i)).collect(),
-        1 => {
-            let mut v = vec![0u32; BITS];
-            v[0] = 1u32 << (BITS - 1);
-            for i in 1..BITS {
-                v[i] = v[i - 1] ^ (v[i - 1] >> 1);
-            }
-            v
-        }
-        2 => {
-            let mut v = vec![0u32; BITS];
-            v[0] = 1u32 << (BITS - 1);
-            v[1] = 1u32 << (BITS - 2);
-            for i in 2..BITS {
-                v[i] = v[i - 2] ^ (v[i - 2] >> 2) ^ v[i - 1] ^ (v[i - 1] >> 1);
-            }
-            v
-        }
-        3 => {
-            let mut v = vec![0u32; BITS];
-            v[0] = 1u32 << (BITS - 1);
-            v[1] = 1u32 << (BITS - 2);
-            v[2] = (3u32 << (BITS - 3)).wrapping_shr(0);
-            v[2] = 3u32 << (BITS - 3);
-            for i in 3..BITS {
-                v[i] = v[i - 3] ^ (v[i - 3] >> 3) ^ v[i - 1] ^ (v[i - 1] >> 1);
-            }
-            v
-        }
-        4 => {
-            let mut v = vec![0u32; BITS];
-            v[0] = 1u32 << (BITS - 1);
-            v[1] = 3u32 << (BITS - 3);
-            v[2] = 7u32 << (BITS - 4);
-            for i in 3..BITS {
-                v[i] = v[i - 3]
-                    ^ (v[i - 3] >> 3)
-                    ^ (v[i - 2] << 1)
-                    ^ (v[i - 2] >> 1)
-                    ^ v[i - 1]
-                    ^ (v[i - 1] >> 1);
-            }
-            v
-        }
-        5 => {
-            let mut v = vec![0u32; BITS];
-            v[0] = 1u32 << (BITS - 1);
-            v[1] = 1u32 << (BITS - 2);
-            v[2] = 5u32 << (BITS - 4);
-            v[3] = 13u32 << (BITS - 5);
-            for i in 4..BITS {
-                v[i] = v[i - 4] ^ (v[i - 4] >> 4) ^ v[i - 1] ^ (v[i - 1] >> 1);
-            }
-            v
-        }
-        6 => {
-            let mut v = vec![0u32; BITS];
-            v[0] = 1u32 << (BITS - 1);
-            v[1] = 3u32 << (BITS - 3);
-            v[2] = 13u32 << (BITS - 5);
-            v[3] = 5u32 << (BITS - 4);
-            for i in 4..BITS {
-                v[i] = v[i - 4]
-                    ^ (v[i - 4] >> 4)
-                    ^ (v[i - 3] << 1)
-                    ^ (v[i - 3] >> 2)
-                    ^ v[i - 1]
-                    ^ (v[i - 1] >> 1);
-            }
-            v
-        }
-        7 => {
-            let mut v = vec![0u32; BITS];
-            v[0] = 1u32 << (BITS - 1);
-            v[1] = 1u32 << (BITS - 2);
-            v[2] = 5u32 << (BITS - 4);
-            v[3] = 11u32 << (BITS - 5);
-            v[4] = 19u32 << (BITS - 6);
-            for i in 5..BITS {
-                v[i] = v[i - 5]
-                    ^ (v[i - 5] >> 5)
-                    ^ v[i - 2]
-                    ^ (v[i - 2] >> 2)
-                    ^ v[i - 1]
-                    ^ (v[i - 1] >> 1);
-            }
-            v
-        }
-        8 => {
-            let mut v = vec![0u32; BITS];
-            v[0] = 1u32 << (BITS - 1);
-            v[1] = 3u32 << (BITS - 3);
-            v[2] = 7u32 << (BITS - 4);
-            v[3] = 5u32 << (BITS - 4);
-            v[4] = 21u32 << (BITS - 6);
-            for i in 5..BITS {
-                v[i] = v[i - 5]
-                    ^ (v[i - 5] >> 5)
-                    ^ (v[i - 3] << 1)
-                    ^ (v[i - 3] >> 2)
-                    ^ v[i - 1]
-                    ^ (v[i - 1] >> 1);
-            }
-            v
-        }
-        9 => {
-            let mut v = vec![0u32; BITS];
-            v[0] = 1u32 << (BITS - 1);
-            v[1] = 1u32 << (BITS - 2);
-            v[2] = 1u32 << (BITS - 3);
-            v[3] = 7u32 << (BITS - 5);
-            v[4] = 13u32 << (BITS - 6);
-            v[5] = 37u32 << (BITS - 7);
-            for i in 6..BITS {
-                v[i] = v[i - 6] ^ (v[i - 6] >> 6) ^ v[i - 1] ^ (v[i - 1] >> 1);
-            }
-            v
-        }
-        _ => (0..BITS).map(|i| 1u32 << (BITS - 1 - i)).collect(),
-    }
-}
 /// Generate `n` Sobol points in 10 dimensions.
 ///
-/// Each point is a `Vec`f64` of length 10 with values in `\[0, 1)`.
+/// Each point is a `Vec<f64>` of length 10 with values in `\[0, 1)`.  The
+/// coordinates use the first ten Joe-Kuo direction numbers of
+/// [`SobolSequence`], so every coordinate is stratified: the first `2^m` points
+/// fall exactly once into each of the `2^m` equal sub-intervals of `\[0, 1)`.
 pub fn sobol_sequence_10d(n: usize) -> Vec<Vec<f64>> {
-    pub(super) const BITS: usize = 32;
-    pub(super) const N_DIMS: usize = 10;
-    let dirs: Vec<Vec<u32>> = (0..N_DIMS).map(sobol10_direction_numbers).collect();
-    (0..n)
-        .map(|idx| {
-            let gray = idx ^ (idx >> 1);
-            (0..N_DIMS)
-                .map(|d| {
-                    let x = (0..BITS)
-                        .filter(|&i| (gray >> i) & 1 == 1)
-                        .fold(0u32, |acc, i| acc ^ dirs[d][i]);
-                    x as f64 / (1u64 << BITS) as f64
-                })
-                .collect()
-        })
-        .collect()
+    SobolSequence::new(10).sample(n)
 }
 /// Monte Carlo integration of `f` over `\[a, b\]` using `n` uniform samples.
 ///

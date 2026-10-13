@@ -97,11 +97,11 @@ impl ColorFunction {
 // Surface tension / detection
 // ---------------------------------------------------------------------------
 
-/// Snapshot entry for normal computation: (position, mass, density, smoothing_length).
-type NormalSnapEntry = ([f64; 3], f64, f64, f64);
+/// Snapshot entry for normal computation: (position, mass, density).
+type NormalSnapEntry = ([f64; 3], f64, f64);
 
-/// Snapshot entry for curvature computation: (position, normal, mass, density, smoothing_length).
-type CurvatureSnapEntry = ([f64; 3], [f64; 3], f64, f64, f64);
+/// Snapshot entry for curvature computation: (position, normal, mass, density).
+type CurvatureSnapEntry = ([f64; 3], [f64; 3], f64, f64);
 
 /// Surface tension model using the Continuum Surface Force (CSF) approach.
 pub struct SurfaceTension {
@@ -123,24 +123,28 @@ impl SurfaceTension {
     /// Compute un-normalised surface normals for every particle.
     ///
     /// n_i = Σ_j (m_j / ρ_j) ∇W_ij
-    pub fn compute_normals(particles: &mut [SurfaceParticle]) {
+    ///
+    /// The kernel gradient is evaluated with this model's
+    /// [`smoothing_length`](Self::smoothing_length) (support radius `2 h`).
+    pub fn compute_normals(&self, particles: &mut [SurfaceParticle]) {
         let n = particles.len();
+        let h = self.smoothing_length;
         let mut normals = vec![[0.0_f64; 3]; n];
 
         // We need an immutable snapshot of the data we read.
         let snap: Vec<NormalSnapEntry> = particles
             .iter()
-            .map(|p| (p.position, p.mass, p.density, p.smoothing_length_or(1.0)))
+            .map(|p| (p.position, p.mass, p.density))
             .collect();
 
-        for (i, (norm_i, &(pi, _, _, hi))) in normals.iter_mut().zip(snap.iter()).enumerate() {
-            for (j, &(pj, mj, rhoj, _)) in snap.iter().enumerate() {
+        for (i, (norm_i, &(pi, _, _))) in normals.iter_mut().zip(snap.iter()).enumerate() {
+            for (j, &(pj, mj, rhoj)) in snap.iter().enumerate() {
                 if i == j || rhoj < 1e-12 {
                     continue;
                 }
                 let dx = [pi[0] - pj[0], pi[1] - pj[1], pi[2] - pj[2]];
                 let r = (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt();
-                let grad = ColorFunction::kernel_gradient(dx, r, hi);
+                let grad = ColorFunction::kernel_gradient(dx, r, h);
                 let w = mj / rhoj;
                 norm_i[0] += w * grad[0];
                 norm_i[1] += w * grad[1];
@@ -177,32 +181,27 @@ impl SurfaceTension {
     ///
     /// κ_i = -Σ_j (m_j / ρ_j) (n̂_j − n̂_i) · ∇W_ij
     ///
-    /// Call `normalize_normals` first.
-    pub fn compute_curvature(particles: &mut [SurfaceParticle]) {
+    /// Call `normalize_normals` first. The kernel gradient is evaluated with
+    /// this model's [`smoothing_length`](Self::smoothing_length) (support
+    /// radius `2 h`).
+    pub fn compute_curvature(&self, particles: &mut [SurfaceParticle]) {
         let n = particles.len();
+        let h = self.smoothing_length;
         let mut kappas = vec![0.0_f64; n];
 
         let snap: Vec<CurvatureSnapEntry> = particles
             .iter()
-            .map(|p| {
-                (
-                    p.position,
-                    p.normal,
-                    p.mass,
-                    p.density,
-                    p.smoothing_length_or(1.0),
-                )
-            })
+            .map(|p| (p.position, p.normal, p.mass, p.density))
             .collect();
 
-        for (i, (kappa_i, &(pi, ni, _, _, hi))) in kappas.iter_mut().zip(snap.iter()).enumerate() {
-            for (j, &(pj, nj, mj, rhoj, _)) in snap.iter().enumerate() {
+        for (i, (kappa_i, &(pi, ni, _, _))) in kappas.iter_mut().zip(snap.iter()).enumerate() {
+            for (j, &(pj, nj, mj, rhoj)) in snap.iter().enumerate() {
                 if i == j || rhoj < 1e-12 {
                     continue;
                 }
                 let dx = [pi[0] - pj[0], pi[1] - pj[1], pi[2] - pj[2]];
                 let r = (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt();
-                let grad = ColorFunction::kernel_gradient(dx, r, hi);
+                let grad = ColorFunction::kernel_gradient(dx, r, h);
                 let dn = [nj[0] - ni[0], nj[1] - ni[1], nj[2] - ni[2]];
                 let dot = dn[0] * grad[0] + dn[1] * grad[1] + dn[2] * grad[2];
                 *kappa_i -= (mj / rhoj) * dot;
@@ -970,21 +969,6 @@ fn vec3_len(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
-/// Extension trait to retrieve a per-particle smoothing length if available;
-/// falls back to a supplied default.
-trait SmoothinLengthExt {
-    fn smoothing_length_or(&self, default: f64) -> f64;
-}
-
-impl SmoothinLengthExt for SurfaceParticle {
-    fn smoothing_length_or(&self, _default: f64) -> f64 {
-        // SurfaceParticle does not currently store a per-particle h;
-        // callers should pass the global h explicitly. This method
-        // exists for forward-compatibility.
-        _default
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1065,7 +1049,7 @@ mod tests {
         let mut particles = vec![SurfaceParticle::new([0.5, 0.5, 0.0], 0.01)];
         particles[0].density = 1000.0;
         // Should not panic with a single particle.
-        SurfaceTension::compute_normals(&mut particles);
+        SurfaceTension::new(0.072, 0.1).compute_normals(&mut particles);
         // Normal should remain zero (no neighbours).
         assert_eq!(particles[0].normal, [0.0, 0.0, 0.0]);
     }
@@ -1383,6 +1367,331 @@ mod tests {
                 (i - 1) as f64 * 0.1
             );
             prev_w = w;
+        }
+    }
+
+    // ── Smoothing-length regression tests (normals / curvature) ─────────
+
+    /// Fluid block on a cubic lattice with spacing `dx`: `nx × ny × nz`
+    /// particles occupying `x, z ≥ 0` and `y ≤ 0`, so the top layer
+    /// (`iy = 0`) is the free surface and the fluid lies below it.
+    fn lattice_block(nx: usize, ny: usize, nz: usize, dx: f64) -> Vec<SurfaceParticle> {
+        let rho0 = 1000.0;
+        let mass = rho0 * dx * dx * dx;
+        let mut particles = Vec::with_capacity(nx * ny * nz);
+        for ix in 0..nx {
+            for iy in 0..ny {
+                for iz in 0..nz {
+                    let mut p = SurfaceParticle::new(
+                        [ix as f64 * dx, -(iy as f64) * dx, iz as f64 * dx],
+                        mass,
+                    );
+                    p.density = rho0;
+                    particles.push(p);
+                }
+            }
+        }
+        particles
+    }
+
+    /// Index of lattice node `(ix, iy, iz)` in [`lattice_block`] ordering.
+    fn lattice_index(ix: usize, iy: usize, iz: usize, ny: usize, nz: usize) -> usize {
+        (ix * ny + iy) * nz + iz
+    }
+
+    /// Midpoint-rule value of `2π ∫_δ^{2h} W(r) r dr`: the kernel integrated
+    /// over the plane lying a height `δ` away from the particle.
+    fn plane_kernel_integral(delta: f64, h: f64) -> f64 {
+        let steps = 20_000;
+        let dr = (2.0 * h - delta) / steps as f64;
+        let sum: f64 = (0..steps)
+            .map(|k| {
+                let r = delta + (k as f64 + 0.5) * dr;
+                ColorFunction::kernel_value(r, h) * r * dr
+            })
+            .sum();
+        2.0 * std::f64::consts::PI * sum
+    }
+
+    /// Deterministic pseudo-random numbers in `[0, 1)` (64-bit LCG).
+    fn lcg_unit(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*state >> 11) as f64) / ((1u64 << 53) as f64)
+    }
+
+    /// With the model's smoothing length (`h = 0.012`, support 2.4 lattice
+    /// spacings) particles whose whole support lies inside the block feel a
+    /// symmetric neighbourhood, so their normal vanishes; the free-surface
+    /// layer carries a large normal pointing into the fluid (-y). A
+    /// hard-coded `h = 1` makes every particle see the whole block and gives
+    /// interior particles large, non-zero normals.
+    #[test]
+    fn test_compute_normals_vanish_in_interior_and_point_into_fluid_at_top() {
+        let (nx, ny, nz) = (13, 9, 13);
+        let dx = 0.01;
+        let h = 0.012;
+        let mut particles = lattice_block(nx, ny, nz, dx);
+        SurfaceTension::new(0.072, h).compute_normals(&mut particles);
+
+        let max_norm = particles
+            .iter()
+            .map(|p| vec3_len(p.normal))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_norm > 1.0,
+            "surface normals must be O(1/h), got {max_norm}"
+        );
+
+        // Deeper than 2h (two lattice layers) from every face of the block.
+        for ix in 2..nx - 2 {
+            for iy in 2..ny - 2 {
+                for iz in 2..nz - 2 {
+                    let p = &particles[lattice_index(ix, iy, iz, ny, nz)];
+                    let magnitude = vec3_len(p.normal);
+                    assert!(
+                        magnitude < 1e-6 * max_norm,
+                        "interior particle ({ix},{iy},{iz}) has |n| = {magnitude:e}, \
+                         max |n| = {max_norm:e}"
+                    );
+                }
+            }
+        }
+
+        // Top layer away from the side faces: purely vertical, pointing down.
+        for ix in 2..nx - 2 {
+            for iz in 2..nz - 2 {
+                let n = particles[lattice_index(ix, 0, iz, ny, nz)].normal;
+                assert!(n[1] < 0.0, "top normal must point into the fluid: {n:?}");
+                assert!(
+                    n[0].abs() < 1e-9 * n[1].abs() && n[2].abs() < 1e-9 * n[1].abs(),
+                    "top-layer normal must be parallel to -y: {n:?}"
+                );
+            }
+        }
+    }
+
+    /// The magnitude of the free-surface normal follows from the kernel
+    /// integral over the bounding plane (the top lattice layer represents a
+    /// slab whose upper face is `dx/2` above the particle), so it scales like
+    /// `1/h`; this ties the result to the model's smoothing length.
+    #[test]
+    fn test_compute_normals_magnitude_follows_smoothing_length() {
+        let (nx, ny, nz) = (15, 9, 15);
+        let dx = 0.01;
+        let top_centre = lattice_index(7, 0, 7, ny, nz);
+        let mut magnitudes = Vec::new();
+        for h in [0.012, 0.016] {
+            let mut particles = lattice_block(nx, ny, nz, dx);
+            SurfaceTension::new(0.072, h).compute_normals(&mut particles);
+            let n = particles[top_centre].normal;
+            let magnitude = vec3_len(n);
+            let expected = plane_kernel_integral(0.5 * dx, h);
+            assert!(
+                (magnitude - expected).abs() < 0.10 * expected,
+                "h = {h}: |n| = {magnitude}, plane-integral estimate {expected}"
+            );
+            magnitudes.push(magnitude);
+        }
+        assert!(
+            magnitudes[0] > 1.1 * magnitudes[1],
+            "a larger smoothing length must give a smaller normal: {magnitudes:?}"
+        );
+    }
+
+    /// `compute_normals` equals the brute-force sum `Σ_j (m_j/ρ_j) ∇W_ij`
+    /// evaluated with the model's smoothing length on a random cloud.
+    #[test]
+    fn test_compute_normals_match_reference_sum_on_random_cloud() {
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let h = 0.02;
+        let mut particles = Vec::new();
+        for _ in 0..80 {
+            let position = [
+                0.06 * lcg_unit(&mut state) - 0.03,
+                0.06 * lcg_unit(&mut state) - 0.03,
+                0.06 * lcg_unit(&mut state) - 0.03,
+            ];
+            let mut p = SurfaceParticle::new(position, 0.02 + 0.01 * lcg_unit(&mut state));
+            p.density = 900.0 + 200.0 * lcg_unit(&mut state);
+            particles.push(p);
+        }
+        let reference: Vec<[f64; 3]> = particles
+            .iter()
+            .enumerate()
+            .map(|(i, pi)| {
+                let mut sum = [0.0_f64; 3];
+                for (j, pj) in particles.iter().enumerate() {
+                    if i == j {
+                        continue;
+                    }
+                    let dx = [
+                        pi.position[0] - pj.position[0],
+                        pi.position[1] - pj.position[1],
+                        pi.position[2] - pj.position[2],
+                    ];
+                    let r = vec3_len(dx);
+                    let grad = ColorFunction::kernel_gradient(dx, r, h);
+                    let w = pj.mass / pj.density;
+                    for k in 0..3 {
+                        sum[k] += w * grad[k];
+                    }
+                }
+                sum
+            })
+            .collect();
+        SurfaceTension::new(0.072, h).compute_normals(&mut particles);
+        let scale = reference
+            .iter()
+            .map(|n| vec3_len(*n))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            scale > 1.0,
+            "reference normals should be non-trivial: {scale}"
+        );
+        for (p, expected) in particles.iter().zip(reference.iter()) {
+            for k in 0..3 {
+                assert!(
+                    (p.normal[k] - expected[k]).abs() < 1e-9 * scale,
+                    "normal {:?} differs from the reference {:?}",
+                    p.normal,
+                    expected
+                );
+            }
+        }
+    }
+
+    /// A spherical cluster of radius `R` has inward normals and mean
+    /// curvature `κ = -∇·n̂ = 2/R` on its surface; the SPH estimate must
+    /// reproduce this with the model's smoothing length.
+    #[test]
+    fn test_compute_curvature_of_sphere_cluster_is_two_over_radius() {
+        let dx = 0.01;
+        let radius = 0.05;
+        let h = 0.012;
+        let rho0 = 1000.0;
+        let mut particles = Vec::new();
+        let n_side = (radius / dx) as i64 + 2;
+        for ix in -n_side..=n_side {
+            for iy in -n_side..=n_side {
+                for iz in -n_side..=n_side {
+                    let position = [ix as f64 * dx, iy as f64 * dx, iz as f64 * dx];
+                    if vec3_len(position) <= radius + 1e-9 {
+                        let mut p = SurfaceParticle::new(position, rho0 * dx * dx * dx);
+                        p.density = rho0;
+                        particles.push(p);
+                    }
+                }
+            }
+        }
+        let model = SurfaceTension::new(0.072, h);
+        model.compute_normals(&mut particles);
+        let max_norm = particles
+            .iter()
+            .map(|p| vec3_len(p.normal))
+            .fold(0.0_f64, f64::max);
+        SurfaceTension::detect_surface(&mut particles, 0.3 * max_norm);
+        SurfaceTension::normalize_normals(&mut particles);
+        model.compute_curvature(&mut particles);
+
+        let surface: Vec<&SurfaceParticle> = particles.iter().filter(|p| p.is_surface).collect();
+        assert!(
+            surface.len() > 100,
+            "found {} surface particles",
+            surface.len()
+        );
+        let mean_cos = surface
+            .iter()
+            .map(|p| {
+                let r = vec3_len(p.position);
+                (p.normal[0] * p.position[0]
+                    + p.normal[1] * p.position[1]
+                    + p.normal[2] * p.position[2])
+                    / r
+            })
+            .sum::<f64>()
+            / surface.len() as f64;
+        assert!(
+            mean_cos < -0.95,
+            "normals must point inward, mean cos = {mean_cos}"
+        );
+        let mean_kappa = surface.iter().map(|p| p.curvature).sum::<f64>() / surface.len() as f64;
+        let expected = 2.0 / radius;
+        assert!(
+            (0.7 * expected..1.2 * expected).contains(&mean_kappa),
+            "mean surface curvature {mean_kappa}, expected about 2/R = {expected}"
+        );
+    }
+
+    /// `compute_curvature` equals the brute-force sum
+    /// `-Σ_j (m_j/ρ_j)(n̂_j - n̂_i)·∇W_ij` with the model's smoothing length.
+    #[test]
+    fn test_compute_curvature_matches_reference_sum_on_random_cloud() {
+        let mut state = 0xD1B5_4A32_D192_ED03_u64;
+        let h = 0.02;
+        let mut particles = Vec::new();
+        for _ in 0..80 {
+            let position = [
+                0.06 * lcg_unit(&mut state),
+                0.06 * lcg_unit(&mut state),
+                0.06 * lcg_unit(&mut state),
+            ];
+            let mut p = SurfaceParticle::new(position, 0.025);
+            p.density = 1000.0;
+            let direction = [
+                lcg_unit(&mut state) - 0.5,
+                lcg_unit(&mut state) - 0.5,
+                lcg_unit(&mut state) - 0.5,
+            ];
+            let length = vec3_len(direction).max(1e-3);
+            p.normal = [
+                direction[0] / length,
+                direction[1] / length,
+                direction[2] / length,
+            ];
+            particles.push(p);
+        }
+        let reference: Vec<f64> = particles
+            .iter()
+            .enumerate()
+            .map(|(i, pi)| {
+                let mut kappa = 0.0;
+                for (j, pj) in particles.iter().enumerate() {
+                    if i == j {
+                        continue;
+                    }
+                    let dx = [
+                        pi.position[0] - pj.position[0],
+                        pi.position[1] - pj.position[1],
+                        pi.position[2] - pj.position[2],
+                    ];
+                    let r = vec3_len(dx);
+                    let grad = ColorFunction::kernel_gradient(dx, r, h);
+                    let dn = [
+                        pj.normal[0] - pi.normal[0],
+                        pj.normal[1] - pi.normal[1],
+                        pj.normal[2] - pi.normal[2],
+                    ];
+                    kappa -= (pj.mass / pj.density)
+                        * (dn[0] * grad[0] + dn[1] * grad[1] + dn[2] * grad[2]);
+                }
+                kappa
+            })
+            .collect();
+        SurfaceTension::new(0.072, h).compute_curvature(&mut particles);
+        let scale = reference.iter().fold(0.0_f64, |m, k| m.max(k.abs()));
+        assert!(
+            scale > 1.0,
+            "reference curvature should be non-trivial: {scale}"
+        );
+        for (p, expected) in particles.iter().zip(reference.iter()) {
+            assert!(
+                (p.curvature - expected).abs() < 1e-9 * scale,
+                "curvature {} differs from the reference {}",
+                p.curvature,
+                expected
+            );
         }
     }
 }

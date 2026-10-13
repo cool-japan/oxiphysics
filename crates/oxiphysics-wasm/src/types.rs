@@ -16,6 +16,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::{Error, Result};
+
 // ---------------------------------------------------------------------------
 // Vec3
 // ---------------------------------------------------------------------------
@@ -572,7 +574,8 @@ impl RigidBodyConfig {
 pub enum ColliderShapeType {
     /// Sphere shape, parameterized by radius.
     Sphere,
-    /// Axis-aligned box shape, parameterized by half-extents.
+    /// Oriented box shape, parameterized by half-extents along its local axes
+    /// (the box rotates with its body).
     Box,
     /// Infinite static plane, defined by normal + offset.
     Plane,
@@ -656,12 +659,22 @@ impl ColliderConfig {
 
     /// Create an infinite static plane collider.
     ///
-    /// The plane's equation is `normal · x = offset`.
+    /// The plane's equation is `normal · x = offset`.  The normal is
+    /// normalised and `offset` is rescaled by the same factor, so the plane
+    /// itself does not move.  A zero or non-finite normal is stored unchanged
+    /// and rejected with [`Error::InvalidParameter`] (`plane_normal`) when the
+    /// collider is added to an engine.
     pub fn plane(nx: f64, ny: f64, nz: f64, offset: f64) -> Self {
+        let len = (nx * nx + ny * ny + nz * nz).sqrt();
+        let (plane_normal, plane_offset) = if len.is_finite() && len > 0.0 {
+            ([nx / len, ny / len, nz / len], offset / len)
+        } else {
+            ([nx, ny, nz], offset)
+        };
         Self {
             shape_type: ColliderShapeType::Plane,
-            plane_normal: [nx, ny, nz],
-            plane_offset: offset,
+            plane_normal,
+            plane_offset,
             ..Default::default()
         }
     }
@@ -785,9 +798,12 @@ impl ContactResult {
 pub struct SimulationConfig {
     /// Gravity vector `[gx, gy, gz]` in m/s². Default: `[0, -9.81, 0]`.
     pub gravity: [f64; 3],
-    /// Fixed simulation time step in seconds. Default: `1/60`.
+    /// Length of one fixed simulation substep in seconds (finite and
+    /// positive). Default: `1/60`.
     pub fixed_dt: f64,
-    /// Maximum number of substeps per `step()` call.
+    /// Maximum number of fixed substeps per `step()` call (at least 1).
+    /// Elapsed time that would need more substeps is dropped and reported in
+    /// [`DebugInfo::dropped_time`].
     pub max_substeps: u32,
     /// Number of constraint solver iterations. Higher = more accurate.
     pub solver_iterations: u32,
@@ -838,6 +854,52 @@ impl SimulationConfig {
     /// Create a config with default values.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Check that every parameter is usable by the engine.
+    ///
+    /// * the gravity components must be finite;
+    /// * `fixed_dt` must be finite and strictly positive
+    ///   ([`Error::InvalidTimeStep`]) - a negative step would integrate
+    ///   backwards and a zero step would never advance;
+    /// * `max_substeps` must be at least 1 (with 0 no simulation step would
+    ///   ever run and all elapsed time would be dropped);
+    /// * the sleep thresholds, `time_before_sleep`, `broadphase_margin`,
+    ///   `contact_slop` and `max_penetration_correction` must be finite and
+    ///   non-negative.
+    ///
+    /// [`WasmPhysicsEngine::from_config`](crate::engine::WasmPhysicsEngine::from_config)
+    /// calls this before building an engine.
+    pub fn validate(&self) -> Result<()> {
+        if self.gravity.iter().any(|g| !g.is_finite()) {
+            return Err(Error::invalid_param("gravity", "components must be finite"));
+        }
+        if !(self.fixed_dt.is_finite() && self.fixed_dt > 0.0) {
+            return Err(Error::InvalidTimeStep(self.fixed_dt));
+        }
+        if self.max_substeps == 0 {
+            return Err(Error::invalid_param("max_substeps", "must be at least 1"));
+        }
+        let non_negative = [
+            ("linear_sleep_threshold", self.linear_sleep_threshold),
+            ("angular_sleep_threshold", self.angular_sleep_threshold),
+            ("time_before_sleep", self.time_before_sleep),
+            ("broadphase_margin", self.broadphase_margin),
+            ("contact_slop", self.contact_slop),
+            (
+                "max_penetration_correction",
+                self.max_penetration_correction,
+            ),
+        ];
+        for (name, value) in non_negative {
+            if !(value.is_finite() && value >= 0.0) {
+                return Err(Error::invalid_param(
+                    name,
+                    format!("must be finite and >= 0, got {value}"),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Create a high-accuracy config (more solver iterations, smaller time step).
@@ -898,7 +960,7 @@ impl SimulationConfig {
 /// serialized to JSON for web worker messaging.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BodyState {
-    /// Body handle (index).
+    /// Body handle (opaque: slot index plus generation counter).
     pub handle: u32,
     /// Current position `[x, y, z]`.
     pub position: [f64; 3],
@@ -912,7 +974,10 @@ pub struct BodyState {
     pub is_sleeping: bool,
     /// Whether the body is active (not removed).
     pub is_active: bool,
-    /// Kinetic energy (approximation: 0.5 * m * v²).
+    /// Kinetic energy in joules: `0.5 m v²` plus the rotational part
+    /// `0.5 ω·(I ω)` (the inertia tensor `I` follows from the colliders
+    /// attached to the body; a body without one contributes no rotational
+    /// energy). Zero for static and kinematic bodies.
     pub kinetic_energy: f64,
 }
 
@@ -981,8 +1046,17 @@ pub struct DebugInfo {
     pub active_contacts: u32,
     /// Number of sleeping bodies.
     pub sleeping_bodies: u32,
-    /// Number of solver iterations actually performed.
+    /// Number of contact-solver sweeps actually performed by the last
+    /// `step()` (one per fixed substep that had at least one contact).
     pub solver_iterations_performed: u32,
+    /// Number of fixed substeps executed by the last `step()` call.
+    #[serde(default)]
+    pub substeps_performed: u32,
+    /// Simulated time (seconds) that the last `step()` could not integrate
+    /// because it would have needed more than `max_substeps` fixed substeps;
+    /// that time is discarded rather than carried over.
+    #[serde(default)]
+    pub dropped_time: f64,
     /// Wall-clock time for the integration step (microseconds).
     pub integration_time_us: u64,
     /// Wall-clock time for the collision detection step (microseconds).

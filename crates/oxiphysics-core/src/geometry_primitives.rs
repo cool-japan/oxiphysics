@@ -818,13 +818,37 @@ pub fn aabb_from_points(points: &[[f64; 3]]) -> Aabb3 {
 }
 
 /// Build a frustum from a combined view-projection matrix (row-major, 4×4).
-/// Extracts the 6 Gribb-Hartmann planes.
+///
+/// Extracts the 6 Gribb-Hartmann planes for the OpenGL clip-space convention
+/// (`-w <= x, y, z <= w`, column vectors, `clip = M · [x, y, z, 1]ᵀ`).
+///
+/// Every plane is returned normalised, with its normal pointing into the
+/// frustum, so that [`Plane3::signed_distance`] is the true metric distance
+/// and is non-negative for points inside the half-space.  The half-space
+/// `n·p + d >= 0` obtained from the matrix rows is stored as the unit normal
+/// `n/|n|` and the offset `-d/|n|` (the convention of [`Plane3`] is
+/// `signed_distance = n̂·p - offset`).
+///
+/// The planes are stored in the order `[left, right, bottom, top, near, far]`.
+///
+/// A row combination whose xyz part vanishes yields the degenerate plane with
+/// a zero normal and offset `-d`; its signed distance is the constant `d`.
 pub fn frustum_from_vp(m: &[[f64; 4]; 4]) -> Frustum {
     // Each row contributes to a plane
     let extract = |a: [f64; 4], b: [f64; 4]| -> Plane3 {
         let n = [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-        let d = -(a[3] + b[3]);
-        Plane3::new(n, -d)
+        let d = a[3] + b[3];
+        let norm = len(n);
+        if norm < 1e-300 {
+            return Plane3 {
+                normal: [0.0; 3],
+                offset: -d,
+            };
+        }
+        Plane3 {
+            normal: [n[0] / norm, n[1] / norm, n[2] / norm],
+            offset: -d / norm,
+        }
     };
     let r = m;
     let row = |i: usize| [r[i][0], r[i][1], r[i][2], r[i][3]];
@@ -1118,6 +1142,106 @@ mod tests {
         ];
         let frustum = Frustum::new(planes);
         assert!(frustum.contains_sphere([0.0, 0.0, 0.0], 0.5));
+    }
+
+    /// Row-major OpenGL perspective matrix (camera at the origin looking down -z).
+    fn perspective(fov_y: f64, aspect: f64, near: f64, far: f64) -> [[f64; 4]; 4] {
+        let f = 1.0 / (fov_y / 2.0).tan();
+        [
+            [f / aspect, 0.0, 0.0, 0.0],
+            [0.0, f, 0.0, 0.0],
+            [
+                0.0,
+                0.0,
+                (far + near) / (near - far),
+                2.0 * far * near / (near - far),
+            ],
+            [0.0, 0.0, -1.0, 0.0],
+        ]
+    }
+
+    const IDENTITY_VP: [[f64; 4]; 4] = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+
+    #[test]
+    fn frustum_from_identity_vp_is_the_unit_cube() {
+        let frustum = frustum_from_vp(&IDENTITY_VP);
+        assert!(frustum.contains_sphere([0.0, 0.0, 0.0], 0.1));
+        assert!(frustum.contains_sphere([0.9, -0.9, 0.9], 0.05));
+        assert!(!frustum.contains_sphere([5.0, 0.0, 0.0], 0.1));
+        assert!(!frustum.contains_sphere([0.0, -5.0, 0.0], 0.1));
+        assert!(!frustum.contains_sphere([0.0, 0.0, 5.0], 0.1));
+        let small_box = Aabb3::new([-0.1, -0.1, -0.1], [0.1, 0.1, 0.1]);
+        assert!(frustum.contains_aabb(&small_box));
+        let far_box = Aabb3::new([4.0, 4.0, 4.0], [5.0, 5.0, 5.0]);
+        assert!(!frustum.contains_aabb(&far_box));
+    }
+
+    #[test]
+    fn frustum_from_vp_planes_are_normalised_with_inward_normals() {
+        let frustum = frustum_from_vp(&IDENTITY_VP);
+        // The clip volume is the cube [-1, 1]^3, so the origin is exactly one
+        // unit away from each of the six planes.
+        for plane in &frustum.planes {
+            assert!((len(plane.normal) - 1.0).abs() < 1e-12);
+            let d = plane.signed_distance([0.0, 0.0, 0.0]);
+            assert!((d - 1.0).abs() < 1e-12, "signed distance {d}");
+        }
+        // A point at x = 3 is two units outside the right plane (x <= 1).
+        let right = &frustum.planes[1];
+        assert!((right.signed_distance([3.0, 0.0, 0.0]) + 2.0).abs() < 1e-12);
+
+        // Normalisation also holds for a perspective matrix whose raw plane
+        // normals are not unit length.
+        let persp = frustum_from_vp(&perspective(std::f64::consts::FRAC_PI_2, 1.0, 0.1, 100.0));
+        for plane in &persp.planes {
+            assert!((len(plane.normal) - 1.0).abs() < 1e-12);
+        }
+        // Near plane z = -0.1 and far plane z = -100: metric distances from
+        // the point (0, 0, -10).
+        let near = &persp.planes[4];
+        let far = &persp.planes[5];
+        assert!((near.signed_distance([0.0, 0.0, -10.0]) - 9.9).abs() < 1e-9);
+        assert!((far.signed_distance([0.0, 0.0, -10.0]) - 90.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn frustum_from_perspective_vp_classifies_points() {
+        let frustum = frustum_from_vp(&perspective(std::f64::consts::FRAC_PI_2, 1.0, 0.1, 100.0));
+        // In front of the camera, inside the 90 degree cone.
+        assert!(frustum.contains_sphere([0.0, 0.0, -10.0], 0.01));
+        assert!(frustum.contains_sphere([-9.0, 0.0, -10.0], 0.01));
+        assert!(frustum.contains_sphere([0.0, 9.0, -10.0], 0.01));
+        // Behind the camera.
+        assert!(!frustum.contains_sphere([0.0, 0.0, 5.0], 0.01));
+        // Beyond the far plane.
+        assert!(!frustum.contains_sphere([0.0, 0.0, -200.0], 0.01));
+        // Outside the side planes (|x| > |z| for a 90 degree field of view).
+        assert!(!frustum.contains_sphere([-11.0, 0.0, -10.0], 0.01));
+        assert!(!frustum.contains_sphere([0.0, 11.0, -10.0], 0.01));
+        // Boxes.
+        let visible = Aabb3::new([-1.0, -1.0, -11.0], [1.0, 1.0, -9.0]);
+        assert!(frustum.contains_aabb(&visible));
+        let behind = Aabb3::new([-1.0, -1.0, 4.0], [1.0, 1.0, 6.0]);
+        assert!(!frustum.contains_aabb(&behind));
+    }
+
+    #[test]
+    fn frustum_from_vp_handles_degenerate_plane_rows() {
+        // Only the w row is non-zero: every plane has a zero normal and the
+        // half-space reduces to the constant condition `w >= 0`.
+        let mut visible = [[0.0; 4]; 4];
+        visible[3][3] = 1.0;
+        let frustum = frustum_from_vp(&visible);
+        assert!(frustum.contains_sphere([3.0, 4.0, 5.0], 0.5));
+        let mut hidden = [[0.0; 4]; 4];
+        hidden[3][3] = -1.0;
+        let frustum = frustum_from_vp(&hidden);
+        assert!(!frustum.contains_sphere([3.0, 4.0, 5.0], 0.5));
     }
 
     // ── PolyhedronConvex tests ────────────────────────────────────────────────

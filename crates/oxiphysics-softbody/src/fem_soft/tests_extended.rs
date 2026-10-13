@@ -1053,7 +1053,8 @@ mod extended_fem_tests {
         let mut forces = vec![[0.0_f64; 3]; 2];
         let velocities = vec![[2.0_f64, 0.0, 0.0], [0.0, -1.0, 0.0]];
         let masses = vec![1.0, 2.0];
-        rd.apply(&mut forces, &velocities, &masses);
+        let kv = vec![[0.0_f64; 3]; 2];
+        rd.apply(&mut forces, &velocities, &masses, &kv);
         // Node 0: f = -alpha * m * v = -1 * 1 * 2 = -2
         assert!(
             (forces[0][0] - (-2.0)).abs() < 1e-12,

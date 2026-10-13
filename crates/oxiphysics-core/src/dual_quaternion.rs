@@ -353,10 +353,26 @@ impl DualQuaternion {
 
     /// Screw linear interpolation (ScLERP) between `self` and `other` at `t`.
     ///
-    /// Uses the formula `(other * self⁻¹)^t * self`.
+    /// Evaluates `self * (self⁻¹ * other)^t`, i.e. `self` followed by the
+    /// fraction `t` of the relative screw motion (this is the same curve as
+    /// `(other * self⁻¹)^t * self`).  `t = 0` gives `self`, `t = 1` gives
+    /// `other` and values outside `[0, 1]` extrapolate along the screw.
+    ///
+    /// Every rigid motion is represented by two dual quaternions, `q` and `-q`.
+    /// The relative motion is represented by the one with a non-negative scalar
+    /// part, so the screw rotates by at most half a turn and the interpolation
+    /// always follows the shortest path: passing `other` or its negation (both
+    /// parts negated) yields the same poses.  A pure translation is
+    /// interpolated linearly.
     pub fn sclerp(&self, other: &DualQuaternion, t: f64) -> DualQuaternion {
         let self_inv = self.conjugate();
-        let diff = self_inv.mul(other).normalize();
+        let mut diff = self_inv.mul(other).normalize();
+        if diff.real.w < 0.0 {
+            diff = DualQuaternion {
+                real: diff.real.scale(-1.0),
+                dual: diff.dual.scale(-1.0),
+            };
+        }
         self.mul(&diff.pow(t))
     }
 
@@ -406,12 +422,82 @@ impl DualQuaternion {
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
-    /// Raises a dual quaternion to the real power `t` via the ScLERP formula.
+    /// Raises a unit dual quaternion to the real power `t`: the rigid motion
+    /// `x -> R x + τ` is replaced by the screw motion with the same axis whose
+    /// rotation angle and translation along the axis are both scaled by `t`.
+    ///
+    /// With `R` a rotation by `2φ` about the unit axis `a` and `τ = δ a + τ⊥`
+    /// (`τ⊥ ⟂ a`), the power is the rotation by `2tφ` about `a` followed by the
+    /// translation
+    ///
+    /// ```text
+    /// τ_t = t δ a + sin(tφ)/sin(φ) · Rot_a((t - 1) φ) τ⊥ .
+    /// ```
+    ///
+    /// The second term is `(I - R(2tφ)) p` for the axis point `p` solving
+    /// `(I - R(2φ)) p = τ⊥`, with the singular factor `1/(1 - e^{2iφ})`
+    /// cancelled analytically.  It needs no division except by `sin φ`, whose
+    /// ratio `sin(tφ)/sin(φ)` is evaluated without cancellation, so the result
+    /// stays accurate down to vanishing rotation angles, where it reduces to
+    /// the scaled translation `t τ`.  The real part is raised along the
+    /// rotation branch of `self` (no sign flip is applied here; see
+    /// [`DualQuaternion::sclerp`] for the shortest-path choice).
     fn pow(&self, t: f64) -> DualQuaternion {
-        // Decompose into screw parameters and re-compose.
-        let sm = ScrewMotion::from_dual_quaternion(self);
-        DualQuaternion::from_twist(sm.axis_dir, sm.angle * t, sm.pitch, sm.axis_point)
+        let unit = self.normalize();
+        let real = unit.real;
+        let translation = unit.to_translation();
+        let sin_half = (real.x * real.x + real.y * real.y + real.z * real.z).sqrt();
+        if sin_half == 0.0 {
+            // No rotation: a pure translation scales linearly.
+            return DualQuaternion::from_rotation_translation(
+                Quaternion::identity(),
+                scale3(translation, t),
+            );
+        }
+        let half_angle = sin_half.atan2(real.w);
+        let axis = [real.x / sin_half, real.y / sin_half, real.z / sin_half];
+        let along = dot3(translation, axis);
+        let perpendicular = [
+            translation[0] - along * axis[0],
+            translation[1] - along * axis[1],
+            translation[2] - along * axis[2],
+        ];
+        let swung = cross3(axis, perpendicular);
+
+        let scaled_half = t * half_angle;
+        let rotation = Quaternion::new(
+            scaled_half.cos(),
+            axis[0] * scaled_half.sin(),
+            axis[1] * scaled_half.sin(),
+            axis[2] * scaled_half.sin(),
+        );
+        let ratio = scaled_half.sin() / sin_half;
+        let (sin_lag, cos_lag) = ((t - 1.0) * half_angle).sin_cos();
+        let translation_t = [
+            t * along * axis[0] + ratio * (cos_lag * perpendicular[0] + sin_lag * swung[0]),
+            t * along * axis[1] + ratio * (cos_lag * perpendicular[1] + sin_lag * swung[1]),
+            t * along * axis[2] + ratio * (cos_lag * perpendicular[2] + sin_lag * swung[2]),
+        ];
+        DualQuaternion::from_rotation_translation(rotation, translation_t)
     }
+}
+
+// ── Private 3-vector helpers ─────────────────────────────────────────────────
+
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn scale3(a: [f64; 3], s: f64) -> [f64; 3] {
+    [a[0] * s, a[1] * s, a[2] * s]
 }
 
 // ── Private arithmetic helpers on Quaternion ─────────────────────────────────
@@ -435,11 +521,24 @@ impl Quaternion {
 // ScrewMotion
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Bound below which a rotation counts as "no rotation" when a screw motion is
+/// decomposed ([`ScrewMotion::from_dual_quaternion`], compared with
+/// `|sin(angle / 2)|`) or recomposed ([`ScrewMotion::to_dual_quaternion`],
+/// compared with `|angle|`).  Both directions use the same bound so that pure
+/// translations survive a round trip.
+const SCREW_ANGLE_EPS: f64 = 1e-10;
+
 /// A rigid body screw motion described by a Chasles-style parameterisation.
 ///
-/// Every rigid body motion (up to pure translation) can be represented as a
-/// rotation by `angle` radians around an axis, combined with a translation
-/// of `pitch * angle` metres along that same axis.
+/// Every rigid body motion can be represented as a rotation by `angle`
+/// radians around an axis, combined with a translation of `pitch * angle`
+/// metres along that same axis.
+///
+/// A pure translation has no screw axis and a per-radian pitch is undefined.
+/// By convention it is stored with `angle == 0`, `axis_dir` the direction of
+/// the translation, `axis_point` the origin and `pitch` holding the *total*
+/// displacement along `axis_dir`; `to_dual_quaternion` and
+/// `from_dual_quaternion` honour this convention.
 #[derive(Debug, Clone, Copy)]
 pub struct ScrewMotion {
     /// Unit direction vector of the screw axis.
@@ -448,86 +547,81 @@ pub struct ScrewMotion {
     pub axis_point: [f64; 3],
     /// Rotation angle in radians.
     pub angle: f64,
-    /// Translation per radian along the screw axis.
+    /// Translation per radian along the screw axis (the total displacement
+    /// along `axis_dir` when `angle` is zero, see the type-level docs).
     pub pitch: f64,
 }
 
 impl ScrewMotion {
     /// Converts this screw motion to its dual-quaternion representation.
+    ///
+    /// If `|angle|` is below `1e-10` the motion is a pure translation by
+    /// `pitch * axis_dir`.
     pub fn to_dual_quaternion(&self) -> DualQuaternion {
+        if self.angle.abs() < SCREW_ANGLE_EPS {
+            return DualQuaternion::from_rotation_translation(
+                Quaternion::identity(),
+                scale3(self.axis_dir, self.pitch),
+            );
+        }
         DualQuaternion::from_twist(self.axis_dir, self.angle, self.pitch, self.axis_point)
     }
 
     /// Extracts the screw-motion parameters from a (normalised) dual
     /// quaternion.
+    ///
+    /// The rotation angle is `2 atan2(|q_v|, q_w)`, which stays accurate down
+    /// to vanishing rotations (where `acos(q_w)` loses all precision), and the
+    /// axis point follows from `(I - R) p = τ⊥` as
+    /// `p = (τ⊥ + cot(θ/2) a × τ⊥) / 2`.  A rotation with `|sin(θ/2)|` below
+    /// `1e-10` is reported as a pure translation (see the type-level docs).
     pub fn from_dual_quaternion(dq: &DualQuaternion) -> ScrewMotion {
         let dq = dq.normalize();
-        // Real part → rotation axis & angle.
         let q = dq.real;
-        // Clamp for numerical safety.
-        let w_clamped = q.w.clamp(-1.0, 1.0);
-        let angle = 2.0 * w_clamped.acos();
-        let sin_half = (1.0 - w_clamped * w_clamped).sqrt();
+        let sin_half = (q.x * q.x + q.y * q.y + q.z * q.z).sqrt();
+        let t = dq.to_translation();
 
-        let (axis_dir, axis_point, pitch) = if sin_half < 1e-10 {
-            // Pure translation (no rotation).
-            let t = dq.to_translation();
+        if sin_half < SCREW_ANGLE_EPS {
+            // Pure translation (no rotation, also for the double cover q = -1):
+            // `pitch` carries the total displacement.
             let t_norm = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
             let dir = if t_norm < f64::EPSILON {
                 [0.0, 0.0, 1.0]
             } else {
                 [t[0] / t_norm, t[1] / t_norm, t[2] / t_norm]
             };
-            ([dir[0], dir[1], dir[2]], [0.0_f64, 0.0, 0.0], t_norm)
-        } else {
-            let inv = 1.0 / sin_half;
-            let axis = [q.x * inv, q.y * inv, q.z * inv];
+            return ScrewMotion {
+                axis_dir: dir,
+                axis_point: [0.0, 0.0, 0.0],
+                angle: 0.0,
+                pitch: t_norm,
+            };
+        }
 
-            // Dual part → moment and pitch.
-            // d = 2 * q_d * q_r* (imaginary parts = translation).
-            let t = dq.to_translation();
-            // Pitch = translation along axis.
-            let pitch_val = t[0] * axis[0] + t[1] * axis[1] + t[2] * axis[2];
-            // Moment = axis × translation / |axis|² (moment of the screw).
-            // axis_point = axis × (t - pitch*axis) / angle (simplified).
-            let t_perp = [
-                t[0] - pitch_val * axis[0],
-                t[1] - pitch_val * axis[1],
-                t[2] - pitch_val * axis[2],
-            ];
-            // axis_point from (I-R)*p = t_perp:
-            // p = [(1-cos)*t_perp + sin*cross] / (2*(1-cos))
-            // where cross = axis × t_perp, 1-cos = 2*sin²(θ/2)
-            let cross = [
-                axis[1] * t_perp[2] - axis[2] * t_perp[1],
-                axis[2] * t_perp[0] - axis[0] * t_perp[2],
-                axis[0] * t_perp[1] - axis[1] * t_perp[0],
-            ];
-            let one_minus_cos = 2.0 * sin_half * sin_half; // 1 - cos(θ)
-            let sin_theta = 2.0 * sin_half * w_clamped; // sin(θ)
-            let denom = 2.0 * one_minus_cos;
-            let p = if denom.abs() < 1e-10 {
-                [0.0, 0.0, 0.0]
-            } else {
-                [
-                    (one_minus_cos * t_perp[0] + sin_theta * cross[0]) / denom,
-                    (one_minus_cos * t_perp[1] + sin_theta * cross[1]) / denom,
-                    (one_minus_cos * t_perp[2] + sin_theta * cross[2]) / denom,
-                ]
-            };
-            let pitch_per_rad = if angle.abs() < 1e-10 {
-                0.0
-            } else {
-                pitch_val / angle
-            };
-            (axis, p, pitch_per_rad)
-        };
+        let angle = 2.0 * sin_half.atan2(q.w);
+        let axis = [q.x / sin_half, q.y / sin_half, q.z / sin_half];
+        // Translation along the axis, and the part perpendicular to it.
+        let along = dot3(t, axis);
+        let t_perp = [
+            t[0] - along * axis[0],
+            t[1] - along * axis[1],
+            t[2] - along * axis[2],
+        ];
+        // Point on the axis solving (I - R) p = t_perp with R the rotation
+        // by `angle` about `axis`: p = (t_perp + cot(θ/2) axis × t_perp) / 2.
+        let swung = cross3(axis, t_perp);
+        let cot_half = q.w / sin_half;
+        let axis_point = [
+            0.5 * (t_perp[0] + cot_half * swung[0]),
+            0.5 * (t_perp[1] + cot_half * swung[1]),
+            0.5 * (t_perp[2] + cot_half * swung[2]),
+        ];
 
         ScrewMotion {
-            axis_dir,
+            axis_dir: axis,
             axis_point,
             angle,
-            pitch,
+            pitch: along / angle,
         }
     }
 }
@@ -1588,3 +1682,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "dual_quaternion_screw_tests.rs"]
+mod screw_tests;

@@ -755,7 +755,11 @@ pub struct ElectroacitiveTetraElement {
     pub bulk_modulus: f64,
     /// Relative permittivity εᵣ.
     pub epsilon_r: f64,
-    /// Rest-state shape matrix inverse B₀⁻¹ (columns = edge vectors from node 0).
+    /// Inverse B₀⁻¹ of the rest-state shape matrix B₀, whose **rows** are the edge
+    /// vectors `e_k = p_k − p_0` (k = 1..3).
+    ///
+    /// Because `B₀ ∇N_k = ê_k`, column `k − 1` of B₀⁻¹ is the gradient `∇N_k` of the
+    /// linear shape function of node `k`; `∇N_0 = −(∇N_1 + ∇N_2 + ∇N_3)`.
     pub shape_matrix_inv: [[f64; 3]; 3],
     /// Undeformed volume (m³).
     pub volume_0: f64,
@@ -795,11 +799,33 @@ impl ElectroacitiveTetraElement {
         }
     }
 
+    /// Shape-function gradients `∇N_0 … ∇N_3` of the linear tetrahedron in the
+    /// rest configuration.
+    ///
+    /// `∇N_k` (k = 1..3) is column `k − 1` of [`shape_matrix_inv`](Self::shape_matrix_inv)
+    /// (the rows of B₀ are the edge vectors, so `B₀ ∇N_k = ê_k`), and the partition
+    /// of unity gives `∇N_0 = −(∇N_1 + ∇N_2 + ∇N_3)`.
+    pub fn shape_gradients(&self) -> [[f64; 3]; 4] {
+        let b_inv = &self.shape_matrix_inv;
+        let mut grads = [[0.0_f64; 3]; 4];
+        for k in 1..4 {
+            for d in 0..3 {
+                grads[k][d] = b_inv[d][k - 1];
+                grads[0][d] -= b_inv[d][k - 1];
+            }
+        }
+        grads
+    }
+
     /// Compute the Maxwell stress contribution to nodal forces.
     ///
-    /// Given the nodal electric potentials, computes the electric field E inside
-    /// the element and the Maxwell stress tensor P_M = ε₀ εᵣ (E⊗E − |E|²/2 I),
-    /// then distributes to nodes via the shape function gradients.
+    /// Given the nodal electric potentials, computes the (constant) electric field
+    /// `E = −∇φ` inside the element and the Maxwell stress tensor
+    /// `T = ε₀ εᵣ (E⊗E − |E|²/2 I)`.  The nodal forces follow from the weak form
+    /// of the stress divergence, `f_k = −V₀ T ∇N_k`, so a uniform field (constant
+    /// `T`) produces no net force: `Σ_k f_k = 0`.  Along the field lines the stress is a
+    /// tension (the electrodes are drawn together) and perpendicular to them a
+    /// compression (the film spreads laterally).
     pub fn maxwell_nodal_forces(&self, nodes: &[ElectroacitiveFemNode]) -> [[f64; 3]; 4] {
         // Electric field E = -B₀⁻¹ ∇φ (within element, constant for linear tet)
         let n0 = &nodes[self.node_indices[0]];
@@ -838,18 +864,15 @@ impl ElectroacitiveTetraElement {
             }
         }
 
-        // Distribute force to each node (volume / 4 per node)
-        let node_vol = self.volume_0 / 4.0;
+        // Weak-form nodal forces of the constant stress T: f_k = -V0 * T * grad N_k.
+        let grads = self.shape_gradients();
         let mut forces = [[0.0_f64; 3]; 4];
-        // Force on node k: f_k = T · n̂_k * A_k (approximated as T-divergence × volume/4)
-        // For a linear tet we use f_k = V/4 * T · grad_N_k; grad_N_k from shape matrix
-        // For simplicity: distribute T's trace force equally to all 4 nodes
-        let trace_force = [
-            (t[0][0] + t[0][1] + t[0][2]) * node_vol,
-            (t[1][0] + t[1][1] + t[1][2]) * node_vol,
-            (t[2][0] + t[2][1] + t[2][2]) * node_vol,
-        ];
-        forces.fill(trace_force);
+        for (force, grad) in forces.iter_mut().zip(grads.iter()) {
+            for i in 0..3 {
+                let t_grad = t[i][0] * grad[0] + t[i][1] * grad[1] + t[i][2] * grad[2];
+                force[i] = -self.volume_0 * t_grad;
+            }
+        }
         forces
     }
 }
@@ -1566,5 +1589,176 @@ mod tests {
         assert!((clamp(0.5, 0.0, 1.0) - 0.5).abs() < TOL);
         assert!((clamp(-1.0, 0.0, 1.0)).abs() < TOL);
         assert!((clamp(2.0, 0.0, 1.0) - 1.0).abs() < TOL);
+    }
+
+    // ── Maxwell nodal forces (weak form: f_k = -V0 T grad N_k) ─────────────────
+
+    /// A skewed millimetre-scale tetrahedron with the given nodal potentials.
+    fn maxwell_fixture(
+        potentials: [f64; 4],
+    ) -> (ElectroacitiveTetraElement, Vec<ElectroacitiveFemNode>) {
+        let positions = [
+            [0.0, 0.0, 0.0],
+            [1.0e-3, 2.0e-4, 1.0e-4],
+            [3.0e-4, 1.1e-3, 0.0],
+            [2.0e-4, 4.0e-4, 9.0e-4],
+        ];
+        let mut nodes: Vec<ElectroacitiveFemNode> = positions
+            .iter()
+            .map(|&p| ElectroacitiveFemNode::new(p, 1.0e-6))
+            .collect();
+        for (node, phi) in nodes.iter_mut().zip(potentials.iter()) {
+            node.potential = *phi;
+        }
+        let elem =
+            ElectroacitiveTetraElement::new([0, 1, 2, 3], &positions, 1.0e5, 2.0e5, EPSILON_R_VHB);
+        (elem, nodes)
+    }
+
+    // 36. A constant Maxwell stress exerts no net force or torque.
+    #[test]
+    fn test_maxwell_forces_have_zero_net_force_and_torque() {
+        let (elem, nodes) = maxwell_fixture([0.0, 1.5e3, -8.0e2, 2.2e3]);
+        let forces = elem.maxwell_nodal_forces(&nodes);
+        let magnitude = forces
+            .iter()
+            .flat_map(|f| f.iter())
+            .fold(0.0_f64, |acc, v| acc.max(v.abs()));
+        assert!(
+            magnitude > 1.0e-9,
+            "the field must load the element: {magnitude:e}"
+        );
+        let mut net = [0.0_f64; 3];
+        let mut torque = [0.0_f64; 3];
+        for (node, f) in forces.iter().enumerate() {
+            let x = nodes[elem.node_indices[node]].position;
+            let moment = v3_cross(x, *f);
+            for d in 0..3 {
+                net[d] += f[d];
+                torque[d] += moment[d];
+            }
+        }
+        // Torque scale: |x| * |f| ~ 1e-3 * magnitude.
+        for d in 0..3 {
+            assert!(
+                net[d].abs() < 1.0e-9 * magnitude,
+                "net force component {d} = {:e} (force scale {magnitude:e})",
+                net[d]
+            );
+            assert!(
+                torque[d].abs() < 1.0e-9 * magnitude * 1.0e-3,
+                "net torque component {d} = {:e}",
+                torque[d]
+            );
+        }
+    }
+
+    // 37. A potential drop along z compresses the film along z and spreads it laterally.
+    #[test]
+    fn test_maxwell_forces_squeeze_along_field_and_spread_laterally() {
+        let h = 1.0e-3;
+        let v0 = 2.0e3;
+        let positions = [[0.0, 0.0, 0.0], [h, 0.0, 0.0], [0.0, h, 0.0], [0.0, 0.0, h]];
+        let mut nodes: Vec<ElectroacitiveFemNode> = positions
+            .iter()
+            .map(|&p| ElectroacitiveFemNode::new(p, 1.0e-6))
+            .collect();
+        nodes[3].potential = v0;
+        let elem =
+            ElectroacitiveTetraElement::new([0, 1, 2, 3], &positions, 1.0e5, 2.0e5, EPSILON_R_VHB);
+        let forces = elem.maxwell_nodal_forces(&nodes);
+        // E = (0, 0, -V0/h), T_zz = eps E^2 / 2, T_xx = T_yy = -eps E^2 / 2 and the
+        // gradients are 1/h along each axis, so every non-zero force component is
+        // eps V0^2 / 12 (independent of h).
+        let unit = EPSILON_0 * EPSILON_R_VHB * v0 * v0 / 12.0;
+        let expected = [
+            [-unit, -unit, unit],
+            [unit, 0.0, 0.0],
+            [0.0, unit, 0.0],
+            [0.0, 0.0, -unit],
+        ];
+        for (k, want) in expected.iter().enumerate() {
+            for d in 0..3 {
+                assert!(
+                    (forces[k][d] - want[d]).abs() < 1.0e-9 * unit,
+                    "node {k} component {d}: {:e} expected {:e}",
+                    forces[k][d],
+                    want[d]
+                );
+            }
+        }
+        assert!(
+            forces[3][2] < 0.0,
+            "the top node is pulled towards the bottom face"
+        );
+        assert!(
+            forces[1][0] > 0.0 && forces[2][1] > 0.0,
+            "lateral nodes spread outwards"
+        );
+    }
+
+    // 38. Without a potential difference there is no Maxwell stress.
+    #[test]
+    fn test_maxwell_forces_vanish_without_field() {
+        let (elem, nodes) = maxwell_fixture([5.0e2; 4]);
+        let forces = elem.maxwell_nodal_forces(&nodes);
+        for f in &forces {
+            for v in f {
+                assert!(v.abs() < 1.0e-18, "unexpected force {v:e}");
+            }
+        }
+    }
+
+    // 39. The forces scale with the square of the applied potentials.
+    #[test]
+    fn test_maxwell_forces_scale_with_potential_squared() {
+        let phi = [0.0, 1.5e3, -8.0e2, 2.2e3];
+        let (elem, nodes) = maxwell_fixture(phi);
+        let (_, nodes_double) = maxwell_fixture(phi.map(|v| 2.0 * v));
+        let f1 = elem.maxwell_nodal_forces(&nodes);
+        let f2 = elem.maxwell_nodal_forces(&nodes_double);
+        for k in 0..4 {
+            for d in 0..3 {
+                assert!(
+                    (f2[k][d] - 4.0 * f1[k][d]).abs() < 1.0e-9 * f1[k][d].abs().max(1.0e-12),
+                    "node {k} component {d}: {:e} vs 4 * {:e}",
+                    f2[k][d],
+                    f1[k][d]
+                );
+            }
+        }
+    }
+
+    // 40. The shape-function gradients reproduce the identity deformation gradient.
+    #[test]
+    fn test_shape_gradients_partition_of_unity_and_identity() {
+        let (elem, nodes) = maxwell_fixture([0.0; 4]);
+        let grads = elem.shape_gradients();
+        let mut sum = [0.0_f64; 3];
+        let mut outer = [[0.0_f64; 3]; 3];
+        for (k, g) in grads.iter().enumerate() {
+            let x = nodes[elem.node_indices[k]].position;
+            for i in 0..3 {
+                sum[i] += g[i];
+                for j in 0..3 {
+                    outer[i][j] += x[i] * g[j];
+                }
+            }
+        }
+        for i in 0..3 {
+            assert!(
+                sum[i].abs() < 1.0e-6,
+                "sum of gradients [{i}] = {:e}",
+                sum[i]
+            );
+            for j in 0..3 {
+                let want = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (outer[i][j] - want).abs() < 1.0e-9,
+                    "sum x_k (x) grad N_k [{i}][{j}] = {} expected {want}",
+                    outer[i][j]
+                );
+            }
+        }
     }
 }

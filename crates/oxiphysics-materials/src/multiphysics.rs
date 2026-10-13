@@ -530,7 +530,9 @@ impl RadiationDamage {
 
 /// Shape memory alloy (SMA) phase transformation material.
 ///
-/// Implements the Tanaka model for martensite fraction and pseudoelasticity.
+/// Implements the Liang–Rogers cosine kinetics for the stress-free martensite
+/// fraction (cooling and heating branches) and the phase-mixture effective
+/// modulus.
 #[derive(Debug, Clone)]
 pub struct PhaseTransformMaterial {
     /// Young's modulus of austenite EA (Pa).
@@ -571,19 +573,31 @@ impl PhaseTransformMaterial {
         self.ea + self.xi * (self.em - self.ea)
     }
 
-    /// Martensite fraction from temperature (cooling, Tanaka model).
+    /// Martensite fraction from temperature on cooling (stress-free
+    /// austenite → martensite, Liang–Rogers cosine kinetics).
+    ///
+    /// For M_f < T < M_s the fraction follows
+    /// ξ = ½ · (cos(π (T − M_f) / (M_s − M_f)) + 1),
+    /// which falls monotonically from ξ = 1 at M_f to ξ = 0 at M_s and is
+    /// continuous with the constant branches ξ = 0 (T ≥ M_s) and ξ = 1
+    /// (T ≤ M_f).
     pub fn martensite_fraction_cooling(&self, temperature: f64) -> f64 {
         if temperature >= self.ms_temp {
             0.0
         } else if temperature <= self.mf_temp {
             1.0
         } else {
-            let b_m = std::f64::consts::PI / (self.ms_temp - self.mf_temp);
-            0.5 * (1.0 - (b_m * (temperature - (self.ms_temp + self.mf_temp) / 2.0)).cos())
+            let a_m = std::f64::consts::PI / (self.ms_temp - self.mf_temp);
+            0.5 * ((a_m * (temperature - self.mf_temp)).cos() + 1.0)
         }
     }
 
-    /// Martensite fraction from temperature (heating, Tanaka model).
+    /// Martensite fraction from temperature on heating (martensite →
+    /// austenite, Liang–Rogers cosine kinetics).
+    ///
+    /// For A_s < T < A_f the fraction follows
+    /// ξ = ξ_M · ½ · (1 + cos(π (T − A_s) / (A_f − A_s))), where ξ_M is the
+    /// martensite fraction `self.xi` at the start of heating.
     pub fn martensite_fraction_heating(&self, temperature: f64) -> f64 {
         if temperature >= self.af_temp {
             0.0
@@ -1011,6 +1025,52 @@ mod tests {
         assert!((xi - 1.0).abs() < 1e-10);
         let xi2 = sma.martensite_fraction_cooling(310.0); // above Ms
         assert!(xi2.abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_sma_cooling_fraction_strictly_decreases_between_mf_and_ms() {
+        let sma = PhaseTransformMaterial::nitinol();
+        let (mf, ms) = (sma.mf_temp, sma.ms_temp);
+        let n = 50;
+        let samples: Vec<f64> = (1..=n)
+            .map(|i| {
+                let t = mf + (ms - mf) * (i as f64) / ((n + 1) as f64);
+                sma.martensite_fraction_cooling(t)
+            })
+            .collect();
+        for w in samples.windows(2) {
+            assert!(
+                w[1] < w[0],
+                "ξ must strictly decrease with T on (Mf, Ms): {} -> {}",
+                w[0],
+                w[1]
+            );
+        }
+        assert!(samples.iter().all(|&xi| xi > 0.0 && xi < 1.0));
+    }
+
+    #[test]
+    fn test_sma_cooling_fraction_is_continuous_at_ms_and_mf() {
+        let sma = PhaseTransformMaterial::nitinol();
+        let eps = 1.0e-9;
+        let just_below_ms = sma.martensite_fraction_cooling(sma.ms_temp - eps);
+        assert!(
+            just_below_ms < 1e-6,
+            "ξ(Ms⁻) = {just_below_ms} must join the austenite branch ξ = 0"
+        );
+        let just_above_mf = sma.martensite_fraction_cooling(sma.mf_temp + eps);
+        assert!(
+            (just_above_mf - 1.0).abs() < 1e-6,
+            "ξ(Mf⁺) = {just_above_mf} must join the martensite branch ξ = 1"
+        );
+    }
+
+    #[test]
+    fn test_sma_cooling_fraction_midpoint_is_one_half() {
+        let sma = PhaseTransformMaterial::nitinol();
+        let mid = 0.5 * (sma.ms_temp + sma.mf_temp);
+        let xi = sma.martensite_fraction_cooling(mid);
+        assert!((xi - 0.5).abs() < 1e-12, "ξ(midpoint) = {xi}");
     }
 
     #[test]

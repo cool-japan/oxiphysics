@@ -875,7 +875,7 @@ mod tests_pimd_ext {
     }
     #[test]
     fn test_pile_l_thermostat_centroid_friction() {
-        let th = PileLThermostat::new(4, 300.0, 1.0);
+        let th = PileLThermostat::new(4, 300.0, 1.0).unwrap();
         assert!(
             (th.gamma[0] - 1.0).abs() < 1e-15,
             "centroid gamma should equal gamma0"
@@ -883,7 +883,7 @@ mod tests_pimd_ext {
     }
     #[test]
     fn test_pile_l_thermostat_higher_modes_critical_damping() {
-        let th = PileLThermostat::new(4, 300.0, 1.0);
+        let th = PileLThermostat::new(4, 300.0, 1.0).unwrap();
         for k in 1..4 {
             let expected = 2.0 * th.omega[k];
             assert!(
@@ -895,7 +895,7 @@ mod tests_pimd_ext {
     }
     #[test]
     fn test_trpmd_integrator_builds() {
-        let integrator = TrpmdIntegrator::new(4, 300.0, 1.0);
+        let integrator = TrpmdIntegrator::new(4, 300.0, 1.0).unwrap();
         assert_eq!(integrator.n_beads, 4);
     }
     #[test]
@@ -903,13 +903,247 @@ mod tests_pimd_ext {
         let prop = NormalModePropagator::new(4, 300.0);
         let pos: Vec<[f64; 3]> = vec![[0.0; 3]; 4];
         let vel: Vec<[f64; 3]> = vec![[1.0, 0.0, 0.0]; 4];
-        let mass = 1.67e-27;
         let dt = 1e-15;
-        let (new_pos, _new_vel) = prop.propagate(&pos, &vel, mass, dt);
+        let (new_pos, _new_vel) = prop.propagate(&pos, &vel, dt);
         let centroid_x: f64 = new_pos.iter().map(|p| p[0]).sum::<f64>() / 4.0;
         assert!(
             (centroid_x - dt).abs() < 1e-17,
             "centroid should move by v*dt = {dt}, got {centroid_x}"
+        );
+    }
+
+    /// Deterministic pseudo-random bead configuration (positions ~1e-11 m, velocities ~1e3 m/s).
+    fn random_ring(p: usize, seed: u64) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
+        use rand::{RngExt, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        let pos = (0..p)
+            .map(|_| {
+                [
+                    rng.random_range(-1.0e-11..1.0e-11),
+                    rng.random_range(-1.0e-11..1.0e-11),
+                    rng.random_range(-1.0e-11..1.0e-11),
+                ]
+            })
+            .collect();
+        let vel = (0..p)
+            .map(|_| {
+                [
+                    rng.random_range(-1.0e3..1.0e3),
+                    rng.random_range(-1.0e3..1.0e3),
+                    rng.random_range(-1.0e3..1.0e3),
+                ]
+            })
+            .collect();
+        (pos, vel)
+    }
+
+    /// Free ring-polymer Hamiltonian: bead kinetic energy plus cyclic spring energy.
+    fn free_ring_energy(pos: &[[f64; 3]], vel: &[[f64; 3]], mass: f64, temperature: f64) -> f64 {
+        let p = pos.len();
+        let omega_p = p as f64 * KB * temperature / HBAR;
+        let kinetic: f64 = vel
+            .iter()
+            .map(|v| 0.5 * mass * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]))
+            .sum();
+        let spring: f64 = (0..p)
+            .map(|i| {
+                let j = (i + 1) % p;
+                (0..3).map(|d| (pos[j][d] - pos[i][d]).powi(2)).sum::<f64>()
+            })
+            .sum();
+        kinetic + 0.5 * mass * omega_p * omega_p * spring
+    }
+
+    #[test]
+    fn test_normal_mode_propagator_conserves_free_ring_energy() {
+        // Regression: the propagator used the momentum formulas on velocities, so with a
+        // real atomic mass (1.67e-27 kg) the internal modes exploded.
+        let (p, mass, temperature, dt) = (8_usize, 1.67e-27, 300.0, 1.0e-16);
+        let prop = NormalModePropagator::new(p, temperature);
+        let (mut pos, mut vel) = random_ring(p, 11);
+        let e0 = free_ring_energy(&pos, &vel, mass, temperature);
+        for _ in 0..100 {
+            let (new_pos, new_vel) = prop.propagate(&pos, &vel, dt);
+            pos = new_pos;
+            vel = new_vel;
+        }
+        let e1 = free_ring_energy(&pos, &vel, mass, temperature);
+        assert!(
+            ((e1 - e0) / e0).abs() < 1e-10,
+            "ring-polymer energy drifted: {e0} -> {e1}"
+        );
+    }
+
+    #[test]
+    fn test_normal_mode_propagator_matches_bead_propagator_per_mode() {
+        let (p, temperature, dt, steps) = (8_usize, 300.0, 1.0e-16, 100);
+        let prop = NormalModePropagator::new(p, temperature);
+        let (pos0, vel0) = random_ring(p, 23);
+
+        // Reference: propagate every normal mode independently with the exact
+        // single-mode velocity propagator.
+        let mut q = beads_to_normal_modes(&pos0, &prop.c_matrix);
+        let mut v = beads_to_normal_modes(&vel0, &prop.c_matrix);
+        for _ in 0..steps {
+            for k in 0..p {
+                BeadPropagator::propagate_mode(&mut q[k], &mut v[k], prop.omega[k], dt);
+            }
+        }
+        let ref_pos = normal_modes_to_beads(&q, &prop.c_matrix);
+        let ref_vel = normal_modes_to_beads(&v, &prop.c_matrix);
+
+        let (mut pos, mut vel) = (pos0, vel0);
+        for _ in 0..steps {
+            let (np, nv) = prop.propagate(&pos, &vel, dt);
+            pos = np;
+            vel = nv;
+        }
+        for i in 0..p {
+            for d in 0..3 {
+                assert!(
+                    (pos[i][d] - ref_pos[i][d]).abs() < 1e-9 * 1.0e-11,
+                    "position mismatch at bead {i} axis {d}"
+                );
+                assert!(
+                    (vel[i][d] - ref_vel[i][d]).abs() < 1e-9 * 1.0e3,
+                    "velocity mismatch at bead {i} axis {d}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_normal_mode_propagator_quarter_period_rotation() {
+        // Quarter-period rotation of a pure internal mode: q -> v/omega, v -> -omega q.
+        let (p, temperature) = (4_usize, 300.0);
+        let prop = NormalModePropagator::new(p, temperature);
+        let k = 2; // alternating mode, omega = 2 omega_P
+        let omega = prop.omega[k];
+        let dt = std::f64::consts::FRAC_PI_2 / omega;
+        let amplitude = 1.0e-11;
+        let q_modes = {
+            let mut m = vec![[0.0_f64; 3]; p];
+            m[k][0] = amplitude;
+            m
+        };
+        let pos = normal_modes_to_beads(&q_modes, &prop.c_matrix);
+        let vel = vec![[0.0_f64; 3]; p];
+        let (new_pos, new_vel) = prop.propagate(&pos, &vel, dt);
+        let q_new = beads_to_normal_modes(&new_pos, &prop.c_matrix);
+        let v_new = beads_to_normal_modes(&new_vel, &prop.c_matrix);
+        assert!(q_new[k][0].abs() < 1e-9 * amplitude, "q = {}", q_new[k][0]);
+        assert!(
+            (v_new[k][0] + omega * amplitude).abs() < 1e-9 * omega * amplitude,
+            "v = {}, expected {}",
+            v_new[k][0],
+            -omega * amplitude
+        );
+    }
+
+    #[test]
+    fn test_pile_l_thermostat_rejects_empty_ring_and_bad_parameters() {
+        assert!(PileLThermostat::new(0, 300.0, 1.0).is_err());
+        assert!(PileLThermostat::new(4, -1.0, 1.0).is_err());
+        assert!(PileLThermostat::new(4, f64::NAN, 1.0).is_err());
+        assert!(PileLThermostat::new(4, 300.0, -1.0).is_err());
+        assert!(PileLThermostat::new(4, 300.0, f64::INFINITY).is_err());
+        assert!(TrpmdIntegrator::new(0, 300.0, 1.0).is_err());
+        assert!(PileLThermostat::new(1, 300.0, 1.0).is_ok());
+    }
+
+    #[test]
+    fn test_pile_l_ou_step_samples_target_temperature() {
+        // Regression: the noise was uniform on [-1, 1) (variance 1/3), so the
+        // thermostat equilibrated at T/3.  A free particle must give m<v^2>/k_B = T.
+        use rand::SeedableRng;
+        let (mass, temperature, dt) = (1.67e-27, 300.0, 1.0e-15);
+        let th = PileLThermostat::new(1, temperature, 1.0 / dt).unwrap();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(17);
+        let mut mode_vel = [[0.0_f64; 3]];
+        let n_steps = 100_000;
+        let mut sum_v2 = 0.0;
+        for _ in 0..n_steps {
+            th.apply(&mut mode_vel, mass, dt, &mut rng);
+            sum_v2 += mode_vel[0].iter().map(|v| v * v).sum::<f64>();
+        }
+        let t_measured = mass * sum_v2 / (3.0 * n_steps as f64 * KB);
+        assert!(
+            (t_measured - temperature).abs() / temperature < 0.02,
+            "measured T = {t_measured} K, expected {temperature} K"
+        );
+    }
+
+    #[test]
+    fn test_pile_l_apply_is_reproducible_for_a_seeded_rng() {
+        use rand::SeedableRng;
+        let th = PileLThermostat::new(4, 300.0, 1.0e13).unwrap();
+        let run = |seed: u64| {
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            let mut mv = [[1.0e2_f64; 3]; 4];
+            th.apply(&mut mv, 1.67e-27, 1.0e-15, &mut rng);
+            mv
+        };
+        assert_eq!(run(5), run(5));
+        assert_ne!(run(5), run(6));
+    }
+
+    #[test]
+    fn test_trpmd_free_ring_polymer_thermalises_every_mode() {
+        // With zero external force the Gibbs distribution is exactly invariant under
+        // O(dt/2) A(dt) O(dt/2), so every normal mode velocity has m<v^2> = k_B T.
+        use rand::SeedableRng;
+        let (p, mass, temperature, dt) = (4_usize, 1.67e-27, 300.0, 1.0e-15);
+        let integrator = TrpmdIntegrator::new(p, temperature, 5.0e14).unwrap();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(31);
+        let mut pos = vec![[0.0_f64; 3]; p];
+        let mut vel = vec![[0.0_f64; 3]; p];
+        let forces = vec![[0.0_f64; 3]; p];
+        let c = &integrator.propagator.c_matrix;
+        let n_steps = 40_000;
+        let mut v2 = vec![0.0_f64; p];
+        for _ in 0..n_steps {
+            integrator
+                .step(&mut pos, &mut vel, &forces, mass, dt, &mut rng)
+                .unwrap();
+            let modes = beads_to_normal_modes(&vel, c);
+            for (acc, m) in v2.iter_mut().zip(modes.iter()) {
+                *acc += m.iter().map(|x| x * x).sum::<f64>();
+            }
+        }
+        for (k, acc) in v2.iter().enumerate() {
+            let t_k = mass * acc / (3.0 * n_steps as f64 * KB);
+            assert!(
+                (t_k - temperature).abs() / temperature < 0.05,
+                "mode {k}: measured T = {t_k} K, expected {temperature} K"
+            );
+        }
+    }
+
+    #[test]
+    fn test_trpmd_step_validates_inputs() {
+        use rand::SeedableRng;
+        let integrator = TrpmdIntegrator::new(4, 300.0, 1.0e13).unwrap();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        let mut pos = vec![[0.0_f64; 3]; 4];
+        let mut vel = vec![[0.0_f64; 3]; 4];
+        let forces = vec![[0.0_f64; 3]; 3];
+        assert!(
+            integrator
+                .step(&mut pos, &mut vel, &forces, 1.67e-27, 1.0e-15, &mut rng)
+                .is_err(),
+            "a force list of the wrong length must be rejected"
+        );
+        let forces = vec![[0.0_f64; 3]; 4];
+        assert!(
+            integrator
+                .step(&mut pos, &mut vel, &forces, 0.0, 1.0e-15, &mut rng)
+                .is_err(),
+            "a non-positive mass must be rejected"
+        );
+        assert!(
+            integrator
+                .step(&mut pos, &mut vel, &forces, 1.67e-27, 1.0e-15, &mut rng)
+                .is_ok()
         );
     }
 }

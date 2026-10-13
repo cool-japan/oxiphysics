@@ -4,6 +4,7 @@
 //! Core MD simulation driver (MdSim) and Berendsen thermostat.
 
 use super::config::{Ensemble, KB_REDUCED, MdConfig, MdState};
+use super::tracking::KJ_MOL_PER_ANG3_TO_BAR;
 
 // ---------------------------------------------------------------------------
 // MdSim — self-contained MD driver
@@ -65,24 +66,29 @@ impl MdSim {
     // Pressure
     // -----------------------------------------------------------------------
 
-    /// Compute instantaneous pressure (bar) using ideal + virial contributions.
+    /// Compute the instantaneous pressure (bar) from the virial theorem.
     ///
-    /// P = (N k_B T + W) / (3 V)
+    /// ```text
+    /// P = (2·KE + W) / (3 V)
+    /// ```
     ///
-    /// where W is the virial (kJ mol⁻¹) and V is the box volume (Å³).
-    /// Result converted to bar: 1 kJ mol⁻¹ Å⁻³ ≈ 16.6054 bar.
+    /// where `KE` is the kinetic energy (kJ mol⁻¹), `W = Σ_{i<j} r_ij · F_ij` is
+    /// the scalar *pair* virial (kJ mol⁻¹, minimum-image separations `r_ij`; see
+    /// [`MdSim::velocity_verlet_step_virial`]) and `V` is the box volume (Å³).
+    ///
+    /// The kinetic term `2·KE / (3 V) = N k_B T / V` is the ideal-gas pressure, so
+    /// a non-interacting gas (`virial = 0`) obeys `P V = N k_B T`.  The result is
+    /// converted to bar with 1 kJ mol⁻¹ Å⁻³ = 16605.4 bar.
+    ///
+    /// Returns `0.0` for a degenerate (zero or non-finite volume) box.
     pub fn compute_pressure(&self, virial: f64) -> f64 {
-        let n = self.state.n_atoms() as f64;
         let v =
             self.config.box_lengths[0] * self.config.box_lengths[1] * self.config.box_lengths[2];
-        if v == 0.0 {
+        if !(v.is_finite() && v > 0.0) {
             return 0.0;
         }
-        let t = self.compute_temperature();
-        let ideal = n * KB_REDUCED * t;
-        // conversion factor: 1 kJ mol⁻¹ Å⁻³ = 16605.4 bar → divide by 3V
-        let p_kj_per_ang3 = (ideal + virial) / (3.0 * v);
-        p_kj_per_ang3 * 16_605.4
+        let twice_kinetic = 2.0 * self.compute_kinetic_energy();
+        (twice_kinetic + virial) / (3.0 * v) * KJ_MOL_PER_ANG3_TO_BAR
     }
 
     // -----------------------------------------------------------------------
@@ -92,10 +98,55 @@ impl MdSim {
     /// Perform one velocity-Verlet step with an external force function.
     ///
     /// `forces_fn(positions, box_lengths) -> forces`
+    ///
+    /// The step does not evaluate a virial.  To run constant-pressure dynamics use
+    /// [`MdSim::velocity_verlet_step_virial`], whose force function also returns
+    /// the pair virial.
     pub fn velocity_verlet_step(
         &mut self,
         forces_fn: impl Fn(&[[f64; 3]], &[f64; 3]) -> Vec<[f64; 3]>,
     ) {
+        self.velocity_verlet_step_with(
+            |pos, box_lengths| (forces_fn(pos, box_lengths), 0.0),
+            |_| {},
+        );
+    }
+
+    /// Perform one velocity-Verlet step with a force function that also returns
+    /// the scalar pair virial, and return the virial at the new positions.
+    ///
+    /// `forces_fn(positions, box_lengths) -> (forces, virial)` with
+    ///
+    /// ```text
+    /// virial = W = Σ_{i<j} r_ij · F_ij
+    /// ```
+    ///
+    /// evaluated with the minimum-image separation `r_ij = r_i − r_j` and the force
+    /// `F_ij` on atom `i` due to atom `j` (kJ mol⁻¹).  A repulsive pair therefore
+    /// contributes `+|F| r`.  Do **not** use the atomic sum `Σ_i r_i · F_i` of wrapped
+    /// coordinates: under periodic boundary conditions a pair that interacts across a
+    /// cell face picks up a spurious `L · F_ij` term.
+    ///
+    /// The returned value feeds [`MdSim::compute_pressure`].
+    pub fn velocity_verlet_step_virial(
+        &mut self,
+        forces_fn: impl Fn(&[[f64; 3]], &[f64; 3]) -> (Vec<[f64; 3]>, f64),
+    ) -> f64 {
+        self.velocity_verlet_step_with(forces_fn, |_| {})
+    }
+
+    /// Velocity-Verlet step shared by all drivers.
+    ///
+    /// `rescale_box` runs after the position update and before the periodic wrap
+    /// and the force evaluation, so a barostat can dilate the box and the
+    /// coordinates (and rescale the velocities) in the same step and the new
+    /// forces and virial are evaluated on the dilated configuration.  Returns the
+    /// virial of that final force evaluation.
+    pub(super) fn velocity_verlet_step_with<F, H>(&mut self, forces_fn: F, rescale_box: H) -> f64
+    where
+        F: Fn(&[[f64; 3]], &[f64; 3]) -> (Vec<[f64; 3]>, f64),
+        H: FnOnce(&mut MdSim),
+    {
         let dt = self.config.dt;
         let n = self.state.n_atoms();
 
@@ -114,6 +165,9 @@ impl MdSim {
             }
         }
 
+        // Pressure coupling: dilate box and coordinates before the forces are evaluated.
+        rescale_box(self);
+
         // PBC wrap
         if self.config.pbc {
             for i in 0..n {
@@ -124,8 +178,9 @@ impl MdSim {
             }
         }
 
-        // Compute new forces
-        self.state.forces = forces_fn(&self.state.positions, &self.config.box_lengths);
+        // Compute new forces (and the pair virial)
+        let (forces, virial) = forces_fn(&self.state.positions, &self.config.box_lengths);
+        self.state.forces = forces;
 
         // Second half-step velocity update
         for i in 0..n {
@@ -134,6 +189,7 @@ impl MdSim {
                 self.state.velocities[i][a] += 0.5 * dt * self.state.forces[i][a] * inv_m;
             }
         }
+        virial
     }
 
     // -----------------------------------------------------------------------

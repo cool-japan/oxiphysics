@@ -19,8 +19,12 @@
 //!
 //! ```no_run
 //! use oxiphysics_wasm::wasm_bench::run_wasm_bench_suite;
-//! let report = run_wasm_bench_suite(true);
+//!
+//! # fn main() -> Result<(), oxiphysics_wasm::Error> {
+//! let report = run_wasm_bench_suite(true)?;
 //! println!("{}", report);
+//! # Ok(())
+//! # }
 //! ```
 
 use wasm_bindgen::prelude::*;
@@ -273,10 +277,16 @@ pub mod native {
     }
 
     /// Benchmark rigid-body stepping with `n` falling spheres.
-    pub fn bench_rigid_bodies(n: usize, iterations: u32) -> WasmBenchReport {
+    ///
+    /// # Errors
+    ///
+    /// Any engine error raised while building the scene or stepping it (for
+    /// example [`crate::Error::CapacityExceeded`] when `n` exceeds the engine's
+    /// body limit).
+    pub fn bench_rigid_bodies(n: usize, iterations: u32) -> crate::error::Result<WasmBenchReport> {
         let mut engine = WasmPhysicsEngine::new(0.0, -9.81, 0.0);
-        let ground = engine.add_static_body(0.0, 0.0, 0.0);
-        engine.add_plane_collider(ground, 0.0, 1.0, 0.0, 0.0);
+        let ground = engine.add_static_body(0.0, 0.0, 0.0)?;
+        engine.add_plane_collider(ground, 0.0, 1.0, 0.0, 0.0)?;
 
         let cols = (n as f64).cbrt().ceil() as usize;
         let mut added = 0;
@@ -289,8 +299,8 @@ pub mod native {
                     let x = ix as f64 * 1.1;
                     let y = 1.0 + iy as f64 * 1.1;
                     let z = iz as f64 * 1.1;
-                    let b = engine.add_dynamic_body(1.0, x, y, z);
-                    engine.add_sphere_collider(b, 0.5);
+                    let b = engine.add_dynamic_body(1.0, x, y, z)?;
+                    engine.add_sphere_collider(b, 0.5)?;
                     added += 1;
                 }
             }
@@ -298,23 +308,23 @@ pub mod native {
 
         let dt = 1.0 / 60.0;
         for _ in 0..5 {
-            engine.step(dt);
+            engine.step(dt)?;
         }
 
         let t0 = Instant::now();
         for _ in 0..iterations {
-            engine.step(dt);
+            engine.step(dt)?;
         }
         let total = t0.elapsed();
 
         let mflops = (n as f64 * 30.0 * iterations as f64) / (total.as_secs_f64() * 1e6);
-        WasmBenchReport::new(
+        Ok(WasmBenchReport::new(
             &format!("rigid_bodies(n={})", n),
             n,
             iterations,
             total,
             Some(mflops),
-        )
+        ))
     }
 
     /// Benchmark particle-system stepping with `n` particles.
@@ -396,7 +406,11 @@ pub mod native {
     }
 
     /// Run the complete WASM benchmark suite.
-    pub fn run_wasm_bench_suite(verbose: bool) -> String {
+    ///
+    /// # Errors
+    ///
+    /// Any engine error raised while building or stepping a benchmark scene.
+    pub fn run_wasm_bench_suite(verbose: bool) -> crate::error::Result<String> {
         let sizes: &[(usize, u32)] = &[(100, 200), (500, 100), (1000, 50)];
         let sph_sizes: &[(usize, u32)] = &[(100, 200), (500, 50), (1000, 20)];
 
@@ -407,7 +421,7 @@ pub mod native {
             eprintln!("[wasm_bench] Running rigid body benchmarks...");
         }
         for &(n, iters) in sizes {
-            all_reports.push(bench_rigid_bodies(n, iters));
+            all_reports.push(bench_rigid_bodies(n, iters)?);
         }
 
         if verbose {
@@ -430,8 +444,8 @@ pub mod native {
         let webgl_report = {
             let mut engine = WasmPhysicsEngine::new(0.0, -9.81, 0.0);
             for i in 0..500 {
-                let b = engine.add_dynamic_body(1.0, i as f64 * 0.1, 0.0, 0.0);
-                engine.add_sphere_collider(b, 0.5);
+                let b = engine.add_dynamic_body(1.0, i as f64 * 0.1, 0.0, 0.0)?;
+                engine.add_sphere_collider(b, 0.5)?;
             }
             let iters = 1000u32;
             for _ in 0..10 {
@@ -493,7 +507,7 @@ pub mod native {
                 ratio
             ));
         }
-        out
+        Ok(out)
     }
 }
 
@@ -516,27 +530,36 @@ pub use native::{
 /// On native targets this delegates to `native::bench_rigid_bodies`.
 /// On WASM this runs the sim but measures no time (returns 0.0 duration);
 /// the caller should wrap it with `performance.now()` on the JS side.
+///
+/// Throws if the benchmark scene cannot be built (for example when `n`
+/// exceeds the engine's body limit).
 #[wasm_bindgen]
-pub fn wasm_bench_rigid_bodies(n: u32, iterations: u32) -> WasmBenchResult {
+pub fn wasm_bench_rigid_bodies(n: u32, iterations: u32) -> Result<WasmBenchResult, JsValue> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        native::bench_rigid_bodies(n as usize, iterations).to_wasm_result()
+        Ok(native::bench_rigid_bodies(n as usize, iterations)?.to_wasm_result())
     }
     #[cfg(target_arch = "wasm32")]
     {
         // Run the simulation without native timing; JS side should measure with performance.now()
         let mut engine = WasmPhysicsEngine::new(0.0, -9.81, 0.0);
-        let ground = engine.add_static_body(0.0, 0.0, 0.0);
-        engine.add_plane_collider(ground, 0.0, 1.0, 0.0, 0.0);
+        let ground = engine.add_static_body(0.0, 0.0, 0.0)?;
+        engine.add_plane_collider(ground, 0.0, 1.0, 0.0, 0.0)?;
         for i in 0..(n as usize) {
-            let b = engine.add_dynamic_body(1.0, (i % 10) as f64, (i / 10) as f64 + 1.0, 0.0);
-            engine.add_sphere_collider(b, 0.5);
+            let b = engine.add_dynamic_body(1.0, (i % 10) as f64, (i / 10) as f64 + 1.0, 0.0)?;
+            engine.add_sphere_collider(b, 0.5)?;
         }
         let dt = 1.0 / 60.0;
         for _ in 0..iterations {
-            engine.step(dt);
+            engine.step(dt)?;
         }
-        WasmBenchResult::new(format!("rigid_bodies(n={})", n), n, iterations, 0.0, -1.0)
+        Ok(WasmBenchResult::new(
+            format!("rigid_bodies(n={})", n),
+            n,
+            iterations,
+            0.0,
+            -1.0,
+        ))
     }
 }
 
@@ -607,7 +630,7 @@ mod tests {
 
     #[test]
     fn bench_rigid_bodies_runs() {
-        let r = bench_rigid_bodies(10, 5);
+        let r = bench_rigid_bodies(10, 5).expect("benchmark scene should build");
         assert!(r.steps_per_sec > 0.0);
         assert!(r.throughput > 0.0);
         assert!(r.mflops.unwrap() > 0.0);

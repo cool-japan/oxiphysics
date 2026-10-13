@@ -917,35 +917,50 @@ pub fn undercut_advantage(lap_delta_s: f64, pit_delta_s: f64) -> bool {
     pit_delta_s < lap_delta_s
 }
 
-/// Compute the total estimated race time for a given strategy.
+/// Compute the total estimated time of a race of `total_laps` laps for a given
+/// strategy.
+///
+/// The strategy's pit laps (1-indexed; lap `pit_laps[i]` is the last lap of
+/// stint `i`) split the race into stints: the first stint covers laps
+/// `1..=pit_laps[0]`, and the last stint ends with lap `total_laps`.  Pit laps
+/// that cannot split the race (lap 0, or lap `total_laps` and later) are
+/// ignored and are not charged `pit_time`; a lap that is listed twice is a
+/// single stop.
+///
+/// The `k`-th lap (0-based) of a stint takes `lap_time_base * (1 + deg_rate * k)`,
+/// so a stint of `L` laps costs the exact sum
+/// `L * lap_time_base + lap_time_base * deg_rate * L * (L - 1) / 2`.
+/// Every stop adds `pit_time`.  The same `deg_rate` is applied to every stint;
+/// the compounds stored in the strategy do not change it.
 pub fn strategy_total_time(
     strategy: &RaceStrategy,
+    total_laps: usize,
     lap_time_base: f64,
     deg_rate: f64,
     pit_time: f64,
 ) -> f64 {
-    let total_pit_time = strategy.pit_laps.len() as f64 * pit_time;
-    let mut pit_laps_sorted = strategy.pit_laps.clone();
-    pit_laps_sorted.sort_unstable();
+    let mut stops: Vec<usize> = strategy
+        .pit_laps
+        .iter()
+        .copied()
+        .filter(|&lap| lap >= 1 && lap < total_laps)
+        .collect();
+    stops.sort_unstable();
+    stops.dedup();
 
-    let mut stints: Vec<(usize, usize)> = Vec::new();
-    let mut prev = 0_usize;
-    for &pl in &pit_laps_sorted {
-        if pl > prev {
-            stints.push((prev, pl));
-        }
-        prev = pl;
-    }
-    let implied_total = pit_laps_sorted.last().copied().unwrap_or(0) + 30;
-    stints.push((prev, implied_total));
+    let stint_time = |laps: usize| -> f64 {
+        let l = laps as f64;
+        l * lap_time_base + lap_time_base * deg_rate * l * (l - 1.0) / 2.0
+    };
 
     let mut total = 0.0_f64;
-    for (start, end) in stints {
-        let stint_laps = end.saturating_sub(start) as f64;
-        let avg_deg = deg_rate * stint_laps * 0.5_f64;
-        total += stint_laps * (lap_time_base + avg_deg * lap_time_base);
+    let mut stint_start = 0_usize;
+    for &stop in &stops {
+        total += stint_time(stop - stint_start);
+        stint_start = stop;
     }
-    total + total_pit_time
+    total += stint_time(total_laps - stint_start);
+    total + stops.len() as f64 * pit_time
 }
 
 /// DRS overtaking probability.
@@ -1594,9 +1609,106 @@ mod tests {
             100.0_f64,
         );
         let s_zero = RaceStrategy::new(vec![], vec![TireCompound::Hard], 100.0_f64);
-        let t_one = strategy_total_time(&s_one, 90.0_f64, 0.0_f64, 25.0_f64);
-        let t_zero = strategy_total_time(&s_zero, 90.0_f64, 0.0_f64, 25.0_f64);
-        assert!(t_one > t_zero);
+        let t_one = strategy_total_time(&s_one, 60, 90.0_f64, 0.0_f64, 25.0_f64);
+        let t_zero = strategy_total_time(&s_zero, 60, 90.0_f64, 0.0_f64, 25.0_f64);
+        assert!((t_one - t_zero - 25.0_f64).abs() < 1e-9);
+    }
+
+    fn strategy_with_stops(pit_laps: Vec<usize>) -> RaceStrategy {
+        let compounds = vec![TireCompound::Medium; pit_laps.len() + 1];
+        RaceStrategy::new(pit_laps, compounds, 100.0_f64)
+    }
+
+    #[test]
+    fn total_time_without_stops_is_laps_times_base() {
+        let s = strategy_with_stops(vec![]);
+        let t = strategy_total_time(&s, 60, 90.0_f64, 0.0_f64, 25.0_f64);
+        assert!((t - 5400.0_f64).abs() < 1e-9);
+    }
+
+    #[test]
+    fn total_time_does_not_depend_on_the_last_pit_lap() {
+        // The race length comes from `total_laps`, not from the stop laps.
+        let early = strategy_with_stops(vec![10]);
+        let late = strategy_with_stops(vec![50]);
+        let t_early = strategy_total_time(&early, 60, 90.0_f64, 0.0_f64, 25.0_f64);
+        let t_late = strategy_total_time(&late, 60, 90.0_f64, 0.0_f64, 25.0_f64);
+        assert!((t_early - 5425.0_f64).abs() < 1e-9);
+        assert!((t_late - 5425.0_f64).abs() < 1e-9);
+        // 30 more laps add exactly 30 base laps
+        let t_long = strategy_total_time(&early, 90, 90.0_f64, 0.0_f64, 25.0_f64);
+        assert!((t_long - t_early - 30.0_f64 * 90.0_f64).abs() < 1e-9);
+    }
+
+    #[test]
+    fn total_time_uses_the_exact_degradation_sum() {
+        // 10 laps, lap k takes 90 * (1 + 0.01 k): 900 + 90 * 0.01 * 45 = 940.5
+        let s = strategy_with_stops(vec![]);
+        let t = strategy_total_time(&s, 10, 90.0_f64, 0.01_f64, 25.0_f64);
+        assert!((t - 940.5_f64).abs() < 1e-9, "t = {t}");
+    }
+
+    #[test]
+    fn a_stop_resets_tyre_degradation() {
+        // Two stints of 5 laps: 2 * (450 + 90 * 0.01 * 10) = 918, plus the stop.
+        let one_stop = strategy_with_stops(vec![5]);
+        let t = strategy_total_time(&one_stop, 10, 90.0_f64, 0.01_f64, 20.0_f64);
+        assert!((t - 938.0_f64).abs() < 1e-9, "t = {t}");
+        // Saving 22.5 s of tyre wear beats a 20 s stop but not a 25 s one.
+        let no_stop = strategy_with_stops(vec![]);
+        let t_zero = strategy_total_time(&no_stop, 10, 90.0_f64, 0.01_f64, 20.0_f64);
+        assert!(t < t_zero);
+        let t_slow_stop = strategy_total_time(&one_stop, 10, 90.0_f64, 0.01_f64, 25.0_f64);
+        assert!(t_slow_stop > t_zero);
+    }
+
+    #[test]
+    fn total_time_ignores_stops_that_cannot_split_the_race() {
+        let reference = strategy_total_time(
+            &strategy_with_stops(vec![]),
+            40,
+            90.0_f64,
+            0.0_f64,
+            25.0_f64,
+        );
+        // A stop on the final lap, beyond the finish, or on lap 0 is no stop.
+        for pit_laps in [vec![40], vec![55], vec![0], vec![40, 55, 0]] {
+            let t = strategy_total_time(
+                &strategy_with_stops(pit_laps.clone()),
+                40,
+                90.0_f64,
+                0.0_f64,
+                25.0_f64,
+            );
+            assert!((t - reference).abs() < 1e-9, "pit laps {pit_laps:?}: {t}");
+        }
+        // The same lap listed twice is a single stop.
+        let double = strategy_total_time(
+            &strategy_with_stops(vec![20, 20]),
+            40,
+            90.0_f64,
+            0.0_f64,
+            25.0_f64,
+        );
+        assert!((double - reference - 25.0_f64).abs() < 1e-9);
+    }
+
+    #[test]
+    fn total_time_is_independent_of_pit_lap_order() {
+        let sorted = strategy_with_stops(vec![15, 35]);
+        let shuffled = strategy_with_stops(vec![35, 15]);
+        let a = strategy_total_time(&sorted, 50, 90.0_f64, 0.002_f64, 22.0_f64);
+        let b = strategy_total_time(&shuffled, 50, 90.0_f64, 0.002_f64, 22.0_f64);
+        assert!((a - b).abs() < 1e-12);
+    }
+
+    #[test]
+    fn total_time_of_an_empty_race_is_zero() {
+        let s = strategy_with_stops(vec![3]);
+        assert_eq!(
+            strategy_total_time(&s, 0, 90.0_f64, 0.01_f64, 25.0_f64),
+            0.0
+        );
     }
 
     #[test]

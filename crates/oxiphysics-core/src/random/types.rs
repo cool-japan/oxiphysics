@@ -4,10 +4,13 @@
 
 use std::f64::consts::PI;
 
+use crate::error::{PhysicsError, PhysicsResult};
+
 use super::functions::{
     EULER_MASCHERONI, box_muller, first_n_primes, gamma_fn, halton_1d, log_gamma, normal_cdf,
     sample_gamma, scrambled_halton_1d, shuffle_fisher_yates, student_t_cdf, weighted_choice_index,
 };
+use super::sobol::{SOBOL_BITS, SOBOL_MAX_DIM, sobol_directions, sobol_state_at};
 
 /// Gaussian copula for bivariate dependence.
 ///
@@ -181,47 +184,77 @@ impl TCopula {
         (0..n).map(|_| self.sample(rng)).collect()
     }
 }
-/// Extended Sobol sequence generator with more direction numbers.
+/// Sobol low-discrepancy sequence generator.
 ///
-/// Supports up to 21 dimensions using standard direction tables.
+/// Uses the Joe-Kuo direction numbers (`new-joe-kuo-6.21201`) for up to
+/// [`SOBOL_MAX_DIM`] (128) dimensions and the Antonov-Saleev Gray-code update
+/// `x_i = x_(i-1) ^ v[ctz(i)]`, so every coordinate is a distinct
+/// (0, 1)-sequence in base 2.  Point 0 is the origin; the resolution is `2^-32`
+/// and the sequence repeats after `2^32` points.
 pub struct SobolSequence {
-    /// Current point index.
+    /// Index of the next point to be generated.
     pub index: usize,
     /// Dimension count.
     pub dim: usize,
-    /// Current state (Gray code representation).
+    /// Current integer state of each coordinate (the coordinate value scaled by `2^32`).
     pub state: Vec<u64>,
+    /// Direction numbers of every coordinate, built once in [`SobolSequence::new`].
+    directions: Vec<[u32; SOBOL_BITS]>,
 }
 impl SobolSequence {
     /// Create a new Sobol sequence for `dim` dimensions.
-    pub fn new(dim: usize) -> Self {
-        let dim = dim.min(4);
-        SobolSequence {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidInput`] when `dim` exceeds [`SOBOL_MAX_DIM`]
+    /// (the number of tabulated dimensions).
+    pub fn new(dim: usize) -> PhysicsResult<Self> {
+        if dim > SOBOL_MAX_DIM {
+            return Err(PhysicsError::InvalidInput {
+                field: "dim".to_string(),
+                reason: format!(
+                    "Sobol direction numbers are tabulated for at most {SOBOL_MAX_DIM} dimensions, requested {dim}"
+                ),
+            });
+        }
+        let directions = (0..dim)
+            .map(sobol_directions)
+            .collect::<PhysicsResult<Vec<_>>>()?;
+        Ok(SobolSequence {
             index: 0,
             dim,
             state: vec![0u64; dim],
-        }
+            directions,
+        })
     }
     /// Generate the next point in \[0,1)^dim.
     pub fn next_point(&mut self) -> Vec<f64> {
-        let v: [Vec<u64>; 4] = [
-            vec![1u64 << 31],
-            vec![1u64 << 31, 1u64 << 30],
-            vec![1u64 << 31, 1u64 << 30, 3u64 << 29],
-            vec![1u64 << 31, 1u64 << 30, 1u64 << 29, 3u64 << 28],
-        ];
-        let norm = 1.0 / (1u64 << 32) as f64;
-        let c = if self.index == 0 {
-            32
+        const NORM: f64 = 1.0 / 4_294_967_296.0;
+        // The sequence has period 2^32: the low 32 bits of the index drive the update.
+        let position = (self.index & 0xFFFF_FFFF) as u32;
+        if position == 0 {
+            self.state.fill(0);
         } else {
-            self.index.trailing_zeros() as usize
-        };
-        for (st, vd) in self.state.iter_mut().zip(v.iter()) {
-            let dir = if c < vd.len() { vd[c] } else { vd[0] >> c };
-            *st ^= dir;
+            let bit = position.trailing_zeros() as usize;
+            for (st, dirs) in self.state.iter_mut().zip(self.directions.iter()) {
+                *st ^= u64::from(dirs[bit]);
+            }
         }
         self.index += 1;
-        self.state.iter().map(|&x| x as f64 * norm).collect()
+        self.state.iter().map(|&x| x as f64 * NORM).collect()
+    }
+    /// Position the generator so that the next call to [`next_point`](Self::next_point)
+    /// returns point number `index` of the sequence (`O(dim)` instead of `O(index * dim)`).
+    pub fn skip_to(&mut self, index: usize) {
+        self.index = index;
+        if index == 0 {
+            self.state.fill(0);
+            return;
+        }
+        let previous = ((index - 1) & 0xFFFF_FFFF) as u32;
+        for (st, dirs) in self.state.iter_mut().zip(self.directions.iter()) {
+            *st = u64::from(sobol_state_at(dirs, previous));
+        }
     }
     /// Generate `n` points.
     pub fn generate(&mut self, n: usize) -> Vec<Vec<f64>> {
@@ -1395,37 +1428,16 @@ impl RandomSampler {
             })
             .collect()
     }
-    /// Sobol sequence (simplified base-2 Sobol for up to 4 dimensions).
+    /// Sobol sequence: the first `n` points of the `d`-dimensional Sobol sequence in \[0,1)^d.
     ///
-    /// Returns `n` points in \[0,1)^d for `d <= 4`.
-    pub fn sobol(n: usize, d: usize) -> Vec<Vec<f64>> {
-        let d = d.min(4);
-        let mut points = vec![vec![0.0f64; d]; n];
-        let v: [Vec<u64>; 4] = [
-            vec![1u64 << 31],
-            vec![1u64 << 31, 1u64 << 30],
-            vec![1u64 << 31, 1u64 << 30, 3u64 << 29],
-            vec![1u64 << 31, 1u64 << 30, 1u64 << 29, 3u64 << 28],
-        ];
-        let norm = 1.0 / (1u64 << 32) as f64;
-        let mut x = vec![0u64; d];
-        for (i, point) in points.iter_mut().enumerate() {
-            let c = if i == 0 {
-                32
-            } else {
-                i.trailing_zeros() as usize
-            };
-            for (dim, pt_dim) in point.iter_mut().enumerate() {
-                let dir = if c < v[dim].len() {
-                    v[dim][c]
-                } else {
-                    v[dim][0] >> c
-                };
-                x[dim] ^= dir;
-                *pt_dim = x[dim] as f64 * norm;
-            }
-        }
-        points
+    /// Uses the Joe-Kuo direction numbers, see [`SobolSequence`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidInput`] when `d` exceeds [`SOBOL_MAX_DIM`].
+    pub fn sobol(n: usize, d: usize) -> PhysicsResult<Vec<Vec<f64>>> {
+        let mut sequence = SobolSequence::new(d)?;
+        Ok(sequence.generate(n))
     }
 }
 /// Exponential distribution via inverse CDF: X = -ln(U) / lambda.
@@ -1477,17 +1489,26 @@ impl DirichletDist {
 }
 /// Fractional Brownian motion (fBm) with Hurst exponent H ∈ (0, 1).
 ///
-/// Simulated via the Cholesky method for small n, or Hosking's method.
+/// Simulated exactly (up to floating-point rounding) on the grid `k·dt` with
+/// Hosking's recursive method, which generates the stationary increments
+/// (fractional Gaussian noise) through the Durbin-Levinson recursion.
 /// H=0.5: standard BM; H>0.5: persistent; H<0.5: anti-persistent.
+///
+/// The cost of one path is `O(n_steps²)`.
 pub struct FractionalBrownianMotion {
-    /// Hurst exponent H ∈ (0, 1).
+    /// Hurst exponent H ∈ (0, 1); values outside are clamped to
+    /// \[`HURST_MIN`, `HURST_MAX`\] when a path is generated.
     pub hurst: f64,
     /// Number of steps.
     pub n_steps: usize,
-    /// Time step dt.
+    /// Time step dt (> 0).
     pub dt: f64,
 }
 impl FractionalBrownianMotion {
+    /// Smallest Hurst exponent used for path generation.
+    pub const HURST_MIN: f64 = 1.0e-3;
+    /// Largest Hurst exponent used for path generation.
+    pub const HURST_MAX: f64 = 0.999;
     /// Create a new fBm simulator.
     pub fn new(hurst: f64, n_steps: usize, dt: f64) -> Self {
         FractionalBrownianMotion { hurst, n_steps, dt }
@@ -1497,27 +1518,101 @@ impl FractionalBrownianMotion {
         let h2 = 2.0 * self.hurst;
         0.5 * (s.abs().powf(h2) + t.abs().powf(h2) - (t - s).abs().powf(h2))
     }
-    /// Generate one fBm path using the Hosking recursive method.
-    pub fn generate_path(&self, rng: &mut Xoshiro256) -> Vec<f64> {
-        let n = self.n_steps;
-        let h = self.hurst;
-        let gamma = |k: i64| -> f64 {
-            let h2 = 2.0 * h;
-            0.5 * (((k + 1).unsigned_abs() as f64).powf(h2)
-                - 2.0 * (k.unsigned_abs() as f64).powf(h2)
-                + ((k - 1).unsigned_abs() as f64).powf(h2))
-        };
-        let mut path = vec![0.0f64; n + 1];
-        if n == 0 {
-            return path;
+    /// Autocovariance of unit-step fractional Gaussian noise at integer lag `k`:
+    /// `γ(k) = (1/2)(|k+1|^2H - 2|k|^2H + |k-1|^2H)`.
+    pub fn fgn_autocovariance(hurst: f64, lag: usize) -> f64 {
+        let h2 = 2.0 * hurst;
+        let k = lag as f64;
+        if lag == 0 {
+            return 1.0;
         }
-        let mut prev = 0.0f64;
-        for p in path[1..].iter_mut() {
-            let (z, _) = box_muller(rng);
-            let scale = self.dt.powf(h);
-            let std_incr = gamma(0).max(0.0).sqrt() * scale;
-            prev += std_incr * z;
-            *p = prev;
+        0.5 * ((k + 1.0).powf(h2) - 2.0 * k.powf(h2) + (k - 1.0).powf(h2))
+    }
+    /// Hosking / Durbin-Levinson generation of unit-variance fractional Gaussian
+    /// noise `X_0 .. X_(m-1)` from the independent standard normals `normals`
+    /// (`m = normals.len()`).
+    ///
+    /// With `φ_(k,j)` the coefficients of the best linear predictor of `X_k`
+    /// from its `k` predecessors and `v_k` its mean-square error:
+    ///
+    /// * `v_0 = γ(0) = 1`, `X_0 = z_0`;
+    /// * `φ_(k,k) = (γ(k) - Σ_(j<k) φ_(k-1,j) γ(k-j)) / v_(k-1)`;
+    /// * `φ_(k,j) = φ_(k-1,j) - φ_(k,k) φ_(k-1,k-j)` for `j < k`;
+    /// * `v_k = v_(k-1) (1 - φ_(k,k)²)`;
+    /// * `X_k = Σ_j φ_(k,j) X_(k-j) + sqrt(v_k) z_k`.
+    ///
+    /// The result is the Cholesky transform `L z` of the covariance matrix
+    /// `Γ_(ij) = γ(|i-j|)`, so it has exactly the fractional-Gaussian-noise law.
+    pub(super) fn hosking_fgn(hurst: f64, normals: &[f64]) -> Vec<f64> {
+        let m = normals.len();
+        let mut x = vec![0.0f64; m];
+        if m == 0 {
+            return x;
+        }
+        let gamma: Vec<f64> = (0..m).map(|k| Self::fgn_autocovariance(hurst, k)).collect();
+        let mut phi = vec![0.0f64; m];
+        let mut phi_prev = vec![0.0f64; m];
+        let mut variance = gamma[0];
+        x[0] = variance.sqrt() * normals[0];
+        for k in 1..m {
+            let mut numerator = gamma[k];
+            for j in 1..k {
+                numerator -= phi_prev[j - 1] * gamma[k - j];
+            }
+            let phi_kk = if variance > 0.0 {
+                numerator / variance
+            } else {
+                0.0
+            };
+            for j in 1..k {
+                phi[j - 1] = phi_prev[j - 1] - phi_kk * phi_prev[k - j - 1];
+            }
+            phi[k - 1] = phi_kk;
+            variance = (variance * (1.0 - phi_kk * phi_kk)).max(0.0);
+            let mut mean = 0.0f64;
+            for j in 1..=k {
+                mean += phi[j - 1] * x[k - j];
+            }
+            x[k] = mean + variance.sqrt() * normals[k];
+            std::mem::swap(&mut phi, &mut phi_prev);
+        }
+        x
+    }
+    /// Generate the `n_steps` increments `B_H((k+1)·dt) - B_H(k·dt)` of one fBm path.
+    ///
+    /// The increments are stationary, Gaussian, have variance `dt^(2H)` and the
+    /// fractional-Gaussian-noise autocovariance
+    /// `Cov(ΔB_k, ΔB_(k+l)) = dt^(2H) γ(l)`.
+    pub fn generate_increments(&self, rng: &mut Xoshiro256) -> Vec<f64> {
+        let n = self.n_steps;
+        let mut normals = Vec::with_capacity(n + 1);
+        while normals.len() < n {
+            let (z0, z1) = box_muller(rng);
+            normals.push(z0);
+            normals.push(z1);
+        }
+        normals.truncate(n);
+        let hurst = self.hurst.clamp(Self::HURST_MIN, Self::HURST_MAX);
+        let scale = self.dt.powf(hurst);
+        let mut increments = Self::hosking_fgn(hurst, &normals);
+        for incr in increments.iter_mut() {
+            *incr *= scale;
+        }
+        increments
+    }
+    /// Generate one fBm path `B_H(0), B_H(dt), ..., B_H(n_steps·dt)` (length `n_steps + 1`,
+    /// starting at 0) using Hosking's recursive method.
+    ///
+    /// `Var[B_H(k·dt)] = (k·dt)^(2H)` and increments over disjoint intervals are
+    /// correlated according to the Hurst exponent (long-range dependence for H > 0.5).
+    pub fn generate_path(&self, rng: &mut Xoshiro256) -> Vec<f64> {
+        let increments = self.generate_increments(rng);
+        let mut path = Vec::with_capacity(increments.len() + 1);
+        path.push(0.0f64);
+        let mut position = 0.0f64;
+        for incr in increments {
+            position += incr;
+            path.push(position);
         }
         path
     }

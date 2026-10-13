@@ -238,7 +238,7 @@ impl CfrpPly {
         let q11b = q11 * c4 + 2.0 * (q12 + 2.0 * q66) * c2s2 + q22 * s4;
         let q22b = q11 * s4 + 2.0 * (q12 + 2.0 * q66) * c2s2 + q22 * c4;
         let q12b = (q11 + q22 - 4.0 * q66) * c2s2 + q12 * (c4 + s4);
-        let q66b = (q11 + q22 - 2.0 * q12 - 2.0 * q66) * c2s2 + q66 * (c2 - s2).powi(2);
+        let q66b = (q11 + q22 - 2.0 * q12 - 2.0 * q66) * c2s2 + q66 * (c4 + s4);
         let q16b = (q11 - q12 - 2.0 * q66) * c * c2 * s - (q22 - q12 - 2.0 * q66) * s * s2 * c;
         let q26b = (q11 - q12 - 2.0 * q66) * s * s2 * c - (q22 - q12 - 2.0 * q66) * c * c2 * s;
         [q11b, q22b, q12b, q66b, q16b, q26b]
@@ -1086,6 +1086,92 @@ mod tests {
         let res = clt_analysis(&plies);
         let expected = 4.0 * 0.125;
         assert!((res.total_thickness_mm - expected).abs() < 1e-9);
+    }
+
+    /// Independent reference: Q̄ = T⁻¹ · Q · T⁻ᵀ with the explicit stress
+    /// transformation matrix, returned as \[Q̄₁₁, Q̄₂₂, Q̄₁₂, Q̄₆₆, Q̄₁₆, Q̄₂₆\].
+    fn tensor_transformed_stiffness(q: [f64; 4], angle_deg: f64) -> [f64; 6] {
+        let theta = angle_deg.to_radians();
+        let c = theta.cos();
+        let s = theta.sin();
+        let q_mat = [[q[0], q[2], 0.0], [q[2], q[1], 0.0], [0.0, 0.0, q[3]]];
+        let t_inv = [
+            [c * c, s * s, -2.0 * c * s],
+            [s * s, c * c, 2.0 * c * s],
+            [c * s, -c * s, c * c - s * s],
+        ];
+        let mut tmp = [[0.0f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                for k in 0..3 {
+                    tmp[i][j] += t_inv[i][k] * q_mat[k][j];
+                }
+            }
+        }
+        let mut qb = [[0.0f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                for k in 0..3 {
+                    // (T⁻¹)ᵀ[k][j] = T⁻¹[j][k]
+                    qb[i][j] += tmp[i][k] * t_inv[j][k];
+                }
+            }
+        }
+        [qb[0][0], qb[1][1], qb[0][1], qb[2][2], qb[0][2], qb[1][2]]
+    }
+
+    /// Q̄₆₆ (and every other transformed component) must agree with the full
+    /// tensor transformation at arbitrary ply angles.
+    #[test]
+    fn test_cfrp_transformed_stiffness_matches_tensor_rotation() {
+        for &angle in &[0.0, 15.0, 30.0, 45.0, -45.0, 60.0, 90.0, 123.0] {
+            let ply = CfrpPly::im7_8552(angle);
+            let got = ply.transformed_stiffness_gpa();
+            let expected = tensor_transformed_stiffness(ply.reduced_stiffness_gpa(), angle);
+            for (idx, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+                let scale = e.abs().max(1.0);
+                assert!(
+                    (g - e).abs() / scale < 1e-12,
+                    "angle {angle} deg component {idx}: got {g}, expected {e}"
+                );
+            }
+        }
+    }
+
+    /// For a balanced \[45/-45/-45/45\] laminate Gxy = (Q11+Q22-2Q12)/4.
+    #[test]
+    fn test_clt_pm45_laminate_shear_modulus_closed_form() {
+        let plies: Vec<CfrpPly> = [45.0, -45.0, -45.0, 45.0]
+            .iter()
+            .map(|&a| CfrpPly::im7_8552(a))
+            .collect();
+        let res = clt_analysis(&plies);
+        let [q11, q22, q12, _q66] = plies[0].reduced_stiffness_gpa();
+        let expected = (q11 + q22 - 2.0 * q12) / 4.0;
+        assert!(
+            (res.gxy_gpa - expected).abs() / expected < 1e-9,
+            "Gxy = {}, expected {expected}",
+            res.gxy_gpa
+        );
+        // The old (c²-s²)² variant dropped Q66/2 at 45°; make sure that is gone.
+        let dropped = expected - plies[0].g12_gpa / 2.0;
+        assert!(
+            (res.gxy_gpa - dropped).abs() / expected > 1e-3,
+            "Gxy still matches the buggy formula"
+        );
+    }
+
+    /// A single 0° ply has Gxy = G12 exactly.
+    #[test]
+    fn test_clt_single_zero_ply_gxy_equals_g12() {
+        let ply = CfrpPly::im7_8552(0.0);
+        let res = clt_analysis(&[ply]);
+        assert!(
+            (res.gxy_gpa - ply.g12_gpa).abs() < 1e-9,
+            "Gxy = {}, G12 = {}",
+            res.gxy_gpa,
+            ply.g12_gpa
+        );
     }
 
     // ── SiC/SiC CMC ─────────────────────────────────────────────────────────

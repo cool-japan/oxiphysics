@@ -14,6 +14,9 @@ pub mod torusapprox_traits;
 pub mod translatedshape_traits;
 pub mod types;
 
+#[cfg(test)]
+mod toi_tests;
+
 // Re-export all types
 pub use functions::*;
 pub use types::*;

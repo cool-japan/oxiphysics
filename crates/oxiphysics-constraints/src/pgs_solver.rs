@@ -6,6 +6,12 @@
 //! Implements the sequential impulse method with warm starting, friction cone
 //! clamping, and convergence tracking via residual norms.
 //!
+//! The solvers honour the [`Constraint`] hooks: inactive constraints are
+//! skipped, [`Constraint::residual`] drives the convergence test,
+//! [`Constraint::post_solve`] runs after the velocity iterations, and
+//! [`Constraint::apply_warm_start`] / [`Constraint::accumulated_impulses`]
+//! carry impulses from frame to frame through a [`PgsState`].
+//!
 //! # Extensions
 //!
 //! - Successive Over-Relaxation (SOR) to accelerate convergence.
@@ -14,6 +20,7 @@
 //! - Convergence criteria (absolute, relative, combined).
 
 use oxiphysics_core::BodyHandle;
+use oxiphysics_core::math::Vec3;
 use oxiphysics_rigid::RigidBodySet;
 
 use crate::traits::Constraint;
@@ -27,9 +34,13 @@ use crate::traits::Constraint;
 pub struct SolverStats {
     /// Number of velocity iterations actually performed.
     pub iterations_used: usize,
-    /// Final residual (sum of |Δλ| over all constraints in the last iteration).
+    /// Final residual: the sum over all active constraints of the size of the
+    /// velocity-level update (the impulse change |Δλ| expressed as a velocity
+    /// change, see [`Constraint::residual`]) made in the last iteration.
+    /// `f64::MAX` when no iteration was performed.
     pub residual: f64,
-    /// Whether the solver converged before the iteration limit.
+    /// Whether the residual dropped to the tolerance before the iteration
+    /// limit was reached.
     pub converged: bool,
 }
 
@@ -75,18 +86,28 @@ impl ConvergenceCriteria {
 
 /// Per-frame solver state carrying warm-start data.
 ///
-/// Holds the accumulated lambda vector from the previous frame.  When warm
-/// starting is enabled the solver scales this by `dt_ratio = dt_new / dt_prev`
-/// and pre-applies it before the first iteration.
+/// Holds the accumulated impulses of the previous frame, indexed by constraint
+/// index.  When warm starting is enabled the solver scales them by
+/// `dt_ratio = dt_new / dt_prev` and hands each constraint its rows through
+/// [`Constraint::apply_warm_start`] before the first iteration; after the
+/// solve it records the constraints' [`Constraint::accumulated_impulses`] back
+/// into the state for the next frame.
 #[derive(Debug, Clone)]
 pub struct PgsState {
-    /// Accumulated (normal + friction) impulse magnitudes from the last frame,
-    /// indexed by constraint index.
+    /// Magnitude (Euclidean norm over all rows) of the accumulated impulse of
+    /// every constraint from the last frame, indexed by constraint index.
     pub lambdas: Vec<f64>,
-    /// Raw cached impulse vectors (x, y, z) per constraint.
+    /// The first three accumulated impulse rows of every constraint, indexed
+    /// by constraint index and zero padded (for a contact:
+    /// `[normal, tangent1, tangent2]`).
     pub cached_impulses: Vec<[f64; 3]>,
     /// dt used in the previous solve (needed to compute `dt_ratio`).
     pub prev_dt: f64,
+    /// Accumulated impulse of every row of every constraint, indexed by
+    /// constraint index.  This is the authoritative warm-start data: it holds
+    /// exactly what [`Constraint::accumulated_impulses`] returned, whatever the
+    /// number of rows.
+    pub row_impulses: Vec<Vec<f64>>,
 }
 
 impl PgsState {
@@ -96,6 +117,7 @@ impl PgsState {
             lambdas: vec![0.0; n],
             cached_impulses: vec![[0.0; 3]; n],
             prev_dt: 1.0 / 60.0,
+            row_impulses: vec![Vec::new(); n],
         }
     }
 
@@ -106,6 +128,9 @@ impl PgsState {
         }
         for c in &mut self.cached_impulses {
             *c = [0.0; 3];
+        }
+        for rows in &mut self.row_impulses {
+            rows.clear();
         }
     }
 
@@ -119,12 +144,51 @@ impl PgsState {
             c[1] *= factor;
             c[2] *= factor;
         }
+        for rows in &mut self.row_impulses {
+            for row in rows.iter_mut() {
+                *row *= factor;
+            }
+        }
     }
 
     /// Resize the state to accommodate `n` constraints, preserving existing data.
     pub fn resize(&mut self, n: usize) {
         self.lambdas.resize(n, 0.0);
         self.cached_impulses.resize(n, [0.0; 3]);
+        self.row_impulses.resize(n, Vec::new());
+    }
+
+    /// Accumulated impulse rows recorded for constraint `index` (empty when
+    /// nothing has been recorded).
+    pub fn rows(&self, index: usize) -> &[f64] {
+        self.row_impulses
+            .get(index)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Record the accumulated impulse `rows` of constraint `index` and update
+    /// the derived summaries ([`lambdas`](Self::lambdas) and
+    /// [`cached_impulses`](Self::cached_impulses)).  Grows the state when
+    /// `index` is beyond its current size.
+    pub fn record(&mut self, index: usize, rows: Vec<f64>) {
+        let needed = index + 1;
+        if self.lambdas.len() < needed {
+            self.lambdas.resize(needed, 0.0);
+        }
+        if self.cached_impulses.len() < needed {
+            self.cached_impulses.resize(needed, [0.0; 3]);
+        }
+        if self.row_impulses.len() < needed {
+            self.row_impulses.resize(needed, Vec::new());
+        }
+        let mut head = [0.0; 3];
+        for (slot, value) in head.iter_mut().zip(rows.iter()) {
+            *slot = *value;
+        }
+        self.lambdas[index] = rows.iter().map(|r| r * r).sum::<f64>().sqrt();
+        self.cached_impulses[index] = head;
+        self.row_impulses[index] = rows;
     }
 
     /// Return the total accumulated impulse magnitude (L2 norm of lambdas).
@@ -137,7 +201,12 @@ impl PgsState {
         self.lambdas.iter().filter(|&&l| l.abs() > 1e-12).count()
     }
 
-    /// Blend current lambdas with a target using exponential smoothing.
+    /// Blend the stored impulses with a target using exponential smoothing.
+    ///
+    /// The magnitudes ([`lambdas`](Self::lambdas)), the leading rows
+    /// ([`cached_impulses`](Self::cached_impulses)) and the full impulse rows
+    /// ([`row_impulses`](Self::row_impulses)) are blended independently; a row
+    /// missing on one side counts as zero.
     ///
     /// `alpha` in \[0, 1\]: 0 = keep current, 1 = take target entirely.
     pub fn blend(&mut self, target: &PgsState, alpha: f64) {
@@ -152,6 +221,18 @@ impl PgsState {
                 self.cached_impulses[i][j] = (1.0 - alpha) * self.cached_impulses[i][j]
                     + alpha * target.cached_impulses[i][j];
             }
+        }
+        let r = self.row_impulses.len().min(target.row_impulses.len());
+        for i in 0..r {
+            let len = self.row_impulses[i].len().max(target.row_impulses[i].len());
+            let blended: Vec<f64> = (0..len)
+                .map(|k| {
+                    let own = self.row_impulses[i].get(k).copied().unwrap_or(0.0);
+                    let other = target.row_impulses[i].get(k).copied().unwrap_or(0.0);
+                    (1.0 - alpha) * own + alpha * other
+                })
+                .collect();
+            self.row_impulses[i] = blended;
         }
     }
 }
@@ -237,17 +318,26 @@ impl ResidualHistory {
 
 /// Projected Gauss-Seidel solver.
 ///
-/// Iteratively solves constraints by calling `solve_velocity` in sequence
-/// for a fixed number of iterations, then applies a single position correction
-/// pass.  Convergence is detected via a residual threshold so that cheap
-/// scenarios finish in fewer iterations.
+/// Iteratively solves the active constraints by calling `solve_velocity` in
+/// sequence, then applies the position correction passes.  After every sweep
+/// the solver sums the size of the velocity-level update each constraint made
+/// ([`Constraint::residual`], or the measured velocity change of the
+/// constrained bodies for constraints that do not report it) and stops as soon
+/// as that sum drops below `tolerance`, so cheap scenarios finish in fewer
+/// iterations and a scene that cannot reach the tolerance reports
+/// `converged == false`.
+///
+/// Constraints whose [`Constraint::is_active`] is `false` are skipped
+/// completely, and [`Constraint::post_solve`] runs once per solve after the
+/// velocity iterations.
 #[derive(Debug, Clone)]
 pub struct PgsSolver {
     /// Maximum number of velocity solver iterations.
     pub max_iterations: usize,
-    /// Residual threshold for early convergence exit.
+    /// Convergence tolerance on the summed per-sweep velocity update (m/s).
     pub tolerance: f64,
-    /// Whether warm starting is enabled.
+    /// Whether [`solve_warm`](PgsSolver::solve_warm) seeds the constraints
+    /// from the previous frame's [`PgsState`].
     pub warm_starting: bool,
     /// Number of position solver iterations.
     pub position_iterations: usize,
@@ -281,6 +371,11 @@ impl PgsSolver {
 
     /// Solve a set of constraints for the given bodies over one time step.
     ///
+    /// Constraints keep whatever impulses they accumulated themselves (a
+    /// persistent [`ContactConstraint`](crate::ContactConstraint) warm starts
+    /// from its previous frame); use [`solve_warm`](PgsSolver::solve_warm) to
+    /// carry impulses across frames in a [`PgsState`].
+    ///
     /// Returns [`SolverStats`] describing convergence behaviour.
     pub fn solve(
         &self,
@@ -288,53 +383,22 @@ impl PgsSolver {
         bodies: &mut RigidBodySet,
         dt: f64,
     ) -> SolverStats {
-        // Prepare all constraints (computes Jacobians, effective masses, biases)
-        for c in constraints.iter_mut() {
-            c.prepare(bodies, dt);
-        }
-
-        let mut residual = f64::MAX;
-        let mut iters_used = 0usize;
-
-        // Iteratively solve velocity constraints
-        for iter in 0..self.max_iterations {
-            residual = 0.0;
-            for c in constraints.iter_mut() {
-                // We track "work" each iteration via the post-solve velocity change.
-                // For a lightweight residual estimate we call solve_velocity and
-                // treat non-zero application as residual contribution.
-                c.solve_velocity(bodies, dt);
-                residual += 1.0; // coarse: one contribution per constraint per iter
-            }
-            iters_used = iter + 1;
-            // After the first full pass the residual proxy decrements quickly.
-            // Use a simple check: if no body has velocity changes > tolerance we stop.
-            if iter > 0 && residual_below_threshold(constraints, bodies, self.tolerance) {
-                residual = 0.0;
-                break;
-            }
-        }
-
-        let converged = residual < self.tolerance || residual == 0.0;
-
-        // Position correction pass
-        for _ in 0..self.position_iterations {
-            for c in constraints.iter_mut() {
-                c.solve_position(bodies, dt);
-            }
-        }
-
-        SolverStats {
-            iterations_used: iters_used,
-            residual: if converged { 0.0 } else { residual },
-            converged,
-        }
+        solve_with_settings(constraints, bodies, dt, &self.settings(), None)
     }
 
     /// Solve with warm starting from a previous-frame [`PgsState`].
     ///
-    /// Scales cached lambdas by `dt / state.prev_dt` before the first
-    /// iteration so the solver starts closer to the solution.
+    /// Scales the cached impulses by `dt / state.prev_dt` and passes each
+    /// constraint its rows through [`Constraint::apply_warm_start`] (which
+    /// applies `+Jᵀλ` to the first and `-Jᵀλ` to the second body) before the
+    /// first iteration, so the solver starts close to the solution.  After the
+    /// solve the constraints' [`Constraint::accumulated_impulses`] are stored
+    /// in `state` for the next frame.
+    ///
+    /// With [`warm_starting`](PgsSolver::warm_starting) disabled the state is
+    /// ignored and every constraint starts cold, but the state is still
+    /// updated.  Constraints are matched with the state by their index in
+    /// `constraints`.
     pub fn solve_warm(
         &self,
         constraints: &mut [Box<dyn Constraint>],
@@ -342,24 +406,20 @@ impl PgsSolver {
         dt: f64,
         state: &mut PgsState,
     ) -> SolverStats {
-        if self.warm_starting && state.prev_dt > 1e-12 {
-            let dt_ratio = dt / state.prev_dt;
-            state.scale(dt_ratio);
-            // Pre-apply warm-start impulses using cached data
-            for (i, c) in constraints.iter().enumerate() {
-                if i < state.cached_impulses.len() {
-                    let imp = state.cached_impulses[i];
-                    let impulse = [imp[0], imp[1], imp[2]];
-                    for handle in c.body_handles() {
-                        apply_cached_impulse(bodies, handle, &impulse);
-                    }
-                }
-            }
-        }
+        let warm = WarmStart {
+            state,
+            enabled: self.warm_starting,
+        };
+        solve_with_settings(constraints, bodies, dt, &self.settings(), Some(warm))
+    }
 
-        let stats = self.solve(constraints, bodies, dt);
-        state.prev_dt = dt;
-        stats
+    fn settings(&self) -> SolveSettings {
+        SolveSettings {
+            max_iterations: self.max_iterations,
+            position_iterations: self.position_iterations,
+            tolerance: self.tolerance,
+            omega: None,
+        }
     }
 }
 
@@ -378,17 +438,27 @@ impl Default for PgsSolver {
 /// Over-relaxation (omega > 1.0) can accelerate convergence for well-behaved
 /// systems, while under-relaxation (omega < 1.0) can improve stability for
 /// stiff or ill-conditioned constraint sets.
+///
+/// The relaxation scales each constraint's impulse update through
+/// [`Constraint::solve_velocity_relaxed`], so the accumulated impulses are
+/// projected onto their bounds *after* relaxing and never leave their
+/// feasible set.  [`ContactConstraint`](crate::ContactConstraint) implements
+/// the full over- and under-relaxation; constraints that do not override
+/// `solve_velocity_relaxed` are under-relaxed for `omega < 1` and solved
+/// without relaxation for `omega >= 1`.  `omega = 1` is exactly
+/// [`PgsSolver`].
 #[derive(Debug, Clone)]
 pub struct SorPgsSolver {
     /// Maximum number of velocity iterations.
     pub max_iterations: usize,
-    /// Convergence tolerance.
+    /// Convergence tolerance on the summed per-sweep velocity update (m/s).
     pub tolerance: f64,
     /// SOR relaxation factor omega in (0, 2). Typical: 1.0-1.5.
     pub omega: f64,
     /// Number of position iterations.
     pub position_iterations: usize,
-    /// Whether warm starting is enabled.
+    /// Whether [`solve_warm`](SorPgsSolver::solve_warm) seeds the constraints
+    /// from the previous frame's [`PgsState`].
     pub warm_starting: bool,
 }
 
@@ -406,54 +476,36 @@ impl SorPgsSolver {
 
     /// Solve constraints with SOR acceleration.
     ///
-    /// The SOR technique modifies each delta-lambda by `omega`:
-    /// `delta_lambda_sor = omega * delta_lambda`
-    /// For omega = 1.0 this reduces to standard PGS.
+    /// Constraints that implement [`Constraint::solve_velocity_relaxed`]
+    /// (contacts) scale their impulse update by `omega` before the
+    /// accumulated impulse is projected onto its bounds:
+    /// `λ ← project(λ + omega · Δλ)`.  All other constraints are under-relaxed
+    /// for `omega < 1` and solved without relaxation for `omega >= 1`.  For
+    /// omega = 1.0 this is bit-for-bit the standard PGS of [`PgsSolver::solve`].
     pub fn solve(
         &self,
         constraints: &mut [Box<dyn Constraint>],
         bodies: &mut RigidBodySet,
         dt: f64,
     ) -> SolverStats {
-        for c in constraints.iter_mut() {
-            c.prepare(bodies, dt);
-        }
+        solve_with_settings(constraints, bodies, dt, &self.settings(), None)
+    }
 
-        let mut iters_used = 0usize;
-        let mut residual = f64::MAX;
-
-        for iter in 0..self.max_iterations {
-            residual = 0.0;
-            for c in constraints.iter_mut() {
-                c.solve_velocity(bodies, dt);
-                residual += 1.0;
-            }
-
-            // Apply SOR damping to velocities after each full pass
-            if (self.omega - 1.0).abs() > 1e-12 {
-                apply_sor_damping(constraints, bodies, self.omega);
-            }
-
-            iters_used = iter + 1;
-            if iter > 0 && residual_below_threshold(constraints, bodies, self.tolerance) {
-                residual = 0.0;
-                break;
-            }
-        }
-
-        let converged = residual < self.tolerance || residual == 0.0;
-
-        for _ in 0..self.position_iterations {
-            for c in constraints.iter_mut() {
-                c.solve_position(bodies, dt);
-            }
-        }
-
-        SolverStats {
-            iterations_used: iters_used,
-            residual: if converged { 0.0 } else { residual },
-            converged,
-        }
+    /// Solve with warm starting from a previous-frame [`PgsState`].
+    ///
+    /// Behaves like [`PgsSolver::solve_warm`] with SOR iterations.
+    pub fn solve_warm(
+        &self,
+        constraints: &mut [Box<dyn Constraint>],
+        bodies: &mut RigidBodySet,
+        dt: f64,
+        state: &mut PgsState,
+    ) -> SolverStats {
+        let warm = WarmStart {
+            state,
+            enabled: self.warm_starting,
+        };
+        solve_with_settings(constraints, bodies, dt, &self.settings(), Some(warm))
     }
 
     /// Estimate the optimal omega for a given constraint count.
@@ -468,6 +520,15 @@ impl SorPgsSolver {
         let omega = 2.0 / (1.0 + (std::f64::consts::PI / (n + 1.0)).sin());
         omega.clamp(1.0, 1.95)
     }
+
+    fn settings(&self) -> SolveSettings {
+        SolveSettings {
+            max_iterations: self.max_iterations,
+            position_iterations: self.position_iterations,
+            tolerance: self.tolerance,
+            omega: ((self.omega - 1.0).abs() > 1e-12).then_some(self.omega),
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -477,7 +538,8 @@ impl SorPgsSolver {
 /// A block of constraints that should be solved together.
 ///
 /// Block PGS groups coupled constraints (e.g., normal + 2 friction rows for
-/// a contact) and solves them simultaneously for better convergence.
+/// a contact) and iterates the whole group several times before moving on to
+/// the next block, which improves the convergence of tightly coupled rows.
 #[derive(Debug, Clone)]
 pub struct ConstraintBlock {
     /// Indices into the constraint array.
@@ -503,9 +565,19 @@ impl ConstraintBlock {
     }
 }
 
+/// Convergence tolerance (summed per-sweep velocity update, m/s) used by
+/// [`solve_block_pgs`]; the same default as [`PgsSolver::new`].
+const BLOCK_PGS_TOLERANCE: f64 = 1e-6;
+
 /// Solve constraints in blocks for better coupled convergence.
 ///
-/// Each block is iterated multiple times internally before moving to the next.
+/// Each block is iterated `inner_iterations` times internally before moving to
+/// the next.  After every outer iteration the residual (the summed velocity
+/// update of the last inner sweep of every block, see [`Constraint::residual`])
+/// is compared with an internal tolerance of `1e-6` and the solve stops early
+/// once it is met, so `converged` and `residual` in the returned
+/// [`SolverStats`] describe the real state of the iteration.  Inactive
+/// constraints are skipped and [`Constraint::post_solve`] runs once at the end.
 pub fn solve_block_pgs(
     constraints: &mut [Box<dyn Constraint>],
     blocks: &[ConstraintBlock],
@@ -515,28 +587,60 @@ pub fn solve_block_pgs(
     inner_iterations: usize,
 ) -> SolverStats {
     for c in constraints.iter_mut() {
-        c.prepare(bodies, dt);
+        if c.is_active() {
+            c.prepare(bodies, dt);
+        }
     }
+    let handles = collect_handles(constraints);
+    let mut scratch = Vec::new();
 
     let mut iters_used = 0usize;
+    let mut residual = f64::MAX;
+    let mut converged = false;
 
-    for _outer in 0..max_iterations {
-        for block in blocks {
-            for _inner in 0..inner_iterations {
-                for &idx in &block.indices {
-                    if idx < constraints.len() {
-                        constraints[idx].solve_velocity(bodies, dt);
+    if inner_iterations > 0 {
+        for _outer in 0..max_iterations {
+            let mut outer_residual = 0.0;
+            for block in blocks {
+                let mut block_residual = 0.0;
+                for _inner in 0..inner_iterations {
+                    block_residual = 0.0;
+                    for &idx in &block.indices {
+                        if let (Some(c), Some(hs)) = (constraints.get_mut(idx), handles.get(idx))
+                            && c.is_active()
+                        {
+                            block_residual += solve_constraint_once(
+                                c.as_mut(),
+                                hs,
+                                bodies,
+                                dt,
+                                None,
+                                &mut scratch,
+                            );
+                        }
                     }
                 }
+                outer_residual += block_residual;
+            }
+            residual = outer_residual;
+            iters_used += 1;
+            if residual <= BLOCK_PGS_TOLERANCE {
+                converged = true;
+                break;
             }
         }
-        iters_used += 1;
+    }
+
+    for c in constraints.iter_mut() {
+        if c.is_active() {
+            c.post_solve();
+        }
     }
 
     SolverStats {
         iterations_used: iters_used,
-        residual: 0.0,
-        converged: true,
+        residual,
+        converged,
     }
 }
 
@@ -791,9 +895,12 @@ pub fn baumgarte_position_bias(penetration: f64, beta: f64, slop: f64, dt: f64) 
     beta * excess / dt
 }
 
-/// Compute the velocity-level residual norm across all constraints.
+/// L2 norm of the linear velocities of the bodies the constraints refer to.
 ///
-/// Returns the L2 norm of velocity changes for the bodies involved.
+/// A body that is shared by several constraints is counted once per
+/// constraint.  This is a measure of how much motion is left in the scene, not
+/// of how far the iteration is from its fixed point: the solvers measure the
+/// latter through [`Constraint::residual`], see [`SolverStats::residual`].
 pub fn compute_velocity_residual(
     constraints: &[Box<dyn Constraint>],
     bodies: &RigidBodySet,
@@ -829,67 +936,221 @@ fn dot3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-/// Apply a raw 3-vector impulse directly to a body's linear velocity.
-fn apply_cached_impulse(bodies: &mut RigidBodySet, handle: BodyHandle, impulse: &[f64; 3]) {
-    if let Some(body) = bodies.get_mut(handle) {
-        let inv_m = body.inverse_mass;
-        body.velocity.x += inv_m * impulse[0];
-        body.velocity.y += inv_m * impulse[1];
-        body.velocity.z += inv_m * impulse[2];
-    }
+// ─────────────────────────────────────────────────────────────────────────────
+// Solve engine shared by PgsSolver and SorPgsSolver
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Parameters of one solve.
+struct SolveSettings {
+    /// Maximum number of velocity sweeps.
+    max_iterations: usize,
+    /// Number of position correction passes.
+    position_iterations: usize,
+    /// Convergence tolerance on the summed per-sweep velocity update.
+    tolerance: f64,
+    /// SOR factor, `None` for plain Gauss-Seidel.
+    omega: Option<f64>,
 }
 
-/// Quick convergence check: if all bodies have velocity magnitude below
-/// `tol` the solver has effectively converged.
-fn residual_below_threshold(
-    constraints: &[Box<dyn Constraint>],
-    bodies: &RigidBodySet,
-    tol: f64,
-) -> bool {
-    let tol2 = tol * tol;
-    for c in constraints.iter() {
-        for handle in c.body_handles() {
-            if let Some(body) = bodies.get(handle) {
-                let v2 =
-                    body.velocity.x.powi(2) + body.velocity.y.powi(2) + body.velocity.z.powi(2);
-                if v2 > tol2 {
-                    return false;
-                }
-            }
-        }
-    }
-    true
+/// Cross-frame warm-start state of one solve.
+struct WarmStart<'a> {
+    state: &'a mut PgsState,
+    /// Whether the state may be used to seed the constraints.
+    enabled: bool,
 }
 
-/// Apply SOR damping to body velocities after a solver pass.
+/// Prepare, iterate and finish one PGS solve.
 ///
-/// Scales velocity changes by `omega` relative to their pre-iteration values.
-/// Since we don't track pre-iteration velocities exactly, this applies a
-/// gentle damping/amplification to the current velocity proportional to omega.
-fn apply_sor_damping(constraints: &[Box<dyn Constraint>], bodies: &mut RigidBodySet, omega: f64) {
-    // Collect unique handles
-    let mut handles = Vec::new();
-    for c in constraints.iter() {
-        for h in c.body_handles() {
-            if !handles.contains(&h) {
-                handles.push(h);
+/// 1. `prepare` every active constraint,
+/// 2. optionally seed the constraints from the warm-start state,
+/// 3. sweep the active constraints until the summed velocity update drops
+///    below the tolerance or the iteration budget is used up,
+/// 4. call `post_solve`, then run the position correction passes,
+/// 5. optionally record the accumulated impulses in the warm-start state.
+fn solve_with_settings(
+    constraints: &mut [Box<dyn Constraint>],
+    bodies: &mut RigidBodySet,
+    dt: f64,
+    settings: &SolveSettings,
+    mut warm: Option<WarmStart<'_>>,
+) -> SolverStats {
+    for c in constraints.iter_mut() {
+        if c.is_active() {
+            c.prepare(bodies, dt);
+        }
+    }
+    if let Some(warm) = warm.as_mut() {
+        seed_warm_start(constraints, bodies, dt, warm);
+    }
+
+    let handles = collect_handles(constraints);
+    let mut scratch = Vec::new();
+    let mut residual = f64::MAX;
+    let mut iterations_used = 0usize;
+    let mut converged = false;
+    for iteration in 0..settings.max_iterations {
+        residual = velocity_sweep(
+            constraints,
+            &handles,
+            bodies,
+            dt,
+            settings.omega,
+            &mut scratch,
+        );
+        iterations_used = iteration + 1;
+        if residual <= settings.tolerance {
+            converged = true;
+            break;
+        }
+    }
+
+    for c in constraints.iter_mut() {
+        if c.is_active() {
+            c.post_solve();
+        }
+    }
+    for _ in 0..settings.position_iterations {
+        for c in constraints.iter_mut() {
+            if c.is_active() {
+                c.solve_position(bodies, dt);
             }
         }
     }
 
-    // Apply a velocity scaling: v_new = omega * v_current + (1 - omega) * 0
-    // This is a simplified SOR: in practice, you'd track pre/post velocities.
-    // For omega close to 1.0, the effect is negligible.
-    let blend = omega;
-    for handle in handles {
-        if let Some(body) = bodies.get_mut(handle)
-            && body.inverse_mass > 0.0
-        {
-            body.velocity.x *= blend;
-            body.velocity.y *= blend;
-            body.velocity.z *= blend;
+    if let Some(warm) = warm.as_mut() {
+        store_warm_start(constraints, dt, warm);
+    }
+
+    SolverStats {
+        iterations_used,
+        residual,
+        converged,
+    }
+}
+
+/// Hand every active constraint its rows of the previous frame's state, scaled
+/// by `dt / prev_dt`, or reset it to a cold start when warm starting is off.
+fn seed_warm_start(
+    constraints: &mut [Box<dyn Constraint>],
+    bodies: &mut RigidBodySet,
+    dt: f64,
+    warm: &mut WarmStart<'_>,
+) {
+    warm.state.resize(constraints.len());
+    let reuse = warm.enabled && warm.state.prev_dt > 1e-12;
+    if reuse {
+        let dt_ratio = dt / warm.state.prev_dt;
+        warm.state.scale(dt_ratio);
+    }
+    for (index, constraint) in constraints.iter_mut().enumerate() {
+        if !constraint.is_active() {
+            continue;
+        }
+        let rows: &[f64] = if reuse { warm.state.rows(index) } else { &[] };
+        constraint.apply_warm_start(bodies, rows);
+    }
+}
+
+/// Record the accumulated impulses of every constraint for the next frame.
+fn store_warm_start(constraints: &[Box<dyn Constraint>], dt: f64, warm: &mut WarmStart<'_>) {
+    warm.state.resize(constraints.len());
+    for (index, constraint) in constraints.iter().enumerate() {
+        let rows = if constraint.is_active() {
+            constraint.accumulated_impulses()
+        } else {
+            Vec::new()
+        };
+        warm.state.record(index, rows);
+    }
+    warm.state.prev_dt = dt;
+}
+
+/// Body handles of every constraint, queried once per solve.
+fn collect_handles(constraints: &[Box<dyn Constraint>]) -> Vec<Vec<BodyHandle>> {
+    constraints.iter().map(|c| c.body_handles()).collect()
+}
+
+/// One Gauss-Seidel sweep over all active constraints.
+///
+/// Returns the sum of the per-constraint update sizes.
+fn velocity_sweep(
+    constraints: &mut [Box<dyn Constraint>],
+    handles: &[Vec<BodyHandle>],
+    bodies: &mut RigidBodySet,
+    dt: f64,
+    omega: Option<f64>,
+    scratch: &mut Vec<(Vec3, Vec3)>,
+) -> f64 {
+    let mut total = 0.0;
+    for (constraint, constraint_handles) in constraints.iter_mut().zip(handles.iter()) {
+        if !constraint.is_active() {
+            continue;
+        }
+        total += solve_constraint_once(
+            constraint.as_mut(),
+            constraint_handles,
+            bodies,
+            dt,
+            omega,
+            scratch,
+        );
+    }
+    total
+}
+
+/// Run one velocity iteration of a single constraint and return the size of
+/// the update it made.
+///
+/// The size comes from [`Constraint::residual`] (or the value returned by
+/// [`Constraint::solve_velocity_relaxed`]) when the constraint reports one.  A
+/// constraint that reports nothing is measured instead: the update size is the
+/// Euclidean norm of the velocity change (linear and angular) the call caused
+/// on the constrained bodies, which is zero exactly when the call left the
+/// bodies untouched.
+fn solve_constraint_once(
+    constraint: &mut dyn Constraint,
+    handles: &[BodyHandle],
+    bodies: &mut RigidBodySet,
+    dt: f64,
+    omega: Option<f64>,
+    scratch: &mut Vec<(Vec3, Vec3)>,
+) -> f64 {
+    scratch.clear();
+    scratch.extend(handles.iter().map(|&handle| {
+        bodies
+            .get(handle)
+            .map_or((Vec3::zeros(), Vec3::zeros()), |body| {
+                (body.velocity, body.angular_velocity)
+            })
+    }));
+    let reported = match omega {
+        Some(omega) => constraint.solve_velocity_relaxed(bodies, dt, omega),
+        None => {
+            constraint.solve_velocity(bodies, dt);
+            constraint.residual()
+        }
+    };
+    if reported > 0.0 {
+        reported
+    } else {
+        measured_velocity_update(bodies, handles, scratch)
+    }
+}
+
+/// Euclidean norm of the velocity change of `handles` relative to `before`.
+fn measured_velocity_update(
+    bodies: &RigidBodySet,
+    handles: &[BodyHandle],
+    before: &[(Vec3, Vec3)],
+) -> f64 {
+    let mut sum_sq = 0.0;
+    for (&handle, &(v_before, w_before)) in handles.iter().zip(before.iter()) {
+        if let Some(body) = bodies.get(handle) {
+            sum_sq += (body.velocity - v_before).norm_squared()
+                + (body.angular_velocity - w_before).norm_squared();
         }
     }
+    sum_sq.sqrt()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1020,9 +1281,12 @@ mod tests {
         let solver = PgsSolver::new(50, 0);
         let stats = solver.solve(&mut constraints, &mut bodies, 1.0 / 60.0);
 
-        // With zero velocity the residual check fires early
-        assert!(stats.iterations_used <= 50);
+        // The contact has nothing to change, so the very first sweep already
+        // reports a zero velocity update.
+        assert_eq!(stats.iterations_used, 1);
         assert!(stats.converged);
+        assert_eq!(stats.residual, 0.0);
+        assert_eq!(bodies.get(hb).map(|b| b.velocity), Some(Vec3::zeros()));
     }
 
     // ── 4. Friction clamping respects Coulomb cone ──────────────────────────

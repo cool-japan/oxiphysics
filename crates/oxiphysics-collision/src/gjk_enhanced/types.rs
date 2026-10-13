@@ -213,9 +213,9 @@ pub struct ToiResult {
     pub hit: bool,
     /// Time of impact in `[0, 1]` (1.0 if no hit).
     pub toi: f64,
-    /// Contact normal at impact.
+    /// Contact normal at impact (pointing from B toward A).
     pub normal: [f64; 3],
-    /// Number of GJK iterations used.
+    /// Number of GJK distance queries (conservative-advancement steps) used.
     pub iterations: u32,
 }
 /// A GJK simplex of dimension 0–3 (point, line, triangle, tetrahedron).

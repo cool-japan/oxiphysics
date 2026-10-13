@@ -7,130 +7,19 @@
 //! probability distributions, including Fisher information, geodesics,
 //! natural gradients, and divergence measures.
 
+use crate::error::{PhysicsError, PhysicsResult};
+
 // ─────────────────────────────────────────────────────────────────────────────
-// StatisticalManifold
+// Submodules: general statistical manifolds, α-geometry, KL projections
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A statistical manifold: a smooth manifold whose points are probability
-/// distributions parameterized by `dim` real parameters.
-///
-/// Provides the Fisher information metric, geodesics, and Christoffel symbols.
-#[derive(Debug, Clone)]
-pub struct StatisticalManifold {
-    /// Dimension of the parameter space.
-    pub dim: usize,
-}
+mod alpha_geometry;
+mod projection;
+mod statistical_manifold;
 
-impl StatisticalManifold {
-    /// Create a new `StatisticalManifold` of the given dimension.
-    pub fn new(dim: usize) -> Self {
-        Self { dim }
-    }
-
-    /// Compute the Fisher information metric (matrix) at `params`.
-    ///
-    /// Uses a finite-difference approximation of the log-likelihood Hessian.
-    /// Returns a `dim × dim` positive-semidefinite matrix.
-    pub fn fisher_metric(&self, params: &[f64]) -> Vec<Vec<f64>> {
-        let n = self.dim;
-        let h = 1e-5;
-        let mut g = vec![vec![0.0f64; n]; n];
-        for i in 0..n {
-            for j in i..n {
-                // Numerical approximation of E[∂_i log p · ∂_j log p].
-                let mut pp = params.to_vec();
-                let mut pm = params.to_vec();
-                let mut mp = params.to_vec();
-                let mut mm = params.to_vec();
-                pp[i] += h;
-                pp[j] += h;
-                pm[i] += h;
-                pm[j] -= h;
-                mp[i] -= h;
-                mp[j] += h;
-                mm[i] -= h;
-                mm[j] -= h;
-                let val = (log_likelihood_approx(&pp)
-                    - log_likelihood_approx(&pm)
-                    - log_likelihood_approx(&mp)
-                    + log_likelihood_approx(&mm))
-                    / (4.0 * h * h);
-                g[i][j] = -val;
-                g[j][i] = -val;
-            }
-        }
-        g
-    }
-
-    /// Compute the geodesic between parameter points `p` and `q` at time `t ∈ [0,1]`.
-    ///
-    /// Uses the exponential map with the Fisher metric (first-order approximation).
-    pub fn geodesic(&self, p: &[f64], q: &[f64], t: f64) -> Vec<f64> {
-        let g = self.fisher_metric(p);
-        let g_inv = invert_matrix(&g);
-        let v: Vec<f64> = p.iter().zip(q.iter()).map(|(pi, qi)| qi - pi).collect();
-        // Geodesic: γ(t) ≈ p + t*v - 0.5 t² Γ^k_{ij} v^i v^j
-        let gamma = self.christoffel_symbols(p);
-        let n = self.dim;
-        let mut correction = vec![0.0f64; n];
-        for k in 0..n {
-            let mut acc = 0.0f64;
-            for i in 0..n {
-                for j in 0..n {
-                    acc += gamma[k][i][j] * v[i] * v[j];
-                }
-            }
-            correction[k] = acc;
-        }
-        // Apply metric inverse to correction.
-        let corr_raised: Vec<f64> = mat_vec_mul(&g_inv, &correction);
-        p.iter()
-            .zip(v.iter())
-            .zip(corr_raised.iter())
-            .map(|((pi, vi), ci)| pi + t * vi - 0.5 * t * t * ci)
-            .collect()
-    }
-
-    /// Compute the Christoffel symbols `Γ^k_{ij}` at `params`.
-    ///
-    /// Uses a finite-difference approximation of the metric derivatives.
-    /// Returns `[k][i][j]` indexed array.
-    pub fn christoffel_symbols(&self, params: &[f64]) -> Vec<Vec<Vec<f64>>> {
-        let n = self.dim;
-        let h = 1e-5;
-        let g = self.fisher_metric(params);
-        let g_inv = invert_matrix(&g);
-        // Compute metric derivatives ∂_k g_{ij}.
-        let mut dg = vec![vec![vec![0.0f64; n]; n]; n];
-        for k in 0..n {
-            let mut pk = params.to_vec();
-            let mut mk = params.to_vec();
-            pk[k] += h;
-            mk[k] -= h;
-            let gp = self.fisher_metric(&pk);
-            let gm = self.fisher_metric(&mk);
-            for i in 0..n {
-                for j in 0..n {
-                    dg[k][i][j] = (gp[i][j] - gm[i][j]) / (2.0 * h);
-                }
-            }
-        }
-        // Γ^l_{ij} = 0.5 g^{lk} (∂_i g_{jk} + ∂_j g_{ik} − ∂_k g_{ij})
-        let mut gamma = vec![vec![vec![0.0f64; n]; n]; n];
-        for l in 0..n {
-            for i in 0..n {
-                for j in 0..n {
-                    let mut acc = 0.0f64;
-                    for k in 0..n {
-                        acc += g_inv[l][k] * (dg[i][j][k] + dg[j][i][k] - dg[k][i][j]);
-                    }
-                    gamma[l][i][j] = 0.5 * acc;
-                }
-            }
-        }
-        gamma
-    }
-}
+pub use alpha_geometry::AlphaGeometry;
+pub use projection::InformationProjection;
+pub use statistical_manifold::{LogDensityFn, StatisticalManifold};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ExponentialFamily
@@ -242,23 +131,16 @@ impl GaussianManifold {
         [[1.0 / s2, 0.0], [0.0, 2.0 / s2]]
     }
 
-    /// Geodesic distance between two Gaussians `(μ1,σ1)` and `(μ2,σ2)`.
+    /// Geodesic (Fisher-Rao) distance between two Gaussians `(μ1,σ1)` and
+    /// `(μ2,σ2)`.
     ///
-    /// Uses the closed-form expression on the Poincaré upper half-plane.
+    /// The Fisher metric `(dμ² + 2 dσ²) / σ²` is twice the Poincaré metric of the
+    /// upper half-plane in the coordinates `(μ/√2, σ)`, so the distance is
+    /// `√2 · acosh(1 + ((μ1−μ2)²/2 + (σ1−σ2)²) / (2 σ1 σ2))`.  This is the same
+    /// quantity as [`crate::information_theory::fisher_rao_gaussian`], which this
+    /// method delegates to; for example `d(N(0,1), N(0,e)) = √2`.
     pub fn geodesic_distance(&self, mu1: f64, sigma1: f64, mu2: f64, sigma2: f64) -> f64 {
-        // Map to upper half-plane: z = μ + i·σ√2
-        let x1 = mu1;
-        let y1 = sigma1 * std::f64::consts::SQRT_2;
-        let x2 = mu2;
-        let y2 = sigma2 * std::f64::consts::SQRT_2;
-        // Poincaré metric distance.
-        let num = (x2 - x1).powi(2) + (y2 - y1).powi(2);
-        let den = 2.0 * y1 * y2;
-        if den <= 0.0 {
-            return f64::INFINITY;
-        }
-        let arg = 1.0 + num / den;
-        (arg + (arg * arg - 1.0).max(0.0).sqrt()).ln()
+        crate::information_theory::fisher_rao_gaussian(mu1, sigma1, mu2, sigma2)
     }
 
     /// Exponential map at `(μ, σ)` in direction `(v_μ, v_σ)` for step `t`.
@@ -369,117 +251,6 @@ pub fn differential_entropy(samples: &[f64], bandwidth: f64) -> f64 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AlphaGeometry
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// α-geometry: a one-parameter family of affine connections on statistical
-/// manifolds, introduced by Amari.
-///
-/// For `α = 0` this reduces to the Levi-Civita connection; `α = ±1` give the
-/// mixture and exponential connections.
-#[derive(Debug, Clone)]
-pub struct AlphaGeometry {
-    /// The α parameter controlling the connection.
-    pub alpha: f64,
-}
-
-impl AlphaGeometry {
-    /// Create a new `AlphaGeometry` with the given `alpha`.
-    pub fn new(alpha: f64) -> Self {
-        Self { alpha }
-    }
-
-    /// Compute the α-connection coefficients `Γ^(α)_{ijk}` at `params`.
-    ///
-    /// Returns a `[dim][dim][dim]` array.
-    /// Uses the formula `Γ^(α) = Γ^(0) − (α/2) T_{ijk}` where `T` is the
-    /// skewness tensor (approximated via finite differences here).
-    pub fn alpha_connection(&self, params: &[f64]) -> Vec<Vec<Vec<f64>>> {
-        let n = params.len();
-        let manifold = StatisticalManifold::new(n);
-        let gamma0 = manifold.christoffel_symbols(params);
-        // Approximate skewness tensor T_{ijk} = E[∂_i ∂_j ∂_k log p].
-        // For simplicity use numerical differentiation of the metric.
-        let h = 1e-4;
-        let mut t = vec![vec![vec![0.0f64; n]; n]; n];
-        for i in 0..n {
-            let mut pi = params.to_vec();
-            let mut mi = params.to_vec();
-            pi[i] += h;
-            mi[i] -= h;
-            let gp = manifold.fisher_metric(&pi);
-            let gm = manifold.fisher_metric(&mi);
-            for j in 0..n {
-                for k in 0..n {
-                    t[i][j][k] = (gp[j][k] - gm[j][k]) / (2.0 * h);
-                }
-            }
-        }
-        let mut gamma_alpha = gamma0;
-        for i in 0..n {
-            for j in 0..n {
-                for k in 0..n {
-                    gamma_alpha[i][j][k] -= (self.alpha / 2.0) * t[i][j][k];
-                }
-            }
-        }
-        gamma_alpha
-    }
-
-    /// Compute the dual (−α) connection.
-    pub fn dual_connection(&self, params: &[f64]) -> Vec<Vec<Vec<f64>>> {
-        let dual = AlphaGeometry::new(-self.alpha);
-        dual.alpha_connection(params)
-    }
-
-    /// Compute the curvature tensor `R^l_{kij}` of the α-connection.
-    ///
-    /// `R^l_{kij} = ∂_i Γ^l_{jk} − ∂_j Γ^l_{ik} + Γ^l_{im} Γ^m_{jk} − Γ^l_{jm} Γ^m_{ik}`
-    pub fn curvature_tensor(&self, params: &[f64]) -> Vec<Vec<Vec<Vec<f64>>>> {
-        let n = params.len();
-        let h = 1e-4;
-        let gamma = self.alpha_connection(params);
-        // Finite-difference derivatives of Γ.
-        let mut dgamma = vec![vec![vec![vec![0.0f64; n]; n]; n]; n];
-        for m in 0..n {
-            let mut pm = params.to_vec();
-            let mut mm = params.to_vec();
-            pm[m] += h;
-            mm[m] -= h;
-            let gp = self.alpha_connection(&pm);
-            let gm_c = self.alpha_connection(&mm);
-            for l in 0..n {
-                for i in 0..n {
-                    for j in 0..n {
-                        dgamma[m][l][i][j] = (gp[l][i][j] - gm_c[l][i][j]) / (2.0 * h);
-                    }
-                }
-            }
-        }
-        // R^l_{k i j} = ∂_i Γ^l_{jk} − ∂_j Γ^l_{ik} + Γ^l_{im}Γ^m_{jk} − Γ^l_{jm}Γ^m_{ik}
-        let mut r = vec![vec![vec![vec![0.0f64; n]; n]; n]; n];
-        for l in 0..n {
-            for k in 0..n {
-                for i in 0..n {
-                    for j in 0..n {
-                        let term1 = dgamma[i][l][j][k];
-                        let term2 = dgamma[j][l][i][k];
-                        let mut term3 = 0.0f64;
-                        let mut term4 = 0.0f64;
-                        for (mm, &g_lim) in gamma[l][i].iter().enumerate() {
-                            term3 += g_lim * gamma[mm][j][k];
-                            term4 += gamma[l][j][mm] * gamma[mm][i][k];
-                        }
-                        r[l][k][i][j] = term1 - term2 + term3 - term4;
-                    }
-                }
-            }
-        }
-        r
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Natural Gradient
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -488,111 +259,46 @@ impl AlphaGeometry {
 ///
 /// The natural gradient is the steepest ascent direction in the Fisher–Rao
 /// metric, used in natural gradient descent.
-pub fn natural_gradient(fisher: &[Vec<f64>], grad: &[f64]) -> Vec<f64> {
-    let f_inv = invert_matrix(fisher);
-    mat_vec_mul(&f_inv, grad)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// InformationProjection
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Information projection onto an exponential family.
 ///
-/// Finds the distribution in the target family closest (in KL divergence) to
-/// a given distribution.
-pub struct InformationProjection {
-    /// Sufficient statistics defining the target exponential family.
-    pub target_family: Vec<fn(&[f64]) -> f64>,
-}
-
-impl InformationProjection {
-    /// Create a new `InformationProjection`.
-    pub fn new(target_family: Vec<fn(&[f64]) -> f64>) -> Self {
-        Self { target_family }
+/// Returns [`PhysicsError::InvalidInput`] if `fisher` is not square, does not
+/// match the length of `grad`, or is singular.
+pub fn natural_gradient(fisher: &[Vec<f64>], grad: &[f64]) -> PhysicsResult<Vec<f64>> {
+    let n = grad.len();
+    if fisher.len() != n || fisher.iter().any(|row| row.len() != n) {
+        return Err(PhysicsError::InvalidInput {
+            field: "fisher".to_string(),
+            reason: format!("expected a {n}x{n} matrix matching the gradient length"),
+        });
     }
-
-    /// Project distribution `p` (given as a probability vector) onto the
-    /// exponential family via moment matching (forward KL projection).
-    ///
-    /// Returns the natural parameters `θ` of the projected distribution.
-    pub fn project(&self, p: &[f64]) -> Vec<f64> {
-        let n = p.len();
-        let k = self.target_family.len();
-        if n == 0 || k == 0 {
-            return vec![0.0; k];
-        }
-        // Compute empirical moments E_p[T_i].
-        let x: Vec<f64> = (0..n).map(|i| i as f64).collect();
-        let mut moments = vec![0.0f64; k];
-        for i in 0..k {
-            let xi: Vec<f64> = vec![x[i % n]];
-            moments[i] = (self.target_family[i])(&xi);
-        }
-        moments
-    }
-
-    /// Reverse KL projection: minimize KL(q ‖ p) over the exponential family.
-    ///
-    /// Returns the natural parameters of the reverse projection.
-    /// Uses a simple gradient descent on the KL divergence.
-    pub fn reverse_kl_projection(&self, p: &[f64], init_theta: &[f64]) -> Vec<f64> {
-        let _p = p; // Acknowledge p is passed but projection is simplified
-        let k = self.target_family.len();
-        let mut theta = init_theta.to_vec();
-        let lr = 0.01;
-        let steps = 50;
-        for _ in 0..steps {
-            let grad = kl_gradient(&theta, k, lr);
-            for i in 0..k {
-                theta[i] -= lr * grad[i];
-            }
-        }
-        theta
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: log-likelihood approximation
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Approximate log-likelihood for a Gaussian with parameters `[μ, σ]`.
-fn log_likelihood_approx(params: &[f64]) -> f64 {
-    if params.len() < 2 {
-        return 0.0;
-    }
-    let sigma = params[1].abs().max(1e-12);
-    // −log(σ) − (x−μ)²/(2σ²) at a reference point x=0.
-    -sigma.ln() - params[0] * params[0] / (2.0 * sigma * sigma)
-}
-
-/// Simple gradient of KL divergence w.r.t. theta (numerical).
-fn kl_gradient(theta: &[f64], _k: usize, h: f64) -> Vec<f64> {
-    let n = theta.len();
-    let mut grad = vec![0.0f64; n];
-    for i in 0..n {
-        let mut tp = theta.to_vec();
-        let mut tm = theta.to_vec();
-        tp[i] += h;
-        tm[i] -= h;
-        // Use log-partition as proxy.
-        let kl_p = log_likelihood_approx(&tp).abs();
-        let kl_m = log_likelihood_approx(&tm).abs();
-        grad[i] = (kl_p - kl_m) / (2.0 * h);
-    }
-    grad
+    let f_inv = invert_matrix(fisher).ok_or_else(|| PhysicsError::InvalidInput {
+        field: "fisher".to_string(),
+        reason: "Fisher information matrix is singular".to_string(),
+    })?;
+    Ok(mat_vec_mul(&f_inv, grad))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Linear algebra helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Invert a square matrix using Gauss-Jordan elimination.
-/// Returns the identity matrix on failure.
-fn invert_matrix(m: &[Vec<f64>]) -> Vec<Vec<f64>> {
+/// Invert a square matrix using Gauss-Jordan elimination with partial
+/// pivoting.
+///
+/// Returns `None` if the matrix is not square, contains non-finite entries, or
+/// is singular (a pivot falls below `1e-14` times the largest absolute entry).
+fn invert_matrix(m: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
     let n = m.len();
     if n == 0 {
-        return vec![];
+        return Some(vec![]);
+    }
+    if m.iter()
+        .any(|row| row.len() != n || row.iter().any(|v| !v.is_finite()))
+    {
+        return None;
+    }
+    let scale = m.iter().flatten().fold(0.0f64, |acc, v| acc.max(v.abs()));
+    if scale == 0.0 {
+        return None;
     }
     // Build augmented matrix [m | I].
     let mut aug: Vec<Vec<f64>> = m
@@ -619,11 +325,8 @@ fn invert_matrix(m: &[Vec<f64>]) -> Vec<Vec<f64>> {
         }
         aug.swap(col, max_row);
         let pivot = aug[col][col];
-        if pivot.abs() < 1e-14 {
-            // Singular: return identity.
-            return (0..n)
-                .map(|i| (0..n).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
-                .collect();
+        if pivot.abs() < 1e-14 * scale {
+            return None;
         }
         for x in aug[col].iter_mut() {
             *x /= pivot;
@@ -640,7 +343,7 @@ fn invert_matrix(m: &[Vec<f64>]) -> Vec<Vec<f64>> {
         }
     }
     // Extract right half.
-    aug.iter().map(|row| row[n..].to_vec()).collect()
+    Some(aug.iter().map(|row| row[n..].to_vec()).collect())
 }
 
 /// Multiply matrix `m` by vector `v`.
@@ -670,68 +373,6 @@ mod tests {
             }
         }
         c
-    }
-
-    // ── StatisticalManifold ────────────────────────────────────────────────
-
-    #[test]
-    fn test_statistical_manifold_new() {
-        let m = StatisticalManifold::new(2);
-        assert_eq!(m.dim, 2);
-    }
-
-    #[test]
-    fn test_fisher_metric_symmetry() {
-        let m = StatisticalManifold::new(2);
-        let g = m.fisher_metric(&[0.5, 1.0]);
-        assert_eq!(g.len(), 2);
-        assert!(
-            (g[0][1] - g[1][0]).abs() < 1e-6,
-            "Fisher metric should be symmetric"
-        );
-    }
-
-    #[test]
-    fn test_fisher_metric_positive_diagonal() {
-        let m = StatisticalManifold::new(2);
-        let g = m.fisher_metric(&[0.5, 1.0]);
-        // The finite-difference approximation returns the negative Hessian of the
-        // log-likelihood proxy. We verify the matrix is finite (well-defined).
-        assert!(g.len() == 2, "Fisher metric should be 2x2");
-        for row in &g {
-            for &val in row {
-                assert!(val.is_finite(), "Fisher metric entries should be finite");
-            }
-        }
-    }
-
-    #[test]
-    fn test_geodesic_endpoints() {
-        let m = StatisticalManifold::new(2);
-        let p = vec![0.0, 1.0];
-        let q = vec![1.0, 2.0];
-        let g0 = m.geodesic(&p, &q, 0.0);
-        let g1 = m.geodesic(&p, &q, 1.0);
-        // At t=0 should be near p (first-order correction is zero at t=0).
-        assert!(
-            (g0[0] - p[0]).abs() < 1e-3,
-            "geodesic at t=0 should start at p"
-        );
-        // At t=1 the result should be finite (numerical Christoffel symbols
-        // may introduce a second-order deviation from q).
-        assert!(
-            g1.iter().all(|x| x.is_finite()),
-            "geodesic at t=1 should be finite"
-        );
-    }
-
-    #[test]
-    fn test_christoffel_symbols_shape() {
-        let m = StatisticalManifold::new(2);
-        let gamma = m.christoffel_symbols(&[0.5, 1.0]);
-        assert_eq!(gamma.len(), 2);
-        assert_eq!(gamma[0].len(), 2);
-        assert_eq!(gamma[0][0].len(), 2);
     }
 
     // ── ExponentialFamily ──────────────────────────────────────────────────
@@ -824,6 +465,49 @@ mod tests {
     }
 
     #[test]
+    fn test_gaussian_geodesic_distance_exact_values() {
+        let gm = GaussianManifold::new();
+        // N(0,1) -> N(0,e): along the sigma axis d = sqrt(2) * |ln(sigma2/sigma1)|.
+        let d = gm.geodesic_distance(0.0, 1.0, 0.0, std::f64::consts::E);
+        assert!(
+            (d - std::f64::consts::SQRT_2).abs() < 1e-12,
+            "expected sqrt(2), got {d}"
+        );
+        // Pure scale change by a factor 4 at fixed mean: sqrt(2) * ln 4.
+        let d = gm.geodesic_distance(2.0, 0.5, 2.0, 2.0);
+        let expected = std::f64::consts::SQRT_2 * 4.0_f64.ln();
+        assert!((d - expected).abs() < 1e-12, "got {d}, expected {expected}");
+    }
+
+    #[test]
+    fn test_gaussian_geodesic_distance_is_a_metric() {
+        let gm = GaussianManifold::new();
+        // Deterministic pseudo-random triples of (mu, sigma) points.
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..200 {
+            let pts: Vec<(f64, f64)> = (0..3)
+                .map(|_| (6.0 * next() - 3.0, 0.1 + 3.0 * next()))
+                .collect();
+            let d =
+                |a: usize, b: usize| gm.geodesic_distance(pts[a].0, pts[a].1, pts[b].0, pts[b].1);
+            assert!((d(0, 1) - d(1, 0)).abs() < 1e-12);
+            assert!(d(0, 1) >= 0.0);
+            assert!(d(0, 2) <= d(0, 1) + d(1, 2) + 1e-12, "triangle inequality");
+            // Agrees with the information-theory implementation.
+            let reference = crate::information_theory::fisher_rao_gaussian(
+                pts[0].0, pts[0].1, pts[1].0, pts[1].1,
+            );
+            assert!((d(0, 1) - reference).abs() < 1e-12);
+        }
+    }
+
+    #[test]
     fn test_gaussian_exponential_map() {
         let gm = GaussianManifold::new();
         let (mu2, sigma2) = gm.exponential_map(0.0, 1.0, 1.0, 0.5, 1.0);
@@ -892,62 +576,13 @@ mod tests {
         assert!(h_wide > h_narrow || h_wide.is_finite());
     }
 
-    // ── AlphaGeometry ──────────────────────────────────────────────────────
-
-    #[test]
-    fn test_alpha_geometry_zero_is_lc() {
-        let ag0 = AlphaGeometry::new(0.0);
-        let m = StatisticalManifold::new(2);
-        let params = vec![0.5, 1.0];
-        let g0 = ag0.alpha_connection(&params);
-        let lc = m.christoffel_symbols(&params);
-        // For α=0, should match Levi-Civita.
-        for i in 0..2 {
-            for j in 0..2 {
-                for k in 0..2 {
-                    assert!((g0[i][j][k] - lc[i][j][k]).abs() < 1e-3);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_alpha_geometry_dual_negation() {
-        let ag = AlphaGeometry::new(1.0);
-        let params = vec![0.5, 1.0];
-        let alpha_conn = ag.alpha_connection(&params);
-        let dual_conn = ag.dual_connection(&params);
-        // Dual of α is −α; the difference should be proportional to skewness.
-        // Just check they differ.
-        let diff: f64 = alpha_conn
-            .iter()
-            .zip(dual_conn.iter())
-            .flat_map(|(a, b)| {
-                a.iter()
-                    .zip(b.iter())
-                    .flat_map(|(r, s)| r.iter().zip(s.iter()).map(|(x, y)| (x - y).abs()))
-            })
-            .sum();
-        assert!(diff >= 0.0);
-    }
-
-    #[test]
-    fn test_curvature_tensor_shape() {
-        let ag = AlphaGeometry::new(0.5);
-        let r = ag.curvature_tensor(&[0.5, 1.0]);
-        assert_eq!(r.len(), 2);
-        assert_eq!(r[0].len(), 2);
-        assert_eq!(r[0][0].len(), 2);
-        assert_eq!(r[0][0][0].len(), 2);
-    }
-
     // ── natural_gradient ───────────────────────────────────────────────────
 
     #[test]
     fn test_natural_gradient_identity_fisher() {
         let fisher = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
         let grad = vec![1.0, 2.0];
-        let ng = natural_gradient(&fisher, &grad);
+        let ng = natural_gradient(&fisher, &grad).expect("non-singular Fisher matrix");
         assert!((ng[0] - 1.0).abs() < 1e-6);
         assert!((ng[1] - 2.0).abs() < 1e-6);
     }
@@ -956,28 +591,32 @@ mod tests {
     fn test_natural_gradient_scaling() {
         let fisher = vec![vec![2.0, 0.0], vec![0.0, 4.0]];
         let grad = vec![2.0, 4.0];
-        let ng = natural_gradient(&fisher, &grad);
+        let ng = natural_gradient(&fisher, &grad).expect("non-singular Fisher matrix");
         assert!((ng[0] - 1.0).abs() < 1e-6);
         assert!((ng[1] - 1.0).abs() < 1e-6);
     }
 
-    // ── InformationProjection ──────────────────────────────────────────────
-
     #[test]
-    fn test_information_projection_project() {
-        let ip = InformationProjection::new(vec![identity_stat as fn(&[f64]) -> f64]);
-        let p = vec![0.25, 0.25, 0.25, 0.25];
-        let theta = ip.project(&p);
-        assert!(!theta.is_empty());
+    fn test_natural_gradient_singular_fisher_is_error() {
+        // Rank-one Fisher matrix: the natural gradient is undefined.
+        let fisher = vec![vec![1.0, 2.0], vec![2.0, 4.0]];
+        let grad = vec![1.0, 1.0];
+        assert!(matches!(
+            natural_gradient(&fisher, &grad),
+            Err(PhysicsError::InvalidInput { .. })
+        ));
+        // Dimension mismatch is rejected as well.
+        assert!(natural_gradient(&[vec![1.0]], &grad).is_err());
     }
 
     #[test]
-    fn test_information_projection_reverse_kl() {
-        let ip = InformationProjection::new(vec![identity_stat as fn(&[f64]) -> f64]);
-        let p = vec![0.5, 0.5];
-        let init = vec![0.0f64];
-        let result = ip.reverse_kl_projection(&p, &init);
-        assert!(!result.is_empty());
+    fn test_natural_gradient_full_matrix() {
+        // F = [[4, 1], [1, 3]], F^{-1} = [[3, -1], [-1, 4]] / 11.
+        let fisher = vec![vec![4.0, 1.0], vec![1.0, 3.0]];
+        let grad = vec![1.0, 2.0];
+        let ng = natural_gradient(&fisher, &grad).expect("non-singular Fisher matrix");
+        assert!((ng[0] - 1.0 / 11.0).abs() < 1e-12);
+        assert!((ng[1] - 7.0 / 11.0).abs() < 1e-12);
     }
 
     // ── Helper functions ───────────────────────────────────────────────────
@@ -985,7 +624,7 @@ mod tests {
     #[test]
     fn test_invert_matrix_identity() {
         let id = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
-        let inv = invert_matrix(&id);
+        let inv = invert_matrix(&id).expect("identity is invertible");
         assert!((inv[0][0] - 1.0).abs() < 1e-10);
         assert!((inv[1][1] - 1.0).abs() < 1e-10);
     }
@@ -993,9 +632,20 @@ mod tests {
     #[test]
     fn test_invert_matrix_2x2() {
         let m = vec![vec![2.0, 0.0], vec![0.0, 4.0]];
-        let inv = invert_matrix(&m);
+        let inv = invert_matrix(&m).expect("diagonal matrix is invertible");
         assert!((inv[0][0] - 0.5).abs() < 1e-10);
         assert!((inv[1][1] - 0.25).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_invert_matrix_singular_returns_none() {
+        assert!(invert_matrix(&[vec![1.0, 2.0], vec![2.0, 4.0]]).is_none());
+        assert!(invert_matrix(&[vec![0.0, 0.0], vec![0.0, 0.0]]).is_none());
+        assert!(invert_matrix(&[vec![1.0, f64::NAN], vec![0.0, 1.0]]).is_none());
+        // Badly scaled but regular matrices are still inverted.
+        let m = vec![vec![1e-20, 0.0], vec![0.0, 1e-20]];
+        let inv = invert_matrix(&m).expect("scaled identity is invertible");
+        assert!((inv[0][0] - 1e20).abs() < 1e8);
     }
 
     #[test]

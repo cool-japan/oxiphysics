@@ -11,6 +11,10 @@ use wasm_bindgen::prelude::*;
 
 use crate::wasm_helpers::{err_to_jsvalue, flatten_vec3s, to_js_value, unflatten_vec3s};
 
+/// Default [`WasmRope::damping`]: 2 % of the carried per-step displacement is
+/// removed each Verlet step (a light, air-drag-like loss).
+const DEFAULT_DAMPING: f64 = 0.02;
+
 // ---------------------------------------------------------------------------
 // Math helpers
 // ---------------------------------------------------------------------------
@@ -102,7 +106,11 @@ pub struct WasmRope {
     pub rest_length: f64,
     /// Gravity vector — private; access from JS via `get_gravity` / `set_gravity`.
     gravity: [f64; 3],
-    /// Velocity damping per Verlet step (0..1).
+    /// Velocity damping per Verlet step, in `[0, 1]`: the fraction of the
+    /// carried per-step displacement (`position - prev_position`) that is
+    /// removed each step.  `0` leaves the rope undamped and `1` stops it
+    /// after a single step.  Values outside `[0, 1]` are clamped when
+    /// stepping, so damping can never amplify the motion.
     pub damping: f64,
     /// Constraint solve iterations — private; access via `iterations()` (`u32`).
     iterations: usize,
@@ -151,7 +159,7 @@ impl WasmRope {
             links,
             rest_length: segment_length,
             gravity: [0.0, -9.81, 0.0],
-            damping: 0.98,
+            damping: DEFAULT_DAMPING,
             iterations: 8,
             bending_stiffness: 0.0,
             anchor_head: None,
@@ -187,23 +195,25 @@ impl WasmRope {
         }
         let dt2 = dt * dt;
 
-        // Step 1: Verlet integrate (skip pinned links)
+        // Step 1: damped Verlet integration (skip pinned links).
+        //
+        // The implicit velocity of a Verlet particle is the displacement
+        // `position - prev_position` of the previous step.  Damping removes
+        // the fraction `damping` of that carried displacement, so the particle
+        // advances by `(1 - damping) * (position - prev_position)` plus the
+        // acceleration term `gravity * dt^2`.  With `damping == 0` this is the
+        // classic undamped Verlet update and with `damping == 1` the particle
+        // keeps no momentum from the previous step.  The motion is therefore
+        // never amplified by damping.
+        let retention = 1.0 - self.damping.clamp(0.0, 1.0);
+        let accel_step = scale(self.gravity, dt2);
         for link in self.links.iter_mut() {
             if link.pinned {
                 continue;
             }
-            let accel = self.gravity;
-            let new_pos = sub(
-                add(link.position, sub(link.position, link.prev_position)),
-                sub([0.0; 3], scale(accel, dt2)),
-            );
-            // Apply damping: move prev toward current
-            let damped_prev = add(
-                scale(link.position, 1.0 - self.damping),
-                scale(link.prev_position, self.damping),
-            );
-            link.prev_position = damped_prev;
-            link.position = new_pos;
+            let carried = scale(sub(link.position, link.prev_position), retention);
+            link.prev_position = link.position;
+            link.position = add(add(link.position, carried), accel_step);
         }
 
         // Step 2: Gauss-Seidel distance constraint
@@ -515,5 +525,126 @@ mod tests {
         let restored: WasmRope = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored.links.len(), rope.links.len());
         assert!((restored.rest_length - rope.rest_length).abs() < 1e-12);
+    }
+
+    // ---- damping regression (F5729) --------------------------------------
+
+    const DT: f64 = 1.0 / 60.0;
+
+    /// Weightless, unpinned rope translating along +x at `speed` m/s: every
+    /// link carries the same displacement, so the distance constraints stay
+    /// satisfied and the rope's motion is governed by damping alone.
+    fn drifting_rope(damping: f64, speed: f64) -> WasmRope {
+        let mut rope = WasmRope::new([0.0, 5.0, 0.0], 6, 0.25, 1.0).expect("valid rope");
+        rope.set_gravity_js(0.0, 0.0, 0.0);
+        rope.damping = damping;
+        for link in rope.links.iter_mut() {
+            link.prev_position[0] = link.position[0] - speed * DT;
+        }
+        rope
+    }
+
+    /// Speed of the head link implied by its Verlet displacement (m/s).
+    fn head_speed(rope: &WasmRope) -> f64 {
+        let link = &rope.links[0];
+        len(sub(link.position, link.prev_position)) / DT
+    }
+
+    #[test]
+    fn test_rope_default_damping_is_a_small_fraction() {
+        let rope = WasmRope::new([0.0; 3], 3, 1.0, 1.0).expect("valid rope");
+        assert!((rope.damping - 0.02).abs() < 1e-15, "got {}", rope.damping);
+    }
+
+    #[test]
+    fn test_rope_zero_damping_preserves_speed() {
+        let mut rope = drifting_rope(0.0, 1.0);
+        assert!((head_speed(&rope) - 1.0).abs() < 1e-12);
+        for _ in 0..600 {
+            rope.step(DT);
+        }
+        assert!(
+            (head_speed(&rope) - 1.0).abs() < 1e-9,
+            "undamped rope changed speed to {}",
+            head_speed(&rope)
+        );
+        // 600 steps at 1 m/s and 60 Hz travel exactly 10 m along +x.
+        assert!((rope.links[0].position[0] - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_rope_damping_never_amplifies_speed() {
+        // Regression: the old update multiplied the carried velocity by
+        // (1 + damping) per step, i.e. ~1.98x per step at the default.
+        let mut rope = drifting_rope(0.02, 1.0);
+        let initial = head_speed(&rope);
+        let mut previous = initial;
+        for step in 0..600 {
+            rope.step(DT);
+            let speed = head_speed(&rope);
+            assert!(
+                speed <= previous + 1e-12,
+                "speed grew at step {step}: {previous} -> {speed}"
+            );
+            assert!(speed <= initial + 1e-12, "speed exceeded its initial value");
+            previous = speed;
+        }
+        assert!(previous < 1e-4, "rope barely damped: speed {previous}");
+    }
+
+    #[test]
+    fn test_rope_damping_decays_geometrically() {
+        let damping = 0.1;
+        let mut rope = drifting_rope(damping, 2.0);
+        for _ in 0..10 {
+            rope.step(DT);
+        }
+        let expected = 2.0 * (1.0 - damping).powi(10);
+        assert!(
+            (head_speed(&rope) - expected).abs() < 1e-9,
+            "speed {} != expected {expected}",
+            head_speed(&rope)
+        );
+    }
+
+    #[test]
+    fn test_rope_full_damping_stops_after_one_step() {
+        let mut rope = drifting_rope(1.0, 3.0);
+        rope.step(DT);
+        assert!(head_speed(&rope) < 1e-12, "speed {}", head_speed(&rope));
+    }
+
+    #[test]
+    fn test_rope_out_of_range_damping_is_clamped() {
+        // A negative damping used to be an amplifier; it is clamped to 0.
+        let mut negative = drifting_rope(-0.5, 1.0);
+        for _ in 0..30 {
+            negative.step(DT);
+        }
+        assert!((head_speed(&negative) - 1.0).abs() < 1e-9);
+        // A damping above 1 is clamped to 1 (full damping): all carried motion
+        // is removed, the rope stays where it was instead of reversing.
+        let mut excessive = drifting_rope(2.0, 1.0);
+        excessive.step(DT);
+        assert!(head_speed(&excessive) < 1e-12);
+        let drift = excessive.links[0].position[0];
+        assert!(drift.abs() < 1e-12, "rope moved or reversed: x = {drift}");
+    }
+
+    #[test]
+    fn test_rope_free_fall_reaches_damped_terminal_speed() {
+        // v <- (1 - d) v + g dt^2 has the fixed point g dt^2 / d (per step).
+        let mut rope = WasmRope::new([0.0, 50.0, 0.0], 5, 0.5, 1.0).expect("valid rope");
+        let damping = rope.damping;
+        for _ in 0..1200 {
+            rope.step(DT);
+        }
+        let link = &rope.links[2];
+        let per_step_drop = link.prev_position[1] - link.position[1];
+        let expected = 9.81 * DT * DT / damping;
+        assert!(
+            (per_step_drop - expected).abs() < 0.01 * expected,
+            "per-step drop {per_step_drop} != terminal {expected}"
+        );
     }
 }

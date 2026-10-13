@@ -1621,11 +1621,18 @@ impl SediLbm {
     pub fn mixture_density(&self, phi: f64) -> f64 {
         self.rho_fluid * (1.0 - phi) + self.rho_solid * phi
     }
-    /// Compute mixture relaxation from volume fraction using Krieger-Dougherty.
+    /// Compute the mixture relaxation frequency from the solid volume fraction.
+    ///
+    /// The Krieger-Dougherty relative viscosity `mu_rel = mu_mix / mu_0 >= 1`
+    /// multiplies the clean-fluid kinematic viscosity.  Because the lattice
+    /// viscosity is `nu = cs^2 (tau - 1/2)`, the mixture relaxation time is
+    /// `tau_mix = 1/2 + (tau - 1/2) * mu_rel` and the returned frequency is
+    /// `1 / tau_mix`: a denser suspension relaxes more slowly (smaller
+    /// `omega`), i.e. it is more viscous.
     pub fn mixture_omega(&self, phi: f64) -> f64 {
         let mu_rel = mixture_viscosity(phi, 0.64);
-        let nu_mix = (1.0 / self.omega - 0.5) / mu_rel;
-        1.0 / (nu_mix + 0.5)
+        let tau_mix = 0.5 + (1.0 / self.omega - 0.5) * mu_rel;
+        1.0 / tau_mix
     }
     /// Perform one BGK collision step with sedimentation body force.
     pub fn collide(&mut self) {

@@ -111,7 +111,9 @@ pub(super) fn parse_metar_temp(s: &str) -> Option<f64> {
         s.parse::<f64>().ok()
     }
 }
-/// Approximate gamma function using Stirling's approximation.
+/// Gamma function via the Lanczos approximation (`g = 7`, nine coefficients;
+/// relative error about `1e-15` for `x > 0`) with the reflection formula for
+/// `x < 0.5`.
 pub(super) fn gamma_approx(x: f64) -> f64 {
     if x < 0.5 {
         std::f64::consts::PI / ((std::f64::consts::PI * x).sin() * gamma_approx(1.0 - x))
@@ -135,12 +137,34 @@ pub(super) fn gamma_approx(x: f64) -> f64 {
         (2.0 * std::f64::consts::PI).sqrt() * t.powf(x - 0.5) * (-t).exp() * sum
     }
 }
-/// Fit GEV distribution using L-moments method.
-pub(super) fn fit_gev_lmoments(data: &[f64]) -> GevParameters {
+/// Euler–Mascheroni constant, the offset between the Gumbel location and mean.
+const EULER_MASCHERONI: f64 = 0.577_215_664_901_532_9;
+/// Fit a GEV distribution to `data` with the method of L-moments
+/// (Hosking, Wallis & Wood 1985).
+///
+/// With Hosking's parametrisation `F(x) = exp{-[1 - k (x - xi)/alpha]^(1/k)}`
+/// the shape follows from the sample L-skewness `t3 = l3 / l2` through
+/// `c = 2/(3 + t3) - ln 2 / ln 3`, `k = 7.8590 c + 2.9554 c^2` (clamped to
+/// `[-0.5, 0.5]`, the range in which the approximation is valid), and then
+/// `alpha = l2 k / (Gamma(1 + k) (1 - 2^-k))`,
+/// `xi = l1 - alpha (1 - Gamma(1 + k)) / k`; for `k = 0` (Gumbel)
+/// `alpha = l2 / ln 2`, `xi = l1 - gamma_E alpha`.
+///
+/// The returned [`GevParameters`] use the Coles (2001) convention that
+/// [`GevParameters::quantile`] and [`GevParameters::pdf`] implement, in which
+/// the shape is `-k` (positive for the heavy-tailed Frechet type).
+///
+/// Returns `None` when fewer than three observations are given or any of them
+/// is not finite.
+pub(super) fn fit_gev_lmoments(data: &[f64]) -> Option<GevParameters> {
     let n = data.len();
+    if n < 3 || data.iter().any(|x| !x.is_finite()) {
+        return None;
+    }
     let mut sorted = data.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let nf = n as f64;
+    // Unbiased probability-weighted moments b0, b1, b2 of the ordered sample.
     let mut b0 = 0.0_f64;
     let mut b1 = 0.0_f64;
     let mut b2 = 0.0_f64;
@@ -148,9 +172,7 @@ pub(super) fn fit_gev_lmoments(data: &[f64]) -> GevParameters {
         let j = i as f64;
         b0 += x;
         b1 += j / (nf - 1.0) * x;
-        if n > 2 {
-            b2 += j * (j - 1.0) / ((nf - 1.0) * (nf - 2.0)) * x;
-        }
+        b2 += j * (j - 1.0) / ((nf - 1.0) * (nf - 2.0)) * x;
     }
     b0 /= nf;
     b1 /= nf;
@@ -159,23 +181,21 @@ pub(super) fn fit_gev_lmoments(data: &[f64]) -> GevParameters {
     let l2 = 2.0 * b1 - b0;
     let l3 = 6.0 * b2 - 6.0 * b1 + b0;
     if l2.abs() < 1e-15 {
-        return GevParameters::new(l1, 1.0, 0.0);
+        return Some(GevParameters::new(l1, 1.0, 0.0));
     }
     let t3 = l3 / l2;
-    let c = 2.0 / (3.0 + t3) - std::f64::consts::LN_2 / (2.0_f64.ln() + 3.0_f64.ln());
-    let shape = 7.859 * c + 2.9554 * c * c;
-    let shape = shape.clamp(-0.5, 0.5);
-    let scale = if shape.abs() < 1e-10 {
-        l2 / std::f64::consts::LN_2
+    let c = 2.0 / (3.0 + t3) - std::f64::consts::LN_2 / 3.0_f64.ln();
+    // Hosking's shape k (k > 0: bounded upper tail).
+    let k = (7.8590 * c + 2.9554 * c * c).clamp(-0.5, 0.5);
+    let (location, scale) = if k.abs() < 1e-10 {
+        let scale = l2 / std::f64::consts::LN_2;
+        (l1 - EULER_MASCHERONI * scale, scale)
     } else {
-        l2 * shape / (gamma_approx(1.0 + shape) * (1.0 - 2.0_f64.powf(-shape)))
+        let gamma = gamma_approx(1.0 + k);
+        let scale = l2 * k / (gamma * (1.0 - 2.0_f64.powf(-k)));
+        (l1 - scale * (1.0 - gamma) / k, scale)
     };
-    let location = if shape.abs() < 1e-10 {
-        l1 - scale * 0.5772
-    } else {
-        l1 - scale * (gamma_approx(1.0 + shape) - 1.0) / shape
-    };
-    GevParameters::new(location, scale.abs(), shape)
+    Some(GevParameters::new(location, scale.abs(), -k))
 }
 #[cfg(test)]
 mod tests {
@@ -532,10 +552,157 @@ mod tests {
     #[test]
     fn test_gev_fit_basic() {
         let data = vec![10.0, 12.0, 15.0, 11.0, 13.0, 14.0, 16.0, 10.5, 12.5, 13.5];
-        let params = fit_gev_lmoments(&data);
+        let params = fit_gev_lmoments(&data).unwrap();
         assert!(params.scale > 0.0);
         let mean: f64 = data.iter().sum::<f64>() / data.len() as f64;
         assert!((params.location - mean).abs() < 10.0);
+        // Reference values from an independent evaluation of the Hosking et al.
+        // formulas (location, scale, Coles shape = -k).
+        assert!((params.location - 11.940_382_171_511_235).abs() < 1e-9);
+        assert!((params.scale - 1.969_018_473_527_084_8).abs() < 1e-9);
+        assert!((params.shape - (-0.197_192_446_343_427_17)).abs() < 1e-9);
+    }
+    /// `n` quantiles of a GEV (Coles parametrisation) at the plotting
+    /// positions `(i + 0.65) / n`; `shape == 0` is the Gumbel distribution.
+    fn gev_quantile_sample(location: f64, scale: f64, shape: f64, n: usize) -> Vec<f64> {
+        (0..n)
+            .map(|i| {
+                let p = (i as f64 + 0.65) / n as f64;
+                let y = -p.ln();
+                if shape == 0.0 {
+                    location - scale * y.ln()
+                } else {
+                    location + scale / shape * (y.powf(-shape) - 1.0)
+                }
+            })
+            .collect()
+    }
+    #[test]
+    fn test_gev_fit_recovers_gumbel_parameters() {
+        // x_i = 10 - 2 ln(-ln((i + 0.65) / 200)): Gumbel(10, 2) quantiles.
+        let data = gev_quantile_sample(10.0, 2.0, 0.0, 200);
+        let params = fit_gev_lmoments(&data).unwrap();
+        assert!(params.shape.abs() < 0.03, "shape = {}", params.shape);
+        assert!(
+            (params.location - 10.0).abs() < 0.1,
+            "mu = {}",
+            params.location
+        );
+        assert!(
+            (params.scale - 2.0).abs() < 0.05,
+            "sigma = {}",
+            params.scale
+        );
+    }
+    #[test]
+    fn test_gev_fit_shape_sign_follows_coles_convention() {
+        // Heavy upper tail (Frechet, xi > 0) and bounded upper tail (Weibull,
+        // xi < 0) must come back with the sign they were generated with.
+        for &(xi, tol) in &[(0.1_f64, 0.03_f64), (0.3, 0.04), (-0.2, 0.03)] {
+            let data = gev_quantile_sample(10.0, 2.0, xi, 200);
+            let params = fit_gev_lmoments(&data).unwrap();
+            assert!(
+                (params.shape - xi).abs() < tol,
+                "xi = {xi}: fitted {}",
+                params.shape
+            );
+            assert!(
+                (params.location - 10.0).abs() < 0.1,
+                "xi = {xi}: mu = {}",
+                params.location
+            );
+            assert!(
+                (params.scale - 2.0).abs() < 0.05,
+                "xi = {xi}: sigma = {}",
+                params.scale
+            );
+        }
+    }
+    #[test]
+    fn test_gev_fit_return_levels_match_generating_distribution() {
+        // The 100-year level of the fitted distribution must be close to the
+        // level of the distribution the sample was drawn from.
+        let truth = GevParameters::new(10.0, 2.0, 0.1);
+        let data = gev_quantile_sample(10.0, 2.0, 0.1, 200);
+        let fitted = fit_gev_lmoments(&data).unwrap();
+        for &period in &[10.0, 50.0, 100.0] {
+            let expected = truth.return_level(period);
+            let got = fitted.return_level(period);
+            assert!(
+                (got - expected).abs() / expected < 0.03,
+                "T = {period}: fitted {got}, true {expected}"
+            );
+        }
+    }
+    #[test]
+    fn test_gev_fit_is_location_scale_equivariant() {
+        let data = gev_quantile_sample(10.0, 2.0, 0.1, 100);
+        let base = fit_gev_lmoments(&data).unwrap();
+        let moved: Vec<f64> = data.iter().map(|x| 3.0 * x - 7.0).collect();
+        let fit = fit_gev_lmoments(&moved).unwrap();
+        assert!((fit.location - (3.0 * base.location - 7.0)).abs() < 1e-9);
+        assert!((fit.scale - 3.0 * base.scale).abs() < 1e-9);
+        assert!((fit.shape - base.shape).abs() < 1e-12);
+    }
+    #[test]
+    fn test_gev_fit_is_independent_of_input_order() {
+        let mut data = gev_quantile_sample(4.0, 1.5, -0.1, 60);
+        let sorted_fit = fit_gev_lmoments(&data).unwrap();
+        data.reverse();
+        let reversed_fit = fit_gev_lmoments(&data).unwrap();
+        assert_eq!(sorted_fit.location, reversed_fit.location);
+        assert_eq!(sorted_fit.scale, reversed_fit.scale);
+        assert_eq!(sorted_fit.shape, reversed_fit.shape);
+    }
+    #[test]
+    fn test_gev_fit_rejects_too_few_or_non_finite_data() {
+        assert!(fit_gev_lmoments(&[]).is_none());
+        assert!(fit_gev_lmoments(&[1.0, 2.0]).is_none());
+        assert!(fit_gev_lmoments(&[1.0, 2.0, f64::NAN, 4.0]).is_none());
+        assert!(fit_gev_lmoments(&[1.0, f64::INFINITY, 3.0]).is_none());
+        assert!(fit_gev_lmoments(&[1.0, 2.0, 4.0]).is_some());
+    }
+    #[test]
+    fn test_gev_fit_constant_sample_keeps_location() {
+        let params = fit_gev_lmoments(&[5.0, 5.0, 5.0, 5.0]).unwrap();
+        assert!((params.location - 5.0).abs() < 1e-12);
+        assert_eq!(params.shape, 0.0);
+    }
+    #[test]
+    fn test_gamma_approx_matches_known_values() {
+        assert!((gamma_approx(1.0) - 1.0).abs() < 1e-13);
+        assert!((gamma_approx(5.0) - 24.0).abs() < 1e-11);
+        assert!((gamma_approx(0.5) - std::f64::consts::PI.sqrt()).abs() < 1e-13);
+        assert!((gamma_approx(1.5) - 0.5 * std::f64::consts::PI.sqrt()).abs() < 1e-13);
+        // Reflection branch.
+        assert!((gamma_approx(0.25) - 3.625_609_908_221_908).abs() < 1e-12);
+    }
+    #[test]
+    fn test_precipitation_analysis_fit_uses_corrected_gev() {
+        // Thirty annual maxima that follow Gumbel(30, 5): the fitted 100-year
+        // depth must be near mu - sigma ln(-ln(1 - 0.01)) = 53.0 mm.
+        let mut analysis = PrecipitationAnalysis::new();
+        for value in gev_quantile_sample(30.0, 5.0, 0.0, 30) {
+            analysis.add_annual_max(60, value);
+        }
+        let params = analysis.fit_gev(60).unwrap();
+        assert!(
+            (params.location - 30.0).abs() < 1.0,
+            "mu = {}",
+            params.location
+        );
+        assert!((params.scale - 5.0).abs() < 1.0, "sigma = {}", params.scale);
+        let truth = 30.0 - 5.0 * (-(0.99_f64).ln()).ln();
+        let level = params.return_level(100.0);
+        assert!(
+            (level - truth).abs() / truth < 0.08,
+            "fitted {level}, true {truth}"
+        );
+        // Too few observations: no fit.
+        let mut sparse = PrecipitationAnalysis::new();
+        sparse.add_annual_max(60, 10.0);
+        sparse.add_annual_max(60, 12.0);
+        assert!(sparse.fit_gev(60).is_none());
     }
     #[test]
     fn test_weather_station_mean_temperature() {

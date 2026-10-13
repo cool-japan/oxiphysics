@@ -101,7 +101,8 @@ fn test_raw_fem_potential_energy() {
 #[test]
 fn test_compute_rotation_identity() {
     let pos = tet_positions();
-    let r = CorotationalElementRaw::compute_rotation(&pos, &[0, 1, 2, 3]);
+    let elem = CorotationalElementRaw::new([0, 1, 2, 3], &pos, make_material());
+    let r = elem.compute_rotation(&pos);
     // For the identity tet, rotation should be close to identity
     for (i, row) in r.iter().enumerate() {
         for (j, &val) in row.iter().enumerate() {
@@ -981,9 +982,9 @@ mod fem_verlet_tests {
     #[test]
     fn test_rayleigh_stiffness_damping_force() {
         let rd = RayleighDamping::new(0.0, 0.5);
-        let elastic_f = [10.0, 0.0, 0.0];
-        let force = rd.stiffness_damping_force(elastic_f);
-        // f = -beta_K * f_elastic = -0.5 * 10 = -5.0
+        let kv = [10.0, 0.0, 0.0];
+        let force = rd.stiffness_damping_force(kv);
+        // f = -beta_K * (K v) = -0.5 * 10 = -5.0
         assert!((force[0] - (-5.0)).abs() < 1e-12);
     }
 
@@ -993,8 +994,9 @@ mod fem_verlet_tests {
         let mut forces = vec![[1.0_f64, 2.0, 3.0]; 4];
         let velocities = vec![[0.1_f64; 3]; 4];
         let masses = vec![1.0_f64; 4];
+        let kv = vec![[0.3_f64; 3]; 4];
         let orig = forces.clone();
-        rd.apply(&mut forces, &velocities, &masses);
+        rd.apply(&mut forces, &velocities, &masses, &kv);
         for (force, orig_force) in forces.iter().zip(orig.iter()) {
             for (&fval, &oval) in force.iter().zip(orig_force.iter()) {
                 assert!(

@@ -35,10 +35,38 @@ fn sign(x: f64) -> f64 {
     }
 }
 
+/// Geometry of the uniform Cartesian grid shared by the finite-difference kernels.
+#[derive(Debug, Clone, Copy)]
+struct GridSpec {
+    /// Number of cells in x.
+    nx: usize,
+    /// Number of cells in y.
+    ny: usize,
+    /// Cell width in x.
+    dx: f64,
+    /// Cell height in y.
+    dy: f64,
+}
+
 /// Godunov upwind approximation of |∇φ| for reinitialization.
 ///
-/// Returns the Godunov numerical Hamiltonian |∇φ|_G for cell (i,j).
-fn godunov_grad_mag(phi: &[f64], nx: usize, ny: usize, i: usize, j: usize, phi0: f64) -> f64 {
+/// Returns the Godunov numerical Hamiltonian |∇φ|_G for cell (i,j) on a grid
+/// with spacings `dx` (x-direction) and `dy` (y-direction).  The one-sided
+/// differences are *divided by the grid spacing*, so the result is a true
+/// gradient magnitude (field units per unit length): a signed-distance field
+/// gives |∇φ|_G = 1 irrespective of the cell size.
+///
+/// The sign of `phi0` selects the upwind direction, i.e. information propagates
+/// away from the interface.  With `a⁺ = max(a, 0)`, `a⁻ = min(a, 0)` and the
+/// backward/forward differences `D⁻φ`, `D⁺φ`, each axis contributes
+///
+/// * `max((D⁻φ)⁺², (D⁺φ)⁻²)` when `phi0 > 0`,
+/// * `max((D⁻φ)⁻², (D⁺φ)⁺²)` when `phi0 < 0`,
+///
+/// and the two axis contributions are added under the square root (Sussman,
+/// Smereka & Osher 1994; Russo & Smereka 2000).
+fn godunov_grad_mag(phi: &[f64], grid: GridSpec, i: usize, j: usize, phi0: f64) -> f64 {
+    let GridSpec { nx, ny, dx, dy } = grid;
     let idx = |ii: usize, jj: usize| ii * ny + jj;
     let s = sign(phi0);
 
@@ -57,22 +85,23 @@ fn godunov_grad_mag(phi: &[f64], nx: usize, ny: usize, i: usize, j: usize, phi0:
         phi_c
     };
 
-    let dp_x = phi_xp - phi_c;
-    let dm_x = phi_c - phi_xm;
-    let dp_y = phi_yp - phi_c;
-    let dm_y = phi_c - phi_ym;
+    // One-sided finite differences scaled by the grid spacing.
+    let dp_x = (phi_xp - phi_c) / dx;
+    let dm_x = (phi_c - phi_xm) / dx;
+    let dp_y = (phi_yp - phi_c) / dy;
+    let dm_y = (phi_c - phi_ym) / dy;
 
     // Godunov fluxes
     let fx = if s > 0.0 {
-        dm_x.max(0.0).powi(2) + dp_x.min(0.0).powi(2)
+        dm_x.max(0.0).powi(2).max(dp_x.min(0.0).powi(2))
     } else {
-        dm_x.min(0.0).powi(2) + dp_x.max(0.0).powi(2)
+        dm_x.min(0.0).powi(2).max(dp_x.max(0.0).powi(2))
     };
 
     let fy = if s > 0.0 {
-        dm_y.max(0.0).powi(2) + dp_y.min(0.0).powi(2)
+        dm_y.max(0.0).powi(2).max(dp_y.min(0.0).powi(2))
     } else {
-        dm_y.min(0.0).powi(2) + dp_y.max(0.0).powi(2)
+        dm_y.min(0.0).powi(2).max(dp_y.max(0.0).powi(2))
     };
 
     (fx + fy).sqrt()
@@ -195,26 +224,52 @@ impl LevelSetField {
     ///
     /// using explicit Euler in pseudo-time and a Godunov upwind scheme.
     ///
+    /// The sign function is the smoothed Sussman sign
+    /// `S(φ₀) = φ₀ / sqrt(φ₀² + ε²)` with `ε = max(dx, dy)`, which keeps cells next
+    /// to the interface (where `|φ₀| ≪ ε`) almost stationary and so limits the
+    /// drift of the zero contour.  The pseudo-time step is `0.5·min(dx, dy)`
+    /// (CFL 0.5) and the one-sided differences are scaled by the grid spacing, so
+    /// the steady state is `|∇φ| = 1` for any cell size.  Two buffers are
+    /// swapped between iterations; no per-iteration allocation takes place.
+    ///
     /// # Arguments
     /// * `n_iter` – number of pseudo-time iterations
     pub fn reinitialize(&mut self, n_iter: usize) {
-        let phi0 = self.phi.clone();
+        let eps = self.dx.max(self.dy);
+        if n_iter == 0 || !eps.is_finite() || eps <= 0.0 || self.dx.min(self.dy) <= 0.0 {
+            return;
+        }
+        let grid = GridSpec {
+            nx: self.nx,
+            ny: self.ny,
+            dx: self.dx,
+            dy: self.dy,
+        };
         let dtau = 0.5 * self.dx.min(self.dy);
+        let phi0 = self.phi.clone();
+        let smoothed_sign: Vec<f64> = phi0
+            .iter()
+            .map(|&p| p / (p * p + eps * eps).sqrt())
+            .collect();
 
+        let mut current = self.phi.clone();
+        let mut next = self.phi.clone();
         for _ in 0..n_iter {
-            let phi_old = self.phi.clone();
             for i in 0..self.nx {
                 for j in 0..self.ny {
                     let k = self.idx(i, j);
-                    let s = sign(phi0[k]);
+                    let s = smoothed_sign[k];
                     if s == 0.0 {
+                        next[k] = current[k];
                         continue;
                     }
-                    let g = godunov_grad_mag(&phi_old, self.nx, self.ny, i, j, phi0[k]);
-                    self.phi[k] = phi_old[k] - dtau * s * (g - 1.0);
+                    let g = godunov_grad_mag(&current, grid, i, j, phi0[k]);
+                    next[k] = current[k] - dtau * s * (g - 1.0);
                 }
             }
+            std::mem::swap(&mut current, &mut next);
         }
+        self.phi = current;
     }
 
     /// Semi-Lagrangian advection with velocity field (u, v) on the same grid.
@@ -296,12 +351,15 @@ impl LevelSetField {
         let phi_xy = (phi_xpyp - phi_xpym - phi_xmyp + phi_xmym) / (4.0 * dx * dy);
 
         let mag2 = phi_x * phi_x + phi_y * phi_y;
-        let mag = mag2.sqrt().max(f64::EPSILON);
-        let mag3 = mag2 * mag;
+        let mag3 = mag2 * mag2.sqrt();
+        if mag3 < f64::MIN_POSITIVE {
+            // ∇φ vanishes (flat field or degenerate grid): the normal, and so the
+            // curvature, is undefined; report a flat interface.
+            return 0.0;
+        }
 
-        (phi_xx * (mag2 + phi_y * phi_y - phi_x * phi_x) - 2.0 * phi_x * phi_y * phi_xy
-            + phi_yy * (mag2 + phi_x * phi_x - phi_y * phi_y))
-            / (2.0 * mag3)
+        // κ = ∇·(∇φ/|∇φ|) = (φ_xx φ_y² − 2 φ_x φ_y φ_xy + φ_yy φ_x²) / |∇φ|³
+        (phi_xx * phi_y * phi_y - 2.0 * phi_x * phi_y * phi_xy + phi_yy * phi_x * phi_x) / mag3
     }
 
     /// Approximate area (m²) of the region Ω = {φ < 0}.
@@ -652,13 +710,171 @@ mod tests {
 
     #[test]
     fn test_reinitialize_preserves_shape() {
-        let mut ls = LevelSetField::new(30, 30, 1.0 / 30.0, 1.0 / 30.0);
+        let n = 30;
+        let dx = 1.0 / n as f64;
+        let mut ls = LevelSetField::new(n, n, dx, dx);
         ls.set_circle(0.5, 0.5, 0.25);
+        let area_before = ls.area();
+        let perimeter_before = ls.perimeter();
         ls.reinitialize(10);
-        // Gradient magnitude should be close to 1 near the interface
-        let center = ls.idx(15, 15);
-        // Just check that reinitialize runs without panic
-        let _ = ls.phi[center];
+        // Reinitializing a signed-distance field must not move the interface:
+        // enclosed area and interface length stay put.
+        assert!(
+            (ls.area() - area_before).abs() < 0.02 * area_before,
+            "area changed: {} -> {}",
+            area_before,
+            ls.area()
+        );
+        assert!(
+            (ls.perimeter() - perimeter_before).abs() < 0.03 * perimeter_before,
+            "perimeter changed: {} -> {}",
+            perimeter_before,
+            ls.perimeter()
+        );
+        // ... and every cell next to the interface keeps a unit gradient.
+        let mut checked = 0;
+        for i in 1..n - 1 {
+            for j in 1..n - 1 {
+                if ls.phi[ls.idx(i, j)].abs() < 2.0 * dx {
+                    let (gx, gy) = ls.gradient(i, j);
+                    let mag = (gx * gx + gy * gy).sqrt();
+                    assert!((mag - 1.0).abs() < 0.1, "cell ({i},{j}): |grad| = {mag}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 20, "too few interface cells checked: {checked}");
+    }
+
+    /// Radii (min, max) at which rays from `(cx, cy)` cross the zero contour.
+    fn zero_contour_radii(ls: &LevelSetField, cx: f64, cy: f64, n_rays: usize) -> (f64, f64) {
+        let value = |x: f64, y: f64| {
+            bilinear_interp(&ls.phi, ls.nx, ls.ny, x / ls.dx - 0.5, y / ls.dy - 0.5)
+        };
+        let step = 0.01 * ls.dx.min(ls.dy);
+        let mut r_min = f64::INFINITY;
+        let mut r_max = 0.0_f64;
+        for k in 0..n_rays {
+            let theta = 2.0 * PI * k as f64 / n_rays as f64;
+            let (c, s) = (theta.cos(), theta.sin());
+            let mut r_prev = 0.0;
+            let mut v_prev = value(cx, cy);
+            let mut r = step;
+            while r < 0.45 {
+                let v = value(cx + r * c, cy + r * s);
+                if v_prev < 0.0 && v >= 0.0 {
+                    let radius = r_prev + v_prev / (v_prev - v) * (r - r_prev);
+                    r_min = r_min.min(radius);
+                    r_max = r_max.max(radius);
+                    break;
+                }
+                r_prev = r;
+                v_prev = v;
+                r += step;
+            }
+        }
+        (r_min, r_max)
+    }
+
+    /// A circle SDF whose values were doubled (|grad| = 2) must be restored to
+    /// |grad| = 1 near the interface without moving the zero contour by more
+    /// than one cell.  Before the grid spacing was applied to the one-sided
+    /// differences the steady state of the iteration was |grad| = 1/dx.
+    #[test]
+    fn test_reinitialize_restores_unit_gradient_after_scaling() {
+        let n = 64;
+        let dx = 1.0 / n as f64;
+        let radius = 0.3;
+        let mut ls = LevelSetField::new(n, n, dx, dx);
+        ls.set_circle(0.5, 0.5, radius);
+        for p in ls.phi.iter_mut() {
+            *p *= 2.0;
+        }
+        ls.reinitialize(100);
+
+        let mut checked = 0;
+        let mut worst = 0.0_f64;
+        for i in 1..n - 1 {
+            for j in 1..n - 1 {
+                if ls.phi[ls.idx(i, j)].abs() < 3.0 * dx {
+                    let (gx, gy) = ls.gradient(i, j);
+                    let mag = (gx * gx + gy * gy).sqrt();
+                    worst = worst.max((mag - 1.0).abs());
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 300, "too few band cells: {checked}");
+        assert!(worst < 0.05, "max ||grad| - 1| in the band = {worst}");
+
+        let (r_min, r_max) = zero_contour_radii(&ls, 0.5, 0.5, 64);
+        assert!(
+            (r_min - radius).abs() < dx && (r_max - radius).abs() < dx,
+            "zero contour radius range [{r_min}, {r_max}] vs {radius} (dx = {dx})"
+        );
+    }
+
+    /// The reinitialized gradient must not depend on the physical size of the
+    /// cells: the same circle on a grid with 2 m cells needs the same iterations.
+    #[test]
+    fn test_reinitialize_independent_of_cell_size() {
+        for &(n, dx) in &[(32usize, 0.25_f64), (32, 1.0), (32, 40.0)] {
+            let extent = n as f64 * dx;
+            let mut ls = LevelSetField::new(n, n, dx, dx);
+            ls.set_circle(0.5 * extent, 0.5 * extent, 0.3 * extent);
+            for p in ls.phi.iter_mut() {
+                *p *= 3.0;
+            }
+            ls.reinitialize(60);
+            let mut worst = 0.0_f64;
+            let mut checked = 0;
+            for i in 1..n - 1 {
+                for j in 1..n - 1 {
+                    if ls.phi[ls.idx(i, j)].abs() < 2.0 * dx {
+                        let (gx, gy) = ls.gradient(i, j);
+                        worst = worst.max(((gx * gx + gy * gy).sqrt() - 1.0).abs());
+                        checked += 1;
+                    }
+                }
+            }
+            assert!(checked > 40);
+            assert!(worst < 0.1, "dx = {dx}: max ||grad| - 1| = {worst}");
+        }
+    }
+
+    /// Anisotropic cells (dx != dy) must use their own spacing per axis.
+    #[test]
+    fn test_reinitialize_anisotropic_grid() {
+        let (nx, ny) = (48usize, 32usize);
+        let (dx, dy) = (1.0 / 48.0, 1.0 / 32.0);
+        let mut ls = LevelSetField::new(nx, ny, dx, dy);
+        ls.set_circle(0.5, 0.5, 0.3);
+        for p in ls.phi.iter_mut() {
+            *p *= 2.0;
+        }
+        ls.reinitialize(120);
+        let mut worst = 0.0_f64;
+        let mut checked = 0;
+        for i in 1..nx - 1 {
+            for j in 1..ny - 1 {
+                if ls.phi[ls.idx(i, j)].abs() < 2.0 * dy {
+                    let (gx, gy) = ls.gradient(i, j);
+                    worst = worst.max(((gx * gx + gy * gy).sqrt() - 1.0).abs());
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 60);
+        assert!(worst < 0.1, "anisotropic max ||grad| - 1| = {worst}");
+    }
+
+    #[test]
+    fn test_reinitialize_zero_iterations_is_noop() {
+        let mut ls = LevelSetField::new(12, 12, 0.1, 0.1);
+        ls.set_circle(0.6, 0.6, 0.3);
+        let before = ls.phi.clone();
+        ls.reinitialize(0);
+        assert_eq!(ls.phi, before);
     }
 
     // -----------------------------------------------------------------------
@@ -729,6 +945,89 @@ mod tests {
         let k = ls.curvature(20, 20);
         // Just check it doesn't panic and returns a finite value
         assert!(k.is_finite());
+    }
+
+    /// κ of a circle SDF equals 1/r.  The earlier cross-derivative term was
+    /// halved, which gave κ = 0.75/R on the 45 degree diagonal where φx·φy ≠ 0.
+    #[test]
+    fn test_curvature_circle_on_45_degree_diagonal() {
+        let n = 128;
+        let dx = 1.0 / n as f64;
+        let radius = 0.3;
+        let mut ls = LevelSetField::new(n, n, dx, dx);
+        ls.set_circle(0.5, 0.5, radius);
+
+        // Interface cell (on the diagonal i == j) nearest to the zero contour.
+        let (mut best, mut best_phi) = (0usize, f64::INFINITY);
+        for i in n / 2..n {
+            let p = ls.phi[ls.idx(i, i)].abs();
+            if p < best_phi {
+                best_phi = p;
+                best = i;
+            }
+        }
+        assert!(best_phi < dx, "no interface cell on the diagonal");
+        let kappa = ls.curvature(best, best);
+        assert!(
+            (kappa * radius - 1.0).abs() < 0.02,
+            "kappa*R = {} at cell ({best},{best})",
+            kappa * radius
+        );
+        // Exact value for an SDF: 1 / (distance from the centre to the cell centre).
+        let r_cell = (ls.phi[ls.idx(best, best)]) + radius;
+        assert!((kappa - 1.0 / r_cell).abs() < 1e-3 / r_cell);
+        // The buggy expression returned 0.75/R here.
+        assert!(kappa * radius > 0.95);
+    }
+
+    #[test]
+    fn test_curvature_circle_all_angles() {
+        let n = 128;
+        let dx = 1.0 / n as f64;
+        let radius = 0.3;
+        let mut ls = LevelSetField::new(n, n, dx, dx);
+        ls.set_circle(0.5, 0.5, radius);
+        let mut checked = 0;
+        for i in 2..n - 2 {
+            for j in 2..n - 2 {
+                let phi = ls.phi[ls.idx(i, j)];
+                if phi.abs() < dx {
+                    let r_cell = phi + radius;
+                    let kappa = ls.curvature(i, j);
+                    assert!(
+                        (kappa * r_cell - 1.0).abs() < 2e-3,
+                        "cell ({i},{j}): kappa*r = {}",
+                        kappa * r_cell
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 200, "checked only {checked} interface cells");
+    }
+
+    #[test]
+    fn test_curvature_of_straight_interface_is_zero() {
+        let n = 16;
+        let dx = 1.0 / n as f64;
+        let mut ls = LevelSetField::new(n, n, dx, dx);
+        for i in 0..n {
+            for j in 0..n {
+                // oblique plane: signed distance to the line x + y = 1
+                let x = (i as f64 + 0.5) * dx;
+                let y = (j as f64 + 0.5) * dx;
+                let k = ls.idx(i, j);
+                ls.phi[k] = (x + y - 1.0) / 2.0_f64.sqrt();
+            }
+        }
+        assert!(ls.curvature(8, 8).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_curvature_flat_field_is_zero_not_nan() {
+        let ls = LevelSetField::new(5, 5, 0.1, 0.1);
+        let k = ls.curvature(2, 2);
+        assert_eq!(k, 0.0);
     }
 
     // -----------------------------------------------------------------------

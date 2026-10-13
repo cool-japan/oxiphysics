@@ -3,7 +3,8 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
-use std::collections::{HashMap, HashSet};
+use super::qem_engine::{CollapsePolicy, QemEngine};
+use std::collections::HashMap;
 
 /// A record of one progressive mesh simplification step (edge collapse).
 #[derive(Debug, Clone)]
@@ -83,55 +84,58 @@ impl ProgressiveMesh {
     }
     /// Perform one QEM-based edge collapse (cheapest edge) and record it.
     ///
-    /// Returns `false` when the mesh has ≤ 3 triangles and cannot be reduced
-    /// further.
+    /// The cheapest edge is the one with the lowest quadric error; ties are broken
+    /// on the vertex pair, so the result is deterministic.  Building the quadrics
+    /// and the edge queue costs `O(F log F)` for a mesh with `F` triangles, so call
+    /// [`decimate_to`](Self::decimate_to) when many collapses are needed: it builds
+    /// them once for the whole pass.
+    ///
+    /// Every call rebuilds the quadrics from the *current* geometry of
+    /// [`mesh`](Self::mesh), so a loop of `collapse_one` calls does not accumulate
+    /// the error of earlier collapses (`Q[keep] += Q[removed]`) the way a single
+    /// `decimate_to` pass does; the two agree on the first collapse only.
+    ///
+    /// Returns `false` when the mesh has ≤ 3 triangles or no edge can be collapsed.
     pub fn collapse_one(&mut self) -> bool {
         if self.mesh.triangle_count() <= 3 {
             return false;
         }
-        let quadrics = compute_vertex_quadrics(&self.mesh);
-        let mut edge_set: std::collections::HashSet<(usize, usize)> =
-            std::collections::HashSet::new();
-        for &[a, b, c] in &self.mesh.triangles {
-            edge_set.insert((a.min(b), a.max(b)));
-            edge_set.insert((b.min(c), b.max(c)));
-            edge_set.insert((a.min(c), a.max(c)));
-        }
-        let mut best_cost = f64::MAX;
-        let mut best_v1 = 0usize;
-        let mut best_v2 = 0usize;
-        let mut best_pos = [0.0f64; 3];
-        for (v1, v2) in &edge_set {
-            let (cost, pos) = edge_collapse_cost(
-                self.mesh.vertices[*v1],
-                self.mesh.vertices[*v2],
-                &quadrics[*v1],
-                &quadrics[*v2],
-            );
-            if cost < best_cost {
-                best_cost = cost;
-                best_v1 = *v1;
-                best_v2 = *v2;
-                best_pos = pos;
-            }
-        }
-        let old_pos = self.mesh.vertices[best_v1];
-        let record = CollapseRecord {
-            v_kept: best_v1,
-            v_removed: best_v2,
-            old_pos,
-            new_pos: best_pos,
+        let Some(mut engine) = QemEngine::new(&self.mesh, CollapsePolicy::Unrestricted) else {
+            return false;
         };
-        collapse_edge(&mut self.mesh, best_v1, best_v2, best_pos);
-        self.history.push(record);
+        let Some(outcome) = engine.collapse_cheapest(f64::INFINITY) else {
+            return false;
+        };
+        engine.write_back(&mut self.mesh);
+        self.history.push(outcome.record());
         true
     }
     /// Reduce the mesh until it has at most `target_triangles` triangles.
+    ///
+    /// Runs Garland–Heckbert quadric decimation: the vertex quadrics, the
+    /// vertex-to-face adjacency and the edge priority queue are built once and
+    /// updated incrementally after every collapse, so the whole pass costs
+    /// `O(F log F)`.  Every collapse is appended to [`history`](Self::history).
+    /// The pass stops early when only three triangles are left or no edge can be
+    /// collapsed.
     pub fn decimate_to(&mut self, target_triangles: usize) {
-        while self.mesh.triangle_count() > target_triangles {
-            if !self.collapse_one() {
+        let floor = target_triangles.max(3);
+        if self.mesh.triangle_count() <= floor {
+            return;
+        }
+        let Some(mut engine) = QemEngine::new(&self.mesh, CollapsePolicy::Unrestricted) else {
+            return;
+        };
+        let mut collapsed = false;
+        while engine.live_triangles() > floor {
+            let Some(outcome) = engine.collapse_cheapest(f64::INFINITY) else {
                 break;
-            }
+            };
+            self.history.push(outcome.record());
+            collapsed = true;
+        }
+        if collapsed {
+            engine.write_back(&mut self.mesh);
         }
     }
 }
@@ -185,24 +189,35 @@ impl EdgePriorityQueue {
         self.heap.is_empty()
     }
     /// Build a priority queue from all unique edges of a mesh with QEM costs.
+    ///
+    /// The cost of an edge is the quadric error of collapsing it to its optimal
+    /// position (see [`edge_collapse_cost`]).  The queue is empty when a triangle
+    /// references a vertex outside the mesh.
     pub fn from_mesh(mesh: &SimpleMesh) -> Self {
         let mut q = Self::new();
-        let mut seen: HashSet<(usize, usize)> = HashSet::new();
+        let n = mesh.vertex_count();
+        if mesh.triangles.iter().flatten().any(|&v| v >= n) {
+            return q;
+        }
+        let quadrics = compute_vertex_quadrics(mesh);
+        let mut edges: Vec<(usize, usize)> = Vec::with_capacity(mesh.triangles.len() * 3);
         for tri in &mesh.triangles {
             for &(a, b) in &[(tri[0], tri[1]), (tri[1], tri[2]), (tri[0], tri[2])] {
-                let key = if a < b { (a, b) } else { (b, a) };
-                if seen.insert(key) {
-                    let va = mesh.vertices[a];
-                    let vb = mesh.vertices[b];
-                    let cost =
-                        (va[0] - vb[0]).powi(2) + (va[1] - vb[1]).powi(2) + (va[2] - vb[2]).powi(2);
-                    q.push(MeshEdge {
-                        v0: key.0,
-                        v1: key.1,
-                        cost,
-                    });
+                if a != b {
+                    edges.push((a.min(b), a.max(b)));
                 }
             }
+        }
+        edges.sort_unstable();
+        edges.dedup();
+        for (a, b) in edges {
+            let (cost, _) = edge_collapse_cost(
+                mesh.vertices[a],
+                mesh.vertices[b],
+                &quadrics[a],
+                &quadrics[b],
+            );
+            q.push(MeshEdge { v0: a, v1: b, cost });
         }
         q
     }
@@ -469,59 +484,24 @@ impl QemDecimation {
     /// Collapse edges while preserving boundary geometry.
     ///
     /// Boundary edges (shared by exactly one triangle) are never collapsed.
-    /// Interior edges with QEM cost below `threshold` are collapsed greedily
-    /// using a priority queue.
+    /// Interior edges with QEM cost at most `threshold` are collapsed greedily,
+    /// cheapest first, with the incremental Garland–Heckbert engine: the quadrics
+    /// are built once and merged on every collapse, so the pass costs
+    /// `O(F log F)` for a mesh with `F` triangles.  Ties are broken on the vertex
+    /// pair, so the result is deterministic.
     ///
     /// Returns the number of collapses performed.
     pub fn preserve_boundary(&mut self, threshold: f64) -> usize {
-        let boundary_edges = find_boundary_edges(&self.mesh);
-        let boundary_set: HashSet<(usize, usize)> = boundary_edges
-            .iter()
-            .flat_map(|&(a, b)| [(a.min(b), a.max(b)), (a.min(b), a.max(b))])
-            .collect();
+        let Some(mut engine) = QemEngine::new(&self.mesh, CollapsePolicy::SkipBoundaryEdges) else {
+            return 0;
+        };
         let mut n_collapses = 0usize;
-        let mut keep_going = true;
-        while keep_going {
-            keep_going = false;
+        while engine.collapse_cheapest(threshold).is_some() {
+            n_collapses += 1;
+        }
+        if n_collapses > 0 {
+            engine.write_back(&mut self.mesh);
             self.recompute_quadrics();
-            let mut best: Option<(f64, [f64; 3], usize, usize)> = None;
-            for tri in &self.mesh.triangles {
-                for k in 0..3 {
-                    let v0 = tri[k];
-                    let v1 = tri[(k + 1) % 3];
-                    let key = (v0.min(v1), v0.max(v1));
-                    if boundary_set.contains(&key) {
-                        continue;
-                    }
-                    if v0 >= self.quadrics.len() || v1 >= self.quadrics.len() {
-                        continue;
-                    }
-                    let (cost, opt) = edge_collapse_cost(
-                        self.mesh.vertices[v0],
-                        self.mesh.vertices[v1],
-                        &self.quadrics[v0],
-                        &self.quadrics[v1],
-                    );
-                    if cost <= threshold && best.as_ref().is_none_or(|b| cost < b.0) {
-                        best = Some((cost, opt, v0, v1));
-                    }
-                }
-            }
-            if let Some((_cost, opt, v0, v1)) = best {
-                self.mesh.vertices[v0] = opt;
-                for tri in &mut self.mesh.triangles {
-                    for idx in tri.iter_mut() {
-                        if *idx == v1 {
-                            *idx = v0;
-                        }
-                    }
-                }
-                self.mesh
-                    .triangles
-                    .retain(|tri| tri[0] != tri[1] && tri[1] != tri[2] && tri[0] != tri[2]);
-                n_collapses += 1;
-                keep_going = true;
-            }
         }
         n_collapses
     }

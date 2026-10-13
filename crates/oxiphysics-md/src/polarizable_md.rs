@@ -16,7 +16,7 @@
 //! - [`MultipoleAtom`]: atom with permanent charge, dipole, and quadrupole moments.
 //! - [`ShellModelAtom`]: atom with a shell (Dick-Overhauser model).
 //! - [`Swm4NdpWater`]: SWM4-NDP polarizable water molecule.
-//! - \[`DrудеThermostat`\]: dual Langevin thermostat for Drude shells.
+//! - [`DrudeThermostat`]: dual Langevin thermostat for Drude shells.
 //!
 //! # Key functions
 //! - [`thole_damping`]: short-range damping factor for dipole–dipole interactions.
@@ -379,7 +379,7 @@ impl Swm4NdpWater {
 /// shells (T_drude, typically 1 K) so that shell degrees of freedom are
 /// kept cold while the molecular system is at the target temperature.
 #[derive(Debug, Clone)]
-pub struct DrудеThermostat {
+pub struct DrudeThermostat {
     /// Target temperature for real atoms (K).
     pub t_real: f64,
     /// Target temperature for Drude shells (K).
@@ -390,7 +390,7 @@ pub struct DrудеThermostat {
     pub gamma_drude: f64,
 }
 
-impl DrудеThermostat {
+impl DrudeThermostat {
     /// Create a new Drude thermostat.
     pub fn new(t_real: f64, t_drude: f64, gamma_real: f64, gamma_drude: f64) -> Self {
         Self {
@@ -401,12 +401,19 @@ impl DrудеThermostat {
         }
     }
 
-    /// Apply one Langevin step to a velocity vector.
+    /// Apply one Langevin (Ornstein-Uhlenbeck) step to a velocity vector.
     ///
-    /// v_new = v * (1 − γ dt) + σ * ξ / m  where σ = sqrt(2 m γ k_B T / dt)
+    /// Uses the exact OU propagator
     ///
-    /// Uses a simple Euler-Maruyama step with a pre-supplied Gaussian noise
-    /// vector `xi` (mean 0, variance 1 per component).
+    /// ```text
+    /// v_new = c1 * v + c2 * ξ,   c1 = exp(−γ dt),   c2 = sqrt((1 − c1²) k_B T / m)
+    /// ```
+    ///
+    /// with a pre-supplied Gaussian noise vector `xi` (mean 0, variance 1 per
+    /// component), so every velocity component has the stationary variance
+    /// `k_B T / m` for any step size.  (The Euler-Maruyama form
+    /// `v (1 − γ dt) + sqrt(2 γ k_B T / m) sqrt(dt) ξ` only agrees with this to
+    /// first order in `γ dt`.)
     pub fn apply_to_velocity(
         &self,
         vel: [f64; 3],
@@ -420,11 +427,26 @@ impl DrудеThermostat {
         } else {
             (self.t_real, self.gamma_real)
         };
-        let friction = 1.0 - gamma * dt;
-        let sigma = (2.0 * mass * gamma * K_BOLTZMANN * t / dt).sqrt();
-        let noise = scale3(sigma / mass, xi);
-        add3(scale3(friction, vel), noise)
+        ornstein_uhlenbeck_velocity(vel, mass, dt, gamma, t, xi)
     }
+}
+
+/// Exact Ornstein-Uhlenbeck velocity update `v → c1 v + c2 ξ`.
+///
+/// `c1 = exp(−γ dt)` and `c2 = sqrt((1 − c1²) k_B T / m)`, so that a velocity
+/// component driven by standard normal noise `ξ` has the stationary variance
+/// `k_B T / m`.  `dt = 0` or `γ = 0` leave the velocity unchanged.
+fn ornstein_uhlenbeck_velocity(
+    vel: [f64; 3],
+    mass: f64,
+    dt: f64,
+    gamma: f64,
+    temperature: f64,
+    xi: [f64; 3],
+) -> [f64; 3] {
+    let c1 = (-gamma * dt).exp();
+    let c2 = ((1.0 - c1 * c1).max(0.0) * K_BOLTZMANN * temperature / mass).sqrt();
+    add3(scale3(c1, vel), scale3(c2, xi))
 }
 
 // ============================================================================
@@ -809,6 +831,14 @@ pub fn many_body_polarization_correction(atoms: &[PolarizableAtom]) -> f64 {
 /// Updates the shell velocity of one Drude particle using a pre-supplied
 /// Gaussian random vector `xi`.  In practice `xi` is drawn from N(0,1)^3.
 ///
+/// The step is a force kick followed by the exact Ornstein-Uhlenbeck bath
+/// update:
+///
+/// ```text
+/// v' = v + (F / m) dt
+/// v_new = c1 * v' + c2 * ξ,   c1 = exp(−γ dt),   c2 = sqrt((1 − c1²) k_B T / m)
+/// ```
+///
 /// Returns the updated shell velocity.
 pub fn drude_thermostat_step(
     drude: &DrudeParticle,
@@ -819,12 +849,8 @@ pub fn drude_thermostat_step(
     xi: [f64; 3],
 ) -> [f64; 3] {
     let m = drude.shell_mass;
-    let friction = 1.0 - gamma_drude * dt;
-    let sigma = (2.0 * m * gamma_drude * K_BOLTZMANN * t_drude / dt).sqrt();
-    // v_new = friction * v + (F/m) * dt + sigma/m * xi
-    let acc = scale3(dt / m, force_on_shell);
-    let noise = scale3(sigma / m, xi);
-    add3(add3(scale3(friction, drude.shell_vel), acc), noise)
+    let kicked = add3(drude.shell_vel, scale3(dt / m, force_on_shell));
+    ornstein_uhlenbeck_velocity(kicked, m, dt, gamma_drude, t_drude, xi)
 }
 
 /// Compute the M-site position for SWM4-NDP water from O, H1, H2 positions.
@@ -1773,11 +1799,11 @@ mod tests {
         assert!(e.abs() < 1e-12);
     }
 
-    // ── DrудеThermostat ───────────────────────────────────────────────────────
+    // ── DrudeThermostat ───────────────────────────────────────────────────────
 
     #[test]
     fn test_drude_thermostat_new() {
-        let t = DrудеThermostat::new(300.0, 1.0, 5.0, 1000.0);
+        let t = DrudeThermostat::new(300.0, 1.0, 5.0, 1000.0);
         assert!((t.t_real - 300.0).abs() < 1e-12);
         assert!((t.t_drude - 1.0).abs() < 1e-12);
     }
@@ -1785,7 +1811,7 @@ mod tests {
     #[test]
     fn test_drude_thermostat_zero_gamma() {
         // With gamma=0, velocity is unchanged (no friction, no noise if sigma=0)
-        let ts = DrудеThermostat::new(0.0, 0.0, 0.0, 0.0);
+        let ts = DrudeThermostat::new(0.0, 0.0, 0.0, 0.0);
         let vel = [1.0, 2.0, 3.0];
         // sigma = sqrt(0) = 0, friction = 1 => vel unchanged
         let v_new = ts.apply_to_velocity(vel, 1.0, 0.001, [0.0; 3], false);
@@ -1819,5 +1845,114 @@ mod tests {
         let u = amoeba_induced_energy(&atoms);
         // induced_dipole is zero => energy = 0
         assert!(u.abs() < 1e-12);
+    }
+
+    // ── Drude thermostat statistics ───────────────────────────────────────────
+
+    /// Draw `n_steps` OU steps for a free particle and return the kinetic
+    /// temperature `m <v²> / k_B` averaged over the three Cartesian components.
+    fn free_particle_temperature(
+        thermostat: &DrudeThermostat,
+        is_drude: bool,
+        mass: f64,
+        dt: f64,
+        n_steps: usize,
+        seed: u64,
+    ) -> f64 {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        let mut vel = [0.0_f64; 3];
+        let mut sum_v2 = 0.0;
+        for _ in 0..n_steps {
+            let xi = crate::gaussian_noise::standard_normal_vec3(&mut rng);
+            vel = thermostat.apply_to_velocity(vel, mass, dt, xi, is_drude);
+            sum_v2 += vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2];
+        }
+        mass * sum_v2 / (3.0 * n_steps as f64 * K_BOLTZMANN)
+    }
+
+    #[test]
+    fn test_drude_thermostat_samples_target_temperature_for_any_dt() {
+        // Regression: the noise was sigma/m * xi with sigma = sqrt(2 m gamma k_B T / dt), i.e.
+        // 1/dt too large in velocity units (variance 1/dt^2), so <v²> exploded as dt -> 0.
+        let mass = 0.4 * 1.660_539e-27; // 0.4 Da Drude shell
+        for &(dt, gamma) in &[(1.0e-15, 3.0e14), (1.0e-14, 3.0e13), (1.0e-15, 1.5e14)] {
+            let ts = DrudeThermostat::new(300.0, 1.0, gamma, gamma);
+            let t_real = free_particle_temperature(&ts, false, mass, dt, 100_000, 42);
+            assert!(
+                (t_real - 300.0).abs() / 300.0 < 0.02,
+                "real-atom bath at dt = {dt}: measured {t_real} K, expected 300 K"
+            );
+            let t_drude = free_particle_temperature(&ts, true, mass, dt, 100_000, 43);
+            assert!(
+                (t_drude - 1.0).abs() < 0.02,
+                "Drude bath at dt = {dt}: measured {t_drude} K, expected 1 K"
+            );
+        }
+    }
+
+    #[test]
+    fn test_drude_thermostat_zero_gamma_or_zero_dt_leaves_velocity_unchanged() {
+        let vel = [1.5, -2.5, 0.5];
+        let xi = [1.0, -1.0, 2.0];
+        let frozen_bath = DrudeThermostat::new(300.0, 1.0, 0.0, 0.0);
+        assert_eq!(
+            frozen_bath.apply_to_velocity(vel, 1.0, 1e-3, xi, false),
+            vel
+        );
+        let ts = DrudeThermostat::new(300.0, 1.0, 5.0, 1000.0);
+        let v = ts.apply_to_velocity(vel, 1.0, 0.0, xi, true);
+        assert_eq!(v, vel, "dt = 0 must be a no-op and must not produce NaN");
+    }
+
+    #[test]
+    fn test_drude_thermostat_zero_temperature_is_exponential_decay() {
+        let ts = DrudeThermostat::new(0.0, 0.0, 4.0, 4.0);
+        let vel = [2.0, 0.0, -6.0];
+        let v = ts.apply_to_velocity(vel, 3.0, 0.1, [5.0, 5.0, 5.0], false);
+        let decay = (-0.4_f64).exp();
+        for k in 0..3 {
+            assert!((v[k] - decay * vel[k]).abs() < 1e-14, "component {k}");
+        }
+    }
+
+    #[test]
+    fn test_drude_thermostat_step_kicks_then_applies_bath() {
+        let mut drude = DrudeParticle::new(0, [0.0; 3], 1.0, 1000.0, 2.0);
+        drude.shell_vel = [1.0, 0.0, -1.0];
+        let force = [4.0, 2.0, 0.0];
+        let dt = 0.05;
+        // gamma = 0: pure force kick, v' = v + F dt / m.
+        let kick_only = drude_thermostat_step(&drude, force, dt, 0.0, 300.0, [3.0; 3]);
+        assert!((kick_only[0] - 1.1).abs() < 1e-14);
+        assert!((kick_only[1] - 0.05).abs() < 1e-14);
+        assert!((kick_only[2] + 1.0).abs() < 1e-14);
+        // T = 0: the kicked velocity then decays by exp(-gamma dt).
+        let damped = drude_thermostat_step(&drude, force, dt, 2.0, 0.0, [3.0; 3]);
+        let decay = (-0.1_f64).exp();
+        for k in 0..3 {
+            assert!(
+                (damped[k] - decay * kick_only[k]).abs() < 1e-14,
+                "component {k}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_drude_thermostat_step_samples_target_temperature() {
+        use rand::SeedableRng;
+        let mass = 0.4 * 1.660_539e-27;
+        let mut drude = DrudeParticle::new(0, [0.0; 3], 1.0, 1000.0, mass);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(8);
+        let (dt, gamma, n_steps) = (1.0e-15, 3.0e14, 100_000);
+        let mut sum_v2 = 0.0;
+        for _ in 0..n_steps {
+            let xi = crate::gaussian_noise::standard_normal_vec3(&mut rng);
+            drude.shell_vel = drude_thermostat_step(&drude, [0.0; 3], dt, gamma, 300.0, xi);
+            let v = drude.shell_vel;
+            sum_v2 += v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+        }
+        let t = mass * sum_v2 / (3.0 * n_steps as f64 * K_BOLTZMANN);
+        assert!((t - 300.0).abs() / 300.0 < 0.02, "measured T = {t} K");
     }
 }

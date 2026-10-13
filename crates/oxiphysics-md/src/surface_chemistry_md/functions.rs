@@ -4,8 +4,15 @@
 
 /// Boltzmann constant (J/K).
 pub(super) const KB: f64 = 1.380_649e-23;
+/// Boltzmann constant (eV/K), for the routines that work in eV, Å, amu and ps.
+pub(super) const KB_EV: f64 = 8.617_333_262e-5;
 /// Avogadro's number (mol⁻¹).
 pub(super) const NA: f64 = 6.022_140_76e23;
+/// One electron volt expressed in amu·Å²/ps² (CODATA 2018).
+///
+/// Multiplying a force in eV/Å by this factor and dividing by a mass in amu gives
+/// an acceleration in Å/ps²; dividing an amu·Å²/ps² kinetic energy by it gives eV.
+pub(super) const EV_TO_AMU_ANG2_PS2: f64 = 9_648.533_216;
 #[cfg(test)]
 mod tests {
 

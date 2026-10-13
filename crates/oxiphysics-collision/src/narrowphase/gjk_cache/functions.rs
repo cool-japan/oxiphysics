@@ -421,6 +421,18 @@ pub(super) fn johnson_triangle_fallback(
         (cp_ac, u_ac, 0.0, w_ac)
     }
 }
+/// Barycentric weight below which a simplex vertex does not take part in the
+/// closest point.
+const ACTIVE_WEIGHT_EPS: f64 = 1e-12;
+
+/// Number of simplex vertices that carry a positive barycentric weight (at least
+/// one: the closest point always lies on some vertex, edge or face).
+fn count_active(bary: &[f64; 4]) -> usize {
+    bary.iter()
+        .filter(|&&weight| weight > ACTIVE_WEIGHT_EPS)
+        .count()
+        .max(1)
+}
 /// Full Johnson sub-algorithm: find closest point on simplex to origin.
 ///
 /// Handles 1-, 2-, 3-, and 4-vertex simplices.  Returns the closest point,
@@ -445,10 +457,11 @@ pub fn johnson_closest_point(simplex: &[CachedSupport]) -> JohnsonSubResult {
         2 => {
             let (closest, u, v) =
                 johnson_segment(simplex[0].minkowski_point, simplex[1].minkowski_point);
+            let bary = [u, v, 0.0, 0.0];
             JohnsonSubResult {
                 closest,
-                bary: [u, v, 0.0, 0.0],
-                num_active: 2,
+                bary,
+                num_active: count_active(&bary),
                 origin_inside: len3_arr(closest) < 1e-10,
             }
         }
@@ -458,10 +471,11 @@ pub fn johnson_closest_point(simplex: &[CachedSupport]) -> JohnsonSubResult {
                 simplex[1].minkowski_point,
                 simplex[2].minkowski_point,
             );
+            let bary = [u, v, w, 0.0];
             JohnsonSubResult {
                 closest,
-                bary: [u, v, w, 0.0],
-                num_active: 3,
+                bary,
+                num_active: count_active(&bary),
                 origin_inside: len3_arr(closest) < 1e-10,
             }
         }
@@ -499,7 +513,7 @@ pub fn johnson_closest_point(simplex: &[CachedSupport]) -> JohnsonSubResult {
             JohnsonSubResult {
                 closest: best_closest,
                 bary: best_bary,
-                num_active: 4,
+                num_active: count_active(&best_bary),
                 origin_inside: false,
             }
         }
@@ -571,7 +585,7 @@ where
                 point_b: pb,
                 iterations: iter + 1,
                 warm_started,
-                intersecting: false,
+                intersecting: dist < termination.proximity_tol,
             };
         }
         prev_dist = dist;
@@ -592,8 +606,12 @@ where
         }
         let norm_dir = scale3_arr(direction, 1.0 / dir_len);
         let new_pt = support_fn(norm_dir);
+        // `new_pt` is extreme in direction `-closest`, so `-v_proj` is a lower
+        // bound on the true distance while `dist` is an upper bound (van den
+        // Bergen's criterion): once the two agree up to the tolerance the
+        // current simplex point is the closest point of the Minkowski difference.
         let v_proj = dot3_arr(new_pt.minkowski_point, norm_dir);
-        if v_proj < dist - termination.abs_tol {
+        if dist + v_proj <= termination.abs_tol.max(termination.rel_tol * dist) {
             let (pa, pb) = barycentric_witness(&simplex, &result.bary);
             cache.simplex_vertices = simplex;
             cache.last_direction = norm_dir;
@@ -607,8 +625,9 @@ where
                 intersecting: false,
             };
         }
-        simplex.push(new_pt);
+        // Reduce to the features that carry the closest point, then extend.
         prune_simplex_to_active(&mut simplex, &result.bary, result.num_active);
+        simplex.push(new_pt);
     }
     let result = johnson_closest_point(&simplex);
     let (pa, pb) = barycentric_witness(&simplex, &result.bary);
@@ -650,17 +669,37 @@ pub(super) fn barycentric_witness(
     (pa, pb)
 }
 /// Prune simplex vertices that have zero barycentric weight.
+///
+/// `bary[i]` is the weight of `simplex[i]` in the closest point of the simplex to
+/// the origin (see [`johnson_closest_point`]). Only vertices with a positive
+/// weight carry the closest point, so only those are kept (in order, at most
+/// `num_active` and never more than four); if every weight vanishes numerically
+/// the heaviest vertex is kept so the simplex never becomes empty.
 pub(super) fn prune_simplex_to_active(
     simplex: &mut Vec<CachedSupport>,
-    _bary: &[f64; 4],
+    bary: &[f64; 4],
     num_active: usize,
 ) {
-    if simplex.len() > num_active {
-        simplex.truncate(num_active);
+    if simplex.is_empty() {
+        return;
     }
-    if simplex.len() > 4 {
-        simplex.drain(0..simplex.len() - 4);
+    let mut kept: Vec<CachedSupport> = simplex
+        .iter()
+        .zip(bary.iter())
+        .filter(|&(_, &weight)| weight > ACTIVE_WEIGHT_EPS)
+        .map(|(vertex, _)| *vertex)
+        .collect();
+    if kept.is_empty() {
+        let heaviest = bary
+            .iter()
+            .take(simplex.len())
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map_or(0, |(index, _)| index);
+        kept.push(simplex[heaviest]);
     }
+    kept.truncate(num_active.max(1));
+    *simplex = kept;
 }
 /// Perform a full proximity query using GJK with warm starting.
 ///

@@ -276,6 +276,12 @@ impl TetMesh {
         // Edge pairs: the dihedral angle along an edge is between the two faces
         // sharing that edge. The 6 edges are (i,j) for i<j in {0,1,2,3}.
         // For edge (i,j), the two opposing vertices are the remaining two.
+        //
+        // With `e = p[j] - p[i]`, the vectors `e x (p[m] - p[i])` and
+        // `e x (p[n] - p[i])` are the in-face perpendiculars of the two faces
+        // rotated by the *same* +90 degrees about `e`.  The angle between them is
+        // therefore exactly the interior dihedral angle of the tetrahedron at that
+        // edge (no supplement is needed).
         let edges = [
             (0, 1, 2, 3),
             (0, 2, 1, 3),
@@ -302,8 +308,9 @@ impl TetMesh {
             } else {
                 let cos_a = n1.dot(&n2) / (len1 * len2);
                 let cos_a = cos_a.clamp(-1.0, 1.0);
-                // Dihedral angle is π minus the angle between outward normals.
-                angles[k] = std::f64::consts::PI - cos_a.acos();
+                // Interior dihedral angle: the angle between the two rotated
+                // in-face perpendiculars `n1` and `n2` (see above).
+                angles[k] = cos_a.acos();
             }
         }
         angles
@@ -1677,5 +1684,75 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), mesh.n_nodes(), "RCM must be a permutation");
+    }
+
+    // ── Dihedral angle tests ────────────────────────────────────────────────
+
+    /// The regular tetrahedron inscribed in a cube has all six interior dihedral
+    /// angles equal to `acos(1/3)` (about 70.53 degrees).
+    #[test]
+    fn test_tet_dihedral_regular_tet_is_acos_one_third() {
+        let nodes = vec![
+            Vec3::new(1.0, 1.0, 1.0),
+            Vec3::new(1.0, -1.0, -1.0),
+            Vec3::new(-1.0, 1.0, -1.0),
+            Vec3::new(-1.0, -1.0, 1.0),
+        ];
+        let angles = TetMesh::tet_dihedral_angles(&nodes, &[0, 1, 2, 3]);
+        let expected = (1.0_f64 / 3.0).acos();
+        for (k, a) in angles.iter().enumerate() {
+            assert!(
+                (a - expected).abs() < 1e-12,
+                "edge {k}: dihedral {a} rad, expected {expected} rad"
+            );
+        }
+        // 70.5288 degrees, not the 109.4712 degree supplement.
+        assert!((expected.to_degrees() - 70.528_779_365_509_3).abs() < 1e-9);
+    }
+
+    /// The corner tetrahedron has three right dihedral angles (edges meeting at
+    /// the origin) and three angles of `acos(1/sqrt(3))` = 54.7356 degrees.
+    #[test]
+    fn test_tet_dihedral_corner_tet_min_and_max() {
+        let nodes = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        ];
+        let mesh = TetMesh::new(nodes, vec![[0, 1, 2, 3]]);
+        let min_expected = (1.0_f64 / 3.0_f64.sqrt()).acos();
+        assert!((min_expected.to_degrees() - 54.735_610_317_245_35).abs() < 1e-9);
+        assert!((mesh.min_dihedral_angle() - min_expected).abs() < 1e-12);
+
+        let quality = compute_element_qualities(&mesh);
+        assert_eq!(quality.len(), 1);
+        assert!((quality[0].min_dihedral - min_expected).abs() < 1e-12);
+        assert!((quality[0].max_dihedral - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+    }
+
+    /// Dihedral angles are invariant under reflection (element orientation).
+    #[test]
+    fn test_tet_dihedral_orientation_independent() {
+        let nodes = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.5, 1.5, 0.0),
+            Vec3::new(0.7, 0.4, 1.2),
+        ];
+        let a = TetMesh::tet_dihedral_angles(&nodes, &[0, 1, 2, 3]);
+        let b = TetMesh::tet_dihedral_angles(&nodes, &[0, 2, 1, 3]);
+        // Swapping two vertices permutes edges but keeps the multiset of angles.
+        let mut a_sorted = a.to_vec();
+        let mut b_sorted = b.to_vec();
+        a_sorted.sort_by(|x, y| x.total_cmp(y));
+        b_sorted.sort_by(|x, y| x.total_cmp(y));
+        for (x, y) in a_sorted.iter().zip(b_sorted.iter()) {
+            assert!((x - y).abs() < 1e-12, "{x} vs {y}");
+        }
+        // A tetrahedron's dihedral angles always lie strictly in (0, pi).
+        for x in a {
+            assert!(x > 0.0 && x < std::f64::consts::PI);
+        }
     }
 }

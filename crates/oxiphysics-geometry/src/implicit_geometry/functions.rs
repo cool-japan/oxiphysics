@@ -5,6 +5,9 @@
 use super::types::{
     ContactPoint, IsoMeshResult, RayMarchResult, SdfCollisionResult, SdfGrid, Triangle,
 };
+use crate::mc_tables::{
+    MC_CORNER_OFFSETS, MC_EDGE_ASCENDING, MC_EDGE_TABLE, case_index, case_triangles,
+};
 
 #[inline]
 pub(super) fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -199,34 +202,17 @@ pub fn ray_march_relaxed<S: Sdf>(
         steps: max_steps,
     }
 }
-pub(super) const MC_EDGE_TABLE: [u16; 256] = [
-    0x000, 0xfff, 0x00f, 0xff0, 0x0f0, 0xf0f, 0x0ff, 0xf00, 0xf00, 0x0ff, 0xf0f, 0x0f0, 0xff0,
-    0x00f, 0xfff, 0x000, 0x00f, 0xff0, 0x000, 0xfff, 0x0ff, 0xf00, 0x0f0, 0xf0f, 0xff0, 0x00f,
-    0xfff, 0x000, 0xf0f, 0x0f0, 0xf00, 0x0ff, 0x0f0, 0xf0f, 0x0ff, 0xf00, 0x000, 0xfff, 0x00f,
-    0xff0, 0xf0f, 0x0f0, 0xf00, 0x0ff, 0xfff, 0x000, 0xff0, 0x00f, 0x0ff, 0xf00, 0x0f0, 0xf0f,
-    0x00f, 0xff0, 0x000, 0xfff, 0xf00, 0x0ff, 0xf0f, 0x0f0, 0xff0, 0x00f, 0xfff, 0x000, 0xf00,
-    0x0ff, 0xf0f, 0x0f0, 0xff0, 0x00f, 0xfff, 0x000, 0x000, 0xfff, 0x00f, 0xff0, 0x0f0, 0xf0f,
-    0x0ff, 0xf00, 0xff0, 0x00f, 0xfff, 0x000, 0xf0f, 0x0f0, 0xf00, 0x0ff, 0x00f, 0xff0, 0x000,
-    0xfff, 0x0ff, 0xf00, 0x0f0, 0xf0f, 0x0ff, 0xf00, 0x0f0, 0xf0f, 0x00f, 0xff0, 0x000, 0xfff,
-    0xf0f, 0x0f0, 0xf00, 0x0ff, 0xfff, 0x000, 0xff0, 0x00f, 0x0f0, 0xf0f, 0x0ff, 0xf00, 0x000,
-    0xfff, 0x00f, 0xff0, 0xf00, 0x0ff, 0xf0f, 0x0f0, 0xff0, 0x00f, 0xfff, 0x000, 0x000, 0xfff,
-    0x00f, 0xff0, 0x0f0, 0xf0f, 0x0ff, 0xf00, 0xf00, 0x0ff, 0xf0f, 0x0f0, 0xff0, 0x00f, 0xfff,
-    0x000, 0x00f, 0xff0, 0x000, 0xfff, 0x0ff, 0xf00, 0x0f0, 0xf0f, 0xff0, 0x00f, 0xfff, 0x000,
-    0xf0f, 0x0f0, 0xf00, 0x0ff, 0x0f0, 0xf0f, 0x0ff, 0xf00, 0x000, 0xfff, 0x00f, 0xff0, 0xf0f,
-    0x0f0, 0xf00, 0x0ff, 0xfff, 0x000, 0xff0, 0x00f, 0x0ff, 0xf00, 0x0f0, 0xf0f, 0x00f, 0xff0,
-    0x000, 0xfff, 0xf00, 0x0ff, 0xf0f, 0x0f0, 0xff0, 0x00f, 0xfff, 0x000, 0xf00, 0x0ff, 0xf0f,
-    0x0f0, 0xff0, 0x00f, 0xfff, 0x000, 0x000, 0xfff, 0x00f, 0xff0, 0x0f0, 0xf0f, 0x0ff, 0xf00,
-    0xff0, 0x00f, 0xfff, 0x000, 0xf0f, 0x0f0, 0xf00, 0x0ff, 0x00f, 0xff0, 0x000, 0xfff, 0x0ff,
-    0xf00, 0x0f0, 0xf0f, 0x0ff, 0xf00, 0x0f0, 0xf0f, 0x00f, 0xff0, 0x000, 0xfff, 0xf0f, 0x0f0,
-    0xf00, 0x0ff, 0xfff, 0x000, 0xff0, 0x00f, 0x0f0, 0xf0f, 0x0ff, 0xf00, 0x000, 0xfff, 0x00f,
-    0xff0, 0xf00, 0x0ff, 0xf0f, 0x0f0, 0xff0, 0x00f, 0xfff, 0x000,
-];
-/// Helper: linearly interpolate between two cube vertices on an edge.
+/// Helper: linearly interpolate the zero crossing between two grid nodes.
+///
+/// `p0`/`p1` are the node positions and `d0`/`d1` the signed distances there.  The
+/// crossing parameter is clamped to the edge; when the field is (numerically)
+/// constant along the edge (`|d1 - d0| < 1e-12`) the midpoint is returned.
 pub(super) fn interp_edge(p0: [f64; 3], d0: f64, p1: [f64; 3], d1: f64) -> [f64; 3] {
-    if (d1 - d0).abs() < 1e-12 {
-        return p0;
-    }
-    let t = d0 / (d0 - d1);
+    let t = if (d1 - d0).abs() < 1e-12 {
+        0.5
+    } else {
+        (d0 / (d0 - d1)).clamp(0.0, 1.0)
+    };
     [
         p0[0] + t * (p1[0] - p0[0]),
         p0[1] + t * (p1[1] - p0[1]),
@@ -235,8 +221,14 @@ pub(super) fn interp_edge(p0: [f64; 3], d0: f64, p1: [f64; 3], d1: f64) -> [f64;
 }
 /// Extract the zero isosurface from an [`SdfGrid`] using Marching Cubes.
 ///
-/// Returns an [`IsoMeshResult`] containing all output triangles.
-/// This is an independent implementation distinct from the one in `implicit`.
+/// Returns an [`IsoMeshResult`] containing all output triangles as an unindexed
+/// triangle soup.  A grid node is *inside* when its distance is negative.  The
+/// triangles are looked up in the standard 256-case Lorensen & Cline table shared
+/// with the other marching-cubes extractors of this crate and are wound
+/// counter-clockwise when seen from outside, so [`Triangle::normal`] points
+/// towards increasing distance.  Every crossing point is interpolated from the
+/// lower to the upper end of its grid edge, so neighbouring cells emit
+/// bit-identical vertices for a shared edge.
 pub fn extract_isosurface(grid: &SdfGrid) -> IsoMeshResult {
     let mut result = IsoMeshResult::default();
     if grid.nx < 2 || grid.ny < 2 || grid.nz < 2 {
@@ -245,62 +237,35 @@ pub fn extract_isosurface(grid: &SdfGrid) -> IsoMeshResult {
     for iz in 0..grid.nz - 1 {
         for iy in 0..grid.ny - 1 {
             for ix in 0..grid.nx - 1 {
-                let corners: [[usize; 3]; 8] = [
-                    [ix, iy, iz],
-                    [ix + 1, iy, iz],
-                    [ix + 1, iy + 1, iz],
-                    [ix, iy + 1, iz],
-                    [ix, iy, iz + 1],
-                    [ix + 1, iy, iz + 1],
-                    [ix + 1, iy + 1, iz + 1],
-                    [ix, iy + 1, iz + 1],
-                ];
+                let corners: [[usize; 3]; 8] = std::array::from_fn(|c| {
+                    let [di, dj, dk] = MC_CORNER_OFFSETS[c];
+                    [ix + di, iy + dj, iz + dk]
+                });
                 let vals: [f64; 8] =
                     std::array::from_fn(|i| grid.get(corners[i][0], corners[i][1], corners[i][2]));
+                let case = case_index(&vals, 0.0);
+                if case == 0 || case == 255 {
+                    continue;
+                }
                 let pts: [[f64; 3]; 8] = std::array::from_fn(|i| {
                     grid.cell_center(corners[i][0], corners[i][1], corners[i][2])
                 });
-                let mut cube_idx: usize = 0;
-                for (i, &val) in vals.iter().enumerate() {
-                    if val < 0.0 {
-                        cube_idx |= 1 << i;
-                    }
-                }
-                if MC_EDGE_TABLE[cube_idx] == 0 {
-                    continue;
-                }
-                let edge_mask = MC_EDGE_TABLE[cube_idx];
+                let edge_mask = MC_EDGE_TABLE[case];
                 let mut verts: [[f64; 3]; 12] = [[0.0; 3]; 12];
-                let edges = [
-                    (0, 1),
-                    (1, 2),
-                    (2, 3),
-                    (3, 0),
-                    (4, 5),
-                    (5, 6),
-                    (6, 7),
-                    (7, 4),
-                    (0, 4),
-                    (1, 5),
-                    (2, 6),
-                    (3, 7),
-                ];
-                for (e, &(i, j)) in edges.iter().enumerate() {
+                for (e, &[lo, hi]) in MC_EDGE_ASCENDING.iter().enumerate() {
                     if edge_mask & (1 << e) != 0 {
-                        verts[e] = interp_edge(pts[i], vals[i], pts[j], vals[j]);
+                        verts[e] = interp_edge(pts[lo], vals[lo], pts[hi], vals[hi]);
                     }
                 }
-                let active: Vec<usize> = (0..12).filter(|&e| edge_mask & (1 << e) != 0).collect();
-                if active.len() >= 3 {
-                    for i in 1..active.len() - 1 {
-                        let tri = Triangle {
-                            v0: verts[active[0]],
-                            v1: verts[active[i]],
-                            v2: verts[active[i + 1]],
-                        };
-                        result.triangles.push(tri);
-                        result.vertex_count += 3;
-                    }
+                for [a, b, c] in case_triangles(case) {
+                    // The table winds into the solid; swap two vertices so the
+                    // triangle faces out of it.
+                    result.triangles.push(Triangle {
+                        v0: verts[a],
+                        v1: verts[c],
+                        v2: verts[b],
+                    });
+                    result.vertex_count += 3;
                 }
             }
         }

@@ -528,16 +528,42 @@ pub struct ConstraintJacobian {
     pub num_dofs: usize,
     /// Row-major storage: `data[row * num_dofs + col]`.
     pub data: Vec<f64>,
+    /// Velocity-product term `J̇ q̇` of every constraint row (see
+    /// [`ConstraintJacobian::set_jdot_v`]).
+    jdot_v: Vec<f64>,
 }
 
 impl ConstraintJacobian {
-    /// Create a zero Jacobian of the given size.
+    /// Create a zero Jacobian of the given size (with a zero `J̇ q̇` term).
     pub fn new(num_constraints: usize, num_dofs: usize) -> Self {
         Self {
             num_constraints,
             num_dofs,
             data: vec![0.0; num_constraints * num_dofs],
+            jdot_v: vec![0.0; num_constraints],
         }
+    }
+
+    /// Set the velocity-product term `(J̇ q̇)_row = d/dt(J) q̇` of a constraint row.
+    ///
+    /// It is the part of the constraint acceleration `C̈ = J q̈ + J̇ q̇` that does
+    /// not depend on the accelerations, e.g. the centripetal term
+    /// `|v_rel⊥|² / d` of a distance row (see
+    /// [`acceleration_residual_distance`], which returns it when evaluated at
+    /// zero accelerations).  It is `0` for constraints that are linear in the
+    /// coordinates.  Used by [`dae_step_index1`]; rows outside the Jacobian are
+    /// ignored.
+    pub fn set_jdot_v(&mut self, row: usize, value: f64) {
+        if let Some(entry) = self.jdot_v.get_mut(row) {
+            *entry = value;
+        }
+    }
+
+    /// The velocity-product term `(J̇ q̇)_row` of a constraint row; `0.0` unless
+    /// set with [`ConstraintJacobian::set_jdot_v`] (and for rows outside the
+    /// Jacobian).
+    pub fn jdot_v(&self, row: usize) -> f64 {
+        self.jdot_v.get(row).copied().unwrap_or(0.0)
     }
 
     /// Set element `(row, col)`.
@@ -643,18 +669,41 @@ impl DaeState {
 /// By differentiating twice we obtain the index-1 system:
 /// ```text
 /// M q̈ = F + J^T λ
-/// J q̈ = −J̇ q̇ − α C − β Ċ    (with Baumgarte)
+/// J q̈ + J̇ q̇ = −2α Ċ − α² C    (with Baumgarte)
 /// ```
 ///
-/// This function performs one step of an **explicit forward Euler** solve
-/// at the *velocity level* (index-1 formulation) with Baumgarte stabilization.
+/// This function performs one step of a *semi-implicit (symplectic) Euler*
+/// integration of that acceleration-level system.  With the full
+/// effective-mass matrix `J M^{-1} J^T` it solves (Gauss–Seidel)
+///
+/// ```text
+/// (J M^{-1} J^T) λ = −2α Ċ − α² C − J̇ q̇ − J M^{-1} F
+/// ```
+///
+/// and then advances `v ← v + dt M^{-1} (F + J^T λ)` and `q ← q + dt v`.  The
+/// multiplier `λ` is therefore a *force-level* quantity (it is stored in
+/// `state.lambda`) and the external forces `F` are projected out of the
+/// constrained directions: after the step
+/// `J v = Ċ + dt (−2α Ċ − α² C − J̇ q̇)`.
+///
+/// The Jacobian is held constant over the step.  The velocity-product term
+/// `J̇ q̇` is read from [`ConstraintJacobian::jdot_v`] and is zero unless set,
+/// which is exact for constraints that are linear in `q` and for bodies at
+/// rest.  For a curved constraint (a distance row between moving bodies, say)
+/// set it with [`ConstraintJacobian::set_jdot_v`]; without it the multiplier
+/// misses the centripetal force and the constraint settles at a drift of about
+/// `|J̇ q̇| / α²`, whereas with it only the first-order (`O(dt)`) error of the
+/// explicit position update remains.
+///
+/// If `state.v` or `inv_mass` has fewer entries than `jac.num_dofs` the
+/// inputs are inconsistent and the state is left untouched.
 ///
 /// * `state` – current state (mutated in place).
-/// * `forces` – generalised forces `F`.
+/// * `forces` – generalised forces `F` (missing entries count as zero).
 /// * `jac` – constraint Jacobian `J`.
 /// * `inv_mass` – diagonal inverse mass.
-/// * `constraint_errors` – `C(q)` values.
-/// * `bparams` – Baumgarte parameters.
+/// * `constraint_errors` – `C(q)` values (missing entries count as zero).
+/// * `bparams` – Baumgarte parameters (`α` is used).
 /// * `dt` – time step.
 pub fn dae_step_index1(
     state: &mut DaeState,
@@ -665,26 +714,41 @@ pub fn dae_step_index1(
     bparams: BaumgarteParams,
     dt: f64,
 ) {
-    let _nd = state.q.len();
     let nc = jac.num_constraints;
+    let nd = jac.num_dofs;
+    if state.v.len() < nd || inv_mass.len() < nd {
+        return;
+    }
 
-    // Compute velocity-level errors Ċ = J v
+    // Constraint-space velocity Ċ = J v.
     let cdot = jac.mul_velocity(&state.v);
 
-    // Compute Baumgarte biases
-    let bias: Vec<f64> = (0..nc)
+    // Free acceleration a_free = M^{-1} F and its constraint-space image
+    // J M^{-1} F, which has to be cancelled by the constraint force.
+    let free_acc: Vec<f64> = inv_mass
+        .iter()
+        .take(nd)
+        .enumerate()
+        .map(|(k, inv_m)| inv_m * forces.get(k).copied().unwrap_or(0.0))
+        .collect();
+    let j_free_acc = jac.mul_velocity(&free_acc);
+
+    // Right-hand side: Baumgarte acceleration target minus the
+    // velocity-product term J̇ q̇ and minus J M^{-1} F.
+    let rhs: Vec<f64> = (0..nc)
         .map(|i| {
-            bparams.velocity_bias(
+            bparams.acceleration_bias(
                 constraint_errors.get(i).copied().unwrap_or(0.0),
                 cdot.get(i).copied().unwrap_or(0.0),
-            )
+            ) - jac.jdot_v(i)
+                - j_free_acc.get(i).copied().unwrap_or(0.0)
         })
         .collect();
 
-    // Build J M^{-1} J^T (diagonal approximation for efficiency)
+    // Full J M^{-1} J^T.
     let eff_mass_matrix = jac.effective_mass_matrix(inv_mass);
 
-    // Solve for Lagrange multipliers λ using Gauss-Seidel
+    // Solve for the Lagrange multipliers λ using Gauss-Seidel.
     let mut lambda = vec![0.0f64; nc];
     for _gs in 0..20 {
         for i in 0..nc {
@@ -698,12 +762,12 @@ pub fn dae_step_index1(
                     off += eff_mass_matrix[i][j] * lambda[j];
                 }
             }
-            lambda[i] = (bias[i] - cdot[i] - off) / diag;
+            lambda[i] = (rhs[i] - off) / diag;
         }
     }
     state.lambda = lambda.clone();
 
-    // Compute constraint forces J^T λ
+    // Constraint forces J^T λ.
     let constraint_forces = jac.mul_lambda(&lambda);
 
     // Update velocities: v += dt * M^{-1} * (F + J^T λ)
@@ -728,7 +792,9 @@ pub fn dae_step_index1(
 /// J v^{n+1} + α C + β Ċ = 0
 /// ```
 ///
-/// Implemented via one iteration of the index-1 Gauss-Seidel solve.
+/// Implemented via one iteration of the index-1 Gauss-Seidel solve.  If
+/// `state.v` or `inv_mass` has fewer entries than `jac.num_dofs` the inputs are
+/// inconsistent and the state is left untouched.
 pub fn dae_bdf1_step(
     state: &mut DaeState,
     forces: &[f64],
@@ -738,6 +804,11 @@ pub fn dae_bdf1_step(
     bparams: BaumgarteParams,
     dt: f64,
 ) {
+    // `ConstraintJacobian::mul_velocity` indexes `v` by DOF: reject inconsistent
+    // dimensions instead of panicking.
+    if state.v.len() < jac.num_dofs || inv_mass.len() < jac.num_dofs {
+        return;
+    }
     // For BDF-1 the effective mass is M/dt on the diagonal.
     // We scale inv_mass to M/dt: eff_inv = dt * inv_mass
     let scaled_inv_mass: Vec<f64> = inv_mass.iter().map(|m| m * dt).collect();
@@ -1506,6 +1577,375 @@ mod tests {
             dot(&jacobians[1], &v).abs() < 1e-8,
             "J1v={}",
             dot(&jacobians[1], &v)
+        );
+    }
+
+    // ---- DAE index-1 acceleration-level solve -------------------------------
+
+    /// Distance row `C = |q_b - q_a| - rest` and its Jacobian for two particles
+    /// whose positions occupy DOFs `0..3` (A) and `3..6` (B).
+    fn rod_error_and_jacobian(q: &[f64], rest: f64) -> (f64, ConstraintJacobian) {
+        let pa = [q[0], q[1], q[2]];
+        let pb = [q[3], q[4], q[5]];
+        let rod = DistanceConstraintHolo::new(0, 1, rest);
+        let (j_a, j_b) = rod.jacobian(pa, pb);
+        let mut jac = ConstraintJacobian::new(1, 6);
+        for d in 0..3 {
+            jac.set(0, d, j_a[d]);
+            jac.set(0, 3 + d, j_b[d]);
+        }
+        (rod.evaluate(pa, pb), jac)
+    }
+
+    /// A bob of mass `mass` hanging `length` below a *static* pivot (inverse
+    /// mass zero) at the origin, with gravity acting along the rod.
+    fn hanging_bob(mass: f64, length: f64) -> (DaeState, Vec<f64>, Vec<f64>) {
+        let mut state = DaeState::new(6, 1);
+        state.q[4] = -length;
+        let inv_mass = vec![0.0, 0.0, 0.0, 1.0 / mass, 1.0 / mass, 1.0 / mass];
+        let forces = vec![0.0, 0.0, 0.0, 0.0, -9.81 * mass, 0.0];
+        (state, inv_mass, forces)
+    }
+
+    /// `J̇ q̇` of the rod row: the centripetal term, i.e. the distance-row
+    /// acceleration residual evaluated at zero accelerations.
+    fn rod_velocity_product(state: &DaeState) -> f64 {
+        let pa = [state.q[0], state.q[1], state.q[2]];
+        let pb = [state.q[3], state.q[4], state.q[5]];
+        let va = [state.v[0], state.v[1], state.v[2]];
+        let vb = [state.v[3], state.v[4], state.v[5]];
+        acceleration_residual_distance(pa, pb, va, vb, [0.0; 3], [0.0; 3])
+    }
+
+    /// 41. External forces are projected out of the constrained direction.
+    #[test]
+    fn test_dae_step_index1_holds_hanging_bob_against_gravity() {
+        // A bob hanging on a rod under gravity keeps the rest distance and the
+        // multiplier carries the weight.
+        let (mut state, inv_mass, forces) = hanging_bob(2.0, 1.0);
+        let bp = BaumgarteParams::critically_damped(10.0);
+        let mut worst = 0.0_f64;
+        for _ in 0..1000 {
+            let (err, jac) = rod_error_and_jacobian(&state.q, 1.0);
+            dae_step_index1(&mut state, &forces, &jac, &inv_mass, &[err], bp, 0.01);
+            let (err_after, _) = rod_error_and_jacobian(&state.q, 1.0);
+            worst = worst.max(err_after.abs());
+        }
+        assert!(worst < 1e-6, "rod drifted by {worst}");
+        // J = [-n, n] with n = -y, so the constraint force on the bob is
+        // n * lambda = +y * (-lambda): lambda = -m g balances the weight.
+        assert!(
+            (state.lambda[0] + 2.0 * 9.81).abs() < 1e-6,
+            "lambda = {}",
+            state.lambda[0]
+        );
+        for k in 0..3 {
+            assert!(state.q[k].abs() < 1e-12, "pivot moved: {}", state.q[k]);
+            assert!(state.v[k].abs() < 1e-12, "pivot gained velocity");
+        }
+        assert!(state.v[4].abs() < 1e-6, "bob speed = {}", state.v[4]);
+    }
+
+    /// 42. Baumgarte feedback drives an initial position error to zero.
+    #[test]
+    fn test_dae_step_index1_baumgarte_removes_initial_error() {
+        let (mut state, inv_mass, forces) = hanging_bob(1.0, 1.05);
+        let bp = BaumgarteParams::critically_damped(10.0);
+        let (c0, _) = rod_error_and_jacobian(&state.q, 1.0);
+        assert!((c0 - 0.05).abs() < 1e-12);
+        let mut previous = c0;
+        for step in 0..1000 {
+            let (err, jac) = rod_error_and_jacobian(&state.q, 1.0);
+            dae_step_index1(&mut state, &forces, &jac, &inv_mass, &[err], bp, 0.01);
+            let (after, _) = rod_error_and_jacobian(&state.q, 1.0);
+            if step < 50 {
+                assert!(
+                    after < previous + 1e-12,
+                    "step {step}: {after} >= {previous}"
+                );
+            }
+            previous = after;
+        }
+        assert!(previous.abs() < 1e-6, "residual error {previous}");
+    }
+
+    /// 43. The step enforces the acceleration-level constraint exactly.
+    #[test]
+    fn test_dae_step_index1_enforces_acceleration_level_rows() {
+        // `J v_new = Cdot + dt * (-2 alpha Cdot - alpha^2 C)` for every row,
+        // with arbitrary external forces and coupled rows.
+        let mut jac = ConstraintJacobian::new(2, 4);
+        let rows = [[1.0, -1.0, 0.0, 0.0], [0.0, 1.0, -1.0, 0.5]];
+        for (r, row) in rows.iter().enumerate() {
+            for (c, value) in row.iter().enumerate() {
+                jac.set(r, c, *value);
+            }
+        }
+        let inv_mass = vec![1.0, 0.5, 2.0, 1.0];
+        let forces = vec![1.0, -2.0, 0.5, 3.0];
+        let errors = [0.02, -0.01];
+        let mut state = DaeState::new(4, 2);
+        state.v = vec![0.3, -0.2, 0.1, 0.4];
+        let bp = BaumgarteParams::critically_damped(5.0);
+        let dt = 0.01;
+        let cdot_old = jac.mul_velocity(&state.v);
+        dae_step_index1(&mut state, &forces, &jac, &inv_mass, &errors, bp, dt);
+        let cdot_new = jac.mul_velocity(&state.v);
+        for i in 0..2 {
+            let target = cdot_old[i] + dt * bp.acceleration_bias(errors[i], cdot_old[i]);
+            assert!(
+                (cdot_new[i] - target).abs() < 1e-9,
+                "row {i}: J v = {} expected {target}",
+                cdot_new[i]
+            );
+        }
+    }
+
+    /// 44. Inconsistent dimensions leave the state untouched instead of panicking.
+    #[test]
+    fn test_dae_step_index1_rejects_inconsistent_dimensions() {
+        let jac = ConstraintJacobian::new(1, 3);
+        let bp = BaumgarteParams::critically_damped(10.0);
+        // Velocity vector shorter than the Jacobian's DOF count.
+        let mut short_v = DaeState::new(2, 1);
+        short_v.q = vec![1.0, 2.0];
+        short_v.v = vec![0.5, 0.25];
+        dae_step_index1(&mut short_v, &[0.0; 3], &jac, &[1.0; 3], &[0.1], bp, 0.01);
+        assert_eq!(short_v.q, vec![1.0, 2.0]);
+        assert_eq!(short_v.v, vec![0.5, 0.25]);
+        // Inverse-mass vector shorter than the Jacobian's DOF count.
+        let mut ok_state = DaeState::new(3, 1);
+        ok_state.v = vec![1.0, 2.0, 3.0];
+        dae_step_index1(
+            &mut ok_state,
+            &[0.0; 3],
+            &jac,
+            &[1.0, 1.0],
+            &[0.1],
+            bp,
+            0.01,
+        );
+        assert_eq!(ok_state.q, vec![0.0; 3]);
+        assert_eq!(ok_state.v, vec![1.0, 2.0, 3.0]);
+    }
+
+    /// 45. BDF-1 shares the dimension guard.
+    #[test]
+    fn test_dae_bdf1_step_rejects_inconsistent_dimensions() {
+        let jac = ConstraintJacobian::new(1, 3);
+        let bp = BaumgarteParams::critically_damped(10.0);
+        let mut state = DaeState::new(2, 1);
+        state.q = vec![1.0, 2.0];
+        state.v = vec![0.5, 0.25];
+        dae_bdf1_step(&mut state, &[0.0; 3], &jac, &[1.0; 3], &[0.1], bp, 0.01);
+        assert_eq!(state.q, vec![1.0, 2.0]);
+        assert_eq!(state.v, vec![0.5, 0.25]);
+    }
+
+    /// The velocity-product term is stored per row; unset and out-of-range
+    /// rows read as zero.
+    #[test]
+    fn test_jacobian_velocity_product_term_defaults_to_zero() {
+        let mut jac = ConstraintJacobian::new(2, 3);
+        assert_eq!(jac.jdot_v(0), 0.0);
+        assert_eq!(jac.jdot_v(1), 0.0);
+        jac.set_jdot_v(1, 2.5);
+        assert_eq!(jac.jdot_v(0), 0.0);
+        assert_eq!(jac.jdot_v(1), 2.5);
+        // Rows outside the Jacobian are ignored.
+        jac.set_jdot_v(7, 9.0);
+        assert_eq!(jac.jdot_v(7), 0.0);
+        assert_eq!(jac.clone().jdot_v(1), 2.5);
+    }
+
+    /// With a velocity-product term the step enforces
+    /// `J v_new = Cdot + dt (bias - J̇q̇)` exactly.
+    #[test]
+    fn test_dae_step_index1_includes_the_velocity_product_term() {
+        let mut jac = ConstraintJacobian::new(2, 4);
+        let rows = [[1.0, -1.0, 0.0, 0.0], [0.0, 1.0, -1.0, 0.5]];
+        for (r, row) in rows.iter().enumerate() {
+            for (c, value) in row.iter().enumerate() {
+                jac.set(r, c, *value);
+            }
+        }
+        jac.set_jdot_v(0, 1.5);
+        jac.set_jdot_v(1, -0.5);
+        let inv_mass = vec![1.0, 0.5, 2.0, 1.0];
+        let forces = vec![1.0, -2.0, 0.5, 3.0];
+        let errors = [0.02, -0.01];
+        let mut state = DaeState::new(4, 2);
+        state.v = vec![0.3, -0.2, 0.1, 0.4];
+        let bp = BaumgarteParams::critically_damped(5.0);
+        let dt = 0.01;
+        let cdot_old = jac.mul_velocity(&state.v);
+        dae_step_index1(&mut state, &forces, &jac, &inv_mass, &errors, bp, dt);
+        let cdot_new = jac.mul_velocity(&state.v);
+        for i in 0..2 {
+            let target =
+                cdot_old[i] + dt * (bp.acceleration_bias(errors[i], cdot_old[i]) - jac.jdot_v(i));
+            assert!(
+                (cdot_new[i] - target).abs() < 1e-9,
+                "row {i}: J v = {} expected {target}",
+                cdot_new[i]
+            );
+        }
+        // The term changes the outcome: it is not a no-op.
+        let mut without = DaeState::new(4, 2);
+        without.v = vec![0.3, -0.2, 0.1, 0.4];
+        let mut plain = jac.clone();
+        plain.set_jdot_v(0, 0.0);
+        plain.set_jdot_v(1, 0.0);
+        dae_step_index1(&mut without, &forces, &plain, &inv_mass, &errors, bp, dt);
+        assert!((without.v[0] - state.v[0]).abs() > 1e-6);
+    }
+
+    /// A swinging pendulum needs `J̇q̇`: with it the rod keeps its length to
+    /// the first-order integration error, without it the missing centripetal
+    /// force lets the rod stretch by about `|J̇q̇| / alpha^2`.
+    #[test]
+    fn test_dae_step_index1_pendulum_needs_the_velocity_product_term() {
+        let length = 1.0;
+        let mass = 1.0;
+        let alpha = 10.0;
+        // Ten seconds of swinging from 30 degrees; returns the largest rod
+        // length error and the top bob speed.
+        let run = |with_jdot: bool, dt: f64| -> (f64, f64) {
+            let angle = std::f64::consts::FRAC_PI_6;
+            let (mut state, inv_mass, forces) = hanging_bob(mass, length);
+            state.q[3] = length * angle.sin();
+            state.q[4] = -length * angle.cos();
+            let bp = BaumgarteParams::critically_damped(alpha);
+            let steps = (10.0 / dt).round() as usize;
+            let mut worst_error = 0.0_f64;
+            let mut top_speed = 0.0_f64;
+            for _ in 0..steps {
+                let (err, mut jac) = rod_error_and_jacobian(&state.q, length);
+                if with_jdot {
+                    jac.set_jdot_v(0, rod_velocity_product(&state));
+                }
+                dae_step_index1(&mut state, &forces, &jac, &inv_mass, &[err], bp, dt);
+                let (after, _) = rod_error_and_jacobian(&state.q, length);
+                worst_error = worst_error.max(after.abs());
+                top_speed = top_speed.max(norm3([state.v[3], state.v[4], state.v[5]]));
+            }
+            (worst_error, top_speed)
+        };
+        let (with_error, with_speed) = run(true, 0.01);
+        let (without_error, without_speed) = run(false, 0.01);
+        assert!(
+            with_speed > 1.5 && without_speed > 1.5,
+            "the bob must swing: {with_speed} / {without_speed} m/s"
+        );
+        assert!(with_error < 4e-3, "rod length error {with_error}");
+        assert!(
+            without_error > 1.2e-2,
+            "without J̇q̇ the rod must stretch, got {without_error}"
+        );
+        assert!(
+            without_error > 5.0 * with_error,
+            "J̇q̇ must cut the drift: {with_error} vs {without_error}"
+        );
+        // Halving the step halves the remaining error (first order in dt) while
+        // the drift of the neglected-term variant stays at |J̇q̇| / alpha^2.
+        let (fine_with, _) = run(true, 0.005);
+        let (fine_without, _) = run(false, 0.005);
+        assert!(
+            fine_with < 0.65 * with_error,
+            "error must shrink with dt: {fine_with} vs {with_error}"
+        );
+        assert!(
+            fine_without > 0.8 * without_error,
+            "the neglected-term drift does not depend on dt: {fine_without} vs {without_error}"
+        );
+    }
+
+    /// Two free particles of different mass joined by a rod and spinning about
+    /// their centre of mass while falling: the multiplier is the centripetal
+    /// tension `mu * omega^2 * L` (`mu` the reduced mass), the constraint force
+    /// is internal so the centre of mass falls freely, and the rod keeps its
+    /// length (it stretches without the `J̇q̇` term).
+    #[test]
+    fn test_dae_step_index1_spinning_dumbbell_carries_the_centripetal_tension() {
+        let (mass_a, mass_b, length, gravity) = (1.0, 3.0, 1.0, 9.81);
+        let reduced_mass = mass_a * mass_b / (mass_a + mass_b);
+        let x_cm = (mass_a * -0.5 + mass_b * 0.5) / (mass_a + mass_b);
+        let (alpha, dt, steps) = (10.0, 0.01, 1000);
+        let inv_mass = vec![
+            1.0 / mass_a,
+            1.0 / mass_a,
+            1.0 / mass_a,
+            1.0 / mass_b,
+            1.0 / mass_b,
+            1.0 / mass_b,
+        ];
+        let forces = vec![0.0, -mass_a * gravity, 0.0, 0.0, -mass_b * gravity, 0.0];
+        let bp = BaumgarteParams::critically_damped(alpha);
+        // Returns (largest rod length error, first multiplier, largest
+        // multiplier magnitude, centre-of-mass vertical velocity).
+        let run = |omega: f64, with_jdot: bool| -> (f64, f64, f64, f64) {
+            let mut state = DaeState::new(6, 1);
+            state.q = vec![-0.5, 0.0, 0.0, 0.5, 0.0, 0.0];
+            // Rigid rotation about the centre of mass: the relative velocity
+            // is perpendicular to the rod, so the state is consistent.
+            state.v[1] = omega * (-0.5 - x_cm);
+            state.v[4] = omega * (0.5 - x_cm);
+            let mut worst_error = 0.0_f64;
+            let mut first_lambda = 0.0;
+            let mut largest_lambda = 0.0_f64;
+            for step in 0..steps {
+                let (err, mut jac) = rod_error_and_jacobian(&state.q, length);
+                if with_jdot {
+                    jac.set_jdot_v(0, rod_velocity_product(&state));
+                }
+                dae_step_index1(&mut state, &forces, &jac, &inv_mass, &[err], bp, dt);
+                if step == 0 {
+                    first_lambda = state.lambda[0];
+                }
+                largest_lambda = largest_lambda.max(state.lambda[0].abs());
+                let (after, _) = rod_error_and_jacobian(&state.q, length);
+                worst_error = worst_error.max(after.abs());
+            }
+            let cm_velocity = (mass_a * state.v[1] + mass_b * state.v[4]) / (mass_a + mass_b);
+            (worst_error, first_lambda, largest_lambda, cm_velocity)
+        };
+        let fall = -gravity * dt * steps as f64;
+
+        // Pure free fall: no constraint force is needed at all.
+        let (error, first, largest, cm_velocity) = run(0.0, true);
+        assert!(error < 1e-12, "rod length error {error}");
+        assert!(
+            first.abs() < 1e-9 && largest < 1e-9,
+            "lambda {first} / {largest}"
+        );
+        assert!((cm_velocity - fall).abs() < 1e-9, "v_cm = {cm_velocity}");
+
+        // Spinning at 1 rad/s.  In the first step the state is consistent
+        // (C = 0, Cdot = 0) and both particles accelerate with gravity, so the
+        // multiplier is exactly minus the centripetal tension (the rod pulls).
+        let omega = 1.0;
+        let (error, first, _, cm_velocity) = run(omega, true);
+        let tension = reduced_mass * omega * omega * length;
+        assert!(
+            (first + tension).abs() < 1e-9,
+            "first multiplier {first}, centripetal tension {tension}"
+        );
+        assert!((cm_velocity - fall).abs() < 1e-9, "v_cm = {cm_velocity}");
+        assert!(error < 2e-3, "rod length error {error}");
+
+        // Without the velocity-product term the rod stretches.
+        let (neglected_error, neglected_first, _, _) = run(omega, false);
+        assert!(
+            neglected_error > 5e-3,
+            "neglected-term error {neglected_error}"
+        );
+        assert!(
+            neglected_error > 4.0 * error,
+            "{neglected_error} vs {error}"
+        );
+        assert!(
+            neglected_first.abs() < 1e-9,
+            "without J̇q̇ the first multiplier misses the tension: {neglected_first}"
         );
     }
 }

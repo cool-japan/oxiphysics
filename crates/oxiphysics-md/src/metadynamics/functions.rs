@@ -3,6 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::types::{GaussianHill, MetadynamicsState};
+use crate::free_energy::bar::log_mean_fermi;
 
 /// Boltzmann constant in kJ/mol/K
 pub(super) const KB: f64 = 8.314e-3;
@@ -270,6 +271,114 @@ mod tests {
         }
     }
     #[test]
+    fn test_multiple_walkers_repeated_sync_does_not_multiply_hills() {
+        let mut mw = MultipleWalkersMetadynamics::new(3, || {
+            MetadynamicsParams::new(1.0, vec![0.5], 1, 300.0, 0.0)
+        });
+        for (k, walker) in mw.walkers.iter_mut().enumerate() {
+            walker.maybe_deposit(&[k as f64]);
+        }
+        mw.synchronise();
+        mw.synchronise();
+        for walker in &mw.walkers {
+            assert_eq!(
+                walker.hills.len(),
+                3,
+                "a second sync must not duplicate hills"
+            );
+        }
+        assert_eq!(mw.shared_hills().len(), 3);
+        // One more deposit on walker 0 only.
+        mw.walkers[0].maybe_deposit(&[5.0]);
+        mw.synchronise();
+        for walker in &mw.walkers {
+            assert_eq!(walker.hills.len(), 4);
+        }
+        mw.synchronise();
+        mw.synchronise();
+        for walker in &mw.walkers {
+            assert_eq!(walker.hills.len(), 4);
+        }
+        assert_eq!(mw.total_hills(), 12);
+        assert_eq!(mw.shared_hills().len(), 4);
+    }
+    #[test]
+    fn test_multiple_walkers_bias_counts_every_hill_exactly_once() {
+        let mut mw = MultipleWalkersMetadynamics::new(2, || {
+            MetadynamicsParams::new(1.0, vec![0.5], 1, 300.0, 0.0)
+        });
+        mw.walkers[0].maybe_deposit(&[0.0]);
+        mw.walkers[1].maybe_deposit(&[1.0]);
+        for _ in 0..3 {
+            mw.synchronise();
+        }
+        mw.walkers[1].maybe_deposit(&[2.0]);
+        for _ in 0..3 {
+            mw.synchronise();
+        }
+        let expected: f64 = [0.0, 1.0, 2.0]
+            .iter()
+            .map(|&c| GaussianHill::new(vec![c], 1.0, vec![0.5]).evaluate(&[0.8]))
+            .sum();
+        for walker in &mw.walkers {
+            let bias = walker.bias_potential(&[0.8]);
+            assert!(
+                (bias - expected).abs() < 1e-12,
+                "bias {bias} vs the three distinct hills {expected}"
+            );
+        }
+    }
+    #[test]
+    fn test_multiple_walkers_simultaneous_deposits_are_all_shared() {
+        let mut mw = MultipleWalkersMetadynamics::new(2, || {
+            MetadynamicsParams::new(1.0, vec![0.5], 1, 300.0, 0.0)
+        });
+        mw.walkers[0].maybe_deposit(&[0.0]);
+        mw.walkers[1].maybe_deposit(&[1.0]);
+        mw.synchronise();
+        // Both walkers deposit again between two synchronisations.
+        mw.walkers[0].maybe_deposit(&[2.0]);
+        mw.walkers[1].maybe_deposit(&[3.0]);
+        mw.walkers[1].maybe_deposit(&[4.0]);
+        mw.synchronise();
+        for walker in &mw.walkers {
+            assert_eq!(walker.hills.len(), 5);
+            let mut centers: Vec<f64> = walker.hills.iter().map(|h| h.center[0]).collect();
+            centers.sort_by(|a, b| a.total_cmp(b));
+            assert_eq!(centers, vec![0.0, 1.0, 2.0, 3.0, 4.0]);
+        }
+    }
+    #[test]
+    fn test_multiple_walkers_late_walker_and_empty_sync() {
+        let mut mw = MultipleWalkersMetadynamics::new(1, || {
+            MetadynamicsParams::new(1.0, vec![0.5], 1, 300.0, 0.0)
+        });
+        mw.synchronise();
+        assert!(mw.shared_hills().is_empty());
+        mw.walkers[0].maybe_deposit(&[0.0]);
+        mw.synchronise();
+        // A walker added after construction brings its own hills into the pool.
+        let mut late =
+            MetadynamicsState::new(MetadynamicsParams::new(1.0, vec![0.5], 1, 300.0, 0.0));
+        late.maybe_deposit(&[7.0]);
+        mw.walkers.push(late);
+        mw.synchronise();
+        assert_eq!(mw.n_walkers(), 2);
+        for walker in &mw.walkers {
+            assert_eq!(walker.hills.len(), 2);
+        }
+        assert_eq!(mw.shared_hills().len(), 2);
+    }
+    #[test]
+    fn test_gaussian_hill_is_clone_and_debug() {
+        let hill = GaussianHill::new(vec![0.5, 1.5], 2.0, vec![0.1, 0.2]);
+        let copy = hill.clone();
+        assert_eq!(copy.center, hill.center);
+        assert_eq!(copy.height, hill.height);
+        assert_eq!(copy.widths, hill.widths);
+        assert!(format!("{hill:?}").contains("GaussianHill"));
+    }
+    #[test]
     fn test_reconstruct_fes_1d_length() {
         let params = MetadynamicsParams::new(1.0, vec![0.5], 1, 300.0, 0.0);
         let mut state = MetadynamicsState::new(params);
@@ -397,28 +506,37 @@ pub fn free_energy_perturbation(delta_u: &[f64], temperature: f64) -> f64 {
 }
 /// Bennett acceptance ratio (BAR) single-iteration estimate.
 ///
-/// ΔF ≈ k_B*T * ln(<f(U_0 - U_1 + C)>_1 / <f(U_1 - U_0 - C)>_0) + C
-/// where f(x) = 1 / (1 + exp(x*beta)) is the Fermi function and C is an initial guess.
+/// ΔF = C + k_B*T * ln( <f(β(U_0 - U_1 + C))>_1 / <f(β(U_1 - U_0 - C))>_0 )
+/// where f(x) = 1 / (1 + exp(x)) is the Fermi function, β = 1/(k_B*T) and C is
+/// the trial shift `c_guess`.
+///
+/// This is Bennett's identity `exp(-βΔF) = <f(β(ΔU - C))>_0 / <f(-β(ΔU - C))>_1 * exp(-βC)`,
+/// which holds exactly (in expectation) for every constant C, so a single
+/// evaluation already returns a consistent estimate.  The variance is smallest
+/// for `C = ΔF + k_B*T*ln(n_1/n_0)`; for equal sample counts feeding the result
+/// back in as the new `c_guess` converges to the self-consistent BAR solution.
+/// The two Fermi averages are evaluated in log space, so energy differences of
+/// thousands of `k_B*T` do not overflow.
 ///
 /// # Arguments
 /// * `du_fwd` – U_1 - U_0 sampled from state 0.
 /// * `du_rev` – U_0 - U_1 sampled from state 1.
 /// * `temperature` – Simulation temperature (K).
 /// * `c_guess` – Initial estimate of ΔF (kJ/mol).
+///
+/// Returns `c_guess` when either sample set is empty or when one of the Fermi
+/// averages vanishes identically (no overlap between the two ensembles).
 pub fn bar_estimate(du_fwd: &[f64], du_rev: &[f64], temperature: f64, c_guess: f64) -> f64 {
     if du_fwd.is_empty() || du_rev.is_empty() {
         return c_guess;
     }
     let beta = 1.0 / (KB * temperature);
-    let fermi = |x: f64| 1.0 / (1.0 + (beta * x).exp());
-    let n0 = du_fwd.len() as f64;
-    let n1 = du_rev.len() as f64;
-    let mean0: f64 = du_fwd.iter().map(|&du| fermi(du - c_guess)).sum::<f64>() / n0;
-    let mean1: f64 = du_rev.iter().map(|&du| fermi(-du + c_guess)).sum::<f64>() / n1;
-    if mean1.abs() < 1e-30 {
+    let ln_mean0 = log_mean_fermi(du_fwd, beta, -beta * c_guess);
+    let ln_mean1 = log_mean_fermi(du_rev, beta, beta * c_guess);
+    if !(ln_mean0.is_finite() && ln_mean1.is_finite()) {
         return c_guess;
     }
-    temperature * KB * (mean0 / mean1).ln() + c_guess
+    temperature * KB * (ln_mean1 - ln_mean0) + c_guess
 }
 #[cfg(test)]
 mod tests_extended {
@@ -514,12 +632,176 @@ mod tests_extended {
         assert_eq!(be.acceptance_rate(), 0.0);
     }
     #[test]
-    fn test_be_meta_try_exchange_returns_bool() {
+    fn test_be_meta_try_exchange_counts_the_attempt() {
         let mut be = BiasExchangeMetadynamics::new(2, 300.0, |_| {
             MetadynamicsParams::new(1.0, vec![0.5], 1, 300.0, 0.0)
         });
-        let _accepted = be.try_exchange(0, 1, &[0.0], &[1.0]);
+        let accepted = be.try_exchange(0, 1, &[0.0], &[1.0]).unwrap();
+        // Without any hills both biases vanish, so Delta = 0 and the move is
+        // accepted with probability one.
+        assert!(accepted);
         assert_eq!(be.n_attempts, 1);
+        assert_eq!(be.n_accepted, 1);
+    }
+    /// Two replicas at 300 K whose exchange cost for `cv_i = [100]`,
+    /// `cv_j = [0]` is exactly `delta`: replica 0 carries one hill of height
+    /// `delta * k_B T` at the origin.
+    fn bias_exchange_with_cost(delta: f64, seed: u64) -> BiasExchangeMetadynamics {
+        let temperature = 300.0;
+        let height = delta * KB * temperature;
+        let mut be = BiasExchangeMetadynamics::with_seed(
+            2,
+            temperature,
+            |_| MetadynamicsParams::new(height, vec![0.5], 1, temperature, 0.0),
+            seed,
+        );
+        be.replicas[0].maybe_deposit(&[0.0]);
+        be
+    }
+    #[test]
+    fn test_be_meta_exchange_delta_matches_the_bias_difference() {
+        let temperature = 350.0;
+        let mut be = BiasExchangeMetadynamics::new(3, temperature, |k| {
+            MetadynamicsParams::new(1.5 + k as f64, vec![0.4], 1, temperature, 0.0)
+        });
+        be.replicas[0].maybe_deposit(&[0.1]);
+        be.replicas[2].maybe_deposit(&[0.9]);
+        let (cv_i, cv_j) = ([0.3], [0.7]);
+        let beta = 1.0 / (KB * temperature);
+        let hill_0 = GaussianHill::new(vec![0.1], 1.5, vec![0.4]);
+        let hill_2 = GaussianHill::new(vec![0.9], 3.5, vec![0.4]);
+        let expected = beta
+            * ((hill_0.evaluate(&cv_j) + hill_2.evaluate(&cv_i))
+                - (hill_0.evaluate(&cv_i) + hill_2.evaluate(&cv_j)));
+        let delta = be.exchange_delta(0, 2, &cv_i, &cv_j).unwrap();
+        assert!((delta - expected).abs() < 1e-12, "{delta} vs {expected}");
+        // Swapping the roles of the two replicas gives the same cost.
+        let swapped = be.exchange_delta(2, 0, &cv_j, &cv_i).unwrap();
+        assert!((delta - swapped).abs() < 1e-12);
+    }
+    #[test]
+    fn test_be_meta_acceptance_rate_follows_boltzmann_factor() {
+        // Delta = 1: acceptance probability exp(-1) = 0.3679.  The old rule
+        // accepted deterministically whenever Delta < ln 2.
+        let mut be = bias_exchange_with_cost(1.0, 7);
+        let delta = be.exchange_delta(0, 1, &[100.0], &[0.0]).unwrap();
+        assert!((delta - 1.0).abs() < 1e-12, "Delta = {delta}");
+        for _ in 0..10_000 {
+            be.try_exchange(0, 1, &[100.0], &[0.0]).unwrap();
+        }
+        assert_eq!(be.n_attempts, 10_000);
+        let rate = be.acceptance_rate();
+        assert!(
+            (rate - (-1.0f64).exp()).abs() < 0.02,
+            "acceptance rate {rate}, expected {}",
+            (-1.0f64).exp()
+        );
+        // Delta = 0.5 < ln 2 used to be accepted every single time.
+        let mut easy = bias_exchange_with_cost(0.5, 8);
+        for _ in 0..10_000 {
+            easy.try_exchange(0, 1, &[100.0], &[0.0]).unwrap();
+        }
+        let easy_rate = easy.acceptance_rate();
+        assert!(
+            (easy_rate - (-0.5f64).exp()).abs() < 0.02 && easy_rate < 0.95,
+            "acceptance rate {easy_rate}, expected {}",
+            (-0.5f64).exp()
+        );
+    }
+    #[test]
+    fn test_be_meta_favourable_exchange_is_always_accepted() {
+        // Reversed roles: the cost is -2, so every attempt is accepted.
+        let mut be = bias_exchange_with_cost(2.0, 3);
+        let delta = be.exchange_delta(0, 1, &[0.0], &[100.0]).unwrap();
+        assert!((delta + 2.0).abs() < 1e-12);
+        for _ in 0..1_000 {
+            assert!(be.try_exchange(0, 1, &[0.0], &[100.0]).unwrap());
+        }
+        assert_eq!(be.acceptance_rate(), 1.0);
+    }
+    #[test]
+    fn test_be_meta_unfavourable_exchange_is_almost_never_accepted() {
+        let mut be = bias_exchange_with_cost(8.0, 5);
+        for _ in 0..10_000 {
+            be.try_exchange(0, 1, &[100.0], &[0.0]).unwrap();
+        }
+        // exp(-8) = 3.4e-4: a handful of acceptances at most.
+        assert!(be.acceptance_rate() < 0.003, "{}", be.acceptance_rate());
+    }
+    #[test]
+    fn test_be_meta_streams_are_reproducible_and_seed_dependent() {
+        let run = |seed: u64| -> Vec<bool> {
+            let mut be = bias_exchange_with_cost(1.0, seed);
+            (0..64)
+                .map(|_| be.try_exchange(0, 1, &[100.0], &[0.0]).unwrap())
+                .collect()
+        };
+        assert_eq!(run(11), run(11));
+        assert_ne!(run(11), run(12));
+        // `new` is `with_seed(DEFAULT_SEED)`.
+        let params = |_: usize| MetadynamicsParams::new(2.0, vec![0.5], 1, 300.0, 0.0);
+        let mut a = BiasExchangeMetadynamics::new(2, 300.0, params);
+        let mut b = BiasExchangeMetadynamics::with_seed(
+            2,
+            300.0,
+            params,
+            BiasExchangeMetadynamics::DEFAULT_SEED,
+        );
+        for be in [&mut a, &mut b] {
+            be.replicas[0].maybe_deposit(&[0.0]);
+        }
+        for _ in 0..32 {
+            assert_eq!(
+                a.try_exchange(0, 1, &[9.0], &[0.0]).unwrap(),
+                b.try_exchange(0, 1, &[9.0], &[0.0]).unwrap()
+            );
+        }
+    }
+    #[test]
+    fn test_be_meta_external_rng_drives_the_decision() {
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+        let mut be = bias_exchange_with_cost(1.0, 1);
+        let mut rng = StdRng::seed_from_u64(99);
+        for _ in 0..10_000 {
+            be.try_exchange_with_rng(0, 1, &[100.0], &[0.0], &mut rng)
+                .unwrap();
+        }
+        let rate = be.acceptance_rate();
+        assert!((rate - (-1.0f64).exp()).abs() < 0.02, "rate {rate}");
+        // Reusing the same seed reproduces the decisions of the first run.
+        let mut again = bias_exchange_with_cost(1.0, 2);
+        let mut rng_again = StdRng::seed_from_u64(99);
+        for _ in 0..10_000 {
+            again
+                .try_exchange_with_rng(0, 1, &[100.0], &[0.0], &mut rng_again)
+                .unwrap();
+        }
+        assert_eq!(again.n_accepted, be.n_accepted);
+    }
+    #[test]
+    fn test_be_meta_invalid_exchange_requests_are_errors() {
+        use crate::MdError;
+        let mut be = BiasExchangeMetadynamics::new(2, 300.0, |_| {
+            MetadynamicsParams::new(1.0, vec![0.5], 1, 300.0, 0.0)
+        });
+        assert!(matches!(
+            be.try_exchange(0, 2, &[0.0], &[1.0]),
+            Err(MdError::General(_))
+        ));
+        assert!(matches!(
+            be.try_exchange(5, 0, &[0.0], &[1.0]),
+            Err(MdError::General(_))
+        ));
+        assert!(matches!(
+            be.try_exchange(1, 1, &[0.0], &[1.0]),
+            Err(MdError::General(_))
+        ));
+        assert_eq!(be.n_attempts, 0, "failed requests are not counted");
+        be.temperature = 0.0;
+        assert!(be.try_exchange(0, 1, &[0.0], &[1.0]).is_err());
+        be.temperature = f64::NAN;
+        assert!(be.exchange_delta(0, 1, &[0.0], &[1.0]).is_err());
     }
     #[test]
     fn test_coordination_number_at_zero_distance() {
@@ -539,7 +821,161 @@ mod tests_extended {
         let cv = CoordinationNumberCV::new(0, vec![1], 1.0, 6, 12, "cn");
         let positions = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
         let v = cv.value(&positions);
-        assert!(v.is_finite(), "CN at r=r0 should be finite, got {v}");
+        assert!(
+            (v - 0.5).abs() < 1e-12,
+            "CN at r=r0 is the limit n/m = 0.5, got {v}"
+        );
+    }
+    #[test]
+    fn test_switching_function_limit_at_r0_is_n_over_m() {
+        for &(n, m) in &[(6u32, 12u32), (8, 16), (4, 12), (6, 9), (3, 5)] {
+            let cv = CoordinationNumberCV::new(0, vec![], 1.7, n, m, "cn");
+            let limit = f64::from(n) / f64::from(m);
+            let at_r0 = cv.switching_function(1.7);
+            assert!((at_r0 - limit).abs() < 1e-12, "({n},{m}): {at_r0}");
+            for &side in &[1.0 - 1e-7, 1.0 + 1e-7, 1.0 - 3e-5, 1.0 + 3e-5] {
+                let v = cv.switching_function(1.7 * side);
+                assert!(
+                    (v - limit).abs() < 1e-4,
+                    "({n},{m}) at x = {side}: {v} vs limit {limit}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn test_switching_function_is_smooth_across_the_series_band() {
+        let cv = CoordinationNumberCV::new(0, vec![], 1.0, 6, 12, "cn");
+        let edge = SWITCHING_SERIES_HALF_WIDTH;
+        for &sign in &[-1.0, 1.0] {
+            let inside = 1.0 + sign * edge * 0.999_999;
+            let outside = 1.0 + sign * edge * 1.000_001;
+            let v_in = cv.switching_function(inside);
+            let v_out = cv.switching_function(outside);
+            assert!((v_in - v_out).abs() < 1e-9, "value jump {v_in} vs {v_out}");
+            let d_in = cv.switching_derivative(inside);
+            let d_out = cv.switching_derivative(outside);
+            assert!(
+                (d_in - d_out).abs() < 1e-7,
+                "derivative jump {d_in} vs {d_out}"
+            );
+        }
+    }
+    #[test]
+    fn test_switching_function_matches_closed_form_for_half_exponent() {
+        // For m = 2n the ratio simplifies to 1 / (1 + x^n), which has no
+        // singularity at x = 1 and so is an independent reference everywhere.
+        let cv = CoordinationNumberCV::new(0, vec![], 2.0, 6, 12, "cn");
+        for &r in &[0.1, 0.9, 1.9999, 2.0, 2.0001, 2.5, 4.0, 40.0] {
+            let x: f64 = r / 2.0;
+            let exact = 1.0 / (1.0 + x.powi(6));
+            let exact_slope = -6.0 * x.powi(5) / (1.0 + x.powi(6)).powi(2) / 2.0;
+            assert!(
+                (cv.switching_function(r) - exact).abs() < 1e-11,
+                "value at r = {r}"
+            );
+            assert!(
+                (cv.switching_derivative(r) - exact_slope).abs() < 1e-9,
+                "slope at r = {r}"
+            );
+        }
+        // At the singular point: sigma = 1/2 and d sigma/dr = -n/(4 r_0) = -0.75.
+        assert!((cv.switching_derivative(2.0) + 0.75).abs() < 1e-12);
+    }
+    #[test]
+    fn test_switching_function_derivative_matches_finite_difference() {
+        let cv = CoordinationNumberCV::new(0, vec![], 1.3, 8, 14, "cn");
+        let h = 1e-6;
+        for &r in &[0.2, 0.9, 1.29, 1.3, 1.31, 1.9, 3.0] {
+            let fd = (cv.switching_function(r + h) - cv.switching_function(r - h)) / (2.0 * h);
+            let analytic = cv.switching_derivative(r);
+            assert!(
+                (fd - analytic).abs() < 1e-6 * analytic.abs().max(1.0),
+                "r = {r}: analytic {analytic} vs finite difference {fd}"
+            );
+        }
+    }
+    #[test]
+    fn test_switching_function_far_field_and_degenerate_exponents() {
+        let cv = CoordinationNumberCV::new(0, vec![], 1.0, 6, 12, "cn");
+        assert_eq!(cv.switching_function(1e60), 0.0);
+        assert_eq!(cv.switching_derivative(1e60), 0.0);
+        assert!((cv.switching_function(0.0) - 1.0).abs() < 1e-15);
+        let flat = CoordinationNumberCV::new(0, vec![], 1.0, 4, 4, "cn");
+        assert_eq!(flat.switching_function(0.7), 1.0);
+        assert_eq!(flat.switching_derivative(0.7), 0.0);
+        let zero_n = CoordinationNumberCV::new(0, vec![], 1.0, 0, 12, "cn");
+        assert_eq!(zero_n.switching_function(0.7), 0.0);
+    }
+    #[test]
+    fn test_coordination_gradient_matches_finite_difference_of_value() {
+        let cv = CoordinationNumberCV::new(0, vec![1, 2, 3], 1.2, 6, 12, "cn");
+        let positions = vec![
+            [0.1, -0.2, 0.3],
+            [1.0, 0.4, -0.1],
+            [-0.7, 0.9, 0.5],
+            [0.3, -1.1, 0.8],
+            [5.0, 5.0, 5.0],
+        ];
+        let grad = cv.gradient(&positions);
+        assert_eq!(grad.len(), positions.len());
+        let h = 1e-6;
+        for atom in 0..positions.len() {
+            for dim in 0..3 {
+                let mut plus = positions.clone();
+                let mut minus = positions.clone();
+                plus[atom][dim] += h;
+                minus[atom][dim] -= h;
+                let fd = (cv.value(&plus) - cv.value(&minus)) / (2.0 * h);
+                assert!(
+                    (grad[atom][dim] - fd).abs() < 1e-6,
+                    "atom {atom} dim {dim}: analytic {} vs finite difference {fd}",
+                    grad[atom][dim]
+                );
+            }
+        }
+        // The spectator atom does not influence the coordination number.
+        assert_eq!(grad[4], [0.0; 3]);
+    }
+    #[test]
+    fn test_coordination_gradient_sums_to_zero() {
+        let cv = CoordinationNumberCV::new(1, vec![0, 2, 3], 1.5, 6, 12, "cn");
+        let positions = vec![
+            [0.4, 0.1, -0.3],
+            [0.0, 0.0, 0.0],
+            [1.1, 0.7, 0.2],
+            [-0.9, 0.8, 1.0],
+        ];
+        let grad = cv.gradient(&positions);
+        for dim in 0..3 {
+            let total: f64 = grad.iter().map(|g| g[dim]).sum();
+            assert!(total.abs() < 1e-12, "dim {dim}: sum of gradients = {total}");
+        }
+        // The reference atom carries minus the sum over the neighbours, which
+        // the old per-neighbour finite difference scaled by N_nb.
+        for dim in 0..3 {
+            let neighbours: f64 = [0usize, 2, 3].iter().map(|&j| grad[j][dim]).sum();
+            assert!((grad[1][dim] + neighbours).abs() < 1e-12);
+        }
+    }
+    #[test]
+    fn test_coordination_gradient_at_r0_uses_analytic_limit() {
+        // sigma'(r_0) = n (n - m) / (2 m r_0) = -1.5 / r_0 for n = 6, m = 12.
+        let r_0 = 1.25;
+        let cv = CoordinationNumberCV::new(0, vec![1], r_0, 6, 12, "cn");
+        let positions = vec![[0.0, 0.0, 0.0], [r_0, 0.0, 0.0]];
+        let grad = cv.gradient(&positions);
+        assert!((grad[1][0] + 1.5 / r_0).abs() < 1e-12, "{:?}", grad[1]);
+        assert!((grad[0][0] - 1.5 / r_0).abs() < 1e-12, "{:?}", grad[0]);
+        assert!(grad[1][1].abs() < 1e-15 && grad[1][2].abs() < 1e-15);
+    }
+    #[test]
+    fn test_coordination_gradient_skips_coincident_neighbour() {
+        let cv = CoordinationNumberCV::new(0, vec![1, 2], 1.0, 6, 12, "cn");
+        let positions = vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.8, 0.0, 0.0]];
+        let grad = cv.gradient(&positions);
+        assert!(grad.iter().all(|g| g.iter().all(|c| c.is_finite())));
+        assert_eq!(grad[1], [0.0; 3]);
+        assert!(grad[2][0] < 0.0, "approaching shell edge lowers s");
     }
     #[test]
     fn test_switching_function_at_small_r() {
@@ -579,6 +1015,62 @@ mod tests_extended {
         assert!(
             df.abs() < 1.0,
             "Symmetric BAR should give small ΔF, got {df}"
+        );
+    }
+    #[test]
+    fn test_bar_estimate_is_exact_for_any_trial_shift() {
+        // U_1 = U_0 + 2: Bennett's identity returns 2 for every C.
+        let du_fwd = vec![2.0f64; 50];
+        let du_rev = vec![-2.0f64; 50];
+        for &c_guess in &[0.0, 2.0, 5.0, -3.0] {
+            let df = bar_estimate(&du_fwd, &du_rev, 300.0, c_guess);
+            assert!(
+                (df - 2.0).abs() < 1e-9,
+                "c_guess = {c_guess}: expected 2, got {df}"
+            );
+        }
+    }
+    #[test]
+    fn test_bar_estimate_is_exact_for_unbalanced_sample_counts() {
+        let du_fwd = vec![2.0f64; 50];
+        let du_rev = vec![-2.0f64; 10];
+        for &c_guess in &[0.0, 1.0, 4.0] {
+            let df = bar_estimate(&du_fwd, &du_rev, 300.0, c_guess);
+            assert!(
+                (df - 2.0).abs() < 1e-9,
+                "c_guess = {c_guess}: expected 2, got {df}"
+            );
+        }
+    }
+    #[test]
+    fn test_bar_estimate_survives_thousands_of_kt() {
+        // 5000 kJ/mol is ~2000 kT at 300 K: a naive Fermi function overflows.
+        let du_fwd = vec![5000.0f64; 10];
+        let du_rev = vec![-5000.0f64; 10];
+        let df = bar_estimate(&du_fwd, &du_rev, 300.0, 0.0);
+        assert!((df - 5000.0).abs() < 1e-6, "expected 5000, got {df}");
+    }
+    #[test]
+    fn test_bar_estimate_gaussian_work_recovers_crooks_free_energy() {
+        use crate::free_energy::test_support::standard_normal;
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+        let temperature = 300.0;
+        let kt = KB * temperature;
+        let (mu, sigma) = (10.0, 5.0);
+        let exact = mu - sigma * sigma / (2.0 * kt);
+        let mut rng = StdRng::seed_from_u64(42);
+        let n = 20_000;
+        let du_fwd: Vec<f64> = (0..n)
+            .map(|_| mu + sigma * standard_normal(&mut rng))
+            .collect();
+        let du_rev: Vec<f64> = (0..n)
+            .map(|_| -(mu - sigma * sigma / kt + sigma * standard_normal(&mut rng)))
+            .collect();
+        let df = bar_estimate(&du_fwd, &du_rev, temperature, exact);
+        assert!(
+            (df - exact).abs() < 0.15,
+            "BAR = {df} kJ/mol, Crooks value = {exact} kJ/mol"
         );
     }
     #[test]
@@ -890,12 +1382,123 @@ mod tests_ptmetad_extended {
     }
     #[test]
     fn test_ptmetad_exchange_attempt_counted() {
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
         let temps = vec![300.0, 400.0];
         let heights = vec![1.0; 2];
         let widths = vec![vec![0.5]; 2];
         let mut pt = PtMetaD::new(temps, heights, widths, 1, 1.0);
-        pt.try_exchange_adjacent(0, &[0.0], &[1.0]);
+        let mut rng = StdRng::seed_from_u64(1);
+        let accepted = pt
+            .try_exchange_adjacent(0, &[0.0], &[1.0], -50.0, -50.0, &mut rng)
+            .unwrap();
         assert_eq!(pt.n_attempts, 1);
+        assert_eq!(pt.n_accepted, usize::from(accepted));
+    }
+    /// Two replicas (300 K and 330 K, no hills) and the potential-energy gap
+    /// `U_j - U_i` for which the exchange cost is exactly `delta`.
+    fn ptmetad_with_cost(delta: f64) -> (PtMetaD, f64) {
+        let temps = vec![300.0, 330.0];
+        let pt = PtMetaD::new(temps, vec![1.0; 2], vec![vec![0.5]; 2], 1, 0.0);
+        let beta_gap = 1.0 / (KB * 300.0) - 1.0 / (KB * 330.0);
+        (pt, delta / beta_gap)
+    }
+    #[test]
+    fn test_ptmetad_exchange_delta_includes_both_biases_and_energies() {
+        let temps = vec![300.0, 360.0];
+        let mut pt = PtMetaD::new(temps, vec![2.0, 3.0], vec![vec![0.5], vec![0.6]], 1, 0.0);
+        pt.replicas[0].maybe_deposit(&[0.0]);
+        pt.replicas[1].maybe_deposit(&[1.0]);
+        let (cv_i, cv_j) = ([0.2], [0.9]);
+        let (u_i, u_j) = (-120.0, -100.0);
+        let beta_i = 1.0 / (KB * 300.0);
+        let beta_j = 1.0 / (KB * 360.0);
+        let hill_0 = GaussianHill::new(vec![0.0], 2.0, vec![0.5]);
+        let hill_1 = GaussianHill::new(vec![1.0], 3.0, vec![0.6]);
+        let expected = (beta_i - beta_j) * (u_j - u_i)
+            + beta_i * (hill_0.evaluate(&cv_j) - hill_0.evaluate(&cv_i))
+            + beta_j * (hill_1.evaluate(&cv_i) - hill_1.evaluate(&cv_j));
+        let delta = pt.exchange_delta(0, &cv_i, &cv_j, u_i, u_j).unwrap();
+        assert!((delta - expected).abs() < 1e-10, "{delta} vs {expected}");
+        // The partner bias is not optional: dropping replica 1's hill changes Delta.
+        let mut without_partner_bias = PtMetaD::new(
+            vec![300.0, 360.0],
+            vec![2.0, 3.0],
+            vec![vec![0.5], vec![0.6]],
+            1,
+            0.0,
+        );
+        without_partner_bias.replicas[0].maybe_deposit(&[0.0]);
+        let partial = without_partner_bias
+            .exchange_delta(0, &cv_i, &cv_j, u_i, u_j)
+            .unwrap();
+        assert!((partial - delta).abs() > 1e-3);
+    }
+    #[test]
+    fn test_ptmetad_acceptance_rate_follows_boltzmann_factor() {
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+        for &(delta, tolerance) in &[(1.0, 0.01), (0.5, 0.01), (3.0, 0.005)] {
+            let (mut pt, gap) = ptmetad_with_cost(delta);
+            let computed = pt.exchange_delta(0, &[0.0], &[0.0], 0.0, gap).unwrap();
+            assert!((computed - delta).abs() < 1e-9, "Delta = {computed}");
+            let mut rng = StdRng::seed_from_u64(2025);
+            for _ in 0..100_000 {
+                pt.try_exchange_adjacent(0, &[0.0], &[0.0], 0.0, gap, &mut rng)
+                    .unwrap();
+            }
+            let expected = (-delta).exp();
+            let rate = pt.acceptance_rate();
+            assert!(
+                (rate - expected).abs() < tolerance,
+                "Delta = {delta}: acceptance {rate}, expected {expected}"
+            );
+        }
+    }
+    #[test]
+    fn test_ptmetad_downhill_exchange_is_always_accepted_and_uphill_is_not() {
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+        let (mut pt, gap) = ptmetad_with_cost(2.0);
+        let mut rng = StdRng::seed_from_u64(4);
+        // Reversed energy gap: Delta = -2, every attempt succeeds.
+        for _ in 0..1_000 {
+            assert!(
+                pt.try_exchange_adjacent(0, &[0.0], &[0.0], gap, 0.0, &mut rng)
+                    .unwrap()
+            );
+        }
+        // Delta = +2 used to be accepted unconditionally by the broken test
+        // `delta >= 0 || exp(-delta) > 0.5`; now it is the exception.
+        let mut uphill = 0;
+        for _ in 0..1_000 {
+            if pt
+                .try_exchange_adjacent(0, &[0.0], &[0.0], 0.0, gap, &mut rng)
+                .unwrap()
+            {
+                uphill += 1;
+            }
+        }
+        assert!(uphill < 250, "{uphill} of 1000 uphill moves accepted");
+    }
+    #[test]
+    fn test_ptmetad_invalid_replica_is_an_error_not_a_panic() {
+        use crate::MdError;
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+        let (mut pt, _) = ptmetad_with_cost(1.0);
+        let mut rng = StdRng::seed_from_u64(0);
+        let err = pt.try_exchange_adjacent(1, &[0.0], &[0.0], 0.0, 0.0, &mut rng);
+        assert!(matches!(err, Err(MdError::General(_))));
+        let err = pt.try_exchange_adjacent(usize::MAX, &[0.0], &[0.0], 0.0, 0.0, &mut rng);
+        assert!(matches!(err, Err(MdError::General(_))));
+        assert_eq!(pt.n_attempts, 0);
+        assert!(
+            pt.exchange_delta(0, &[0.0], &[0.0], f64::NAN, 0.0).is_err(),
+            "NaN energies must be rejected"
+        );
+        pt.temperatures[1] = -5.0;
+        assert!(pt.exchange_delta(0, &[0.0], &[0.0], 0.0, 0.0).is_err());
     }
     #[test]
     fn test_ptmetad_total_hills_accumulate() {

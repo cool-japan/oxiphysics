@@ -4,7 +4,7 @@
 
 use std::f64::consts::PI;
 
-use super::functions::{KB, NA};
+use super::functions::{EV_TO_AMU_ANG2_PS2, KB, KB_EV, NA};
 
 /// Isotherm type selection for [`AdsorptionModel`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -282,10 +282,24 @@ impl CatalysisMd {
         self.adsorbate_velocities.push(vel);
         self.adsorbate_masses.push(mass);
     }
-    /// Perform a simple Langevin integration step for adsorbates on the surface.
+    /// Perform one Langevin integration step for adsorbates on the surface.
     ///
-    /// Uses a harmonic restoring force to the surface (z = 0) and a random
-    /// Langevin noise term.
+    /// Each adsorbate feels the harmonic restoring force `F_z = −k_surf · z` toward
+    /// the surface plane (z = 0), friction `γ` and thermal noise at the system
+    /// temperature; x and y are free.  Units are eV, Å, amu and ps: the force is
+    /// converted with `1 eV/(Å·amu) = 9648.53 Å/ps²` and the thermal energy is
+    /// `k_B T` in eV (`8.617e-5 eV/K`), i.e. `k_B T · 9648.53` in amu·Å²/ps².
+    ///
+    /// The step is the BAOAB splitting of Leimkuhler & Matthews: half kick (B),
+    /// half drift (A), exact Ornstein–Uhlenbeck update of the velocity (O)
+    ///
+    /// ```text
+    /// v ← c₁ v + sqrt((1 − c₁²) k_B T / m) ξ,     c₁ = exp(−γ dt),   ξ ~ N(0, 1),
+    /// ```
+    ///
+    /// half drift (A), half kick (B) with the force at the new position.  The O step
+    /// leaves the Maxwell–Boltzmann velocity distribution invariant for any `dt`, so
+    /// free adsorbates thermalise at `⟨½ m v_x²⟩ = ½ k_B T`.
     ///
     /// # Arguments
     /// * `dt`     — time step (ps)
@@ -294,32 +308,37 @@ impl CatalysisMd {
     /// * `seed`   — LCG seed
     pub fn langevin_step(&mut self, dt: f64, k_surf: f64, gamma: f64, seed: u64) {
         let mut rng = Lcg::new(seed);
-        let kbt = KB * self.temperature;
+        // k_B T in amu Å² ps⁻².
+        let kt = KB_EV * self.temperature * EV_TO_AMU_ANG2_PS2;
+        let friction_decay = (-gamma * dt).exp();
+        let noise_variance_factor = (1.0 - friction_decay * friction_decay).max(0.0);
         let n = self.adsorbate_positions.len();
         for i in 0..n {
             let m = self.adsorbate_masses[i];
             if m <= 0.0 {
                 continue;
             }
-            let z = self.adsorbate_positions[i][2];
-            let fz = -k_surf * z;
-            let u1 = rng.next_f64().max(1e-15);
-            let u2 = rng.next_f64();
-            let gauss = (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos();
-            let noise_std = (2.0 * gamma * kbt * m / dt).sqrt();
-            let noise_z = noise_std * gauss;
-            let az = (fz + noise_z) / m - gamma * self.adsorbate_velocities[i][2];
-            self.adsorbate_velocities[i][2] += az * dt;
-            self.adsorbate_positions[i][2] += self.adsorbate_velocities[i][2] * dt;
-            for dim in 0..2 {
-                let u1x = rng.next_f64().max(1e-15);
-                let u2x = rng.next_f64();
-                let gx = (-2.0 * u1x.ln()).sqrt() * (2.0 * PI * u2x).cos();
-                let noise_xy = noise_std * gx;
-                let a_xy = noise_xy / m - gamma * self.adsorbate_velocities[i][dim];
-                self.adsorbate_velocities[i][dim] += a_xy * dt;
-                self.adsorbate_positions[i][dim] += self.adsorbate_velocities[i][dim] * dt;
+            // Å ps⁻² per (eV Å⁻¹) of force.
+            let acceleration_per_force = EV_TO_AMU_ANG2_PS2 / m;
+            let noise_std = (noise_variance_factor * kt / m).sqrt();
+            let pos = &mut self.adsorbate_positions[i];
+            let vel = &mut self.adsorbate_velocities[i];
+            // B: half kick from the surface spring (z only).
+            vel[2] += 0.5 * dt * (-k_surf * pos[2]) * acceleration_per_force;
+            // A: half drift.
+            for (p, v) in pos.iter_mut().zip(vel.iter()) {
+                *p += 0.5 * dt * *v;
             }
+            // O: exact friction + noise update.
+            for v in vel.iter_mut() {
+                *v = friction_decay * *v + noise_std * rng.next_gaussian();
+            }
+            // A: half drift.
+            for (p, v) in pos.iter_mut().zip(vel.iter()) {
+                *p += 0.5 * dt * *v;
+            }
+            // B: half kick with the force at the new position.
+            vel[2] += 0.5 * dt * (-k_surf * pos[2]) * acceleration_per_force;
         }
     }
     /// Simulate `n_steps` of stochastic reaction events, counting turnovers.
@@ -368,23 +387,47 @@ impl CatalysisMd {
         -r * (tof_2 / tof_1).ln() / (1.0 / t2 - 1.0 / t1)
     }
 }
+/// SplitMix64 finaliser: a bijective avalanche mix of a 64-bit word.
+fn splitmix64(value: u64) -> u64 {
+    let mut z = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
 /// Simple LCG pseudo-random number generator state.
 pub(super) struct Lcg(u64);
 impl Lcg {
+    /// Seed the generator.
+    ///
+    /// The seed is passed through a SplitMix64 mix so that nearby seeds (the
+    /// step index of a simulation loop, say) give statistically independent
+    /// streams; the bare LCG maps consecutive seeds to streams that differ by a
+    /// fixed offset modulo one.
     fn new(seed: u64) -> Self {
-        Self(seed.wrapping_add(0x9e3779b97f4a7c15))
+        Self(splitmix64(seed))
     }
-    /// Return next f64 in \[0, 1).
+    /// Return next f64 uniformly distributed in \[0, 1).
+    ///
+    /// The 53 most significant bits of the state fill the mantissa, so the result
+    /// covers the whole unit interval with the resolution of an `f64`.
     fn next_f64(&mut self) -> f64 {
         self.0 = self
             .0
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
-        ((self.0 >> 33) as f64) / (u32::MAX as f64)
+        ((self.0 >> 11) as f64) * (1.0 / (1u64 << 53) as f64)
     }
     /// Return next f64 in \[lo, hi).
     fn range(&mut self, lo: f64, hi: f64) -> f64 {
         lo + self.next_f64() * (hi - lo)
+    }
+    /// Return a standard normal variate `N(0, 1)` (Box–Muller, cosine branch).
+    ///
+    /// `u₁` is taken from (0, 1] so that `ln u₁` is always finite.
+    fn next_gaussian(&mut self) -> f64 {
+        let u1 = 1.0 - self.next_f64();
+        let u2 = self.next_f64();
+        (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
     }
 }
 /// Precursor state for the precursor-mediated adsorption mechanism.
@@ -694,12 +737,18 @@ impl SurfaceReconstruction {
     /// Perform a Monte Carlo relaxation step: randomly perturb atoms and accept
     /// if the harmonic energy decreases or with Metropolis probability.
     ///
+    /// The harmonic energy `½ k d²` is in eV (`spring_constant` in eV/Å², the
+    /// displacement `d` in Å), so the Metropolis factor uses `k_B T` in eV.  The
+    /// proposal is symmetric (each Cartesian component uniform in
+    /// `[−amplitude, amplitude)`), hence the displacements sample the Boltzmann
+    /// distribution and `⟨½ k d²⟩ = (3/2) k_B T`.
+    ///
     /// # Arguments
     /// * `amplitude` — maximum perturbation amplitude (Å)
     /// * `seed`      — LCG seed
     pub fn mc_relax_step(&mut self, amplitude: f64, seed: u64) -> usize {
         let mut rng = Lcg::new(seed);
-        let kbt = KB * self.temperature;
+        let kbt = KB_EV * self.temperature;
         let k = self.spring_constant;
         let mut accepted = 0usize;
         for atom in self.atoms.iter_mut() {
@@ -1112,8 +1161,7 @@ impl InterfaceMd {
             }
             let dz = mol.pos[2] - self.interface_z;
             let fz = -k_if * dz;
-            let conv = 9648.5;
-            let az = fz * conv / mol.mass;
+            let az = fz * EV_TO_AMU_ANG2_PS2 / mol.mass;
             mol.vel[2] += az * dt;
             mol.pos[2] += mol.vel[2] * dt;
             mol.pos[0] += mol.vel[0] * dt;

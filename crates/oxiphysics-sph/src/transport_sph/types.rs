@@ -3,8 +3,13 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::{
-    ReactionFn, cubic_kernel, cubic_kernel_grad, dot3, heat_exchange_rate, len3, scale3, sub3,
+    ReactionFn, cubic_kernel, cubic_kernel_grad, dot3, heat_exchange_rate, len3, sub3,
 };
+
+/// Morris regularisation factor: the Brookshaw/Morris SPH Laplacians divide by
+/// `r_ij² + η²` with `η² = 0.01 h²`, which keeps the pair term bounded as
+/// `r_ij → 0` without changing it at the usual particle spacings.
+const MORRIS_ETA_SQ_FACTOR: f64 = 0.01;
 
 /// Advection-dominated scalar transport with stabilisation.
 ///
@@ -26,7 +31,12 @@ impl AdvectionScheme {
     }
     /// Compute the stabilised advection rate dφ/dt for particle `i`.
     ///
-    /// For upwind: adds ε·∑_j (m_j/ρ_j)·|v·∇W|·(φ_j − φ_i) if v·r_ij < 0.
+    /// The central term is `−v·∇φ` with the SPH gradient
+    /// `∇φ_i = Σ_j V_j (φ_j − φ_i) ∇_iW_ij`.  For upwind, a stabilising
+    /// Brookshaw/Morris diffusion term
+    /// `ε Σ_j V_j 2 (φ_i − φ_j) (r_ij·∇_iW_ij) / (r_ij² + η²)` is added for every
+    /// neighbour with `v·r_ij < 0`.  Because `r_ij·∇_iW_ij < 0`, this term pulls
+    /// `φ_i` towards its neighbours (it damps, rather than amplifies, extrema).
     pub fn compute_rate_i(&self, particles: &[TransportParticle], i: usize) -> f64 {
         let pi = &particles[i];
         let mut rate = 0.0f64;
@@ -52,8 +62,8 @@ impl AdvectionScheme {
                     let v_dot_gradw = dot3(pi.velocity, grad_w);
                     rate -= vj * (pj.conc() - pi.conc()) * v_dot_gradw;
                     if v_dot_r < 0.0 {
-                        let e_ij = scale3(r_ij, 1.0 / r);
-                        let term = 2.0 * (pj.conc() - pi.conc()) / r * dot3(e_ij, grad_w);
+                        let term = 2.0 * (pi.conc() - pj.conc()) * dot3(r_ij, grad_w)
+                            / (r * r + MORRIS_ETA_SQ_FACTOR * h_ij * h_ij);
                         rate += self.epsilon_upwind * vj * term;
                     }
                 }
@@ -390,18 +400,63 @@ impl HeatTransferSPH {
         }
         self.thermal_conductivity / (density * self.specific_heat)
     }
-    /// SPH heat conduction rate DT/Dt at particle `i`.
+    /// SPH heat conduction rate DT/Dt at particle `i` for a uniform conductivity.
     ///
-    /// Uses the SPH approximation:
-    ///   ρ_i cₚ DT_i/Dt = Σ_j m_j 4 k_i k_j/(k_i+k_j) (T_j−T_i)/(r²_{ij}) (r·∇W)
+    /// Cleary & Monaghan (1999) conduction operator:
+    /// ```text
+    /// ρ_i cₚ DT_i/Dt = Σ_j (m_j/ρ_j) · 4 k_i k_j/(k_i+k_j) · (T_i − T_j) (r_ij·∇_iW_ij) / (r²_ij + η²) + Q
+    /// ```
+    /// with `η² = 0.01 h_ij²`.  Since `r_ij·∇_iW_ij < 0`, heat flows from hot to
+    /// cold, and for uniform conductivity the harmonic-mean factor `4 k_i k_j/(k_i+k_j)`
+    /// equals `2k`, so the sum is exactly the Brookshaw form of `k ∇²T`.
+    ///
+    /// The pair smoothing length is `h_ij = (h_i + h_j)/2`, which keeps the pair
+    /// exchange antisymmetric (energy conserving) for variable `h`.
     pub fn heat_conduction_rate(
         &self,
         particles: &[TransportParticle],
         i: usize,
         kernel_grad_fn: impl Fn([f64; 3], f64) -> [f64; 3],
     ) -> f64 {
+        self.conduction_rate_impl(particles, i, |_| self.thermal_conductivity, kernel_grad_fn)
+    }
+    /// SPH heat conduction rate DT/Dt at particle `i` with per-particle conductivities.
+    ///
+    /// Same operator as [`HeatTransferSPH::heat_conduction_rate`], but the pair
+    /// conductivity is the harmonic mean built from `conductivities[i]` and
+    /// `conductivities[j]` (the Cleary–Monaghan interface conductivity), which
+    /// keeps the heat flux continuous across a conductivity jump.  Particles
+    /// beyond the end of `conductivities` fall back to
+    /// [`HeatTransferSPH::thermal_conductivity`].
+    pub fn heat_conduction_rate_with_k(
+        &self,
+        particles: &[TransportParticle],
+        i: usize,
+        conductivities: &[f64],
+        kernel_grad_fn: impl Fn([f64; 3], f64) -> [f64; 3],
+    ) -> f64 {
+        self.conduction_rate_impl(
+            particles,
+            i,
+            |idx| {
+                conductivities
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(self.thermal_conductivity)
+            },
+            kernel_grad_fn,
+        )
+    }
+    /// Shared implementation of the conduction operator.
+    fn conduction_rate_impl(
+        &self,
+        particles: &[TransportParticle],
+        i: usize,
+        conductivity_of: impl Fn(usize) -> f64,
+        kernel_grad_fn: impl Fn([f64; 3], f64) -> [f64; 3],
+    ) -> f64 {
         let pi = &particles[i];
-        let ki = self.thermal_conductivity;
+        let ki = conductivity_of(i);
         let rhocpi = pi.density.max(1e-300) * self.specific_heat.max(1e-300);
         let mut heat_rate = 0.0_f64;
         for (j, pj) in particles.iter().enumerate() {
@@ -413,16 +468,20 @@ impl HeatTransferSPH {
             if r < 1e-12 {
                 continue;
             }
-            let grad_w = kernel_grad_fn(r_ij, pi.h);
+            let h_ij = 0.5 * (pi.h + pj.h);
+            let grad_w = kernel_grad_fn(r_ij, h_ij);
             let rdotgw = dot3(r_ij, grad_w);
-            let kj = ki;
-            let k_ij = 4.0 * ki * kj / (ki + kj + 1e-300);
+            let kj = conductivity_of(j);
+            let k_sum = ki + kj;
+            if k_sum.abs() < 1e-300 {
+                continue;
+            }
+            let k_ij = 4.0 * ki * kj / k_sum;
             heat_rate += pj.mass / pj.density.max(1e-300)
                 * k_ij
-                * (pj.temperature - pi.temperature)
-                * 2.0
+                * (pi.temperature - pj.temperature)
                 * rdotgw
-                / (r * r + 1e-20);
+                / (r * r + MORRIS_ETA_SQ_FACTOR * h_ij * h_ij);
         }
         heat_rate / rhocpi + self.heat_source / rhocpi
     }
@@ -817,8 +876,10 @@ impl ScalarTransport {
 }
 /// SPH Laplacian diffusion operator.
 ///
-/// dφ_i/dt = D · ∑_j (m_j/ρ_j) · (φ_j − φ_i) / r_ij² · (r_ij · ∇W_ij)
-/// (Brookshaw / Morris form for the second derivative).
+/// dφ_i/dt = 2 D · ∑_j (m_j/ρ_j) · (φ_i − φ_j) (r_ij · ∇_iW_ij) / (r_ij² + η²)
+/// with `r_ij = x_i − x_j` and `η² = 0.01 h²` (Brookshaw / Morris form for the
+/// second derivative).  Because `r_ij · ∇_iW_ij < 0` for a decreasing kernel, a
+/// particle that is richer in φ than its neighbours loses it.
 #[derive(Debug, Clone)]
 pub struct DiffusionSph {
     /// Diffusion coefficient D \[m²/s\].
@@ -848,10 +909,10 @@ impl DiffusionSph {
                 }
                 let h_ij = 0.5 * (pi.h + pj.h);
                 let grad_w = cubic_kernel_grad(r_ij, h_ij);
-                let e_ij = scale3(r_ij, 1.0 / r);
-                let dphi = pj.conc() - pi.conc();
+                let dphi = pi.conc() - pj.conc();
                 let vj = pj.volume();
-                let term = 2.0 * dphi / r * dot3(e_ij, grad_w);
+                let term =
+                    2.0 * dphi * dot3(r_ij, grad_w) / (r * r + MORRIS_ETA_SQ_FACTOR * h_ij * h_ij);
                 dphidt[i] += self.diffusivity * vj * term;
             }
         }
@@ -909,7 +970,7 @@ impl AdvectionSPH {
             }
             let r_ij = sub3(pi.position, pj.position);
             let r = len3(r_ij);
-            let grad_w = kernel_grad_fn(r_ij, pi.h);
+            let grad_w = kernel_grad_fn(r_ij, 0.5 * (pi.h + pj.h));
             let cj = pj.concentration.first().copied().unwrap_or(0.0);
             let vol_j = pj.mass / pj.density.max(1e-300);
             grad_c[0] += vol_j * (cj - ci) * grad_w[0];
@@ -929,11 +990,12 @@ impl AdvectionSPH {
             if r < 1e-12 {
                 continue;
             }
-            let grad_w = kernel_grad_fn(r_ij, pi.h);
+            let h_ij = 0.5 * (pi.h + pj.h);
+            let grad_w = kernel_grad_fn(r_ij, h_ij);
             let rdotgw = dot3(r_ij, grad_w);
             let cj = pj.concentration.first().copied().unwrap_or(0.0);
-            laplacian_c +=
-                pj.mass / pj.density.max(1e-300) * (cj - ci) * 2.0 * rdotgw / (r * r + 1e-20);
+            laplacian_c += pj.mass / pj.density.max(1e-300) * (ci - cj) * 2.0 * rdotgw
+                / (r * r + MORRIS_ETA_SQ_FACTOR * h_ij * h_ij);
         }
         let conv = if self.semi_lagrangian {
             -(pi.velocity[0] * grad_c[0] + pi.velocity[1] * grad_c[1] + pi.velocity[2] * grad_c[2])
@@ -1211,10 +1273,10 @@ impl ThermalConduction {
                 }
                 let h_ij = 0.5 * (pi.h + pj.h);
                 let grad_w = cubic_kernel_grad(r_ij, h_ij);
-                let e_ij = scale3(r_ij, 1.0 / r);
-                let dt_ij = pj.temperature - pi.temperature;
+                let dt_ij = pi.temperature - pj.temperature;
                 let vj = pj.volume();
-                let term = 2.0 * dt_ij / r * dot3(e_ij, grad_w);
+                let term =
+                    2.0 * dt_ij * dot3(r_ij, grad_w) / (r * r + MORRIS_ETA_SQ_FACTOR * h_ij * h_ij);
                 dtdt[i] += alpha * vj * term;
             }
         }
@@ -1286,9 +1348,12 @@ impl FickianDiffusion {
             }
         }
     }
-    /// SPH Laplacian diffusion operator: Σ_j m_j/ρ_j (c_j − c_i) ∇²W_{ij}.
+    /// SPH Laplacian diffusion operator `D_eff ∇²c` at particle `i`.
     ///
-    /// Uses the second-order SPH Laplacian  2D Σ_j m_j(c_j−c_i)/(ρ_j r_{ij}²) (r·∇W).
+    /// Uses the Brookshaw/Morris form
+    /// `2 D Σ_j m_j (c_i − c_j) (r_ij·∇_iW_ij) / (ρ_j (r_ij² + η²))` with
+    /// `r_ij = x_i − x_j` and `η² = 0.01 h_ij²`, so the result is negative at a
+    /// concentration maximum.
     pub fn sph_laplacian(
         &self,
         particles: &[TransportParticle],
@@ -1307,12 +1372,13 @@ impl FickianDiffusion {
             if r < 1e-12 {
                 continue;
             }
-            let grad_w = kernel_grad_fn(r_ij, pi.h);
+            let h_ij = 0.5 * (pi.h + pj.h);
+            let grad_w = kernel_grad_fn(r_ij, h_ij);
             let rdotgw = dot3(r_ij, grad_w);
             let ci = pi.concentration.first().copied().unwrap_or(0.0);
             let cj = pj.concentration.first().copied().unwrap_or(0.0);
-            laplacian +=
-                pj.mass / pj.density.max(1e-300) * (cj - ci) * 2.0 * rdotgw / (r * r + 1e-20);
+            laplacian += pj.mass / pj.density.max(1e-300) * (ci - cj) * 2.0 * rdotgw
+                / (r * r + MORRIS_ETA_SQ_FACTOR * h_ij * h_ij);
         }
         d * laplacian
     }

@@ -7,6 +7,7 @@ pub mod functions;
 pub mod functions_2;
 pub mod matrix_free;
 pub mod solvererror_traits;
+pub mod symmetric_amg;
 pub mod types;
 
 // Re-export all types
@@ -21,4 +22,5 @@ pub use block_schur_pc::{
 pub use functions::*;
 pub use functions_2::*;
 pub use matrix_free::{MatrixFreeError, MatrixFreeOperator, MatrixFreePcg, SumFactPoisson};
+pub use symmetric_amg::SymmetricAmg;
 pub use types::*;

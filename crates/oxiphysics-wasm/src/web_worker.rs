@@ -36,6 +36,13 @@
 //! | 16+12N | f32[N×4] | Body orientations (qx,qy,qz,qw) |
 //! | 16+28N | f32[N×3] | Body velocities |
 //!
+//! `N` is the `max_bodies` the buffer was created with.  Every per-body
+//! accessor is bounds-checked against `N`: a write for a body index `>= N`
+//! is rejected (`false` from the Rust API, an exception from the JavaScript
+//! API) and leaves the buffer untouched, and a read for such an index yields
+//! zeros.  Without that guard a position write for index `N` would land in
+//! the orientation region and corrupt body 0.
+//!
 //! ## JavaScript interop
 //!
 //! ```js
@@ -66,6 +73,7 @@
 
 use wasm_bindgen::prelude::*;
 
+use crate::error::Error;
 use crate::wasm_helpers::now_ms;
 
 /// Convert an elapsed interval measured by [`now_ms`] (milliseconds) into whole
@@ -384,11 +392,23 @@ impl SimResult {
 
 // ── SharedStateBuffer ─────────────────────────────────────────────────────────
 
+/// Size in bytes of the fixed header (lock, body count, step count, time).
+const HEADER_BYTES: usize = 16;
+/// Bytes per body in the position region (`f32 x 3`).
+const POSITION_STRIDE: usize = 12;
+/// Bytes per body in the orientation region (`f32 x 4`).
+const ORIENTATION_STRIDE: usize = 16;
+/// Bytes per body in the velocity region (`f32 x 3`).
+const VELOCITY_STRIDE: usize = 12;
+
 /// CPU-resident approximation of a `SharedArrayBuffer` for Rust-side logic.
 ///
 /// In a real browser environment this wraps a JS `SharedArrayBuffer` and
 /// accesses it via `Atomics` operations.  In non-WASM / unit-test contexts
 /// it is a plain `Vec<u8>` providing the same layout.
+///
+/// All per-body accessors validate the body index against
+/// [`Self::max_bodies`]; see the module documentation.
 #[wasm_bindgen]
 pub struct SharedStateBuffer {
     data: Vec<u8>,
@@ -472,10 +492,11 @@ impl SharedStateBuffer {
     }
 
     /// Write position `[x, y, z]` for body `i` (JS-compatible: uses flat `Vec<f32>`).
-    pub fn write_body_position_js(&mut self, i: usize, pos_flat: Vec<f32>) {
-        if pos_flat.len() >= 3 {
-            self.write_body_position(i, [pos_flat[0], pos_flat[1], pos_flat[2]]);
-        }
+    ///
+    /// Throws when `i >= max_bodies()` or when `pos_flat` holds fewer than
+    /// three components; the buffer is left untouched in both cases.
+    pub fn write_body_position_js(&mut self, i: usize, pos_flat: Vec<f32>) -> Result<(), JsValue> {
+        Ok(self.write_body_position_slice(i, &pos_flat)?)
     }
 
     /// Read position for body `i` as `Vec<f32>` of `[x, y, z]` (JS-compatible).
@@ -515,58 +536,152 @@ impl SharedStateBuffer {
 }
 
 impl SharedStateBuffer {
+    /// Byte offset of body `i`'s position record, or `None` when
+    /// `i >= max_bodies` (the record would belong to another region).
+    fn position_offset(&self, i: usize) -> Option<usize> {
+        if i >= self.max_bodies {
+            return None;
+        }
+        HEADER_BYTES.checked_add(i.checked_mul(POSITION_STRIDE)?)
+    }
+
+    /// Byte offset of body `i`'s orientation record, or `None` when
+    /// `i >= max_bodies`.
+    fn orientation_offset(&self, i: usize) -> Option<usize> {
+        if i >= self.max_bodies {
+            return None;
+        }
+        let region = HEADER_BYTES.checked_add(self.max_bodies.checked_mul(POSITION_STRIDE)?)?;
+        region.checked_add(i.checked_mul(ORIENTATION_STRIDE)?)
+    }
+
+    /// Byte offset of body `i`'s velocity record, or `None` when
+    /// `i >= max_bodies`.
+    fn velocity_offset(&self, i: usize) -> Option<usize> {
+        if i >= self.max_bodies {
+            return None;
+        }
+        let region = HEADER_BYTES.checked_add(
+            self.max_bodies
+                .checked_mul(POSITION_STRIDE + ORIENTATION_STRIDE)?,
+        )?;
+        region.checked_add(i.checked_mul(VELOCITY_STRIDE)?)
+    }
+
+    /// Store `values` as little-endian `f32`s starting at byte `offset`.
+    ///
+    /// Returns `false`, writing nothing, when the range does not fit in the
+    /// buffer.
+    fn write_f32s(&mut self, offset: usize, values: &[f32]) -> bool {
+        let Some(end) = values
+            .len()
+            .checked_mul(4)
+            .and_then(|len| offset.checked_add(len))
+        else {
+            return false;
+        };
+        let Some(dst) = self.data.get_mut(offset..end) else {
+            return false;
+        };
+        for (chunk, v) in dst.chunks_exact_mut(4).zip(values) {
+            chunk.copy_from_slice(&v.to_le_bytes());
+        }
+        true
+    }
+
+    /// Load `N` consecutive little-endian `f32`s starting at byte `offset`
+    /// (components outside the buffer read as `0.0`).
+    fn read_f32s<const N: usize>(&self, offset: usize) -> [f32; N] {
+        let mut out = [0.0_f32; N];
+        for (k, slot) in out.iter_mut().enumerate() {
+            *slot = offset
+                .checked_add(k * 4)
+                .map_or(0.0, |at| read_f32_le(&self.data, at));
+        }
+        out
+    }
+
+    /// Error describing a rejected body index.
+    fn index_error(&self, i: usize) -> Error {
+        Error::invalid_param(
+            "body_index",
+            format!(
+                "{i} is out of range for a shared buffer of {} bodies",
+                self.max_bodies
+            ),
+        )
+    }
+
     /// Write position `[x, y, z]` for body `i` (Rust-only).
-    pub fn write_body_position(&mut self, i: usize, pos: [f32; 3]) {
-        let base = 16 + i * 12;
-        for (j, &v) in pos.iter().enumerate() {
-            self.data[base + j * 4..base + j * 4 + 4].copy_from_slice(&v.to_le_bytes());
+    ///
+    /// Returns `false`, leaving the buffer untouched, when `i >= max_bodies()`.
+    pub fn write_body_position(&mut self, i: usize, pos: [f32; 3]) -> bool {
+        match self.position_offset(i) {
+            Some(offset) => self.write_f32s(offset, &pos),
+            None => false,
         }
     }
 
-    /// Read position `[x, y, z]` for body `i` (Rust-only).
+    /// Validated slice form of [`Self::write_body_position`] used by the
+    /// JavaScript API.  The first three components of `pos` are written.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidParameter`] when `pos` holds fewer than three
+    /// components or `i >= max_bodies()`.
+    pub fn write_body_position_slice(&mut self, i: usize, pos: &[f32]) -> crate::error::Result<()> {
+        let &[x, y, z, ..] = pos else {
+            return Err(Error::invalid_param(
+                "pos_flat",
+                format!("expected 3 components, got {}", pos.len()),
+            ));
+        };
+        if self.write_body_position(i, [x, y, z]) {
+            Ok(())
+        } else {
+            Err(self.index_error(i))
+        }
+    }
+
+    /// Read position `[x, y, z]` for body `i` (Rust-only); zeros when
+    /// `i >= max_bodies()`.
     pub fn read_body_position(&self, i: usize) -> [f32; 3] {
-        let base = 16 + i * 12;
-        let x = read_f32_le(&self.data, base);
-        let y = read_f32_le(&self.data, base + 4);
-        let z = read_f32_le(&self.data, base + 8);
-        [x, y, z]
+        self.position_offset(i)
+            .map_or([0.0; 3], |offset| self.read_f32s::<3>(offset))
     }
 
     /// Write orientation quaternion for body `i` (Rust-only).
-    pub fn write_body_orientation(&mut self, i: usize, q: [f32; 4]) {
-        let base = 16 + self.max_bodies * 12 + i * 16;
-        for (j, &v) in q.iter().enumerate() {
-            self.data[base + j * 4..base + j * 4 + 4].copy_from_slice(&v.to_le_bytes());
+    ///
+    /// Returns `false`, leaving the buffer untouched, when `i >= max_bodies()`.
+    pub fn write_body_orientation(&mut self, i: usize, q: [f32; 4]) -> bool {
+        match self.orientation_offset(i) {
+            Some(offset) => self.write_f32s(offset, &q),
+            None => false,
         }
     }
 
-    /// Read orientation quaternion for body `i` (Rust-only).
+    /// Read orientation quaternion for body `i` (Rust-only); zeros when
+    /// `i >= max_bodies()`.
     pub fn read_body_orientation(&self, i: usize) -> [f32; 4] {
-        let base = 16 + self.max_bodies * 12 + i * 16;
-        [
-            read_f32_le(&self.data, base),
-            read_f32_le(&self.data, base + 4),
-            read_f32_le(&self.data, base + 8),
-            read_f32_le(&self.data, base + 12),
-        ]
+        self.orientation_offset(i)
+            .map_or([0.0; 4], |offset| self.read_f32s::<4>(offset))
     }
 
     /// Write linear velocity for body `i` (Rust-only).
-    pub fn write_body_velocity(&mut self, i: usize, vel: [f32; 3]) {
-        let base = 16 + self.max_bodies * 28 + i * 12;
-        for (j, &v) in vel.iter().enumerate() {
-            self.data[base + j * 4..base + j * 4 + 4].copy_from_slice(&v.to_le_bytes());
+    ///
+    /// Returns `false`, leaving the buffer untouched, when `i >= max_bodies()`.
+    pub fn write_body_velocity(&mut self, i: usize, vel: [f32; 3]) -> bool {
+        match self.velocity_offset(i) {
+            Some(offset) => self.write_f32s(offset, &vel),
+            None => false,
         }
     }
 
-    /// Read linear velocity for body `i` (Rust-only).
+    /// Read linear velocity for body `i` (Rust-only); zeros when
+    /// `i >= max_bodies()`.
     pub fn read_body_velocity(&self, i: usize) -> [f32; 3] {
-        let base = 16 + self.max_bodies * 28 + i * 12;
-        [
-            read_f32_le(&self.data, base),
-            read_f32_le(&self.data, base + 4),
-            read_f32_le(&self.data, base + 8),
-        ]
+        self.velocity_offset(i)
+            .map_or([0.0; 3], |offset| self.read_f32s::<3>(offset))
     }
 
     /// Write all positions from a flat `&[f32]` slice (Rust-only).
@@ -591,16 +706,11 @@ impl SharedStateBuffer {
 /// Read a little-endian `f32` from `bytes` at `offset` (returns 0.0 if out of bounds).
 #[inline]
 fn read_f32_le(bytes: &[u8], offset: usize) -> f32 {
-    if offset + 4 > bytes.len() {
-        return 0.0;
-    }
-    let arr: [u8; 4] = [
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3],
-    ];
-    f32::from_le_bytes(arr)
+    offset
+        .checked_add(4)
+        .and_then(|end| bytes.get(offset..end))
+        .and_then(|slice| <[u8; 4]>::try_from(slice).ok())
+        .map_or(0.0, f32::from_le_bytes)
 }
 
 // ── WorkerBridge ──────────────────────────────────────────────────────────────
@@ -803,6 +913,10 @@ pub struct WorkerRuntime {
     /// Step count.
     pub step_count: u32,
     /// Simulated body count (stub; real impl uses WasmPhysicsEngine).
+    ///
+    /// The runtime keeps this equal to the number of bodies it stores.
+    /// Capacity checks and body handles are derived from the stored bodies,
+    /// never from a value written to this field from JavaScript.
     pub body_count: u32,
     /// Body positions (stub storage for testing).
     positions: Vec<[f32; 3]>,
@@ -843,6 +957,24 @@ impl WorkerRuntime {
         }
     }
 
+    /// Append a body at `position`, refusing once `capacity` bodies exist.
+    ///
+    /// The body count is derived from the stored bodies (`positions.len()`),
+    /// never from the public [`Self::body_count`] field that JavaScript may
+    /// overwrite, so a forged count cannot be used to run past the shared
+    /// buffer.  The handle of the new body is its index.
+    fn add_body(&mut self, capacity: usize, position: [f32; 3]) -> crate::error::Result<u32> {
+        let index = self.positions.len();
+        if index >= capacity {
+            return Err(Error::CapacityExceeded { max: capacity });
+        }
+        let handle = u32::try_from(index).map_err(|_| Error::CapacityExceeded { max: capacity })?;
+        self.positions.push(position);
+        self.velocities.push([0.0, 0.0, 0.0]);
+        self.body_count = handle.saturating_add(1);
+        Ok(handle)
+    }
+
     fn dispatch(&mut self, cmd: SimCommand, shared: &mut SharedStateBuffer) -> SimResult {
         match cmd {
             SimCommand::Step { dt } => {
@@ -865,14 +997,17 @@ impl WorkerRuntime {
                 self.sim_time += dt;
                 self.step_count += 1;
 
+                // Publish only the bodies the shared buffer has room for; the
+                // header never claims more bodies than the regions hold.
+                let published = self.positions.len().min(shared.max_bodies());
                 shared.lock();
                 shared.write_sim_time(self.sim_time);
                 shared.increment_step_count();
-                shared.write_body_count(self.body_count);
-                for (i, &p) in self.positions.iter().enumerate() {
+                shared.write_body_count(u32::try_from(published).unwrap_or(u32::MAX));
+                for (i, &p) in self.positions.iter().enumerate().take(published) {
                     shared.write_body_position(i, p);
                 }
-                for (i, &v) in self.velocities.iter().enumerate() {
+                for (i, &v) in self.velocities.iter().enumerate().take(published) {
                     shared.write_body_velocity(i, v);
                 }
                 shared.unlock();
@@ -901,33 +1036,41 @@ impl WorkerRuntime {
                 }
             }
             SimCommand::AddSphere { x, y, z, .. } => {
-                let handle = self.body_count;
-                self.positions.push([x, y, z]);
-                self.velocities.push([0.0, 0.0, 0.0]);
-                self.body_count += 1;
-                shared.write_body_position(handle as usize, [x, y, z]);
-                SimResult::BodyAdded { handle }
+                match self.add_body(shared.max_bodies(), [x, y, z]) {
+                    Ok(handle) => {
+                        shared.write_body_position(handle as usize, [x, y, z]);
+                        SimResult::BodyAdded { handle }
+                    }
+                    Err(err) => SimResult::Error(err.to_string()),
+                }
             }
             SimCommand::AddStaticBox { x, y, z, .. } => {
-                let handle = self.body_count;
-                self.positions.push([x, y, z]);
-                self.velocities.push([0.0, 0.0, 0.0]);
-                self.body_count += 1;
-                SimResult::BodyAdded { handle }
+                match self.add_body(shared.max_bodies(), [x, y, z]) {
+                    Ok(handle) => SimResult::BodyAdded { handle },
+                    Err(err) => SimResult::Error(err.to_string()),
+                }
             }
             SimCommand::ApplyImpulse { handle, ix, iy, iz } => {
                 // Measure the real wall-clock cost of resolving the body and
                 // applying the impulse (same clock the other arms use).
                 let t_start = now_ms();
                 let idx = handle as usize;
+                let have = self.velocities.len();
                 let Some(vel) = self.velocities.get_mut(idx) else {
                     // No body owns this handle — there is nothing to push on.
                     // Report the truth instead of a fabricated StepDone.
                     return SimResult::Error(format!(
-                        "ApplyImpulse: body handle {handle} out of range (have {} bodies)",
-                        self.body_count
+                        "ApplyImpulse: body handle {handle} out of range (have {have} bodies)"
                     ));
                 };
+                if idx >= shared.max_bodies() {
+                    // The body exists but this shared buffer has no slot for
+                    // it, so the new velocity could not be published.
+                    return SimResult::Error(format!(
+                        "ApplyImpulse: body handle {handle} exceeds the shared buffer capacity of {} bodies",
+                        shared.max_bodies()
+                    ));
+                }
                 // The kinematic preview carries no per-body mass, so every body
                 // is modeled as unit mass (m = 1 kg): Δv = impulse / m = impulse.
                 // This is an honest, documented unit-mass approximation — the
@@ -972,6 +1115,9 @@ impl WorkerRuntime {
                 // the `velocities` field docs) rather than a hardcoded zero
                 // vector. Orientations are identity because the kinematic
                 // preview models no rotation — a genuine value, not a stand-in.
+                // One quaternion per *stored* body: the public `body_count`
+                // field may have been overwritten from JavaScript, and sizing
+                // the allocation from it could exhaust memory.
                 let velocities: Vec<f32> = self
                     .velocities
                     .iter()
@@ -979,7 +1125,7 @@ impl WorkerRuntime {
                     .collect();
                 SimResult::Snapshot {
                     positions,
-                    orientations: (0..self.body_count as usize)
+                    orientations: (0..self.positions.len())
                         .flat_map(|_| [0_f32, 0., 0., 1.])
                         .collect(),
                     velocities,
@@ -1345,5 +1491,302 @@ mod tests {
             SimResult::Error(msg) => assert!(msg.contains("out of range"), "msg={msg}"),
             other => panic!("expected Error, got {}", other.kind_str()),
         }
+    }
+
+    // ---- shared buffer bounds / capacity regression (F5764, F5765, F5768) --
+
+    /// Quaternion seeded into body 0 to detect cross-region corruption.
+    const SEED_Q: [f32; 4] = [0.1, 0.2, 0.3, 0.9];
+
+    fn add_sphere(x: f32) -> SimCommand {
+        SimCommand::AddSphere {
+            mass: 1.0,
+            x,
+            y: 10.0,
+            z: 0.0,
+            radius: 0.5,
+        }
+    }
+
+    fn is_capacity_error(result: &SimResult) -> bool {
+        matches!(result, SimResult::Error(msg) if msg.contains("capacity"))
+    }
+
+    #[test]
+    fn test_shared_state_regions_tile_the_buffer_exactly() {
+        let n = 5;
+        let buf = SharedStateBuffer::new(n);
+        assert_eq!(buf.position_offset(0), Some(16));
+        assert_eq!(buf.orientation_offset(0), Some(16 + 12 * n));
+        assert_eq!(buf.velocity_offset(0), Some(16 + 28 * n));
+        let last = n - 1;
+        assert_eq!(buf.position_offset(last), Some(16 + 12 * last));
+        assert_eq!(buf.orientation_offset(last), Some(16 + 12 * n + 16 * last));
+        assert_eq!(
+            buf.velocity_offset(last).map(|o| o + VELOCITY_STRIDE),
+            Some(buf.byte_len()),
+            "the velocity region must end exactly at the end of the buffer"
+        );
+        for i in [n, n + 1, usize::MAX] {
+            assert_eq!(buf.position_offset(i), None);
+            assert_eq!(buf.orientation_offset(i), None);
+            assert_eq!(buf.velocity_offset(i), None);
+        }
+    }
+
+    #[test]
+    fn test_shared_state_last_body_round_trips_without_touching_neighbours() {
+        let mut buf = SharedStateBuffer::new(3);
+        assert!(buf.write_body_orientation(0, SEED_Q));
+        assert!(buf.write_body_position(2, [1.0, 2.0, 3.0]));
+        assert!(buf.write_body_orientation(2, [0.0, 0.0, 1.0, 0.0]));
+        assert!(buf.write_body_velocity(2, [4.0, 5.0, 6.0]));
+        assert_eq!(buf.read_body_position(2), [1.0, 2.0, 3.0]);
+        assert_eq!(buf.read_body_orientation(2), [0.0, 0.0, 1.0, 0.0]);
+        assert_eq!(buf.read_body_velocity(2), [4.0, 5.0, 6.0]);
+        assert_eq!(buf.read_body_orientation(0), SEED_Q);
+        assert_eq!(buf.read_body_position(0), [0.0; 3]);
+        assert_eq!(buf.read_body_velocity(0), [0.0; 3]);
+    }
+
+    #[test]
+    fn test_shared_state_rejects_writes_past_max_bodies() {
+        let mut buf = SharedStateBuffer::new(2);
+        assert!(buf.write_body_orientation(0, SEED_Q));
+        assert!(buf.write_body_position(0, [1.0, 2.0, 3.0]));
+        assert!(buf.write_body_velocity(1, [4.0, 5.0, 6.0]));
+        let before = buf.as_bytes().to_vec();
+
+        // Index == max_bodies used to overwrite body 0's orientation (position
+        // write) or slice past the end of the buffer (velocity write).
+        for i in [2, 3, 99, usize::MAX] {
+            assert!(!buf.write_body_position(i, [9.0; 3]), "position {i}");
+            assert!(!buf.write_body_orientation(i, [9.0; 4]), "orientation {i}");
+            assert!(!buf.write_body_velocity(i, [9.0; 3]), "velocity {i}");
+        }
+        assert_eq!(
+            buf.as_bytes(),
+            &before[..],
+            "a rejected write modified the buffer"
+        );
+        assert_eq!(buf.read_body_orientation(0), SEED_Q);
+    }
+
+    #[test]
+    fn test_shared_state_out_of_range_reads_are_zero_not_neighbour_data() {
+        let mut buf = SharedStateBuffer::new(2);
+        assert!(buf.write_body_orientation(0, SEED_Q));
+        assert!(buf.write_body_velocity(0, [7.0, 8.0, 9.0]));
+        // Position index 2 would alias body 0's orientation, orientation
+        // index 2 the velocity region and velocity index 2 the buffer end.
+        assert_eq!(buf.read_body_position(2), [0.0; 3]);
+        assert_eq!(buf.read_body_orientation(2), [0.0; 4]);
+        assert_eq!(buf.read_body_velocity(2), [0.0; 3]);
+        assert_eq!(buf.read_body_position(usize::MAX), [0.0; 3]);
+        assert_eq!(buf.read_body_orientation(usize::MAX), [0.0; 4]);
+        assert_eq!(buf.read_body_velocity(usize::MAX), [0.0; 3]);
+        assert_eq!(buf.read_body_position_js(2), vec![0.0; 3]);
+        assert_eq!(buf.read_body_orientation_js(2), vec![0.0; 4]);
+        assert_eq!(buf.read_body_velocity_js(2), vec![0.0; 3]);
+    }
+
+    #[test]
+    fn test_shared_state_position_slice_validation() {
+        let mut buf = SharedStateBuffer::new(2);
+        buf.write_body_position_slice(1, &[1.0, 2.0, 3.0])
+            .expect("valid write");
+        assert_eq!(buf.read_body_position(1), [1.0, 2.0, 3.0]);
+        // Extra trailing components are ignored, as before.
+        buf.write_body_position_slice(0, &[7.0, 8.0, 9.0, 99.0])
+            .expect("extra component tolerated");
+        assert_eq!(buf.read_body_position(0), [7.0, 8.0, 9.0]);
+
+        let out_of_range = buf
+            .write_body_position_slice(2, &[0.0; 3])
+            .expect_err("index 2 of 2 bodies must be rejected");
+        assert!(
+            matches!(&out_of_range, Error::InvalidParameter { name, .. } if name == "body_index"),
+            "{out_of_range:?}"
+        );
+        let too_short = buf
+            .write_body_position_slice(0, &[1.0, 2.0])
+            .expect_err("two components must be rejected");
+        assert!(
+            matches!(&too_short, Error::InvalidParameter { name, .. } if name == "pos_flat"),
+            "{too_short:?}"
+        );
+        // Neither failure touched the stored data.
+        assert_eq!(buf.read_body_position(0), [7.0, 8.0, 9.0]);
+        assert_eq!(buf.read_body_position(1), [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_shared_state_js_write_accepts_valid_input() {
+        let mut buf = SharedStateBuffer::new(2);
+        assert!(
+            buf.write_body_position_js(1, vec![0.5, 0.25, 0.125])
+                .is_ok()
+        );
+        assert_eq!(buf.read_body_position_js(1), vec![0.5, 0.25, 0.125]);
+    }
+
+    #[test]
+    fn test_worker_runtime_refuses_bodies_past_shared_capacity() {
+        // WorkerBridge::new(2) + 3 spheres + Step used to panic while writing
+        // the velocity of body 2 (slice 96..100 of a 96-byte buffer), after
+        // the third sphere's position write had already clobbered body 0's
+        // orientation.
+        let mut bridge = WorkerBridge::new(2);
+        let mut runtime = WorkerRuntime::new();
+        assert!(bridge.shared_mut().write_body_orientation(0, SEED_Q));
+        for i in 0..3 {
+            bridge.post_command(&add_sphere(i as f32));
+        }
+        bridge.post_command(&SimCommand::AddStaticBox {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            hx: 1.0,
+            hy: 1.0,
+            hz: 1.0,
+        });
+        bridge.post_command(&SimCommand::Step { dt: 1.0 / 60.0 });
+        runtime.process(&mut bridge);
+
+        let results: Vec<SimResult> = std::iter::from_fn(|| bridge.poll_result()).collect();
+        assert_eq!(results.len(), 5);
+        assert!(matches!(results[0], SimResult::BodyAdded { handle: 0 }));
+        assert!(matches!(results[1], SimResult::BodyAdded { handle: 1 }));
+        assert!(
+            is_capacity_error(&results[2]),
+            "third sphere: {:?}",
+            results[2]
+        );
+        assert!(
+            is_capacity_error(&results[3]),
+            "static box: {:?}",
+            results[3]
+        );
+        assert!(matches!(
+            results[4],
+            SimResult::StepDone { body_count: 2, .. }
+        ));
+        assert_eq!(runtime.body_count, 2);
+        assert_eq!(bridge.shared_body_count(), 2);
+        assert_eq!(
+            bridge.shared().read_body_orientation(0),
+            SEED_Q,
+            "body 0's orientation was overwritten"
+        );
+        // Both admitted bodies were published and have fallen.
+        assert!(bridge.shared().read_body_position(0)[1] < 10.0);
+        assert!(bridge.shared().read_body_position(1)[1] < 10.0);
+    }
+
+    #[test]
+    fn test_worker_runtime_fifth_sphere_of_four_is_an_error() {
+        let mut shared = SharedStateBuffer::new(4);
+        let mut runtime = WorkerRuntime::new();
+        assert!(shared.write_body_orientation(0, SEED_Q));
+        for i in 0..4 {
+            let res = runtime.dispatch(add_sphere(i as f32), &mut shared);
+            assert!(
+                matches!(res, SimResult::BodyAdded { handle } if handle == i),
+                "sphere {i}: {res:?}"
+            );
+        }
+        let fifth = runtime.dispatch(add_sphere(4.0), &mut shared);
+        assert!(is_capacity_error(&fifth), "{fifth:?}");
+        let step = runtime.dispatch(SimCommand::Step { dt: 1.0 / 60.0 }, &mut shared);
+        assert!(matches!(step, SimResult::StepDone { body_count: 4, .. }));
+        assert_eq!(runtime.body_count, 4);
+        assert_eq!(shared.read_body_count(), 4);
+        assert_eq!(shared.read_body_orientation(0), SEED_Q);
+    }
+
+    #[test]
+    fn test_worker_runtime_capacity_ignores_forged_body_count() {
+        // `body_count` is a public wasm-bindgen field: JavaScript can set it
+        // to anything, so capacity must be judged from the stored bodies.
+        let mut shared = SharedStateBuffer::new(2);
+        let mut runtime = WorkerRuntime::new();
+        for i in 0..2 {
+            let res = runtime.dispatch(add_sphere(i as f32), &mut shared);
+            assert!(matches!(res, SimResult::BodyAdded { .. }));
+        }
+        runtime.body_count = 0;
+        let res = runtime.dispatch(add_sphere(2.0), &mut shared);
+        assert!(is_capacity_error(&res), "{res:?}");
+
+        let mut fresh = WorkerRuntime::new();
+        fresh.body_count = 50;
+        let mut roomy = SharedStateBuffer::new(4);
+        let res = fresh.dispatch(add_sphere(0.0), &mut roomy);
+        assert!(
+            matches!(res, SimResult::BodyAdded { handle: 0 }),
+            "handle must be the body index, got {res:?}"
+        );
+        assert_eq!(fresh.body_count, 1, "body_count is re-derived from storage");
+    }
+
+    #[test]
+    fn test_worker_runtime_snapshot_ignores_forged_body_count() {
+        // A forged `body_count` of u32::MAX would otherwise size the
+        // orientation array at 16 GiB of f32s.
+        let mut shared = SharedStateBuffer::new(4);
+        let mut runtime = WorkerRuntime::new();
+        for i in 0..3 {
+            runtime.dispatch(add_sphere(i as f32), &mut shared);
+        }
+        runtime.body_count = u32::MAX;
+        match runtime.dispatch(SimCommand::RequestSnapshot, &mut shared) {
+            SimResult::Snapshot {
+                positions,
+                orientations,
+                velocities,
+                ..
+            } => {
+                assert_eq!(positions.len(), 9);
+                assert_eq!(velocities.len(), 9);
+                assert_eq!(orientations.len(), 12, "one quaternion per stored body");
+                assert!(
+                    orientations
+                        .chunks_exact(4)
+                        .all(|q| q == [0.0, 0.0, 0.0, 1.0]),
+                    "{orientations:?}"
+                );
+            }
+            other => panic!("expected Snapshot, got {}", other.kind_str()),
+        }
+    }
+
+    #[test]
+    fn test_worker_runtime_with_undersized_shared_buffer_does_not_panic() {
+        // A runtime that holds more bodies than the buffer it is pointed at
+        // can store must publish only what fits.
+        let mut big = SharedStateBuffer::new(4);
+        let mut runtime = WorkerRuntime::new();
+        for i in 0..4 {
+            runtime.dispatch(add_sphere(i as f32), &mut big);
+        }
+        let mut small = SharedStateBuffer::new(2);
+        assert!(small.write_body_orientation(0, SEED_Q));
+        let step = runtime.dispatch(SimCommand::Step { dt: 1.0 / 60.0 }, &mut small);
+        assert!(matches!(step, SimResult::StepDone { body_count: 4, .. }));
+        assert_eq!(small.read_body_count(), 2, "header must not claim 4 bodies");
+        assert_eq!(small.read_body_orientation(0), SEED_Q);
+        assert!(small.read_body_position(1)[1] < 10.0);
+
+        let impulse = runtime.dispatch(
+            SimCommand::ApplyImpulse {
+                handle: 3,
+                ix: 1.0,
+                iy: 0.0,
+                iz: 0.0,
+            },
+            &mut small,
+        );
+        assert!(is_capacity_error(&impulse), "{impulse:?}");
+        assert_eq!(small.read_body_orientation(0), SEED_Q);
     }
 }

@@ -13,11 +13,14 @@
 //! - [`LqrController`] — LQR via discrete algebraic Riccati equation (iterative)
 //! - [`KalmanFilter`] — discrete Kalman filter: predict + update
 //! - [`ExtendedKalmanFilter`] — EKF with Jacobian-based linearization
-//! - [`BodeAnalysis`] — gain/phase at frequencies; gain/phase margins
+//! - [`BodeAnalysis`] — gain/phase at frequencies; gain/phase margins (on the unwrapped phase)
 //! - [`RootLocus`] — closed-loop poles vs gain K; breakaway points
 //! - [`ZieglerNichols`] — auto-tune PID from ultimate gain/period
 //! - [`LeadLagCompensator`] — lead/lag compensator transfer function
-//! - [`PolesZeros`] — transfer function poles, zeros, DC gain, step response
+//! - [`PolesZeros`] — transfer function poles, zeros, DC gain, exact sampled step response
+
+mod margins;
+mod pole_zero_response;
 
 // ---------------------------------------------------------------------------
 // Internal complex number helper
@@ -791,48 +794,6 @@ impl BodeAnalysis {
             .collect();
         self.compute(&omegas)
     }
-
-    /// Find gain margin (dB) and phase margin (degrees).
-    ///
-    /// - Gain margin: gain (dB) at the phase crossover frequency (where phase = -180°).
-    /// - Phase margin: phase (deg) + 180° at the gain crossover frequency (where gain = 0 dB).
-    ///
-    /// Returns `(gain_margin_db, phase_margin_deg)`.
-    pub fn margins(&self, omega_min: f64, omega_max: f64, n_points: usize) -> (f64, f64) {
-        let points = self.compute_log(omega_min, omega_max, n_points);
-        if points.is_empty() {
-            return (f64::NAN, f64::NAN);
-        }
-
-        // Phase crossover: phase = -180°
-        let mut phase_cross_gain_db = f64::NAN;
-        for i in 1..points.len() {
-            let p0 = &points[i - 1];
-            let p1 = &points[i];
-            if (p0.phase_deg + 180.0) * (p1.phase_deg + 180.0) <= 0.0 {
-                // Linear interpolation
-                let frac = (-(p0.phase_deg + 180.0)) / (p1.phase_deg - p0.phase_deg + 1e-300);
-                phase_cross_gain_db = p0.gain_db + frac * (p1.gain_db - p0.gain_db);
-                break;
-            }
-        }
-
-        // Gain crossover: gain = 0 dB
-        let mut gain_cross_phase_margin = f64::NAN;
-        for i in 1..points.len() {
-            let p0 = &points[i - 1];
-            let p1 = &points[i];
-            if p0.gain_db * p1.gain_db <= 0.0 {
-                let frac = (-p0.gain_db) / (p1.gain_db - p0.gain_db + 1e-300);
-                let phase = p0.phase_deg + frac * (p1.phase_deg - p0.phase_deg);
-                gain_cross_phase_margin = phase + 180.0;
-                break;
-            }
-        }
-
-        let gain_margin_db = -phase_cross_gain_db;
-        (gain_margin_db, gain_cross_phase_margin)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1315,78 +1276,6 @@ impl PolesZeros {
             .iter()
             .all(|&(re, im)| (re * re + im * im).sqrt() < 1.0)
     }
-
-    /// Compute step response via numerical inverse Laplace (Euler method on state-space).
-    /// Returns (time, output) pairs for `steps` time steps of size `dt`.
-    pub fn step_response_approx(&self, dt: f64, steps: usize) -> Vec<(f64, f64)> {
-        // Build first-order state-space from poles for simple SISO case
-        // Use direct form simulation for small systems
-        let n = self.poles.len();
-        if n == 0 {
-            return (0..steps).map(|k| (k as f64 * dt, self.gain)).collect();
-        }
-
-        // Build numerator and denominator polynomials from poles/zeros
-        let mut den_poly = vec![1.0f64]; // start with 1
-        for &(pr, pi) in &self.poles {
-            // multiply by (s - (pr + j*pi))*(s - (pr - j*pi)) = s^2 - 2*pr*s + (pr^2+pi^2)
-            // For real poles: multiply by (s - pr)
-            if pi.abs() < 1e-10 {
-                // Real pole: multiply by (s - pr) = [1, -pr]
-                let old = den_poly.clone();
-                den_poly = vec![0.0; old.len() + 1];
-                for (i, &c) in old.iter().enumerate() {
-                    den_poly[i] += c;
-                    den_poly[i + 1] += c * (-pr);
-                }
-            }
-        }
-        let mut num_poly = vec![self.gain];
-        for &(zr, zi) in &self.zeros {
-            if zi.abs() < 1e-10 {
-                let old = num_poly.clone();
-                num_poly = vec![0.0; old.len() + 1];
-                for (i, &c) in old.iter().enumerate() {
-                    num_poly[i] += c;
-                    num_poly[i + 1] += c * (-zr);
-                }
-            }
-        }
-
-        // Simulate using Euler step: y'' + a1*y' + a0*y = b0*u (2nd order example)
-        // General: use the denominator-based difference equation
-        let _num_poly = num_poly;
-        let _den_poly = den_poly;
-
-        // Simple: use frequency domain approximation — just compute output via pole-zero step
-        // Use numerical inverse: approximate step response as sum of residues
-        let mut result = Vec::with_capacity(steps);
-        for k in 0..steps {
-            let t = k as f64 * dt;
-            let mut y = self.gain;
-            for &(pr, pi) in &self.poles {
-                if pi.abs() < 1e-10 {
-                    // Real pole contribution: residue * (1 - e^(p*t)) / (-p)
-                    if pr.abs() > 1e-12 {
-                        y += (pr * t).exp() * 0.0; // simplified - pole contribution
-                    }
-                } else {
-                    let _ = pr + pi; // suppress warning
-                }
-            }
-            // Simplified step response: sum of exponential modes
-            let mut y_step = 1.0 - 0.0; // DC component
-            for &(pr, pi) in &self.poles {
-                if pi.abs() < 1e-10 && pr < 0.0 {
-                    // Real stable pole: step response component = 1 - e^(pr*t)
-                    y_step += -(pr * t).exp() / self.poles.len() as f64;
-                }
-            }
-            let _ = y;
-            result.push((t, y_step * self.gain));
-        }
-        result
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1715,15 +1604,17 @@ mod tests {
 
     #[test]
     fn test_bode_margins_stable_system() {
-        // G(s) = 1/(s+1)^3 — stable, has some gain and phase margins
+        // G(s) = 1/(s+1)^3: phase crossover at w = sqrt(3) where |G| = 1/8, so the
+        // gain margin is 20 log10(8) = 18.06 dB.  The gain never reaches 0 dB, so
+        // the phase margin is unbounded.
         let bode = BodeAnalysis::new(vec![1.0], vec![1.0, 3.0, 3.0, 1.0]);
         let (gm, pm) = bode.margins(0.01, 100.0, 200);
-        // For this stable system, phase margin should be positive
+        let expected_gm = 20.0 * 8.0_f64.log10();
         assert!(
-            pm > 0.0 || pm.is_nan(),
-            "phase margin should be positive for stable system"
+            (gm - expected_gm).abs() < 1e-6,
+            "gm = {gm}, expected {expected_gm}"
         );
-        let _ = gm;
+        assert!(pm.is_infinite() && pm > 0.0, "pm = {pm}");
     }
 
     // ---- RootLocus tests ----
@@ -1898,9 +1789,16 @@ mod tests {
 
     #[test]
     fn test_poles_zeros_step_response_length() {
+        // 1 / (s + 1): y(t) = 1 - e^-t, sampled at t = 0, 0.1, ..., 0.9.
         let pz = PolesZeros::new(1.0, vec![], vec![(-1.0, 0.0)]);
         let resp = pz.step_response_approx(0.1, 10);
         assert_eq!(resp.len(), 10);
+        let (t_last, y_last) = resp[9];
+        assert!((t_last - 0.9).abs() < 1e-12, "t = {t_last}");
+        assert!(
+            (y_last - (1.0 - (-0.9_f64).exp())).abs() < 1e-12,
+            "y = {y_last}"
+        );
     }
 
     #[test]

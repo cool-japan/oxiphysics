@@ -657,30 +657,127 @@ impl BvhBroadphase {
         node_idx
     }
     /// Query all pairs of overlapping AABBs.
+    ///
+    /// The pairs are found with a simultaneous self-traversal of the
+    /// hierarchy: two subtrees are only expanded against each other when their
+    /// node AABBs overlap, so well-separated groups of objects are pruned in
+    /// bulk instead of being tested one object at a time.
+    ///
+    /// The hierarchy is traversed as-is when it was built from AABBs that
+    /// enclose `aabbs` (the slice passed to [`BvhBroadphase::build`], or a
+    /// fattened version of it).  When it is empty, was built for a different
+    /// number of objects, or no longer encloses `aabbs`, a temporary hierarchy
+    /// is built from `aabbs` first, so the result is always exactly the set of
+    /// overlapping pairs of `aabbs`, whatever the state of `self`.
+    ///
+    /// Every pair is canonical (`a < b`) and the list is sorted
+    /// lexicographically, which is the order [`crate::BruteForceBroadPhase`]
+    /// produces.
     pub fn find_all_pairs(&self, aabbs: &[Aabb]) -> Vec<CollisionPair> {
-        let mut pairs = Vec::new();
-        if self.root.is_none() {
-            return pairs;
+        if self.encloses(aabbs) {
+            self.collect_self_pairs(aabbs)
+        } else {
+            let mut local = BvhBroadphase::new();
+            local.build(aabbs);
+            local.collect_self_pairs(aabbs)
         }
-        let leaves: Vec<(usize, usize)> = self
-            .nodes
+    }
+    /// `true` when every object of `aabbs` has a leaf in this hierarchy whose
+    /// stored AABB encloses it, i.e. when pruning on the node AABBs cannot
+    /// miss an overlap between two of the supplied AABBs.
+    fn encloses(&self, aabbs: &[Aabb]) -> bool {
+        if self.root.is_none() || self.object_to_node.len() != aabbs.len() {
+            return false;
+        }
+        aabbs
             .iter()
+            .zip(self.object_to_node.iter())
             .enumerate()
-            .filter_map(|(node_idx, node)| {
-                if let BvhNodeData::Leaf { object_index } = node.data {
-                    Some((node_idx, object_index))
-                } else {
-                    None
-                }
+            .all(|(object, (aabb, slot))| {
+                slot.and_then(|node_idx| self.nodes.get(node_idx))
+                    .is_some_and(|node| {
+                        matches!(
+                            node.data,
+                            BvhNodeData::Leaf { object_index } if object_index == object
+                        ) && aabb_contains_aabb(&node.aabb, aabb)
+                    })
             })
-            .collect();
-        for (i, &(_, obj_a)) in leaves.iter().enumerate() {
-            for &(_, obj_b) in &leaves[(i + 1)..] {
-                if aabbs[obj_a].intersects(&aabbs[obj_b]) {
-                    pairs.push(CollisionPair::new(obj_a, obj_b));
+    }
+    /// Self-collision traversal: report every pair of leaves whose objects
+    /// overlap in `aabbs`.
+    ///
+    /// A stack entry `(n, n)` stands for "all pairs inside the subtree of `n`"
+    /// and splits into the two child self-pairs plus the cross pair of the
+    /// children.  An entry `(a, b)` with `a != b` stands for "all pairs between
+    /// the two subtrees"; it is discarded when the node AABBs are disjoint,
+    /// reported when both nodes are leaves, and otherwise expanded by
+    /// descending into the larger node.  Each unordered leaf pair is visited
+    /// exactly once.
+    fn collect_self_pairs(&self, aabbs: &[Aabb]) -> Vec<CollisionPair> {
+        let mut pairs = Vec::new();
+        let Some(root) = self.root else {
+            return pairs;
+        };
+        let mut stack: Vec<(usize, usize)> = vec![(root, root)];
+        while let Some((idx_a, idx_b)) = stack.pop() {
+            let node_a = &self.nodes[idx_a];
+            if idx_a == idx_b {
+                if let BvhNodeData::Internal { left, right } = node_a.data {
+                    stack.push((left, left));
+                    stack.push((right, right));
+                    stack.push((left, right));
+                }
+                continue;
+            }
+            let node_b = &self.nodes[idx_b];
+            if !node_a.aabb.intersects(&node_b.aabb) {
+                continue;
+            }
+            match (&node_a.data, &node_b.data) {
+                (
+                    BvhNodeData::Leaf {
+                        object_index: object_a,
+                    },
+                    BvhNodeData::Leaf {
+                        object_index: object_b,
+                    },
+                ) => {
+                    if let (Some(aabb_a), Some(aabb_b)) =
+                        (aabbs.get(*object_a), aabbs.get(*object_b))
+                        && aabb_a.intersects(aabb_b)
+                    {
+                        pairs.push(CollisionPair::canonical(*object_a, *object_b));
+                    }
+                }
+                (BvhNodeData::Internal { left, right }, BvhNodeData::Leaf { .. }) => {
+                    stack.push((*left, idx_b));
+                    stack.push((*right, idx_b));
+                }
+                (BvhNodeData::Leaf { .. }, BvhNodeData::Internal { left, right }) => {
+                    stack.push((idx_a, *left));
+                    stack.push((idx_a, *right));
+                }
+                (
+                    BvhNodeData::Internal {
+                        left: left_a,
+                        right: right_a,
+                    },
+                    BvhNodeData::Internal {
+                        left: left_b,
+                        right: right_b,
+                    },
+                ) => {
+                    if node_a.aabb.surface_area() >= node_b.aabb.surface_area() {
+                        stack.push((*left_a, idx_b));
+                        stack.push((*right_a, idx_b));
+                    } else {
+                        stack.push((idx_a, *left_b));
+                        stack.push((idx_a, *right_b));
+                    }
                 }
             }
         }
+        pairs.sort_unstable_by_key(|pair| (pair.a, pair.b));
         pairs
     }
     /// Query all objects whose AABB overlaps the given AABB.

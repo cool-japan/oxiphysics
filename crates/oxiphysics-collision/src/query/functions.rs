@@ -614,6 +614,12 @@ pub fn sphere_cast_scene(
 ///
 /// Both spheres move at constant velocity over the interval `[0, max_t]`.
 /// Returns `None` if no collision occurs within `max_t`.
+///
+/// Spheres that already overlap (or touch) at `t = 0` are in contact
+/// immediately, so the result has `toi == 0.0` whatever their relative motion
+/// is; the normal then points from `center_b` towards `center_a` and the contact
+/// point lies on the surface of sphere B. For separated spheres the earliest
+/// root of `|d + t * v_rel| = r_a + r_b` is returned.
 pub fn compute_time_of_impact_spheres(
     center_a: [f64; 3],
     vel_a: [f64; 3],
@@ -629,34 +635,36 @@ pub fn compute_time_of_impact_spheres(
     let a = dot(rel_vel, rel_vel);
     let b = 2.0 * dot(d, rel_vel);
     let c = dot(d, d) - combined_r * combined_r;
-    if a < 1e-30 {
-        return if c <= 0.0 {
-            let n = if norm(d) > 1e-15 {
-                normalize(d)
-            } else {
-                [1.0, 0.0, 0.0]
-            };
-            let contact = add(center_b, scale(n, radius_b));
-            Some(ToiResult {
-                toi: 0.0,
-                normal: n,
-                point: contact,
-            })
+    if c <= 0.0 {
+        // Already in contact at t = 0. The quadratic below would report the
+        // *exit* time of an overlapping pair (its roots straddle zero), which
+        // is not a time of impact.
+        let n = if norm(d) > 1e-15 {
+            normalize(d)
         } else {
-            None
+            [1.0, 0.0, 0.0]
         };
+        let contact = add(center_b, scale(n, radius_b));
+        return Some(ToiResult {
+            toi: 0.0,
+            normal: n,
+            point: contact,
+        });
+    }
+    if a < 1e-30 {
+        // Separated and not moving relative to each other.
+        return None;
     }
     let disc = b * b - 4.0 * a * c;
     if disc < 0.0 {
         return None;
     }
-    let sqrt_disc = disc.sqrt();
-    let t1 = (-b - sqrt_disc) / (2.0 * a);
-    let t2 = (-b + sqrt_disc) / (2.0 * a);
-    let toi = if t1 >= 0.0 && t1 <= max_t {
+    // Separated at t = 0 (c > 0): both roots share a sign, so the earlier one
+    // is the entry time and it is the only candidate (t1 < 0 means the spheres
+    // are moving apart, t1 > max_t means they do not meet in time).
+    let t1 = (-b - disc.sqrt()) / (2.0 * a);
+    let toi = if (0.0..=max_t).contains(&t1) {
         t1
-    } else if t2 >= 0.0 && t2 <= max_t {
-        t2
     } else {
         return None;
     };
@@ -1725,5 +1733,117 @@ mod tests_extended {
             "touching segments: distance must be 0, got {}",
             r.distance
         );
+    }
+
+    #[test]
+    fn toi_spheres_overlapping_and_approaching_reports_zero() {
+        // Radii 1 + 1, centres 1 apart on x, closing speed 2: the pair overlaps
+        // at t = 0 and the exit root is t = 1.5; the TOI must be 0.
+        let r = compute_time_of_impact_spheres(
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            1.0,
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            1.0,
+            100.0,
+        )
+        .expect("overlapping spheres are in contact");
+        assert_eq!(r.toi, 0.0);
+        assert!((r.normal[0] + 1.0).abs() < 1e-12, "normal {:?}", r.normal);
+        // Contact point: centre of B moved by n * radius_b -> (1,0,0) + (-1,0,0).
+        assert!(r.point[0].abs() < 1e-12, "point {:?}", r.point);
+    }
+
+    #[test]
+    fn toi_spheres_overlapping_and_separating_reports_zero() {
+        // The pair overlaps now and moves apart: still in contact at t = 0.
+        let r = compute_time_of_impact_spheres(
+            [0.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            1.0,
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            1.0,
+            100.0,
+        )
+        .expect("overlapping spheres are in contact");
+        // The pair separates at t = 0.5; that exit time must not be reported.
+        assert_eq!(r.toi, 0.0);
+        assert!((r.normal[0] + 1.0).abs() < 1e-12, "normal {:?}", r.normal);
+    }
+
+    #[test]
+    fn toi_spheres_overlapping_beyond_max_t_still_reports_zero() {
+        // The exit time (1.5) exceeds max_t = 1.0, which used to yield `None`.
+        let r = compute_time_of_impact_spheres(
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            1.0,
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            1.0,
+            1.0,
+        );
+        assert_eq!(r.map(|hit| hit.toi), Some(0.0));
+    }
+
+    #[test]
+    fn toi_spheres_coincident_centres_use_default_normal() {
+        let r = compute_time_of_impact_spheres(
+            [2.0, 3.0, 4.0],
+            [0.0, 0.0, 0.0],
+            0.5,
+            [2.0, 3.0, 4.0],
+            [0.0, 0.0, 0.0],
+            0.5,
+            1.0,
+        )
+        .expect("coincident spheres are in contact");
+        assert_eq!(r.toi, 0.0);
+        assert_eq!(r.normal, [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn toi_spheres_touching_at_start_is_contact() {
+        let r = compute_time_of_impact_spheres(
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            1.0,
+            [2.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            1.0,
+            1.0,
+        );
+        assert_eq!(r.map(|hit| hit.toi), Some(0.0));
+    }
+
+    #[test]
+    fn toi_spheres_separated_but_too_slow_is_none() {
+        // Gap of 3, closing speed 1: impact at t = 3, beyond max_t = 2.
+        let r = compute_time_of_impact_spheres(
+            [0.0, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+            1.0,
+            [5.0, 0.0, 0.0],
+            [-0.5, 0.0, 0.0],
+            1.0,
+            2.0,
+        );
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn toi_spheres_separated_static_pair_is_none() {
+        let r = compute_time_of_impact_spheres(
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            1.0,
+            [5.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            1.0,
+            10.0,
+        );
+        assert!(r.is_none());
     }
 }

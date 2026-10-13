@@ -23,17 +23,20 @@ use super::wasm_types::WasmTransform;
 /// ```no_run
 /// use oxiphysics_wasm::engine::WasmBindings;
 ///
+/// # fn main() -> Result<(), wasm_bindgen::JsValue> {
 /// let mut api = WasmBindings::new(0.0, -9.81, 0.0);
 ///
 /// // Add a 1 kg body at height 10
-/// let id = api.add_rigid_body(0.0, 10.0, 0.0, 1.0);
-/// api.add_collider_sphere(id, 0.5);
+/// let id = api.add_rigid_body(0.0, 10.0, 0.0, 1.0)?;
+/// api.add_collider_sphere(id, 0.5)?;
 ///
-/// api.step(1.0 / 60.0);
+/// api.step(1.0 / 60.0)?;
 ///
 /// let pos = api.get_position(id);
 /// assert!(pos[1] < 10.0, "body should fall");
 /// assert_eq!(api.body_count(), 1);
+/// # Ok(())
+/// # }
 /// ```
 #[wasm_bindgen]
 #[derive(Debug)]
@@ -60,20 +63,24 @@ impl WasmBindings {
 
     /// Add a rigid body at `(x, y, z)` with the given `mass` (kg).
     ///
-    /// Returns the stable body handle (`u32`).  Pass `mass = 0.0` for a
+    /// Returns the body handle (an opaque `u32`).  Pass `mass = 0.0` for a
     /// static (immovable) body.
-    pub fn add_rigid_body(&mut self, x: f64, y: f64, z: f64, mass: f64) -> u32 {
-        if mass <= 0.0 {
-            self.engine.add_static_body(x, y, z)
+    ///
+    /// Throws if the mass is negative or not finite, or the position is not
+    /// finite.
+    pub fn add_rigid_body(&mut self, x: f64, y: f64, z: f64, mass: f64) -> Result<u32, JsValue> {
+        let handle = if mass == 0.0 {
+            self.engine.add_static_body(x, y, z)?
         } else {
-            self.engine.add_dynamic_body(mass, x, y, z)
-        }
+            self.engine.add_dynamic_body(mass, x, y, z)?
+        };
+        Ok(handle)
     }
 
     /// Set linear velocity of body `id`.
     ///
-    /// Silently ignores invalid handles (JS callers should not need to
-    /// propagate physics errors in hot loops).
+    /// Silently ignores invalid or stale handles and non-finite components
+    /// (JS callers should not need to propagate physics errors in hot loops).
     pub fn set_velocity(&mut self, id: u32, vx: f64, vy: f64, vz: f64) {
         let _ = self.engine.set_velocity(id, vx, vy, vz);
     }
@@ -85,9 +92,12 @@ impl WasmBindings {
         self.engine.get_position(id).to_vec()
     }
 
-    /// Advance the simulation by `dt` seconds.
-    pub fn step(&mut self, dt: f64) {
-        self.engine.step(dt);
+    /// Advance the simulation by `dt` seconds of real time (consumed in fixed
+    /// substeps, see [`WasmPhysicsEngine::step`]).
+    ///
+    /// Throws if `dt` is negative, `NaN` or infinite.
+    pub fn step(&mut self, dt: f64) -> Result<(), JsValue> {
+        Ok(self.engine.step(dt)?)
     }
 
     /// Return all active body positions as a flat `Vec<f64>`:
@@ -114,16 +124,24 @@ impl WasmBindings {
 
     /// Add a sphere collider to `body_id` with the given `radius`.
     ///
-    /// Returns the collider handle.
-    pub fn add_collider_sphere(&mut self, body_id: u32, radius: f64) -> u32 {
-        self.engine.add_sphere_collider(body_id, radius)
+    /// Returns the collider handle.  Throws if `body_id` is not a live body or
+    /// the radius is not finite and positive.
+    pub fn add_collider_sphere(&mut self, body_id: u32, radius: f64) -> Result<u32, JsValue> {
+        Ok(self.engine.add_sphere_collider(body_id, radius)?)
     }
 
     /// Add a box collider to `body_id` with half-extents `(hx, hy, hz)`.
     ///
-    /// Returns the collider handle.
-    pub fn add_collider_box(&mut self, body_id: u32, hx: f64, hy: f64, hz: f64) -> u32 {
-        self.engine.add_box_collider(body_id, hx, hy, hz)
+    /// Returns the collider handle.  Throws if `body_id` is not a live body or
+    /// a half-extent is not finite and positive.
+    pub fn add_collider_box(
+        &mut self,
+        body_id: u32,
+        hx: f64,
+        hy: f64,
+        hz: f64,
+    ) -> Result<u32, JsValue> {
+        Ok(self.engine.add_box_collider(body_id, hx, hy, hz)?)
     }
 
     // -----------------------------------------------------------------------
@@ -194,11 +212,14 @@ impl WasmBindings {
     /// ```no_run
     /// use oxiphysics_wasm::engine::WasmBindings;
     ///
+    /// # fn main() -> Result<(), wasm_bindgen::JsValue> {
     /// let mut api = WasmBindings::new(0.0, -9.81, 0.0);
-    /// api.add_rigid_body(0.0, 1.0, 0.0, 1.0);
-    /// api.step(1.0 / 60.0);
+    /// api.add_rigid_body(0.0, 1.0, 0.0, 1.0)?;
+    /// api.step(1.0 / 60.0)?;
     ///
     /// assert!(api.time() > 0.0);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn time(&self) -> f64 {
         self.engine.time()
@@ -267,12 +288,14 @@ impl WasmBindings {
         self.engine.reset();
     }
 
-    /// Apply a force to body `id` (silently ignores invalid handles).
+    /// Apply a force to body `id` (silently ignores invalid or stale handles
+    /// and non-finite components).
     pub fn apply_force(&mut self, id: u32, fx: f64, fy: f64, fz: f64) {
         let _ = self.engine.apply_force(id, fx, fy, fz);
     }
 
-    /// Apply an impulse to body `id`.
+    /// Apply an impulse to body `id` (silently ignores invalid or stale
+    /// handles and non-finite components).
     pub fn apply_impulse(&mut self, id: u32, ix: f64, iy: f64, iz: f64) {
         let _ = self.engine.apply_impulse(id, ix, iy, iz);
     }

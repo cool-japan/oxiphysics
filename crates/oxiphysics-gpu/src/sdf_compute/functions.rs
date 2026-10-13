@@ -4,62 +4,13 @@
 
 use rayon::prelude::*;
 
+/// `fast_sweeping_update` now lives in the [`eikonal`](super::eikonal) module; it is
+/// re-exported here so that the path it was first published under keeps working.
+pub use super::eikonal::fast_sweeping_update;
+use super::eikonal::sdf_redistance;
+use super::mc_tables::{MC_CORNER_OFFSETS, MC_EDGE_CORNERS, MC_EDGE_TABLE, MC_TRI_TABLE};
 use super::types::{SdfGrid, SphereTraceResult, Triangle};
 
-/// One pass of the fast sweeping method.
-pub fn fast_sweeping_update(grid: &mut SdfGrid) {
-    let nx = grid.nx;
-    let ny = grid.ny;
-    let nz = grid.nz;
-    let dx = grid.dx;
-    for i in 0..nx {
-        for j in 0..ny {
-            for k in 0..nz {
-                let cur = grid.get(i, j, k);
-                let mut best = cur;
-                if i > 0 {
-                    let candidate = grid.get(i - 1, j, k) + dx;
-                    if candidate < best {
-                        best = candidate;
-                    }
-                }
-                if i + 1 < nx {
-                    let candidate = grid.get(i + 1, j, k) + dx;
-                    if candidate < best {
-                        best = candidate;
-                    }
-                }
-                if j > 0 {
-                    let candidate = grid.get(i, j - 1, k) + dx;
-                    if candidate < best {
-                        best = candidate;
-                    }
-                }
-                if j + 1 < ny {
-                    let candidate = grid.get(i, j + 1, k) + dx;
-                    if candidate < best {
-                        best = candidate;
-                    }
-                }
-                if k > 0 {
-                    let candidate = grid.get(i, j, k - 1) + dx;
-                    if candidate < best {
-                        best = candidate;
-                    }
-                }
-                if k + 1 < nz {
-                    let candidate = grid.get(i, j, k + 1) + dx;
-                    if candidate < best {
-                        best = candidate;
-                    }
-                }
-                if best < cur {
-                    grid.set(i, j, k, best);
-                }
-            }
-        }
-    }
-}
 /// Compute the union of two SDFs: `min(a, b)` pointwise.
 pub fn union_sdf(a: &SdfGrid, b: &SdfGrid) -> SdfGrid {
     assert_eq!(a.nx, b.nx, "union_sdf: nx mismatch");
@@ -343,34 +294,12 @@ pub fn approximate_volume(grid: &SdfGrid) -> f64 {
     let count = count_interior_cells(grid);
     count as f64 * grid.dx * grid.dx * grid.dx
 }
-/// Marching cubes edge table (12 edges per cube).
-/// Each entry encodes which edges are intersected for a given vertex mask.
-#[rustfmt::skip]
-pub(super) const MC_EDGE_TABLE: [u16; 256] = [
-    0x000, 0x109, 0x203, 0x30a, 0x406, 0x50f, 0x605, 0x70c, 0x80c, 0x905, 0xa0f, 0xb06,
-    0xc0a, 0xd03, 0xe09, 0xf00, 0x190, 0x099, 0x393, 0x29a, 0x596, 0x49f, 0x795, 0x69c,
-    0x99c, 0x895, 0xb9f, 0xa96, 0xd9a, 0xc93, 0xf99, 0xe90, 0x230, 0x339, 0x033, 0x13a,
-    0x636, 0x73f, 0x435, 0x53c, 0xa3c, 0xb35, 0x83f, 0x936, 0xe3a, 0xf33, 0xc39, 0xd30,
-    0x3a0, 0x2a9, 0x1a3, 0x0aa, 0x7a6, 0x6af, 0x5a5, 0x4ac, 0xbac, 0xaa5, 0x9af, 0x8a6,
-    0xfaa, 0xea3, 0xda9, 0xca0, 0x460, 0x569, 0x663, 0x76a, 0x066, 0x16f, 0x265, 0x36c,
-    0xc6c, 0xd65, 0xe6f, 0xf66, 0x86a, 0x963, 0xa69, 0xb60, 0x5f0, 0x4f9, 0x7f3, 0x6fa,
-    0x1f6, 0x0ff, 0x3f5, 0x2fc, 0xdfc, 0xcf5, 0xfff, 0xef6, 0x9fa, 0x8f3, 0xbf9, 0xaf0,
-    0x650, 0x759, 0x453, 0x55a, 0x256, 0x35f, 0x055, 0x15c, 0xe5c, 0xf55, 0xc5f, 0xd56,
-    0xa5a, 0xb53, 0x859, 0x950, 0x7c0, 0x6c9, 0x5c3, 0x4ca, 0x3c6, 0x2cf, 0x1c5, 0x0cc,
-    0xfcc, 0xec5, 0xdcf, 0xcc6, 0xbca, 0xac3, 0x9c9, 0x8c0, 0x8c0, 0x9c9, 0xac3, 0xbca,
-    0xcc6, 0xdcf, 0xec5, 0xfcc, 0x0cc, 0x1c5, 0x2cf, 0x3c6, 0x4ca, 0x5c3, 0x6c9, 0x7c0,
-    0x950, 0x859, 0xb53, 0xa5a, 0xd56, 0xc5f, 0xf55, 0xe5c, 0x15c, 0x055, 0x35f, 0x256,
-    0x55a, 0x453, 0x759, 0x650, 0xaf0, 0xbf9, 0x8f3, 0x9fa, 0xef6, 0xfff, 0xcf5, 0xdfc,
-    0x2fc, 0x3f5, 0x0ff, 0x1f6, 0x6fa, 0x7f3, 0x4f9, 0x5f0, 0xb60, 0xa69, 0x963, 0x86a,
-    0xf66, 0xe6f, 0xd65, 0xc6c, 0x36c, 0x265, 0x16f, 0x066, 0x76a, 0x663, 0x569, 0x460,
-    0xca0, 0xda9, 0xea3, 0xfaa, 0x8a6, 0x9af, 0xaa5, 0xbac, 0x4ac, 0x5a5, 0x6af, 0x7a6,
-    0x0aa, 0x1a3, 0x2a9, 0x3a0, 0xd30, 0xc39, 0xf33, 0xe3a, 0x936, 0x835, 0xb3f, 0xa36,
-    0x53c, 0x435, 0x73f, 0x636, 0x13a, 0x033, 0x339, 0x230, 0xe90, 0xf99, 0xc93, 0xd9a,
-    0xa96, 0xb9f, 0x895, 0x99c, 0x69c, 0x795, 0x49f, 0x596, 0x29a, 0x393, 0x099, 0x190,
-    0xf00, 0xe09, 0xd03, 0xc0a, 0xb06, 0xa0f, 0x905, 0x80c, 0x70c, 0x605, 0x50f, 0x406,
-    0x30a, 0x203, 0x109, 0x000,
-];
 /// Interpolate the position of an edge intersection given two corner SDF values.
+///
+/// `p1`/`p2` are the end points of the edge and `val1`/`val2` the field values
+/// there.  The result lies on the edge (the interpolation parameter is clamped to
+/// `[0, 1]`); if the parameter is not finite (NaN field values) the midpoint is
+/// returned.
 #[inline]
 pub(super) fn interpolate_vertex(
     p1: [f64; 3],
@@ -379,126 +308,135 @@ pub(super) fn interpolate_vertex(
     val2: f64,
     iso: f64,
 ) -> [f64; 3] {
-    if (val2 - val1).abs() < 1e-15 {
-        return p1;
-    }
     let t = (iso - val1) / (val2 - val1);
+    let t = if t.is_finite() {
+        t.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
     [
         p1[0] + t * (p2[0] - p1[0]),
         p1[1] + t * (p2[1] - p1[1]),
         p1[2] + t * (p2[2] - p1[2]),
     ]
 }
-/// Extract a triangle mesh from the SDF grid at the given isovalue
-/// using the marching cubes algorithm (simplified 3-case variant).
+/// Triangles generated by one marching-cubes cell (at most five).
+pub(super) struct CellTriangles {
+    /// Triangle vertices in world space; only the first `count` are valid.
+    pub(super) triangles: [[[f64; 3]; 3]; 5],
+    /// Number of valid triangles.
+    pub(super) count: usize,
+}
+/// Run marching cubes on the single cell whose lowest corner is grid point
+/// `(i, j, k)`.
 ///
-/// Returns a list of triangles. For a signed distance field, `isovalue = 0.0`
-/// extracts the zero level-set (the surface).
-pub fn marching_cubes(grid: &SdfGrid, isovalue: f64) -> Vec<Triangle> {
-    let nx = grid.nx;
-    let ny = grid.ny;
-    let nz = grid.nz;
-    if nx < 2 || ny < 2 || nz < 2 {
-        return Vec::new();
-    }
-    let mut triangles = Vec::new();
-    for i in 0..nx - 1 {
-        for j in 0..ny - 1 {
-            for k in 0..nz - 1 {
-                let corners: [[f64; 3]; 8] = [
-                    grid.world_pos(i, j, k),
-                    grid.world_pos(i + 1, j, k),
-                    grid.world_pos(i + 1, j + 1, k),
-                    grid.world_pos(i, j + 1, k),
-                    grid.world_pos(i, j, k + 1),
-                    grid.world_pos(i + 1, j, k + 1),
-                    grid.world_pos(i + 1, j + 1, k + 1),
-                    grid.world_pos(i, j + 1, k + 1),
-                ];
-                let vals: [f64; 8] = [
-                    grid.get(i, j, k),
-                    grid.get(i + 1, j, k),
-                    grid.get(i + 1, j + 1, k),
-                    grid.get(i, j + 1, k),
-                    grid.get(i, j, k + 1),
-                    grid.get(i + 1, j, k + 1),
-                    grid.get(i + 1, j + 1, k + 1),
-                    grid.get(i, j + 1, k + 1),
-                ];
-                let mut cube_idx = 0u8;
-                for (c, &v) in vals.iter().enumerate() {
-                    if v < isovalue {
-                        cube_idx |= 1 << c;
-                    }
-                }
-                let edge_flags = MC_EDGE_TABLE[cube_idx as usize];
-                if edge_flags == 0 {
-                    continue;
-                }
-                let mut verts = [[0.0f64; 3]; 12];
-                if edge_flags & 0x001 != 0 {
-                    verts[0] =
-                        interpolate_vertex(corners[0], corners[1], vals[0], vals[1], isovalue);
-                }
-                if edge_flags & 0x002 != 0 {
-                    verts[1] =
-                        interpolate_vertex(corners[1], corners[2], vals[1], vals[2], isovalue);
-                }
-                if edge_flags & 0x004 != 0 {
-                    verts[2] =
-                        interpolate_vertex(corners[2], corners[3], vals[2], vals[3], isovalue);
-                }
-                if edge_flags & 0x008 != 0 {
-                    verts[3] =
-                        interpolate_vertex(corners[3], corners[0], vals[3], vals[0], isovalue);
-                }
-                if edge_flags & 0x010 != 0 {
-                    verts[4] =
-                        interpolate_vertex(corners[4], corners[5], vals[4], vals[5], isovalue);
-                }
-                if edge_flags & 0x020 != 0 {
-                    verts[5] =
-                        interpolate_vertex(corners[5], corners[6], vals[5], vals[6], isovalue);
-                }
-                if edge_flags & 0x040 != 0 {
-                    verts[6] =
-                        interpolate_vertex(corners[6], corners[7], vals[6], vals[7], isovalue);
-                }
-                if edge_flags & 0x080 != 0 {
-                    verts[7] =
-                        interpolate_vertex(corners[7], corners[4], vals[7], vals[4], isovalue);
-                }
-                if edge_flags & 0x100 != 0 {
-                    verts[8] =
-                        interpolate_vertex(corners[0], corners[4], vals[0], vals[4], isovalue);
-                }
-                if edge_flags & 0x200 != 0 {
-                    verts[9] =
-                        interpolate_vertex(corners[1], corners[5], vals[1], vals[5], isovalue);
-                }
-                if edge_flags & 0x400 != 0 {
-                    verts[10] =
-                        interpolate_vertex(corners[2], corners[6], vals[2], vals[6], isovalue);
-                }
-                if edge_flags & 0x800 != 0 {
-                    verts[11] =
-                        interpolate_vertex(corners[3], corners[7], vals[3], vals[7], isovalue);
-                }
-                let active: Vec<[f64; 3]> = (0..12)
-                    .filter(|&e| edge_flags & (1 << e) != 0)
-                    .map(|e| verts[e])
-                    .collect();
-                if active.len() >= 3 {
-                    for tri_idx in 1..active.len() - 1 {
-                        triangles.push(Triangle {
-                            v: [active[0], active[tri_idx], active[tri_idx + 1]],
-                        });
-                    }
-                }
-            }
+/// Corner `c` of the cell is the grid point `(i, j, k) + MC_CORNER_OFFSETS[c]`
+/// and is inside when its value is below `isovalue`.  Every crossed edge yields
+/// one vertex, linearly interpolated *from its end point with the lower flat grid
+/// index*: the two to four cells that share an edge therefore compute bit-for-bit
+/// identical vertices, which is what makes the extracted mesh watertight.  The
+/// caller guarantees that grid point `(i + 1, j + 1, k + 1)` exists.
+pub(super) fn polygonize_cell(
+    grid: &SdfGrid,
+    i: usize,
+    j: usize,
+    k: usize,
+    isovalue: f64,
+) -> CellTriangles {
+    let mut cell = CellTriangles {
+        triangles: [[[0.0; 3]; 3]; 5],
+        count: 0,
+    };
+    let mut values = [0.0_f64; 8];
+    let mut case = 0_usize;
+    for (corner, offset) in MC_CORNER_OFFSETS.iter().enumerate() {
+        let value = grid.get(i + offset[0], j + offset[1], k + offset[2]);
+        values[corner] = value;
+        if value < isovalue {
+            case |= 1 << corner;
         }
     }
-    triangles
+    let crossed = MC_EDGE_TABLE[case];
+    if crossed == 0 {
+        return cell;
+    }
+    let corner_position = |corner: usize| -> [f64; 3] {
+        let offset = MC_CORNER_OFFSETS[corner];
+        grid.world_pos(i + offset[0], j + offset[1], k + offset[2])
+    };
+    let mut vertices = [[0.0_f64; 3]; 12];
+    for (edge, corners) in MC_EDGE_CORNERS.iter().enumerate() {
+        if crossed & (1 << edge) == 0 {
+            continue;
+        }
+        let [a, b] = *corners;
+        // Lexicographic order of the corner offsets equals the flat-index order.
+        let (lower, upper) = if MC_CORNER_OFFSETS[a] <= MC_CORNER_OFFSETS[b] {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        vertices[edge] = interpolate_vertex(
+            corner_position(lower),
+            corner_position(upper),
+            values[lower],
+            values[upper],
+            isovalue,
+        );
+    }
+    for edges in MC_TRI_TABLE[case].chunks_exact(3) {
+        let (Ok(e0), Ok(e1), Ok(e2)) = (
+            usize::try_from(edges[0]),
+            usize::try_from(edges[1]),
+            usize::try_from(edges[2]),
+        ) else {
+            break;
+        };
+        if cell.count == cell.triangles.len() {
+            break;
+        }
+        // The table winds into the solid; reverse it so the triangle faces outwards.
+        cell.triangles[cell.count] = [vertices[e0], vertices[e2], vertices[e1]];
+        cell.count += 1;
+    }
+    cell
+}
+/// Extract a triangle mesh from the SDF grid at the given isovalue
+/// using the marching cubes algorithm (Lorensen & Cline, with the standard
+/// 256-case triangle table).
+///
+/// Returns a list of triangles. For a signed distance field, `isovalue = 0.0`
+/// extracts the zero level-set (the surface).  A grid point is inside when its
+/// value is below `isovalue`, and the triangles are wound so that their
+/// right-handed normals point towards increasing field values, i.e. out of the
+/// solid.  Vertices are the linearly interpolated crossings of the grid edges and
+/// are shared bit-for-bit by neighbouring cells, so a closed surface that the
+/// grid resolves is watertight: every undirected mesh edge belongs to exactly
+/// two triangles.  (Under-resolved features can hit the topological ambiguity of
+/// the original algorithm, which may leave small holes.)
+///
+/// Cells are processed in parallel; the output order is deterministic (cells in
+/// ascending `i`, then `j`, then `k`).
+pub fn marching_cubes(grid: &SdfGrid, isovalue: f64) -> Vec<Triangle> {
+    if grid.nx < 2 || grid.ny < 2 || grid.nz < 2 {
+        return Vec::new();
+    }
+    let ny = grid.ny;
+    let nz = grid.nz;
+    let slabs: Vec<Vec<Triangle>> = (0..grid.nx - 1)
+        .into_par_iter()
+        .map(|i| {
+            let mut slab = Vec::new();
+            for j in 0..ny - 1 {
+                for k in 0..nz - 1 {
+                    let cell = polygonize_cell(grid, i, j, k, isovalue);
+                    slab.extend(cell.triangles[..cell.count].iter().map(|&v| Triangle { v }));
+                }
+            }
+            slab
+        })
+        .collect();
+    slabs.into_iter().flatten().collect()
 }
 /// Count the number of triangles in the extracted mesh.
 pub fn mesh_triangle_count(grid: &SdfGrid, isovalue: f64) -> usize {
@@ -564,44 +502,93 @@ pub fn sdf_gaussian_blur(grid: &SdfGrid, sigma: f64) -> SdfGrid {
     let _ = kernel_sum;
     out
 }
-/// Laplacian (sharpening) convolution on the SDF.
-///
-/// Returns grid + `amount` * Laplacian(grid), which sharpens features.
-pub fn sdf_laplacian_sharpen(grid: &SdfGrid, amount: f64) -> SdfGrid {
-    let nx = grid.nx;
-    let ny = grid.ny;
-    let nz = grid.nz;
-    let inv_dx2 = 1.0 / (grid.dx * grid.dx);
-    let mut out = SdfGrid::new(nx, ny, nz, grid.dx, grid.origin);
-    for i in 0..nx {
-        for j in 0..ny {
-            for k in 0..nz {
-                let v = grid.get(i, j, k);
-                let lx = if i > 0 && i + 1 < nx {
-                    (grid.get(i + 1, j, k) - 2.0 * v + grid.get(i - 1, j, k)) * inv_dx2
-                } else {
-                    0.0
-                };
-                let ly = if j > 0 && j + 1 < ny {
-                    (grid.get(i, j + 1, k) - 2.0 * v + grid.get(i, j - 1, k)) * inv_dx2
-                } else {
-                    0.0
-                };
-                let lz = if k > 0 && k + 1 < nz {
-                    (grid.get(i, j, k + 1) - 2.0 * v + grid.get(i, j, k - 1)) * inv_dx2
-                } else {
-                    0.0
-                };
-                out.set(i, j, k, v + amount * (lx + ly + lz));
-            }
-        }
+/// `true` when the grid dimensions are consistent with its storage, it is
+/// non-empty and its cell size is positive and finite.
+pub(super) fn grid_is_usable(grid: &SdfGrid) -> bool {
+    let cells = grid
+        .nx
+        .checked_mul(grid.ny)
+        .and_then(|plane| plane.checked_mul(grid.nz));
+    cells == Some(grid.values.len())
+        && !grid.values.is_empty()
+        && grid.dx.is_finite()
+        && grid.dx > 0.0
+}
+/// Copy of `grid` with its dimensions, spacing and origin but new `values`.
+fn with_values(grid: &SdfGrid, values: Vec<f64>) -> SdfGrid {
+    SdfGrid {
+        nx: grid.nx,
+        ny: grid.ny,
+        nz: grid.nz,
+        dx: grid.dx,
+        origin: grid.origin,
+        values,
     }
-    out
+}
+/// One explicit step `dst = src + coeff * D(src)` where `D` is the sum over the
+/// three axes of the second difference `v₊ − 2v + v₋`.
+///
+/// `coeff` therefore already contains the `1/dx²` of the Laplacian.  Along an axis
+/// on which a cell lacks a neighbour on either side the second difference is
+/// taken as zero (a linear extrapolation boundary condition).  Rows of constant
+/// `i` are processed in parallel.
+fn laplacian_step(src: &[f64], dst: &mut [f64], dims: [usize; 3], coeff: f64) {
+    let [nx, ny, nz] = dims;
+    let stride_i = ny * nz;
+    dst.par_chunks_mut(stride_i)
+        .enumerate()
+        .for_each(|(i, slab)| {
+            for j in 0..ny {
+                for k in 0..nz {
+                    let idx = i * stride_i + j * nz + k;
+                    let v = src[idx];
+                    let mut second = 0.0;
+                    if i > 0 && i + 1 < nx {
+                        second += src[idx + stride_i] - 2.0 * v + src[idx - stride_i];
+                    }
+                    if j > 0 && j + 1 < ny {
+                        second += src[idx + nz] - 2.0 * v + src[idx - nz];
+                    }
+                    if k > 0 && k + 1 < nz {
+                        second += src[idx + 1] - 2.0 * v + src[idx - 1];
+                    }
+                    slab[j * nz + k] = v + coeff * second;
+                }
+            }
+        });
+}
+/// Laplacian sharpening (unsharp mask) of the SDF.
+///
+/// Returns `grid - amount * Δgrid`, where `Δ` is the 7-point Laplacian
+/// (`Σ (v₊ − 2v + v₋) / dx²`, zero along axes on which a cell has no two
+/// neighbours).  Subtracting the Laplacian is anti-diffusion: for `amount > 0`
+/// local extrema are exaggerated (a negative spike becomes more negative) and
+/// grid-scale noise is amplified by up to `1 + 12·amount/dx²`, while a negative
+/// `amount` smooths exactly like [`sdf_laplacian_smooth`] without sub-stepping.
+/// A grid with inconsistent dimensions or a non-positive cell size is returned
+/// unchanged.
+pub fn sdf_laplacian_sharpen(grid: &SdfGrid, amount: f64) -> SdfGrid {
+    if !grid_is_usable(grid) {
+        return with_values(grid, grid.values.clone());
+    }
+    let mut values = vec![0.0; grid.values.len()];
+    let coeff = -amount / (grid.dx * grid.dx);
+    laplacian_step(
+        &grid.values,
+        &mut values,
+        [grid.nx, grid.ny, grid.nz],
+        coeff,
+    );
+    with_values(grid, values)
 }
 /// SDF dilation: offset the surface outward by `offset` units.
 ///
-/// Simply subtracts `offset` from all SDF values.
-/// Positive offset = dilation (expand solid), negative = erosion.
+/// Subtracts `offset` from all SDF values, which moves the zero level set
+/// outward along the gradient; a negative offset erodes.  Because only the values
+/// are shifted, the result stays an exact distance field on the outside of the
+/// shape but not wherever the offset reaches the medial axis; run
+/// [`sdf_redistance`] to restore the unit-gradient
+/// property.
 pub fn sdf_dilate(grid: &SdfGrid, offset: f64) -> SdfGrid {
     let values: Vec<f64> = grid.values.par_iter().map(|&v| v - offset).collect();
     SdfGrid {
@@ -619,19 +606,39 @@ pub fn sdf_dilate(grid: &SdfGrid, offset: f64) -> SdfGrid {
 pub fn sdf_erode(grid: &SdfGrid, offset: f64) -> SdfGrid {
     sdf_dilate(grid, -offset)
 }
-/// SDF morphological opening: erode then dilate.
+/// SDF morphological opening: erode, re-initialise the distance field, dilate.
 ///
-/// Removes small protrusions (blobs smaller than `offset`).
+/// The solid is eroded by `offset`, so every part thinner than `2 * offset`
+/// vanishes; the eroded field is then re-initialised with
+/// [`sdf_redistance`], because a uniform shift keeps the
+/// values that belonged to the removed parts and dilating that field would simply
+/// grow them back; finally the remainder is dilated by `offset`.  The result
+/// removes protrusions and islands narrower than `2 * offset`, keeps larger
+/// features (rounding their convex corners) and is a subset of the input, up to
+/// the first-order accuracy of the re-initialisation (a fraction of a cell).  A
+/// shape that is entirely removed by the erosion yields an empty field (`+f64::MAX`
+/// everywhere).  A negative `offset` exchanges the two operations, i.e. computes
+/// [`sdf_close`] for `-offset`.
 pub fn sdf_open(grid: &SdfGrid, offset: f64) -> SdfGrid {
     let eroded = sdf_erode(grid, offset);
-    sdf_dilate(&eroded, offset)
+    let redistanced = sdf_redistance(&eroded);
+    sdf_dilate(&redistanced, offset)
 }
-/// SDF morphological closing: dilate then erode.
+/// SDF morphological closing: dilate, re-initialise the distance field, erode.
 ///
-/// Fills small holes (gaps smaller than `offset`).
+/// The solid is dilated by `offset`, so gaps and holes narrower than
+/// `2 * offset` are filled and nearby parts merge; the dilated field is
+/// re-initialised with [`sdf_redistance`] so that the
+/// following erosion starts from the true distance to the merged shape instead of
+/// undoing the dilation exactly; finally the result is eroded by `offset`.  The
+/// result fills small holes and gaps, keeps the rest of the boundary and is a
+/// superset of the input, up to the first-order accuracy of the re-initialisation
+/// (a fraction of a cell).  A negative `offset` exchanges the two operations, i.e.
+/// computes [`sdf_open`] for `-offset`.
 pub fn sdf_close(grid: &SdfGrid, offset: f64) -> SdfGrid {
     let dilated = sdf_dilate(grid, offset);
-    sdf_erode(&dilated, offset)
+    let redistanced = sdf_redistance(&dilated);
+    sdf_erode(&redistanced, offset)
 }
 /// Signed distance field offset: produce an iso-surface at `offset`.
 ///
@@ -649,27 +656,54 @@ pub fn sdf_offset_surface(grid: &SdfGrid, offset: f64) -> SdfGrid {
 }
 /// Iterative Laplacian smoothing of the SDF.
 ///
-/// Applies `n_iterations` of a simple diffusion smoother.
-/// `dt` is the pseudo-time step (small values → mild smoothing).
-pub fn sdf_laplacian_smooth(grid: &SdfGrid, n_iterations: usize, dt: f64) -> SdfGrid {
-    let mut current = SdfGrid {
-        nx: grid.nx,
-        ny: grid.ny,
-        nz: grid.nz,
-        dx: grid.dx,
-        origin: grid.origin,
-        values: grid.values.clone(),
-    };
-    for _ in 0..n_iterations {
-        let sharpened = sdf_laplacian_sharpen(&current, -dt);
-        current = sharpened;
-    }
-    current
-}
-/// Mean-curvature smoothing of the SDF (simplified).
+/// Advances the heat equation `∂φ/∂t = Δφ` by `dt` pseudo-time units in each of
+/// `n_iterations` iterations (small `dt` → mild smoothing), with the explicit
+/// update `v ← v + dt_sub·Δv`.  The explicit 3-D scheme is only stable for
+/// `dt_sub / dx² ≤ 1/6`, so every iteration is split into
+/// `m = ⌈6·dt/dx²⌉` equal sub-steps of `dt_sub = dt/m`; at that bound each update
+/// is a convex combination of a cell and its six neighbours, hence smoothing never
+/// creates new extrema (`max|φ|` does not increase) and noise decays instead of
+/// growing.  The cost is `n_iterations · m` sweeps, i.e. proportional to
+/// `dt/dx²`.  Along an axis on which a cell lacks neighbours on both sides the
+/// second difference is taken as zero, so linear fields are preserved.
 ///
-/// Uses the divergence of the gradient (Laplacian as proxy for mean curvature).
-/// `step` is the smoothing step size.
+/// A grid with inconsistent dimensions, a non-positive or non-finite `dt` or
+/// cell size, or `n_iterations == 0` is returned unchanged.
+pub fn sdf_laplacian_smooth(grid: &SdfGrid, n_iterations: usize, dt: f64) -> SdfGrid {
+    let ratio = dt / (grid.dx * grid.dx);
+    if n_iterations == 0
+        || !grid_is_usable(grid)
+        || !dt.is_finite()
+        || dt <= 0.0
+        || !ratio.is_finite()
+        || ratio <= 0.0
+    {
+        return with_values(grid, grid.values.clone());
+    }
+    let mut substeps = (6.0 * ratio).ceil().max(1.0) as usize;
+    while ratio / (substeps as f64) * 6.0 > 1.0 {
+        substeps += 1;
+    }
+    let coeff = ratio / substeps as f64;
+    let dims = [grid.nx, grid.ny, grid.nz];
+    let mut current = grid.values.clone();
+    let mut next = vec![0.0; current.len()];
+    for _ in 0..n_iterations.saturating_mul(substeps) {
+        laplacian_step(&current, &mut next, dims, coeff);
+        std::mem::swap(&mut current, &mut next);
+    }
+    with_values(grid, current)
+}
+/// Mean-curvature smoothing of the SDF.
+///
+/// For a signed distance field `|∇φ| = 1`, so the level-set mean-curvature flow
+/// `∂φ/∂t = |∇φ|·∇·(∇φ/|∇φ|)` reduces to the heat equation `∂φ/∂t = Δφ` (the
+/// Laplacian of a distance function is the sum of the principal curvatures of its
+/// level sets).  This function therefore advances that flow by `step` pseudo-time
+/// units with one stable [`sdf_laplacian_smooth`] iteration.  The approximation
+/// holds only while the field is close to a distance function and the smoothed
+/// field is not renormalised; call [`sdf_redistance`]
+/// afterwards when an exact unit-gradient field is needed.
 pub fn sdf_mean_curvature_smooth(grid: &SdfGrid, step: f64) -> SdfGrid {
     sdf_laplacian_smooth(grid, 1, step)
 }

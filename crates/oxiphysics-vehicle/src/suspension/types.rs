@@ -151,9 +151,11 @@ impl QuarterCarModel {
     /// Static deflections due to gravity `g`.
     ///
     /// Returns `(xs_static, xu_static)` — the static compressions of the
-    /// suspension spring and tyre spring respectively.
+    /// suspension spring and tyre spring respectively.  The suspension spring
+    /// carries only the sprung mass (`ms·g / ks`) while the tyre carries the
+    /// sprung and the unsprung mass (`(ms + mu)·g / kt`).
     pub fn static_equilibrium(&self, g: f64) -> (f64, f64) {
-        let xs = (self.ms + self.mu) * g / self.ks;
+        let xs = self.ms * g / self.ks;
         let xu = (self.ms + self.mu) * g / self.kt;
         (xs, xu)
     }
@@ -220,17 +222,44 @@ impl QuarterCarModel {
         let xs_i = (num_i * det_r - num_r * det_i) / det_mag2;
         (xs_r * xs_r + xs_i * xs_i).sqrt()
     }
-    /// Perform one explicit Euler integration step of the 2-DOF quarter-car.
+    /// Advance the 2-DOF quarter-car by one semi-implicit (symplectic) Euler step.
+    ///
+    /// All positions are measured from the static-equilibrium configuration, so
+    /// gravity is already balanced and does not appear in the equations of
+    /// motion.  With `f_susp = ks·(xu − xs) + cs·(vu − vs)` (force the suspension
+    /// exerts on the sprung mass, positive upwards) and
+    /// `f_tyre = kt·(xu − zr)` (compression of the tyre spring against the road
+    /// height `zr`):
+    ///
+    /// ```text
+    /// ms · a_s = +f_susp
+    /// mu · a_u = −f_susp − f_tyre
+    /// ```
+    ///
+    /// The suspension force acts with opposite signs on the two masses, so the
+    /// damper dissipates energy; the tyre is the only element tied to the road.
+    /// The road height is integrated from the supplied road velocity before the
+    /// forces are evaluated (`zr ← zr + road_velocity·dt`).
+    ///
+    /// The damper force is treated explicitly, so `dt` must stay below
+    /// `2·m_red / cs` with `m_red = ms·mu / (ms + mu)` and well below the
+    /// wheel-hop period for the integration to remain stable.
     ///
     /// # Arguments
-    /// * `state`        – mutable state (velocities and positions)
-    /// * `dt`           – time step (s)
-    /// * `road_velocity` – velocity of the road input at the tyre contact (m/s)
+    /// * `state`         – mutable state (positions, velocities and road height)
+    /// * `dt`            – time step (s)
+    /// * `road_velocity` – vertical velocity of the road surface under the tyre
+    ///   (m/s, positive = road rising)
     pub fn step(&self, state: &mut QuarterCarState, dt: f64, road_velocity: f64) {
+        state.zr += road_velocity * dt;
         let f_susp = self.ks * (state.xu - state.xs) + self.cs * (state.vu - state.vs);
-        let f_tyre = self.kt * state.xu;
-        let as_ = f_susp / self.ms;
-        let au = (-f_tyre + f_susp + self.kt * road_velocity * dt / dt) / self.mu;
+        let f_tyre = self.kt * (state.xu - state.zr);
+        let as_ = if self.ms > 0.0 { f_susp / self.ms } else { 0.0 };
+        let au = if self.mu > 0.0 {
+            (-f_susp - f_tyre) / self.mu
+        } else {
+            0.0
+        };
         state.vs += as_ * dt;
         state.vu += au * dt;
         state.xs += state.vs * dt;
@@ -737,9 +766,14 @@ pub struct QuarterCarState {
     pub vs: f64,
     /// Unsprung mass velocity (m/s).
     pub vu: f64,
+    /// Road surface height under the tyre, relative to the equilibrium road
+    /// level (m, positive = road raised).  It is integrated from the road
+    /// velocity passed to [`QuarterCarModel::step`].
+    pub zr: f64,
 }
 impl QuarterCarState {
-    /// Create state at rest at the static equilibrium position.
+    /// Create state at rest at the static equilibrium position on a flat road
+    /// (`zr = 0`).
     pub fn at_equilibrium(model: &QuarterCarModel, _g: f64) -> Self {
         let _ = model;
         Self {
@@ -747,6 +781,7 @@ impl QuarterCarState {
             xu: 0.0,
             vs: 0.0,
             vu: 0.0,
+            zr: 0.0,
         }
     }
 }
@@ -986,6 +1021,39 @@ impl PitchRollDistributor {
         (-delta, delta)
     }
 }
+/// Relative tolerance below which two directions are treated as parallel and
+/// below which two points are treated as coincident in the front-view solver.
+const PARALLEL_TOLERANCE: f64 = 1e-12;
+/// Relative tolerance of the circle-intersection tests of the front-view
+/// solver; it absorbs rounding at the boundary of the reachable range.
+const CIRCLE_TOLERANCE: f64 = 1e-12;
+/// Half-length of the chord at distance `offset` from the centre of a circle
+/// of radius `radius`: `sqrt(radius² - offset²)`.
+///
+/// Returns `None` when the line lies outside the circle.  A line that misses by
+/// no more than rounding noise is treated as tangent.
+fn circle_half_chord(radius: f64, offset: f64) -> Option<f64> {
+    let squared = radius * radius - offset * offset;
+    if squared >= 0.0 {
+        Some(squared.sqrt())
+    } else if -squared <= CIRCLE_TOLERANCE * radius * radius {
+        Some(0.0)
+    } else {
+        None
+    }
+}
+/// Front-view configuration of a [`DoubleWishboneKinematic`] linkage at one
+/// wheel travel, returned by [`DoubleWishboneKinematic::pose_at_travel`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DoubleWishbonePose {
+    /// Upper ball joint `[x, y, z]` (m).
+    pub upper_outboard: [f64; 3],
+    /// Lower ball joint `[x, y, z]` (m).
+    pub lower_outboard: [f64; 3],
+    /// Upright inclination from the vertical (degrees); positive when the top
+    /// of the upright leans outboard.
+    pub camber_deg: f64,
+}
 /// Full double-wishbone suspension kinematic model.
 ///
 /// Tracks upper and lower control arms, their inboard pivot points, and the
@@ -1042,44 +1110,255 @@ impl DoubleWishboneKinematic {
         let d = sub3(self.lower_outboard, self.lower_inboard);
         norm3(d)
     }
-    /// Instant centre height (m) from ground using the 4-bar analogy.
+    /// Sign of the outboard direction along the lateral `y` axis.
     ///
-    /// Approximated as the intersection of lines extending through the upper
-    /// and lower arm pivot axes in the YZ plane.
-    pub fn instant_centre_height(&self) -> f64 {
+    /// `+1.0` when the control arms reach towards `+y` (the usual right-hand
+    /// side of the car), `-1.0` for a mirrored (left-hand) layout.  It makes the
+    /// camber sign convention independent of the side of the car.
+    fn outboard_sign(&self) -> f64 {
+        let reach = (self.upper_outboard[1] - self.upper_inboard[1])
+            + (self.lower_outboard[1] - self.lower_inboard[1]);
+        if reach < 0.0 { -1.0 } else { 1.0 }
+    }
+    /// Lengths `(upper arm, lower arm, upright)` of the three moving links,
+    /// measured in the front-view (`YZ`) plane.
+    ///
+    /// The mechanism moves in the front-view plane with every `x` coordinate
+    /// held fixed, so the effective link lengths are the `YZ` projections of
+    /// the 3D members; for a member with a fore-aft offset this is the radius
+    /// of the circle its outboard end sweeps in the plane `x = const`.
+    fn front_view_link_lengths(&self) -> (f64, f64, f64) {
+        let projected = |p: [f64; 3], q: [f64; 3]| (q[1] - p[1]).hypot(q[2] - p[2]);
+        (
+            projected(self.upper_inboard, self.upper_outboard),
+            projected(self.lower_inboard, self.lower_outboard),
+            projected(self.lower_outboard, self.upper_outboard),
+        )
+    }
+    /// Front-view instant centre `[y, z]` (m): the intersection of the lines
+    /// through the upper and the lower control arm.
+    ///
+    /// Returns `None` when the arms are parallel (the instant centre is then at
+    /// infinity) or when an arm has zero length.
+    pub fn instant_centre(&self) -> Option<[f64; 2]> {
         let uy = self.upper_outboard[1] - self.upper_inboard[1];
         let uz = self.upper_outboard[2] - self.upper_inboard[2];
         let ly = self.lower_outboard[1] - self.lower_inboard[1];
         let lz = self.lower_outboard[2] - self.lower_inboard[2];
         let det = uy * lz - uz * ly;
-        if det.abs() < 1e-9 {
-            return 0.0;
+        let scale = uy.hypot(uz) * ly.hypot(lz);
+        if scale == 0.0 || det.abs() <= PARALLEL_TOLERANCE * scale {
+            return None;
         }
         let dy = self.lower_inboard[1] - self.upper_inboard[1];
         let dz = self.lower_inboard[2] - self.upper_inboard[2];
         let t = (dy * lz - dz * ly) / det;
-        self.upper_inboard[2] + t * uz
+        Some([
+            self.upper_inboard[1] + t * uy,
+            self.upper_inboard[2] + t * uz,
+        ])
     }
-    /// Roll centre height (m) — estimated as the instant centre height.
-    pub fn roll_centre_height(&self) -> f64 {
-        self.instant_centre_height()
-    }
-    /// Camber change per unit of wheel travel (deg/mm).
+    /// Instant centre height (m) in the suspension coordinate frame, whose
+    /// ground plane is `z = 0`.
     ///
-    /// Uses a finite-difference approximation with Δz = 1 mm.
-    pub fn camber_gain(&self) -> f64 {
-        let dz = 0.001;
-        let camber_base = self.camber_at_travel(0.0);
-        let camber_bump = self.camber_at_travel(dz);
-        (camber_bump - camber_base) / (dz * 1000.0)
+    /// It is the height of [`instant_centre`](Self::instant_centre).  For
+    /// parallel arms the instant centre is at infinity and `0.0` is returned;
+    /// use [`roll_centre_height`](Self::roll_centre_height), which handles that
+    /// case exactly, when the instant centre is only a means to an end.
+    pub fn instant_centre_height(&self) -> f64 {
+        self.instant_centre().map_or(0.0, |centre| centre[1])
     }
-    /// Camber angle (degrees) at a given wheel travel (m, positive = bump).
+    /// Roll centre height (m) at the design position, by the instant-centre
+    /// method.
+    ///
+    /// The ground plane is `z = 0` and the contact patch is taken directly
+    /// below the wheel centre, at `(spindle y, 0)`.  The roll centre is where
+    /// the line from the contact patch through the instant centre crosses the
+    /// vehicle centre plane `y = 0`.  With parallel control arms the instant
+    /// centre is at infinity along the arm direction, so the line runs parallel
+    /// to the arms: horizontal parallel arms put the roll centre on the ground,
+    /// arms rising outboard put it below the ground.
+    ///
+    /// Returns `NaN` when the roll centre is undefined: the instant centre
+    /// lies vertically above the contact patch, the parallel arms are vertical,
+    /// or both arms have zero length.
+    pub fn roll_centre_height(&self) -> f64 {
+        let contact_y = self.spindle[1];
+        match self.instant_centre() {
+            Some([centre_y, centre_z]) => {
+                let run = contact_y - centre_y;
+                let reference = contact_y.abs().max(centre_y.abs());
+                if run.abs() <= PARALLEL_TOLERANCE * reference {
+                    return f64::NAN;
+                }
+                // Adding 0.0 turns a negative zero into +0.0.
+                contact_y * centre_z / run + 0.0
+            }
+            None => {
+                let upper = (
+                    self.upper_outboard[1] - self.upper_inboard[1],
+                    self.upper_outboard[2] - self.upper_inboard[2],
+                );
+                let lower = (
+                    self.lower_outboard[1] - self.lower_inboard[1],
+                    self.lower_outboard[2] - self.lower_inboard[2],
+                );
+                let (run, rise) = if upper.0.hypot(upper.1) > 0.0 {
+                    upper
+                } else {
+                    lower
+                };
+                if run.abs() <= PARALLEL_TOLERANCE * run.hypot(rise) {
+                    return f64::NAN;
+                }
+                -contact_y * rise / run + 0.0
+            }
+        }
+    }
+    /// Camber change per unit of wheel travel (deg/mm) at the design position.
+    ///
+    /// Central finite difference of [`camber_at_travel`](Self::camber_at_travel)
+    /// over ±1 mm of lower-ball-joint travel; a one-sided difference is used
+    /// when the linkage cannot move 1 mm in one direction.  `NaN` if the
+    /// linkage cannot move in either direction.
+    ///
+    /// To first order the upright turns about the instant centre, so the gain
+    /// is `-s / (y_lower - y_ic)` radians per metre (`s` = `+1` for a
+    /// right-hand layout, `-1` for a mirrored one): negative, i.e. the wheel
+    /// gains negative camber in bump, when the instant centre lies inboard of
+    /// the lower ball joint, positive when it lies outboard, and zero when the
+    /// arms are parallel (instant centre at infinity).  The length ratio of the
+    /// arms only matters through the instant centre it produces: horizontal
+    /// parallel arms of unequal length still have zero gain at the design
+    /// position and only curve at second order.
+    pub fn camber_gain(&self) -> f64 {
+        let step = 0.001;
+        let per_mm = |delta_deg: f64, travel_m: f64| delta_deg / (travel_m * 1000.0);
+        let bump = self.camber_at_travel(step);
+        let droop = self.camber_at_travel(-step);
+        match (bump.is_finite(), droop.is_finite()) {
+            (true, true) => per_mm(bump - droop, 2.0 * step),
+            (true, false) => per_mm(bump - self.camber_at_travel(0.0), step),
+            (false, true) => per_mm(self.camber_at_travel(0.0) - droop, step),
+            (false, false) => f64::NAN,
+        }
+    }
+    /// Camber angle (degrees) at a given wheel travel.
+    ///
+    /// `delta_z` is the vertical displacement of the lower ball joint from its
+    /// design position (m, positive = bump).  The camber is the inclination of
+    /// the upright (the line from the lower to the upper ball joint) from the
+    /// vertical in the front view, positive when the top leans outboard.  At
+    /// `delta_z = 0` it equals the static inclination of the given geometry;
+    /// the change from that value is the camber change of the wheel.
+    ///
+    /// Returns `NaN` if the linkage cannot reach the requested travel; see
+    /// [`pose_at_travel`](Self::pose_at_travel).
     pub fn camber_at_travel(&self, delta_z: f64) -> f64 {
-        let upper_z = self.upper_outboard[2] + delta_z;
-        let lower_z = self.lower_outboard[2] + delta_z;
-        let dz = upper_z - lower_z;
-        let dy = self.upper_outboard[1] - self.lower_outboard[1];
-        dz.atan2(dy.abs().max(1e-9)).to_degrees()
+        self.pose_at_travel(delta_z)
+            .map_or(f64::NAN, |pose| pose.camber_deg)
+    }
+    /// Solve the front-view four-bar linkage at a given wheel travel.
+    ///
+    /// The body is the fixed link between the two inboard pivots, the control
+    /// arms are rigid links of constant (front-view) length and the upright is
+    /// the coupler between the two ball joints.  The lower ball joint is moved
+    /// to `z + delta_z` on the circle swept by the lower arm about its inboard
+    /// pivot; the upper ball joint is the intersection of the circle swept by
+    /// the upper arm and the circle of the upright's length around the lower
+    /// ball joint.  Of the two intersections the one that keeps the assembly
+    /// mode of the design position (the same side of the line from the upper
+    /// inboard pivot to the lower ball joint) is taken, which is the continuous
+    /// continuation of the motion.  If the design position itself is a dead
+    /// centre (upper arm and upright collinear) both modes coincide there and
+    /// the root nearest to the design position of the upper ball joint is used.
+    ///
+    /// `delta_z = 0` returns the design position exactly.  Returns `None` for a
+    /// non-finite `delta_z`, when the lower arm cannot reach the height, or when
+    /// the upper arm and the upright cannot close the loop (no real
+    /// intersection).
+    pub fn pose_at_travel(&self, delta_z: f64) -> Option<DoubleWishbonePose> {
+        if !delta_z.is_finite() {
+            return None;
+        }
+        let sign = self.outboard_sign();
+        let camber_of = |upper: [f64; 3], lower: [f64; 3]| {
+            (sign * (upper[1] - lower[1]))
+                .atan2(upper[2] - lower[2])
+                .to_degrees()
+        };
+        if delta_z == 0.0 {
+            return Some(DoubleWishbonePose {
+                upper_outboard: self.upper_outboard,
+                lower_outboard: self.lower_outboard,
+                camber_deg: camber_of(self.upper_outboard, self.lower_outboard),
+            });
+        }
+        let (upper_len, lower_len, upright_len) = self.front_view_link_lengths();
+        let upper_pivot = [self.upper_inboard[1], self.upper_inboard[2]];
+        let lower_pivot = [self.lower_inboard[1], self.lower_inboard[2]];
+        let upper_ref = [self.upper_outboard[1], self.upper_outboard[2]];
+        let lower_ref = [self.lower_outboard[1], self.lower_outboard[2]];
+
+        // Lower ball joint on its circle at the requested height; it stays on the
+        // side of the inboard pivot where the design position has it.
+        let lower_z = lower_ref[1] + delta_z;
+        let rise = lower_z - lower_pivot[1];
+        let lower_reach = circle_half_chord(lower_len, rise)?;
+        let lower_side = if lower_ref[0] < lower_pivot[0] {
+            -1.0
+        } else {
+            1.0
+        };
+        let lower = [lower_pivot[0] + lower_side * lower_reach, lower_z];
+
+        // Upper ball joint: intersection of the circle (upper pivot, upper arm)
+        // and the circle (lower ball joint, upright).
+        let chord = [lower[0] - upper_pivot[0], lower[1] - upper_pivot[1]];
+        let distance = chord[0].hypot(chord[1]);
+        let scale = upper_len.max(upright_len).max(distance);
+        if distance <= CIRCLE_TOLERANCE * scale
+            || distance > upper_len + upright_len + CIRCLE_TOLERANCE * scale
+            || distance < (upper_len - upright_len).abs() - CIRCLE_TOLERANCE * scale
+        {
+            return None;
+        }
+        let along = (upper_len * upper_len - upright_len * upright_len + distance * distance)
+            / (2.0 * distance);
+        let offset = circle_half_chord(upper_len, along)?;
+        let unit = [chord[0] / distance, chord[1] / distance];
+        let normal = [-unit[1], unit[0]];
+        let foot = [
+            upper_pivot[0] + along * unit[0],
+            upper_pivot[1] + along * unit[1],
+        ];
+        let plus = [foot[0] + offset * normal[0], foot[1] + offset * normal[1]];
+        let minus = [foot[0] - offset * normal[0], foot[1] - offset * normal[1]];
+
+        // Assembly mode of the design position: the sign of the cross product
+        // (lower ball joint - upper pivot) x (upper ball joint - upper pivot).
+        let ref_chord = [lower_ref[0] - upper_pivot[0], lower_ref[1] - upper_pivot[1]];
+        let ref_arm = [upper_ref[0] - upper_pivot[0], upper_ref[1] - upper_pivot[1]];
+        let ref_cross = ref_chord[0] * ref_arm[1] - ref_chord[1] * ref_arm[0];
+        let ref_scale = ref_chord[0].hypot(ref_chord[1]) * upper_len;
+        let upper = if ref_cross > CIRCLE_TOLERANCE * ref_scale {
+            plus
+        } else if ref_cross < -CIRCLE_TOLERANCE * ref_scale {
+            minus
+        } else {
+            // The design position is a dead centre; fall back to the root nearest
+            // to the design position of the upper ball joint.
+            let gap = |p: [f64; 2]| (p[0] - upper_ref[0]).hypot(p[1] - upper_ref[1]);
+            if gap(plus) <= gap(minus) { plus } else { minus }
+        };
+
+        let upper_outboard = [self.upper_outboard[0], upper[0], upper[1]];
+        let lower_outboard = [self.lower_outboard[0], lower[0], lower[1]];
+        Some(DoubleWishbonePose {
+            upper_outboard,
+            lower_outboard,
+            camber_deg: camber_of(upper_outboard, lower_outboard),
+        })
     }
     /// Spring length at a given wheel travel (m).
     pub fn spring_length(&self, delta_z: f64) -> f64 {

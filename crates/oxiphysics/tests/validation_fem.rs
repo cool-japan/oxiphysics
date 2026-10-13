@@ -97,13 +97,15 @@ fn solve_cantilever_tip_deflection(nx: usize, ny: usize, nz: usize) -> f64 {
         max_iter: 200_000,
         tolerance: 1e-12,
     };
-    let result = analysis.solve(
-        &mesh,
-        &material,
-        &dirichlet_bcs,
-        &neumann_bcs,
-        &Vec3::new(0.0, 0.0, 0.0),
-    );
+    let result = analysis
+        .try_solve(
+            &mesh,
+            &material,
+            &dirichlet_bcs,
+            &neumann_bcs,
+            &Vec3::new(0.0, 0.0, 0.0),
+        )
+        .expect("cantilever analysis must converge");
 
     // The most-downward tip y-displacement (most negative).
     let min_y = tip_nodes

@@ -781,3 +781,183 @@ mod tests {
         assert_eq!(ls.phi.len(), nx * ny);
     }
 }
+#[cfg(test)]
+mod mol_dopri5_tests {
+    use super::fdm_laplacian;
+    use crate::pde::MethodOfLines;
+    use std::f64::consts::PI;
+
+    /// Exact solution of `y' = -y + cos(2 t)`, `y(0) = 0`.
+    fn driven_decay_exact(t: f64) -> f64 {
+        ((2.0 * t).cos() + 2.0 * (2.0 * t).sin() - (-t).exp()) / 5.0
+    }
+    /// Eigenvalue of the 3-point Laplacian (zero Dirichlet ends) on the mode `sin(pi x)`.
+    fn discrete_laplacian_eigenvalue(dx: f64) -> f64 {
+        -4.0 / (dx * dx) * (0.5 * PI * dx).sin().powi(2)
+    }
+
+    #[test]
+    fn dopri5_integrates_exponential_decay_to_the_requested_tolerance() {
+        let mol = MethodOfLines::new(3, 0.1);
+        let u0 = vec![1.0, -2.0, 0.5];
+        let u = mol.integrate_dopri5(&u0, 0.1, 2.0, 1e-10, |_t, v| v.iter().map(|x| -x).collect());
+        let decay = (-2.0_f64).exp();
+        for (ui, u0i) in u.iter().zip(u0.iter()) {
+            assert!(
+                (ui - u0i * decay).abs() < 1e-8,
+                "u={ui}, exact={}",
+                u0i * decay
+            );
+        }
+    }
+    #[test]
+    fn dopri5_follows_an_explicitly_time_dependent_rhs() {
+        // The previous implementation evaluated k5 at t + dt instead of t + 8/9 dt,
+        // never formed k6 and mixed the Fehlberg weights with Dormand-Prince stages,
+        // which is visible as an O(tol^0.2) error for a right-hand side that depends on t.
+        let mol = MethodOfLines::new(2, 0.1);
+        let u = mol.integrate_dopri5(&[0.0, 1.0], 0.05, 10.0, 1e-10, |t, _u| {
+            vec![t.cos(), -t.sin()]
+        });
+        assert!(
+            (u[0] - 10.0_f64.sin()).abs() < 1e-6,
+            "u0={}, sin(10)={}",
+            u[0],
+            10.0_f64.sin()
+        );
+        assert!(
+            (u[1] - 10.0_f64.cos()).abs() < 1e-6,
+            "u1={}, cos(10)={}",
+            u[1],
+            10.0_f64.cos()
+        );
+    }
+    #[test]
+    fn dopri5_error_decreases_with_the_tolerance() {
+        let error_for = |tol: f64| {
+            let mol = MethodOfLines::new(1, 0.1);
+            let u =
+                mol.integrate_dopri5(&[0.0], 0.1, 6.0, tol, |t, u| vec![-u[0] + (2.0 * t).cos()]);
+            (u[0] - driven_decay_exact(6.0)).abs()
+        };
+        let loose = error_for(1e-5);
+        let tight = error_for(1e-11);
+        assert!(loose < 1e-3, "loose={loose}");
+        assert!(tight < 1e-8, "tight={tight}");
+        assert!(tight < loose, "tight={tight}, loose={loose}");
+    }
+    #[test]
+    fn dopri5_reproduces_the_decay_of_a_discrete_diffusion_eigenmode() {
+        let n = 21;
+        let dx = 1.0 / (n - 1) as f64;
+        let diffusivity = 0.5;
+        let t_end = 0.2;
+        let mol = MethodOfLines::new(n, dx);
+        let mode: Vec<f64> = (0..n).map(|i| (PI * i as f64 * dx).sin()).collect();
+        let u = mol.integrate_dopri5(&mode, 1e-3, t_end, 1e-11, |_t, v| {
+            fdm_laplacian(v, dx)
+                .iter()
+                .map(|l| diffusivity * l)
+                .collect()
+        });
+        let factor = (diffusivity * discrete_laplacian_eigenvalue(dx) * t_end).exp();
+        assert!(
+            factor < 0.4,
+            "the mode must decay noticeably, factor={factor}"
+        );
+        for i in 1..n - 1 {
+            assert!(
+                (u[i] - factor * mode[i]).abs() < 1e-8,
+                "node {i}: u={}, exact={}",
+                u[i],
+                factor * mode[i]
+            );
+        }
+    }
+    #[test]
+    fn dopri5_handles_a_time_dependent_forcing_of_the_diffusion_mode() {
+        // u_t = D u_xx + sin(w t) mode(x): the mode amplitude a obeys
+        // a' = mu a + sin(w t), a(0) = 0, so
+        // a(t) = (w e^(mu t) - mu sin(w t) - w cos(w t)) / (mu^2 + w^2).
+        let n = 21;
+        let dx = 1.0 / (n - 1) as f64;
+        let (diffusivity, omega, t_end) = (0.5_f64, 3.0_f64, 1.0_f64);
+        let mol = MethodOfLines::new(n, dx);
+        let mode: Vec<f64> = (0..n).map(|i| (PI * i as f64 * dx).sin()).collect();
+        let u0 = vec![0.0; n];
+        let u = mol.integrate_dopri5(&u0, 1e-3, t_end, 1e-11, |t, v| {
+            let forcing = (omega * t).sin();
+            fdm_laplacian(v, dx)
+                .iter()
+                .zip(mode.iter())
+                .map(|(l, m)| diffusivity * l + forcing * m)
+                .collect()
+        });
+        let mu = diffusivity * discrete_laplacian_eigenvalue(dx);
+        let amplitude = (omega * (mu * t_end).exp()
+            - mu * (omega * t_end).sin()
+            - omega * (omega * t_end).cos())
+            / (mu * mu + omega * omega);
+        for i in 1..n - 1 {
+            assert!(
+                (u[i] - amplitude * mode[i]).abs() < 1e-8,
+                "node {i}: u={}, exact={}",
+                u[i],
+                amplitude * mode[i]
+            );
+        }
+    }
+    #[test]
+    fn dopri5_agrees_with_a_fine_rk4_reference() {
+        let mol = MethodOfLines::new(2, 0.1);
+        let rhs = |t: f64, u: &[f64]| vec![u[1], -u[0] + 0.3 * (1.7 * t).sin()];
+        let reference = mol.integrate_rk4(&[1.0, 0.0], 1e-3, 5000, rhs);
+        let adaptive = mol.integrate_dopri5(&[1.0, 0.0], 0.05, 5.0, 1e-10, rhs);
+        for (a, r) in adaptive.iter().zip(reference.iter()) {
+            assert!((a - r).abs() < 1e-8, "adaptive={a}, rk4={r}");
+        }
+    }
+    #[test]
+    fn dopri5_returns_the_initial_state_for_an_empty_or_invalid_interval() {
+        let mol = MethodOfLines::new(2, 0.1);
+        let u0 = vec![0.25, -4.0];
+        for t_end in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let u = mol.integrate_dopri5(&u0, 0.1, t_end, 1e-8, |_t, v| {
+                v.iter().map(|x| -x).collect()
+            });
+            assert_eq!(u, u0, "t_end={t_end}");
+        }
+    }
+    #[test]
+    fn dopri5_falls_back_to_a_default_step_for_an_invalid_initial_step() {
+        let mol = MethodOfLines::new(1, 0.1);
+        for dt_init in [0.0, -0.5, f64::NAN, f64::INFINITY] {
+            let u = mol.integrate_dopri5(&[1.0], dt_init, 1.0, 1e-10, |_t, v| vec![-v[0]]);
+            assert!(
+                (u[0] - (-1.0_f64).exp()).abs() < 1e-8,
+                "dt_init={dt_init}: u={}",
+                u[0]
+            );
+        }
+    }
+    #[test]
+    fn dopri5_terminates_for_a_nan_or_non_positive_tolerance() {
+        // Such a tolerance shrinks the step size to zero (or to NaN); the integration
+        // must stop with a finite state close to the initial one instead of looping.
+        let mol = MethodOfLines::new(1, 0.1);
+        for tol in [f64::NAN, 0.0, -1.0] {
+            let u = mol.integrate_dopri5(&[1.0], 0.1, 1.0, tol, |_t, v| vec![-v[0]]);
+            assert!(u[0].is_finite(), "tol={tol}: u={}", u[0]);
+            assert!((u[0] - 1.0).abs() < 1e-6, "tol={tol}: u={}", u[0]);
+        }
+    }
+    #[test]
+    fn dopri5_stops_at_the_last_finite_state_when_the_rhs_breaks_down() {
+        let mol = MethodOfLines::new(1, 0.1);
+        let u = mol.integrate_dopri5(&[1.0], 0.05, 1.0, 1e-10, |t, v| {
+            if t > 0.5 { vec![f64::NAN] } else { vec![-v[0]] }
+        });
+        assert!(u[0].is_finite(), "u={}", u[0]);
+        assert!((u[0] - (-0.5_f64).exp()).abs() < 1e-6, "u={}", u[0]);
+    }
+}

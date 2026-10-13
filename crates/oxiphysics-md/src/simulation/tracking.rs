@@ -65,6 +65,58 @@ impl EnergyDriftTracker {
 }
 
 // ---------------------------------------------------------------------------
+// RDF normalisation shared by RdfHistogram and RdfRunning
+// ---------------------------------------------------------------------------
+
+/// Normalise a histogram of *unique* pair distances to the radial distribution
+/// function g(r).
+///
+/// `hist[k]` counts the pairs `i < j` whose separation falls in the shell
+/// `[k·dr, (k+1)·dr)`, summed over `n_frames` frames of a system of `n_atoms`
+/// atoms in a periodic box of `volume`.  For an ideal gas the expected number of
+/// unique pairs per frame in a shell of volume `v_shell` is
+///
+/// ```text
+/// n_pairs · v_shell / V,        n_pairs = N (N − 1) / 2
+/// ```
+///
+/// and g(r) is the ratio of the observed count to that expectation, so an
+/// uncorrelated system gives g(r) = 1 independently of `N`.  The shell volume is
+/// the exact spherical-shell volume `4π/3 (r_hi³ − r_lo³)`, which is only the
+/// available volume for `r ≤ L/2` under the minimum-image convention.
+///
+/// Returns zeros when there are no frames, fewer than two atoms or no volume.
+pub(crate) fn normalise_rdf(
+    hist: &[u64],
+    n_frames: u64,
+    n_atoms: usize,
+    volume: f64,
+    dr: f64,
+) -> Vec<f64> {
+    let geometry_is_valid = volume > 0.0 && dr > 0.0;
+    if n_frames == 0 || n_atoms < 2 || !geometry_is_valid {
+        return vec![0.0; hist.len()];
+    }
+    let n_atoms_f = n_atoms as f64;
+    let n_pairs = n_atoms_f * (n_atoms_f - 1.0) / 2.0;
+    let pair_density = n_frames as f64 * n_pairs / volume;
+    hist.iter()
+        .enumerate()
+        .map(|(k, &count)| {
+            let r_lo = k as f64 * dr;
+            let r_hi = (k + 1) as f64 * dr;
+            let shell_volume = (4.0 / 3.0) * std::f64::consts::PI * (r_hi.powi(3) - r_lo.powi(3));
+            let ideal = pair_density * shell_volume;
+            if ideal > 0.0 {
+                count as f64 / ideal
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // RdfHistogram — radial distribution function accumulator
 // ---------------------------------------------------------------------------
 
@@ -72,6 +124,10 @@ impl EnergyDriftTracker {
 ///
 /// Bins pair distances into a histogram and normalises to yield g(r).
 /// Operates on plain `[f64; 3]` positions with an orthorhombic periodic box.
+///
+/// The minimum-image convention limits the meaningful range to
+/// `r_max ≤ L/2`; shells beyond that radius are not fully inside the periodic
+/// cell and g(r) is biased low there.
 #[derive(Debug, Clone)]
 pub struct RdfHistogram {
     /// Number of histogram bins.
@@ -138,27 +194,17 @@ impl RdfHistogram {
 
     /// Return the normalised g(r) values for each bin.
     ///
-    /// Normalises by the ideal-gas count: `dN_ideal = 4π r² dr * ρ`.
+    /// The histogram counts unique pairs `i < j`, so the ideal-gas reference per
+    /// frame is `N (N − 1) / 2 · v_shell / V` pairs in a shell of volume
+    /// `v_shell = 4π/3 (r_hi³ − r_lo³)`; an uncorrelated gas gives g(r) = 1.
     pub fn gofr(&self) -> Vec<f64> {
-        if self.n_frames == 0 || self.n_atoms < 2 {
-            return vec![0.0; self.n_bins];
-        }
-        let rho = self.n_atoms as f64 / self.volume;
-        let n_pairs = self.n_atoms * (self.n_atoms - 1) / 2;
-        let norm = self.n_frames as f64 * n_pairs as f64;
-        (0..self.n_bins)
-            .map(|k| {
-                let r_lo = k as f64 * self.dr;
-                let r_hi = r_lo + self.dr;
-                let v_shell = (4.0 / 3.0) * std::f64::consts::PI * (r_hi.powi(3) - r_lo.powi(3));
-                let ideal = rho * v_shell * norm;
-                if ideal > 0.0 {
-                    self.histogram[k] as f64 / ideal
-                } else {
-                    0.0
-                }
-            })
-            .collect()
+        normalise_rdf(
+            &self.histogram,
+            self.n_frames,
+            self.n_atoms,
+            self.volume,
+            self.dr,
+        )
     }
 
     /// Return the bin centres (Å).
@@ -174,25 +220,33 @@ impl RdfHistogram {
         self.n_frames = 0;
     }
 
-    /// Coordination number: integral of g(r)*4π r² ρ dr from 0 to r_cut.
+    /// Coordination number: mean number of neighbours per atom within `r_cut`.
+    ///
+    /// Every unique pair inside the cutoff is a neighbour of *both* of its atoms,
+    /// so over the bins whose outer edge does not exceed `r_cut`
+    ///
+    /// ```text
+    /// CN = 2 · Σ_k hist[k] / (n_frames · N)
+    /// ```
+    ///
+    /// For an uncorrelated gas this is `(N − 1) · 4π/3 r_cut³ / V`.  Bins that
+    /// straddle `r_cut` are excluded.  Returns `0.0` without frames or with fewer
+    /// than two atoms.
     pub fn coordination_number(&self, r_cut: f64) -> f64 {
-        if self.n_frames == 0 {
+        if self.n_frames == 0 || self.n_atoms < 2 {
             return 0.0;
         }
-        let rho = self.n_atoms as f64 / self.volume;
-        let n_pairs = self.n_atoms * (self.n_atoms - 1) / 2;
-        let norm = self.n_frames as f64 * n_pairs as f64;
-        let mut cn = 0.0;
-        for k in 0..self.n_bins {
-            let r_lo = k as f64 * self.dr;
-            let r_hi = r_lo + self.dr;
-            if r_hi > r_cut {
+        // Tolerance so that a cutoff on a bin edge keeps the bin despite round-off.
+        let edge_tolerance = 1e-9 * self.dr;
+        let mut pair_count = 0u64;
+        for (k, &count) in self.histogram.iter().enumerate() {
+            let r_hi = (k + 1) as f64 * self.dr;
+            if r_hi > r_cut + edge_tolerance {
                 break;
             }
-            let v_shell = (4.0 / 3.0) * std::f64::consts::PI * (r_hi.powi(3) - r_lo.powi(3));
-            cn += rho * v_shell * (self.histogram[k] as f64 / norm);
+            pair_count += count;
         }
-        cn * norm / self.n_frames as f64
+        2.0 * pair_count as f64 / (self.n_frames as f64 * self.n_atoms as f64)
     }
 }
 

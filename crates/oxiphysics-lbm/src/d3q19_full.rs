@@ -46,12 +46,37 @@ pub const D3Q19_EZ: [i32; 19] = [0, 0, 0, 0, 0, 1, -1, 0, 0, 0, 0, 1, 1, -1, -1,
 /// Opposite direction indices for bounce-back.
 ///
 /// `D3Q19_OPP[i]` is the index `j` such that `(ex[j], ey[j], ez[j]) == (-ex[i], -ey[i], -ez[i])`.
-pub const D3Q19_OPP: [usize; 19] = [
-    0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15, 18, 17,
-];
+///
+/// The velocity ordering of this module (`D3Q19_EX`, `D3Q19_EY`, `D3Q19_EZ`) is the crate-wide
+/// D3Q19 ordering, so the table is exactly [`crate::lattice::D3Q19_OPPOSITES`]. The edge
+/// directions are *not* adjacent pairs: `7 = (1,1,0)` is opposite to `10 = (-1,-1,0)` and
+/// `8 = (-1,1,0)` to `9 = (1,-1,0)`; likewise for the `xz` (`11..=14`) and `yz` (`15..=18`)
+/// edge groups.
+pub const D3Q19_OPP: [usize; 19] = crate::lattice::D3Q19_OPPOSITES;
 
 /// Lattice speed of sound squared (cs² = 1/3 in lattice units).
 const CS2: f64 = 1.0 / 3.0;
+
+/// Quantity prescribed on a Zou-He boundary face.
+#[derive(Debug, Clone, Copy)]
+enum ZouHeTarget {
+    /// Velocity component normal to the face (positive along the positive axis). The
+    /// transverse velocity components are zero and the density follows from continuity.
+    NormalVelocity(f64),
+    /// Density. The transverse velocity components are zero and the normal velocity follows
+    /// from continuity.
+    Density(f64),
+}
+
+/// Component of the lattice velocity of direction `i` along `axis` (0 = x, 1 = y, 2 = z).
+#[inline]
+fn direction_component(i: usize, axis: usize) -> i32 {
+    match axis {
+        0 => D3Q19_EX[i],
+        1 => D3Q19_EY[i],
+        _ => D3Q19_EZ[i],
+    }
+}
 
 // ---------------------------------------------------------------------------
 // D3q19Simulation
@@ -189,11 +214,13 @@ impl D3q19Simulation {
         }
     }
 
-    /// Apply half-way bounce-back at all solid nodes.
+    /// Apply on-node ("full-way") bounce-back at all solid nodes.
     ///
     /// For each solid node, incoming distributions are reflected back:
     /// the population travelling in direction `i` is swapped with the
-    /// population in the opposite direction `opp\[i\]`.
+    /// population in the opposite direction `opp\[i\]`. Called after streaming,
+    /// the reflected populations re-enter the fluid with the next streaming
+    /// step, so the no-slip wall sits on the solid node itself.
     pub fn apply_bounce_back(&mut self) {
         let n = self.nx * self.ny * self.nz;
         for k in 0..n {
@@ -319,12 +346,24 @@ impl D3q19Simulation {
 // ---------------------------------------------------------------------------
 
 impl D3q19Simulation {
-    /// MRT collision step with diagonal relaxation matrix.
+    /// MRT collision step with a diagonal relaxation matrix in moment space.
     ///
-    /// The relaxation rates `s` correspond to the 19 moments in order.
-    /// Typically s\[0\]=s\[3\]=s\[5\]=0 (conserved), others in (0,2).
-    /// Uses a simplified D3Q19 moment-space transformation.
+    /// For every fluid node the 19 populations are mapped to the Lallemand-Luo moments
+    /// `m = M f` (see [`crate::mrt3d`]; the moment order is
+    /// `rho, e, eps, jx, qx, jy, qy, jz, qz, 3pxx, 3pixx, pww, piww, pxy, pyz, pxz, mx, my, mz`),
+    /// every moment is relaxed towards its equilibrium, `m* = m - S (m - m_eq)`, and the result
+    /// is mapped back with `f* = M^{-1} m*`. `s\[k\]` is the relaxation rate of moment `k`.
+    ///
+    /// The conserved moments (`rho` = 0, `jx` = 3, `jy` = 5, `jz` = 7) are never relaxed: their
+    /// entries in `s` are ignored, so mass and momentum are conserved to round-off for any `s`.
+    /// Stability requires `0 < s\[k\] < 2` for the remaining moments. A uniform rate
+    /// `s\[k\] = omega` reproduces BGK collision with `tau = 1/omega`.
     pub fn collide_mrt(&mut self, s: &[f64; 19]) {
+        const CONSERVED_MODES: [usize; 4] = [0, 3, 5, 7];
+        let mut rates = *s;
+        for &mode in &CONSERVED_MODES {
+            rates[mode] = 0.0;
+        }
         let n = self.nx * self.ny * self.nz;
         for k in 0..n {
             if self.solid[k] {
@@ -332,14 +371,10 @@ impl D3q19Simulation {
             }
             let (rho, u) = self.macroscopic(k);
             let base = k * N_DIRS;
-
-            // Compute equilibrium and relax each distribution using
-            // the per-direction effective relaxation. This is a simplified
-            // approach where s[i] maps to direction i.
-            for (i, s_i) in s.iter().enumerate() {
-                let feq = Self::equilibrium(rho, u, i);
-                self.f[base + i] -= s_i * (self.f[base + i] - feq);
-            }
+            let mut cell = [0.0_f64; N_DIRS];
+            cell.copy_from_slice(&self.f[base..base + N_DIRS]);
+            let post = crate::mrt3d::collide_mrt(&cell, rho, u, &rates);
+            self.f[base..base + N_DIRS].copy_from_slice(&post);
         }
     }
 
@@ -443,31 +478,26 @@ impl D3q19Simulation {
 
     /// Apply bounce-back boundary conditions on walls in the y-direction.
     ///
-    /// Top (y=ny-1) and bottom (y=0) walls are treated as no-slip.
+    /// Top (y=ny-1) and bottom (y=0) walls are treated as no-slip: every population on the two
+    /// wall rows is exchanged with its opposite `D3Q19_OPP\[i\]` (each opposite pair is swapped
+    /// exactly once), which reverses the full velocity vector. Call it after streaming.
     pub fn apply_wall_bounce_back_y(&mut self) {
         let nx = self.nx;
         let ny = self.ny;
         let nz = self.nz;
-
+        if nx == 0 || ny == 0 || nz == 0 {
+            return;
+        }
+        let wall_rows = [0usize, ny - 1];
+        let n_rows = if ny == 1 { 1 } else { 2 };
         for z in 0..nz {
             for x in 0..nx {
-                // Bottom wall (y=0)
-                let k_bot = self.idx(x, 0, z);
-                let base = k_bot * N_DIRS;
-                for i in 1..N_DIRS {
-                    let opp = D3Q19_OPP[i];
-                    if D3Q19_EY[i] < 0 && opp > i {
-                        self.f.swap(base + i, base + opp);
-                    }
-                }
-
-                // Top wall (y=ny-1)
-                let k_top = self.idx(x, ny - 1, z);
-                let base = k_top * N_DIRS;
-                for i in 1..N_DIRS {
-                    let opp = D3Q19_OPP[i];
-                    if D3Q19_EY[i] > 0 && opp > i {
-                        self.f.swap(base + i, base + opp);
+                for &y in &wall_rows[..n_rows] {
+                    let base = self.idx(x, y, z) * N_DIRS;
+                    for (i, &opp) in D3Q19_OPP.iter().enumerate().skip(1) {
+                        if opp > i {
+                            self.f.swap(base + i, base + opp);
+                        }
                     }
                 }
             }
@@ -804,7 +834,13 @@ impl D3q19Simulation {
     /// each relaxed with its own rate: `omega_plus` (symmetric, viscosity)
     /// and `omega_minus` (antisymmetric, stability).
     ///
-    /// The optimal magic number is `lambda = omega+ * omega- / ((omega+ + omega-)^2 / 4) = 3/16`.
+    /// The commonly used "magic" combination is
+    /// `Lambda = (1/omega_plus - 1/2) * (1/omega_minus - 1/2) = 3/16`
+    /// (see [`Self::optimal_omega_minus`]).
+    ///
+    /// All 19 populations of a node are read from a snapshot taken before any of them is
+    /// updated, so the result does not depend on the direction loop order and mass and momentum
+    /// are conserved to round-off.
     pub fn collide_trt(&mut self, omega_plus: f64, omega_minus: f64) {
         let n = self.nx * self.ny * self.nz;
         for k in 0..n {
@@ -814,20 +850,21 @@ impl D3q19Simulation {
             let (rho, u) = self.macroscopic(k);
             let base = k * N_DIRS;
 
-            // Compute symmetric feq+ and antisymmetric feq-
-            for (i, opp) in D3Q19_OPP.iter().enumerate() {
-                let opp = *opp;
-                let feq_i = Self::equilibrium(rho, u, i);
-                let feq_opp = Self::equilibrium(rho, u, opp);
+            let mut f_old = [0.0_f64; N_DIRS];
+            f_old.copy_from_slice(&self.f[base..base + N_DIRS]);
+            let mut feq = [0.0_f64; N_DIRS];
+            for (i, feq_i) in feq.iter_mut().enumerate() {
+                *feq_i = Self::equilibrium(rho, u, i);
+            }
 
-                let f_sym = 0.5 * (self.f[base + i] + self.f[base + opp]);
-                let f_anti = 0.5 * (self.f[base + i] - self.f[base + opp]);
-                let feq_sym = 0.5 * (feq_i + feq_opp);
-                let feq_anti = 0.5 * (feq_i - feq_opp);
+            for (i, &opp) in D3Q19_OPP.iter().enumerate() {
+                let f_sym = 0.5 * (f_old[i] + f_old[opp]);
+                let f_anti = 0.5 * (f_old[i] - f_old[opp]);
+                let feq_sym = 0.5 * (feq[i] + feq[opp]);
+                let feq_anti = 0.5 * (feq[i] - feq[opp]);
 
-                self.f[base + i] = self.f[base + i]
-                    - omega_plus * (f_sym - feq_sym)
-                    - omega_minus * (f_anti - feq_anti);
+                self.f[base + i] =
+                    f_old[i] - omega_plus * (f_sym - feq_sym) - omega_minus * (f_anti - feq_anti);
             }
         }
     }
@@ -839,10 +876,11 @@ impl D3q19Simulation {
         self.apply_bounce_back();
     }
 
-    /// Compute the optimal TRT antisymmetric rate from the magic parameter.
+    /// Compute the TRT antisymmetric rate that realises the "magic" parameter `Lambda = 3/16`.
     ///
-    /// `omega_minus = omega_plus * magic / (omega_plus - magic * omega_plus + magic)`
-    /// Standard magic parameter is `Lambda = 3/16`.
+    /// With `tau_plus = 1 / omega_plus` the magic parameter is
+    /// `Lambda = (tau_plus - 1/2) * (tau_minus - 1/2)`, hence
+    /// `tau_minus = Lambda / (tau_plus - 1/2) + 1/2` and `omega_minus = 1 / tau_minus`.
     pub fn optimal_omega_minus(omega_plus: f64) -> f64 {
         let lambda = 3.0 / 16.0;
         // omega_minus such that lambda = (1/omega_plus - 0.5) * (1/omega_minus - 0.5)
@@ -903,74 +941,131 @@ impl D3q19Simulation {
 // ---------------------------------------------------------------------------
 
 impl D3q19Simulation {
-    /// Apply Zou-He velocity boundary condition on the x=0 inlet face.
+    /// Apply a Zou-He / Hecht-Harting on-site boundary condition on one face of the box.
     ///
-    /// Sets the velocity at all nodes with x=0 to `(ux_in, 0, 0)` and
-    /// computes the unknown distributions using the Zou-He scheme.
-    pub fn apply_zou_he_inlet_x(&mut self, ux_in: f64) {
-        let _nx = self.nx;
-        let ny = self.ny;
-        let nz = self.nz;
-
-        for z in 0..nz {
-            for y in 0..ny {
-                let k = self.idx(0, y, z);
-                let base = k * N_DIRS;
-
-                // Compute known sums from existing distributions.
-                // For the x=0 face, unknown directions are those with ex[i] > 0.
-                let sum_known: f64 = (0..N_DIRS)
-                    .filter(|&i| D3Q19_EX[i] <= 0)
-                    .map(|i| self.f[base + i])
-                    .sum();
-
-                // rho from continuity: rho = sum_f / (1 - ux_in)
-                let rho = sum_known / (1.0 - ux_in);
-
-                // Fill unknown distributions with equilibrium correction
-                for i in 0..N_DIRS {
-                    if D3Q19_EX[i] > 0 {
-                        let feq = Self::equilibrium(rho, [ux_in, 0.0, 0.0], i);
-                        let feq_opp = Self::equilibrium(rho, [ux_in, 0.0, 0.0], D3Q19_OPP[i]);
-                        self.f[base + i] = feq + (self.f[base + D3Q19_OPP[i]] - feq_opp);
-                    }
+    /// `axis` is the face normal (0 = x, 1 = y, 2 = z); `at_max` selects the face at the largest
+    /// index (the outlet side) instead of index 0. Only fluid nodes are modified; solid nodes on
+    /// the face are left to the bounce-back scheme.
+    fn apply_zou_he_face(&mut self, axis: usize, at_max: bool, target: ZouHeTarget) {
+        let dims = [self.nx, self.ny, self.nz];
+        if dims.contains(&0) {
+            return;
+        }
+        // `sigma` is the sign of the normal velocity component of the unknown populations, which
+        // point into the domain: +1 on the index-0 face and -1 on the index-max face.
+        let sigma: i32 = if at_max { -1 } else { 1 };
+        let layer = if at_max { dims[axis] - 1 } else { 0 };
+        let tangents: [usize; 2] = match axis {
+            0 => [1, 2],
+            1 => [0, 2],
+            _ => [0, 1],
+        };
+        for q in 0..dims[tangents[1]] {
+            for p in 0..dims[tangents[0]] {
+                let mut coords = [0usize; 3];
+                coords[axis] = layer;
+                coords[tangents[0]] = p;
+                coords[tangents[1]] = q;
+                let k = self.idx(coords[0], coords[1], coords[2]);
+                if !self.solid[k] {
+                    self.zou_he_node(k, axis, sigma, tangents, target);
                 }
             }
         }
     }
 
-    /// Apply Zou-He pressure (density) boundary condition on the x=nx-1 outlet face.
+    /// Reconstruct the unknown (incoming) populations of boundary node `k`.
     ///
-    /// Sets the outlet density to `rho_out` and assumes zero transverse velocity.
-    pub fn apply_zou_he_outlet_x(&mut self, rho_out: f64) {
-        let nx = self.nx;
-        let ny = self.ny;
-        let nz = self.nz;
+    /// With `e_n` the velocity component along the face normal, the unknown populations are the
+    /// five with `e_n = sigma`; the known ones are the nine tangential (`e_n = 0`) and the five
+    /// leaving the domain (`e_n = -sigma`). Continuity gives
+    ///
+    /// `rho * (1 - sigma * u_n) = S_0 + 2 S_out`,
+    ///
+    /// with `S_0` the sum of the tangential and `S_out` the sum of the leaving populations. A
+    /// velocity target fixes `rho`; a density target fixes `u_n`. The unknown populations then
+    /// follow from the bounce-back of the non-equilibrium part, `f_i = f_opp(i) + feq_i -
+    /// feq_opp(i)`, plus the Hecht-Harting transverse correction `-/+ N_t` on the edge directions
+    /// (sign of their tangential component along `t`), where
+    /// `N_t = (1/2) * sum_{e_n = 0} f_i e_t - rho u_t / 3`. This makes the transverse momentum
+    /// equal `rho u_t = 0` exactly, so the node ends with density `rho` and velocity `u_n` along
+    /// the normal and zero transverse velocity.
+    fn zou_he_node(
+        &mut self,
+        k: usize,
+        axis: usize,
+        sigma: i32,
+        tangents: [usize; 2],
+        target: ZouHeTarget,
+    ) {
+        let base = k * N_DIRS;
+        let sigma_f = f64::from(sigma);
 
-        for z in 0..nz {
-            for y in 0..ny {
-                let k = self.idx(nx - 1, y, z);
-                let base = k * N_DIRS;
-
-                // Sum distributions pointing away from outlet (ex[i] >= 0)
-                let sum_known: f64 = (0..N_DIRS)
-                    .filter(|&i| D3Q19_EX[i] >= 0)
-                    .map(|i| self.f[base + i])
-                    .sum();
-
-                // Velocity from continuity
-                let ux_out = -1.0 + sum_known / rho_out + 2.0 * sum_known / rho_out - 1.0;
-                let ux_out = ux_out.clamp(-0.3, -1e-8); // outlet must be flowing out
-
-                for i in 0..N_DIRS {
-                    if D3Q19_EX[i] < 0 {
-                        let feq = Self::equilibrium(rho_out, [ux_out, 0.0, 0.0], i);
-                        let feq_opp = Self::equilibrium(rho_out, [ux_out, 0.0, 0.0], D3Q19_OPP[i]);
-                        self.f[base + i] = feq + (self.f[base + D3Q19_OPP[i]] - feq_opp);
-                    }
-                }
+        let mut sum_tangential = 0.0_f64;
+        let mut sum_leaving = 0.0_f64;
+        for i in 0..N_DIRS {
+            let e_n = direction_component(i, axis);
+            if e_n == 0 {
+                sum_tangential += self.f[base + i];
+            } else if e_n == -sigma {
+                sum_leaving += self.f[base + i];
             }
         }
+        let known = sum_tangential + 2.0 * sum_leaving;
+
+        let (rho, u_n) = match target {
+            ZouHeTarget::NormalVelocity(u_n) => (known / (1.0 - sigma_f * u_n), u_n),
+            ZouHeTarget::Density(rho) => (rho, sigma_f * (1.0 - known / rho)),
+        };
+        let mut u = [0.0_f64; 3];
+        u[axis] = u_n;
+
+        let mut transverse = [0.0_f64; 2];
+        for (corr, &t) in transverse.iter_mut().zip(tangents.iter()) {
+            let mut momentum = 0.0_f64;
+            for i in 0..N_DIRS {
+                if direction_component(i, axis) == 0 {
+                    momentum += self.f[base + i] * f64::from(direction_component(i, t));
+                }
+            }
+            *corr = 0.5 * momentum - rho * u[t] / 3.0;
+        }
+
+        for (i, &opp) in D3Q19_OPP.iter().enumerate() {
+            if direction_component(i, axis) != sigma {
+                continue;
+            }
+            let mut value =
+                self.f[base + opp] + Self::equilibrium(rho, u, i) - Self::equilibrium(rho, u, opp);
+            for (corr, &t) in transverse.iter().zip(tangents.iter()) {
+                value -= f64::from(direction_component(i, t)) * corr;
+            }
+            self.f[base + i] = value;
+        }
+    }
+
+    /// Apply the Zou-He velocity boundary condition on the x=0 inlet face.
+    ///
+    /// Imposes the velocity `(ux_in, 0, 0)` on all fluid nodes with x=0. The density follows from
+    /// continuity, `rho = (S_0 + 2 S_out) / (1 - ux_in)` with `S_0` the sum of the populations
+    /// with `ex = 0` and `S_out` the sum of those with `ex < 0`, and the five unknown
+    /// populations with `ex > 0` are rebuilt with the Hecht-Harting on-site scheme (see
+    /// [`Self::apply_zou_he_outlet_x`]). Call it after streaming.
+    pub fn apply_zou_he_inlet_x(&mut self, ux_in: f64) {
+        self.apply_zou_he_face(0, false, ZouHeTarget::NormalVelocity(ux_in));
+    }
+
+    /// Apply the Zou-He pressure (density) boundary condition on the x=nx-1 outlet face.
+    ///
+    /// Sets the outlet density to `rho_out` and zero transverse velocity on all fluid nodes with
+    /// x=nx-1. The normal velocity follows from continuity,
+    /// `ux = -1 + (S_0 + 2 S_out) / rho_out`, with `S_0` the sum of the populations with `ex = 0`
+    /// and `S_out` the sum of those with `ex > 0`; it is not clamped, so the boundary can carry
+    /// either outflow or inflow. The five unknown populations with `ex < 0` are rebuilt from the
+    /// bounce-back of the non-equilibrium part plus the Hecht-Harting transverse correction.
+    /// Call it after streaming.
+    pub fn apply_zou_he_outlet_x(&mut self, rho_out: f64) {
+        self.apply_zou_he_face(0, true, ZouHeTarget::Density(rho_out));
     }
 
     /// Apply no-slip (bounce-back) on the y=0 and y=ny-1 planes.
@@ -986,25 +1081,20 @@ impl D3q19Simulation {
 }
 
 // ---------------------------------------------------------------------------
-// MRT with full 19x19 transformation matrix (simplified representation)
+// MRT with the exact 19x19 Lallemand-Luo transformation matrix
 // ---------------------------------------------------------------------------
 
 impl D3q19Simulation {
-    /// Full MRT collision using the standard D3Q19 moment transformation.
+    /// Full MRT collision in the standard D3Q19 (Lallemand-Luo) moment basis.
     ///
     /// The 19 moments are:
     /// rho, e, epsilon, jx, qx, jy, qy, jz, qz, 3pxx, 3pi_xx, pww, pi_ww, pxy, pyz, pxz, mx, my, mz
     ///
-    /// The relaxation matrix S = diag(s\[0..19\]).
-    /// This implementation computes the raw moments, relaxes them, and
-    /// transforms back — equivalent to standard MRT.
-    ///
-    /// For simplicity in this implementation, each distribution is relaxed
-    /// toward its equilibrium with a moment-dependent relaxation rate derived
-    /// from the diagonal of M^T * S * M applied to the BGK operator.
+    /// The relaxation matrix is `S = diag(s\[0..19\])`. The populations of every fluid node are
+    /// transformed to moment space with the exact 19x19 matrix `M` of [`crate::mrt3d`], relaxed
+    /// with `m* = m - S (m - m_eq)` and transformed back with `M^{-1}`; this is the same
+    /// operation as [`Self::collide_mrt`], which this method delegates to.
     pub fn collide_mrt_full(&mut self, s: &[f64; 19]) {
-        // This is an alias to the existing collide_mrt for now, but with validation
-        assert_eq!(s.len(), 19, "Need exactly 19 relaxation rates");
         self.collide_mrt(s);
     }
 
@@ -1200,58 +1290,19 @@ impl D3q19Simulation {
 impl D3q19Simulation {
     /// Apply Zou-He velocity BC on the y=0 (bottom) face.
     ///
-    /// Sets velocity `(0, uy_in, 0)` on all bottom-face nodes.
+    /// Imposes the velocity `(0, uy_in, 0)` on all fluid nodes with y=0, with the density from
+    /// continuity (see [`Self::apply_zou_he_inlet_x`] for the scheme). Call it after streaming.
     pub fn apply_zou_he_inlet_y(&mut self, uy_in: f64) {
-        let nx = self.nx;
-        let nz = self.nz;
-        for z in 0..nz {
-            for x in 0..nx {
-                let k = self.idx(x, 0, z);
-                let base = k * N_DIRS;
-
-                let sum_known: f64 = (0..N_DIRS)
-                    .filter(|&i| D3Q19_EY[i] <= 0)
-                    .map(|i| self.f[base + i])
-                    .sum();
-                let rho = sum_known / (1.0 - uy_in);
-
-                for i in 0..N_DIRS {
-                    if D3Q19_EY[i] > 0 {
-                        let feq = Self::equilibrium(rho, [0.0, uy_in, 0.0], i);
-                        let feq_opp = Self::equilibrium(rho, [0.0, uy_in, 0.0], D3Q19_OPP[i]);
-                        self.f[base + i] = feq + (self.f[base + D3Q19_OPP[i]] - feq_opp);
-                    }
-                }
-            }
-        }
+        self.apply_zou_he_face(1, false, ZouHeTarget::NormalVelocity(uy_in));
     }
 
     /// Apply Zou-He pressure (density) BC on the y=ny-1 (top) face.
+    ///
+    /// Sets the density to `rho_out` and zero transverse velocity on all fluid nodes with
+    /// y=ny-1; the normal velocity follows from continuity and is not clamped (see
+    /// [`Self::apply_zou_he_outlet_x`] for the scheme). Call it after streaming.
     pub fn apply_zou_he_outlet_y(&mut self, rho_out: f64) {
-        let nx = self.nx;
-        let ny = self.ny;
-        let nz = self.nz;
-        for z in 0..nz {
-            for x in 0..nx {
-                let k = self.idx(x, ny - 1, z);
-                let base = k * N_DIRS;
-
-                let sum_known: f64 = (0..N_DIRS)
-                    .filter(|&i| D3Q19_EY[i] >= 0)
-                    .map(|i| self.f[base + i])
-                    .sum();
-
-                let uy_out = (sum_known / rho_out - 1.0).clamp(-0.3, -1e-8);
-
-                for i in 0..N_DIRS {
-                    if D3Q19_EY[i] < 0 {
-                        let feq = Self::equilibrium(rho_out, [0.0, uy_out, 0.0], i);
-                        let feq_opp = Self::equilibrium(rho_out, [0.0, uy_out, 0.0], D3Q19_OPP[i]);
-                        self.f[base + i] = feq + (self.f[base + D3Q19_OPP[i]] - feq_opp);
-                    }
-                }
-            }
-        }
+        self.apply_zou_he_face(1, true, ZouHeTarget::Density(rho_out));
     }
 }
 
@@ -1320,6 +1371,9 @@ impl D3q19Simulation {
         sum_sq / count as f64 - mean * mean
     }
 }
+
+#[cfg(test)]
+mod regression_tests;
 
 // ---------------------------------------------------------------------------
 // Additional tests for new functionality
@@ -1456,11 +1510,18 @@ mod tests_extended {
 
     #[test]
     fn test_d3q19_collide_mrt_full_alias() {
+        // The uniform rest state is the fixed point of every moment-space relaxation, whatever
+        // the rates are, and `collide_mrt_full` must act exactly like `collide_mrt`.
         let mut sim = D3q19Simulation::new(3, 3, 3, 1.0);
-        let omega = 1.0;
-        let s = [omega; 19];
-        sim.collide_mrt_full(&s); // should not panic
-        // collide_mrt_full should not panic
+        let before = sim.f.clone();
+        let s = crate::mrt3d::build_relaxation_matrix(1.2, 1.4, 1.1);
+        sim.collide_mrt_full(&s);
+        for (slot, (&after, &prior)) in sim.f.iter().zip(before.iter()).enumerate() {
+            assert!(
+                (after - prior).abs() < 1e-14,
+                "population {slot} moved from {prior} to {after}"
+            );
+        }
     }
 
     // Check that stream_step preserves total mass under Poiseuille-channel
@@ -1642,8 +1703,9 @@ mod tests_extended {
 
     #[test]
     fn test_d3q19_opp_face_center_directions() {
-        // Check face-center directions (0..6) where the opposite is well-defined
-        for i in 0..7 {
+        // Every direction (rest, face-centre and edge-centre) must map to its geometric
+        // opposite: e[opp[i]] == -e[i].
+        for i in 0..N_DIRS {
             let j = D3Q19_OPP[i];
             assert_eq!(D3Q19_EX[j], -D3Q19_EX[i], "D3Q19_OPP[{i}] ex mismatch");
             assert_eq!(D3Q19_EY[j], -D3Q19_EY[i], "D3Q19_OPP[{i}] ey mismatch");

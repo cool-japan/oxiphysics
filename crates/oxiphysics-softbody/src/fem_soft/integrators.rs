@@ -74,11 +74,15 @@ impl LumpedMassMatrix {
 
 /// Rayleigh damping: `C = alpha * M + beta * K`.
 ///
-/// The damping force on node `i` is approximated as:
-/// `f_d,i = -(alpha * m_i * v_i) + (-beta_K * f_elastic_i)`
+/// The damping force on node `i` is `f_d,i = -alpha * m_i * v_i - beta_K * (K v)_i`.
 ///
-/// The stiffness-proportional term `beta * K * v` is approximated by
-/// scaling the elastic forces: `f_stiff_damp = -beta_K * f_elastic`.
+/// The stiffness-proportional term needs the product of the tangent stiffness
+/// `K = -d f_el / d x` with the nodal velocities.  It is a function of the
+/// **elastic** forces only; it must never be derived from an array that already
+/// holds gravity or other external loads (a velocity-independent force is not
+/// damping).  [`stiffness_velocity_product`](Self::stiffness_velocity_product)
+/// evaluates `K v` matrix-free from an elastic force callback, and
+/// [`apply`](Self::apply) adds both damping contributions to the force array.
 #[derive(Debug, Clone, Copy)]
 pub struct RayleighDamping {
     /// Mass-proportional coefficient alpha (1/s).
@@ -104,31 +108,111 @@ impl RayleighDamping {
 
     /// Compute the stiffness-proportional damping force for one node.
     ///
-    /// Approximation: `f_stiff = -beta_K * f_elastic`
+    /// `kv` is the node's entry of the stiffness-velocity product `K v` (see
+    /// [`stiffness_velocity_product`](Self::stiffness_velocity_product)); the force
+    /// is `f_stiff = -beta_K * (K v)`.
     #[inline]
-    pub fn stiffness_damping_force(&self, elastic_force: [f64; 3]) -> [f64; 3] {
+    pub fn stiffness_damping_force(&self, kv: [f64; 3]) -> [f64; 3] {
         let c = -self.beta_k;
-        [
-            c * elastic_force[0],
-            c * elastic_force[1],
-            c * elastic_force[2],
-        ]
+        [c * kv[0], c * kv[1], c * kv[2]]
+    }
+
+    /// `true` when the stiffness-proportional term is active (`beta_K != 0`), i.e.
+    /// when callers have to supply a real `K v` to [`apply`](Self::apply).
+    #[inline]
+    pub fn uses_stiffness_term(&self) -> bool {
+        self.beta_k != 0.0
+    }
+
+    /// Matrix-free stiffness-velocity product `K v` with `K = -d f_el / d x`.
+    ///
+    /// Evaluates the directional derivative of the elastic force field along the
+    /// nodal velocities by a central difference,
+    /// `K v ~ -(f_el(x + eps v) - f_el(x - eps v)) / (2 eps)`, which costs two
+    /// evaluations of `elastic_forces`.
+    ///
+    /// * `positions` -- current nodal positions `x`.
+    /// * `velocities` -- nodal velocities `v` (pass zero for fixed nodes).
+    /// * `elastic_forces` -- returns the **restoring elastic** nodal forces of all
+    ///   nodes for the given positions: no gravity, no external loads, no damping.
+    ///
+    /// `eps` is chosen so that the largest probe displacement is `1e-6` times the
+    /// extent of the node cloud.  The result is all zeros when every velocity is
+    /// zero.
+    pub fn stiffness_velocity_product<F>(
+        positions: &[[f64; 3]],
+        velocities: &[[f64; 3]],
+        mut elastic_forces: F,
+    ) -> Vec<[f64; 3]>
+    where
+        F: FnMut(&[[f64; 3]]) -> Vec<[f64; 3]>,
+    {
+        let mut kv = vec![[0.0_f64; 3]; positions.len()];
+        let v_max = velocities
+            .iter()
+            .flatten()
+            .fold(0.0_f64, |acc, c| acc.max(c.abs()));
+        if positions.is_empty() || !v_max.is_finite() || v_max <= 0.0 {
+            return kv;
+        }
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for p in positions {
+            for d in 0..3 {
+                lo[d] = lo[d].min(p[d]);
+                hi[d] = hi[d].max(p[d]);
+            }
+        }
+        let extent = (0..3).map(|d| hi[d] - lo[d]).fold(0.0_f64, f64::max);
+        let length_scale = if extent > 0.0 { extent } else { 1.0 };
+        let eps = 1.0e-6 * length_scale / v_max;
+
+        let probe = |sign: f64| -> Vec<[f64; 3]> {
+            let mut shifted = positions.to_vec();
+            for (x, v) in shifted.iter_mut().zip(velocities.iter()) {
+                for d in 0..3 {
+                    x[d] += sign * eps * v[d];
+                }
+            }
+            shifted
+        };
+        let f_plus = elastic_forces(&probe(1.0));
+        let f_minus = elastic_forces(&probe(-1.0));
+        let scale = -1.0 / (2.0 * eps);
+        for ((out, fp), fm) in kv.iter_mut().zip(f_plus.iter()).zip(f_minus.iter()) {
+            for d in 0..3 {
+                out[d] = scale * (fp[d] - fm[d]);
+            }
+        }
+        kv
     }
 
     /// Apply Rayleigh damping to the full force array.
     ///
-    /// Modifies `forces` in-place by adding mass-proportional and
-    /// stiffness-proportional damping contributions.
-    pub fn apply(&self, forces: &mut [[f64; 3]], velocities: &[[f64; 3]], masses: &[f64]) {
+    /// Adds `-alpha * m_i * v_i - beta_K * kv_i` to `forces[i]`.  `kv` is the
+    /// stiffness-velocity product `K v` computed from the elastic forces only (see
+    /// [`stiffness_velocity_product`](Self::stiffness_velocity_product)); it may be
+    /// all zeros when [`uses_stiffness_term`](Self::uses_stiffness_term) is `false`.
+    pub fn apply(
+        &self,
+        forces: &mut [[f64; 3]],
+        velocities: &[[f64; 3]],
+        masses: &[f64],
+        kv: &[[f64; 3]],
+    ) {
         debug_assert_eq!(forces.len(), velocities.len());
         debug_assert_eq!(forces.len(), masses.len());
-        for i in 0..forces.len() {
-            // Stiffness damping first (so we can capture current elastic force)
-            let f_stiff = self.stiffness_damping_force(forces[i]);
-            // Mass damping
-            let f_mass = self.mass_damping_force(masses[i], velocities[i]);
+        debug_assert_eq!(forces.len(), kv.len());
+        for (((force, velocity), mass), kv_i) in forces
+            .iter_mut()
+            .zip(velocities.iter())
+            .zip(masses.iter())
+            .zip(kv.iter())
+        {
+            let f_stiff = self.stiffness_damping_force(*kv_i);
+            let f_mass = self.mass_damping_force(*mass, *velocity);
             for d in 0..3 {
-                forces[i][d] += f_stiff[d] + f_mass[d];
+                force[d] += f_stiff[d] + f_mass[d];
             }
         }
     }
@@ -279,30 +363,30 @@ impl VelocityVerletIntegrator {
             }
         }
 
-        // Elastic forces from tets (need to wrap positions into CorotFemNode slice)
-        // Use a temporary node slice
-        let temp_nodes: Vec<CorotFemNode> = (0..n)
-            .map(|i| CorotFemNode {
-                position: positions[i],
-                velocity: velocities[i],
-                force: [0.0; 3],
-                mass: masses[i],
-            })
-            .collect();
-
-        for tet in tets {
-            let fs = tet.compute_elastic_forces(&temp_nodes, mu, lambda);
-            for (k, fs_k) in fs.iter().enumerate() {
-                let idx = tet.node_indices[k];
-                for (force_d, fs_d) in forces[idx].iter_mut().zip(fs_k.iter()) {
-                    *force_d += fs_d;
-                }
+        // Elastic (restoring) forces from the tets.
+        let elastic = tet_elastic_forces(positions, masses, tets, mu, lambda);
+        for (force, f_el) in forces.iter_mut().zip(elastic.iter()) {
+            for d in 0..3 {
+                force[d] += f_el[d];
             }
         }
 
-        // Rayleigh damping
+        // Rayleigh damping.  The stiffness term uses K v of the elastic forces
+        // alone, never the gravity-inclusive force array.
         if let Some(rd) = rayleigh {
-            rd.apply(&mut forces, velocities, masses);
+            let kv = if rd.uses_stiffness_term() {
+                let moving: Vec<[f64; 3]> = velocities
+                    .iter()
+                    .zip(pinned.iter())
+                    .map(|(v, &fixed)| if fixed { [0.0; 3] } else { *v })
+                    .collect();
+                RayleighDamping::stiffness_velocity_product(positions, &moving, |x| {
+                    tet_elastic_forces(x, masses, tets, mu, lambda)
+                })
+            } else {
+                vec![[0.0_f64; 3]; n]
+            };
+            rd.apply(&mut forces, velocities, masses, &kv);
         }
 
         // 3. Compute new accelerations
@@ -335,6 +419,37 @@ impl VelocityVerletIntegrator {
 
         self.prev_accel = new_accel;
     }
+}
+
+/// Restoring elastic forces of all `tets` at the given nodal `positions`.
+fn tet_elastic_forces(
+    positions: &[[f64; 3]],
+    masses: &[f64],
+    tets: &[CorotFemTet],
+    mu: f64,
+    lambda: f64,
+) -> Vec<[f64; 3]> {
+    let nodes: Vec<CorotFemNode> = positions
+        .iter()
+        .zip(masses.iter())
+        .map(|(position, mass)| CorotFemNode {
+            position: *position,
+            velocity: [0.0; 3],
+            force: [0.0; 3],
+            mass: *mass,
+        })
+        .collect();
+    let mut forces = vec![[0.0_f64; 3]; positions.len()];
+    for tet in tets {
+        let fs = tet.compute_elastic_forces(&nodes, mu, lambda);
+        for (k, fs_k) in fs.iter().enumerate() {
+            let idx = tet.node_indices[k];
+            for (force_d, fs_d) in forces[idx].iter_mut().zip(fs_k.iter()) {
+                *force_d += fs_d;
+            }
+        }
+    }
+    forces
 }
 
 // ---------------------------------------------------------------------------
@@ -656,20 +771,32 @@ impl FemSoftBodyVerlet {
             }
         }
 
-        // Elastic forces
-        for elem in &self.elements {
-            let fs = elem.elastic_forces(&self.positions);
-            for (k, fs_k) in fs.iter().enumerate() {
-                let idx = elem.indices[k];
-                for (force_d, fs_d) in forces[idx].iter_mut().zip(fs_k.iter()) {
-                    *force_d += fs_d;
-                }
+        // Elastic (restoring) forces
+        let elastic = assemble_internal_forces(&self.positions, &self.elements);
+        for (force, f_el) in forces.iter_mut().zip(elastic.iter()) {
+            for d in 0..3 {
+                force[d] += f_el[d];
             }
         }
 
-        // Rayleigh damping
+        // Rayleigh damping.  The stiffness term uses K v of the elastic forces
+        // alone, never the gravity-inclusive force array.
+        let kv = if self.rayleigh.uses_stiffness_term() {
+            let moving: Vec<[f64; 3]> = self
+                .velocities
+                .iter()
+                .zip(pinned.iter())
+                .map(|(v, &fixed)| if fixed { [0.0; 3] } else { *v })
+                .collect();
+            let elements = &self.elements;
+            RayleighDamping::stiffness_velocity_product(&self.positions, &moving, |x| {
+                assemble_internal_forces(x, elements)
+            })
+        } else {
+            vec![[0.0_f64; 3]; n]
+        };
         self.rayleigh
-            .apply(&mut forces, &self.velocities, &self.masses);
+            .apply(&mut forces, &self.velocities, &self.masses, &kv);
 
         // Zero forces on pinned nodes
         for i in 0..n {

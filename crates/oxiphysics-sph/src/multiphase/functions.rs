@@ -225,13 +225,17 @@ mod tests {
         assert_eq!(id_w, 0);
         assert_eq!(id_o, 1);
         assert_eq!(sys.phases.len(), 2);
-        let pi = sys.add_particle([0.0, 0.0, 0.0], [0.0; 3], id_w);
-        let pj = sys.add_particle([0.05, 0.0, 0.0], [0.0; 3], id_o);
+        let pi = sys.add_particle([0.0, 0.0, 0.0], [0.0; 3], id_w, 1.0);
+        let pj = sys.add_particle([0.05, 0.0, 0.0], [0.0; 3], id_o, 0.8);
         assert_eq!(pi, 0);
         assert_eq!(pj, 1);
         assert_eq!(sys.particles.len(), 2);
         assert_eq!(sys.particles[0].phase_id, id_w);
         assert_eq!(sys.particles[1].phase_id, id_o);
+        assert_eq!(sys.particles[0].mass, 1.0);
+        assert_eq!(sys.particles[1].mass, 0.8);
+        assert_eq!(sys.particles[0].density, 1000.0);
+        assert_eq!(sys.particles[1].density, 800.0);
     }
     #[test]
     fn test_compute_density_single_particle() {
@@ -244,8 +248,7 @@ mod tests {
             color: [0.0, 0.0, 1.0],
         };
         sys.add_phase(phase);
-        sys.add_particle([0.0, 0.0, 0.0], [0.0; 3], 0);
-        sys.particles[0].mass = 1.0;
+        sys.add_particle([0.0, 0.0, 0.0], [0.0; 3], 0, 1.0);
         sys.compute_density();
         let h = 0.1;
         let expected = cubic_spline_w(0.0, h);
@@ -266,8 +269,8 @@ mod tests {
             color: [0.0, 0.0, 1.0],
         };
         sys.add_phase(phase);
-        sys.add_particle([0.0, 0.0, 0.0], [0.0; 3], 0);
-        sys.add_particle([0.5, 0.0, 0.0], [0.0; 3], 0);
+        sys.add_particle([0.0, 0.0, 0.0], [0.0; 3], 0, 1.0);
+        sys.add_particle([0.5, 0.0, 0.0], [0.0; 3], 0, 1.0);
         sys.particles[0].density = 1000.0;
         sys.particles[1].density = 1000.0;
         let idx = sys.phase_separation_index();
@@ -295,8 +298,8 @@ mod tests {
         };
         sys.add_phase(water);
         sys.add_phase(oil);
-        sys.add_particle([0.0, 0.0, 0.0], [0.0; 3], 0);
-        sys.add_particle([0.5, 0.0, 0.0], [0.0; 3], 1);
+        sys.add_particle([0.0, 0.0, 0.0], [0.0; 3], 0, 1.0);
+        sys.add_particle([0.5, 0.0, 0.0], [0.0; 3], 1, 0.8);
         sys.particles[0].density = 1000.0;
         sys.particles[1].density = 800.0;
         let idx = sys.phase_separation_index();
@@ -304,6 +307,321 @@ mod tests {
             idx < 0.1,
             "Different-phase neighbour pair should give separation index near 0, got {idx}"
         );
+    }
+
+    // ── interface normals, curvature and CSF force ─────────────────────────────
+
+    /// Two-phase system (phase 0 = drop, phase 1 = ambient) with equal
+    /// reference densities of 1000 kg/m³ and the interphase tension `sigma`.
+    fn drop_system(h: f64, sigma: f64) -> MultiphaseSystem {
+        let mut sys = MultiphaseSystem::new(h, [0.0; 3]);
+        for id in 0..2 {
+            sys.add_phase(FluidPhase {
+                id,
+                density_ref: 1000.0,
+                dynamic_viscosity: 1e-3,
+                surface_tension: sigma,
+                color: [0.0, 0.0, 1.0],
+            });
+        }
+        sys.tension.set(0, 1, sigma);
+        sys
+    }
+
+    /// Fill `sys` with an `n × n` planar lattice (`z = 0`, spacing `s`, `n`
+    /// odd) holding a disk of phase 0 and the given `radius` in phase 1.  The
+    /// masses are calibrated so that the central particle has the reference
+    /// density, then all densities are recomputed.
+    fn fill_planar_drop(sys: &mut MultiphaseSystem, n: usize, s: f64, radius: f64) {
+        let half = (n as f64 - 1.0) / 2.0;
+        for ix in 0..n {
+            for iy in 0..n {
+                let pos = [(ix as f64 - half) * s, (iy as f64 - half) * s, 0.0];
+                let r = (pos[0] * pos[0] + pos[1] * pos[1]).sqrt();
+                sys.add_particle(pos, [0.0; 3], usize::from(r > radius), 1.0);
+            }
+        }
+        sys.compute_density();
+        let centre = (n * n - 1) / 2;
+        let scale = 1000.0 / sys.particles[centre].density;
+        for p in sys.particles.iter_mut() {
+            p.mass *= scale;
+        }
+        sys.compute_density();
+    }
+
+    fn planar_radius(p: &MultiphaseParticle) -> f64 {
+        (p.position[0] * p.position[0] + p.position[1] * p.position[1]).sqrt()
+    }
+
+    fn particle_at(sys: &MultiphaseSystem, x: f64, y: f64) -> usize {
+        sys.particles
+            .iter()
+            .position(|p| (p.position[0] - x).abs() < 1e-12 && (p.position[1] - y).abs() < 1e-12)
+            .expect("lattice site exists")
+    }
+
+    #[test]
+    fn test_planar_lattice_kernel_sum_approaches_plane_integral() {
+        // For s << h the lattice sum times s² tends to ∫ W(ρ, 0) dA = 0.7 / h
+        // (3-D cubic spline evaluated in a plane through its centre).
+        let h = 0.03;
+        let s = h / 25.0;
+        let sum = planar_lattice_kernel_sum(s, h);
+        let integral = sum * s * s * h;
+        assert!((integral - 0.7).abs() < 0.005, "∫ W dA · h = {integral}");
+    }
+
+    #[test]
+    fn test_csf_acceleration_formula_and_sign() {
+        let a = InterphaseTension::csf_acceleration(0.07, 20.0, [0.0, -50.0, 0.0], 1000.0);
+        assert!((a[1] - 0.07 * 20.0 * (-50.0) / 1000.0).abs() < 1e-14);
+        assert_eq!(a[0], 0.0);
+        // flipping the frame (κ → −κ, n → −n) leaves the acceleration unchanged
+        let b = InterphaseTension::csf_acceleration(0.07, -20.0, [0.0, 50.0, 0.0], 1000.0);
+        assert!((a[1] - b[1]).abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_interface_normals_zero_in_single_phase_interior() {
+        let s = 0.01;
+        let mut sys = drop_system(1.5 * s, 0.07);
+        fill_planar_drop(&mut sys, 41, s, f64::INFINITY);
+        sys.compute_interface_normals();
+        let mut checked = 0;
+        for p in &sys.particles {
+            if p.position[0].abs() <= 6.0 * s && p.position[1].abs() <= 6.0 * s {
+                checked += 1;
+                // the colour gradient is zero up to round-off, the unit normal vanishes
+                assert!(
+                    p.normal.iter().all(|c| c.abs() < 1e-6),
+                    "no interface, no normal: {:?}",
+                    p.normal
+                );
+                assert_eq!(p.curvature, 0.0);
+                assert!((p.color_field - 1.0).abs() < 0.05, "c = {}", p.color_field);
+            }
+        }
+        assert_eq!(checked, 13 * 13);
+    }
+
+    #[test]
+    fn test_interface_normals_point_into_own_phase() {
+        let s = 0.01;
+        let mut sys = drop_system(1.5 * s, 0.07);
+        fill_planar_drop(&mut sys, 41, s, 10.3 * s);
+        sys.compute_interface_normals();
+        // Last drop site and first ambient site on the +x axis.
+        let inner = &sys.particles[particle_at(&sys, 10.0 * s, 0.0)];
+        let outer = &sys.particles[particle_at(&sys, 11.0 * s, 0.0)];
+        assert_eq!((inner.phase_id, outer.phase_id), (0, 1));
+        assert!(inner.normal[0] < 0.0, "drop normal must point inward");
+        assert!(outer.normal[0] > 0.0, "ambient normal must point outward");
+        assert!(inner.normal[1].abs() < 1e-9 * inner.normal[0].abs());
+        let dot: f64 = (0..3).map(|k| inner.normal[k] * outer.normal[k]).sum();
+        assert!(dot < 0.0, "the two sides of the interface are antiparallel");
+        // the gradient magnitude is the inverse interface thickness ~ 1/(2 h)
+        let width = 1.0 / (inner.normal[0].powi(2) + inner.normal[1].powi(2)).sqrt();
+        assert!(
+            width > 0.5 * s && width < 6.0 * s,
+            "interface width {width}"
+        );
+        // own-phase colour: neither 0 nor 1 on the interface
+        for p in [inner, outer] {
+            assert!(
+                p.color_field > 0.2 && p.color_field < 0.95,
+                "interface colour {}",
+                p.color_field
+            );
+        }
+    }
+
+    #[test]
+    fn test_interface_curvature_of_planar_drop_is_one_over_radius() {
+        // 2-D drop of R ≈ 10 s: κ = 1/R on the drop side, −1/R on the ambient
+        // side (own-phase frame), within 20 %.
+        let s = 0.01;
+        let radius = 10.3 * s;
+        let mut sys = drop_system(1.5 * s, 0.07);
+        fill_planar_drop(&mut sys, 41, s, radius);
+        sys.compute_interface_normals();
+        let (mut drop_sum, mut drop_count) = (0.0, 0_usize);
+        let (mut ambient_sum, mut ambient_count) = (0.0, 0_usize);
+        for p in &sys.particles {
+            if (planar_radius(p) - radius).abs() <= s {
+                if p.phase_id == 0 {
+                    drop_sum += p.curvature;
+                    drop_count += 1;
+                } else {
+                    ambient_sum += p.curvature;
+                    ambient_count += 1;
+                }
+            }
+        }
+        assert!(drop_count > 40 && ambient_count > 40);
+        let expected = 1.0 / radius;
+        let drop_mean = drop_sum / drop_count as f64;
+        let ambient_mean = ambient_sum / ambient_count as f64;
+        assert!(
+            (drop_mean - expected).abs() < 0.2 * expected,
+            "drop-side κ {drop_mean} vs 1/R = {expected}"
+        );
+        assert!(
+            (ambient_mean + expected).abs() < 0.2 * expected,
+            "ambient-side κ {ambient_mean} vs −1/R = {}",
+            -expected
+        );
+    }
+
+    #[test]
+    fn test_interface_normals_independent_of_storage_order() {
+        let s = 0.01;
+        let radius = 5.3 * s;
+        let mut sys = drop_system(1.5 * s, 0.07);
+        fill_planar_drop(&mut sys, 21, s, radius);
+        sys.compute_interface_normals();
+
+        // A fixed bijective shuffle: k -> 5 k + 2 (mod 441), gcd(5, 441) = 1.
+        let count = sys.particles.len();
+        assert_eq!(count, 441);
+        let perm: Vec<usize> = (0..count).map(|k| (5 * k + 2) % count).collect();
+        let mut shuffled_sys = drop_system(1.5 * s, 0.07);
+        shuffled_sys.particles = perm.iter().map(|&src| sys.particles[src].clone()).collect();
+        shuffled_sys.compute_interface_normals();
+
+        let kappa_scale = sys
+            .particles
+            .iter()
+            .fold(0.0_f64, |m, p| m.max(p.curvature.abs()));
+        assert!(kappa_scale > 1.0, "test drop must carry curvature");
+        for (k, &src) in perm.iter().enumerate() {
+            let a = &sys.particles[src];
+            let b = &shuffled_sys.particles[k];
+            assert!(
+                (a.curvature - b.curvature).abs() < 1e-9 * kappa_scale,
+                "particle {src}: κ changed with storage order ({} vs {})",
+                a.curvature,
+                b.curvature
+            );
+            for c in 0..3 {
+                assert!((a.normal[c] - b.normal[c]).abs() < 1e-8 * (1.0 + a.normal[0].abs()));
+            }
+        }
+    }
+
+    #[test]
+    fn test_csf_force_balances_laplace_pressure_of_planar_drop() {
+        // The interface layer of a 2-D drop is pulled inwards with the total
+        // force 2 π σ t_eff, where t_eff = V / s² is the slab thickness that
+        // the single particle layer represents (Laplace: Δp = σ / R over the
+        // perimeter 2 π R).
+        let s = 0.01;
+        let sigma = 0.072;
+        let radius = 10.3 * s;
+        let mut sys = drop_system(1.5 * s, sigma);
+        fill_planar_drop(&mut sys, 41, s, radius);
+        sys.compute_interface_normals();
+        let acc = sys.compute_forces();
+
+        let mut inward = 0.0;
+        let mut net = [0.0_f64; 3];
+        for (p, a) in sys.particles.iter().zip(acc.iter()) {
+            let force = [p.mass * a[0], p.mass * a[1], p.mass * a[2]];
+            let r = planar_radius(p);
+            if r > 1e-12 {
+                inward -= (force[0] * p.position[0] + force[1] * p.position[1]) / r;
+            }
+            for c in 0..3 {
+                net[c] += force[c];
+            }
+        }
+        let centre = (41 * 41 - 1) / 2;
+        let volume = sys.particles[centre].mass / 1000.0;
+        let t_eff = volume / (s * s);
+        let expected = 2.0 * std::f64::consts::PI * sigma * t_eff;
+        assert!(inward > 0.0, "surface tension must pull the drop inward");
+        assert!(
+            inward > 0.7 * expected && inward < 1.15 * expected,
+            "inward CSF force {inward} N vs Laplace estimate {expected} N"
+        );
+        let net_norm = (net[0] * net[0] + net[1] * net[1] + net[2] * net[2]).sqrt();
+        assert!(
+            net_norm < 1e-9 * inward,
+            "net CSF force {net_norm} must vanish"
+        );
+    }
+
+    #[test]
+    fn test_csf_force_absent_without_interphase_tension() {
+        let s = 0.01;
+        let mut sys = drop_system(1.5 * s, 0.0);
+        fill_planar_drop(&mut sys, 21, s, 5.3 * s);
+        sys.compute_interface_normals();
+        let acc = sys.compute_forces();
+        for a in &acc {
+            assert!(a.iter().all(|c| c.abs() < 1e-12), "unexpected force {a:?}");
+        }
+    }
+
+    #[test]
+    fn test_initialize_two_layer_masses_reproduce_reference_density() {
+        let s = 0.01;
+        let h = 1.5 * s;
+        let mut sys = MultiphaseSystem::new(h, [0.0; 3]);
+        for (id, rho) in [(0, 1000.0), (1, 800.0)] {
+            sys.add_phase(FluidPhase {
+                id,
+                density_ref: rho,
+                dynamic_viscosity: 1e-3,
+                surface_tension: 0.03,
+                color: [0.0, 0.0, 1.0],
+            });
+        }
+        let particles = sys.initialize_two_layer(31, 31, 0, 1, s);
+        assert_eq!(particles.len(), 31 * 31);
+        let lower = particles.iter().filter(|p| p.phase_id == 0).count();
+        assert_eq!(lower, 31 * 15);
+        assert_eq!(particles.len() - lower, 31 * 16);
+        // the mass follows the phase density
+        let m_lower = particles[0].mass;
+        let m_upper = particles[particles.len() - 1].mass;
+        assert!((m_upper / m_lower - 0.8).abs() < 1e-12);
+
+        sys.particles = particles;
+        sys.compute_density();
+        // sites deep inside each layer, away from the interface and the edges
+        let lower_site = particle_at(&sys, 15.0 * s, 5.0 * s);
+        let upper_site = particle_at(&sys, 15.0 * s, 25.0 * s);
+        let rho_lower = sys.particles[lower_site].density;
+        let rho_upper = sys.particles[upper_site].density;
+        assert!(
+            (rho_lower - 1000.0).abs() < 10.0,
+            "lower density {rho_lower}"
+        );
+        assert!((rho_upper - 800.0).abs() < 8.0, "upper density {rho_upper}");
+        assert_eq!(sys.particles[lower_site].density, rho_lower);
+    }
+
+    #[test]
+    fn test_initialize_two_layer_rejects_invalid_geometry() {
+        let sys = MultiphaseSystem::new(0.015, [0.0; 3]);
+        assert!(sys.initialize_two_layer(4, 4, 0, 1, 0.0).is_empty());
+        assert!(sys.initialize_two_layer(4, 4, 0, 1, f64::NAN).is_empty());
+        let no_kernel = MultiphaseSystem::new(0.0, [0.0; 3]);
+        assert!(no_kernel.initialize_two_layer(4, 4, 0, 1, 0.01).is_empty());
+        // unregistered phases fall back to 1000 kg/m³
+        let particles = sys.initialize_two_layer(4, 4, 0, 1, 0.01);
+        assert_eq!(particles.len(), 16);
+        assert!(particles.iter().all(|p| p.density == 1000.0));
+    }
+
+    #[test]
+    fn test_add_particle_unregistered_phase_uses_default_density() {
+        let mut sys = MultiphaseSystem::new(0.1, [0.0; 3]);
+        let idx = sys.add_particle([0.0; 3], [1.0, 0.0, 0.0], 3, 0.25);
+        assert_eq!(sys.particles[idx].density, 1000.0);
+        assert_eq!(sys.particles[idx].mass, 0.25);
+        assert_eq!(sys.particles[idx].velocity, [1.0, 0.0, 0.0]);
     }
 }
 /// Extract droplet descriptors from the current particle state.

@@ -1,5 +1,7 @@
 //! Auto-generated module structure
 
+#[cfg(test)]
+mod butterworth_tests;
 pub mod functions;
 pub mod types;
 

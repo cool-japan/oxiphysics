@@ -982,6 +982,10 @@ impl DualBem {
 #[path = "boundary_element_dual.rs"]
 mod dual;
 
+// Dense LU and the Dirichlet-to-Neumann condensation (`BemFemCoupling::condense`).
+#[path = "boundary_element_coupling.rs"]
+mod coupling;
+
 // ---------------------------------------------------------------------------
 // 9. BEM–FEM coupling interface
 // ---------------------------------------------------------------------------
@@ -997,7 +1001,8 @@ pub struct BemFemCoupling {
     pub interface_nodes: Vec<usize>,
     /// BEM boundary mesh for the exterior domain.
     pub bem_mesh: BoundaryMesh,
-    /// Stiffness condensation matrix from the BEM side.
+    /// Dirichlet-to-Neumann map `G⁻¹·H` of the BEM region, indexed by BEM
+    /// element; filled by [`BemFemCoupling::condense`].
     pub condensed_stiffness: Option<DenseMatrix>,
 }
 
@@ -1009,37 +1014,6 @@ impl BemFemCoupling {
             bem_mesh,
             condensed_stiffness: None,
         }
-    }
-
-    /// Condense the BEM influence matrices into an equivalent stiffness
-    /// matrix for coupling with the FEM stiffness.
-    ///
-    /// K_bem = H * G^{-1}  (approximation for potential problems)
-    pub fn condense(&mut self) {
-        let (h, g) = assemble_laplace_bem(&self.bem_mesh);
-        let n = h.rows;
-        // Invert G (simple for small systems)
-        let mut g_inv = DenseMatrix::zeros(n, n);
-        for j in 0..n {
-            let mut e = vec![0.0; n];
-            e[j] = 1.0;
-            let col = gauss_solve(&g, &e);
-            for (i, &col_i) in col.iter().enumerate().take(n) {
-                g_inv.set(i, j, col_i);
-            }
-        }
-        // K_bem = H * G_inv
-        let mut k = DenseMatrix::zeros(n, n);
-        for i in 0..n {
-            for j in 0..n {
-                let mut s = 0.0;
-                for m in 0..n {
-                    s += h.get(i, m) * g_inv.get(m, j);
-                }
-                k.set(i, j, s);
-            }
-        }
-        self.condensed_stiffness = Some(k);
     }
 
     /// Number of interface DOFs.

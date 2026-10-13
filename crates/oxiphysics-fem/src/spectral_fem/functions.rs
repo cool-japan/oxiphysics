@@ -655,6 +655,101 @@ mod tests_part2 {
             assert!(ui.abs() < 1e-10, "u={}", ui);
         }
     }
+    /// Physical coordinates of every global SEM node of `solver`.
+    fn global_node_coordinates(solver: &SemEllipticSolver) -> Vec<f64> {
+        let mut x = vec![0.0; solver.mapping.n_global];
+        let mut offset = 0.0;
+        for e in 0..solver.mesh.n_elem() {
+            let elem = SpectralElement1D::new(solver.mesh.degrees[e], solver.mesh.lengths[e]);
+            for (i, &xi) in elem.nodes.iter().enumerate() {
+                x[solver.mapping.conn[e][i]] = offset + 0.5 * (xi + 1.0) * solver.mesh.lengths[e];
+            }
+            offset += solver.mesh.lengths[e];
+        }
+        x
+    }
+    #[test]
+    fn test_sem_elliptic_constant_source_reproduces_parabola_exactly() {
+        // -u'' = 1 on [0, 1], u(0) = u(1) = 0  =>  u = x (1 - x) / 2.
+        let mut solver = SemEllipticSolver::new(HpMesh1D::uniform(2, 1.0, 4));
+        solver.load_rhs(|_x| 1.0);
+        let u = solver.solve();
+        let x = global_node_coordinates(&solver);
+        let mut checked_midpoint = false;
+        for (xi, ui) in x.iter().zip(u.iter()) {
+            let exact = 0.5 * xi * (1.0 - xi);
+            assert!(
+                (ui - exact).abs() < 1e-10,
+                "x = {xi}: u = {ui}, exact = {exact}"
+            );
+            if (xi - 0.5).abs() < 1e-12 {
+                checked_midpoint = true;
+                assert!((ui - 0.125).abs() < 1e-10, "u(0.5) = {ui}");
+            }
+        }
+        assert!(
+            checked_midpoint,
+            "the shared interface node x = 0.5 must exist"
+        );
+    }
+    #[test]
+    fn test_sem_elliptic_solution_does_not_depend_on_element_size_scaling() {
+        // Three elements of length 1 on [0, 3]: the Jacobian is 1/2 and must
+        // multiply the load exactly once.  -u'' = 1 => u = x (3 - x) / 2.
+        let mut solver = SemEllipticSolver::new(HpMesh1D::uniform(3, 3.0, 3));
+        solver.load_rhs(|_x| 1.0);
+        let u = solver.solve();
+        let x = global_node_coordinates(&solver);
+        for (xi, ui) in x.iter().zip(u.iter()) {
+            let exact = 0.5 * xi * (3.0 - xi);
+            assert!(
+                (ui - exact).abs() < 1e-9,
+                "x = {xi}: u = {ui}, exact = {exact}"
+            );
+        }
+    }
+    #[test]
+    fn test_sem_elliptic_sine_source_converges_spectrally() {
+        // -u'' = pi^2 sin(pi x) on [0, 1]  =>  u = sin(pi x).
+        let pi = std::f64::consts::PI;
+        let mut solver = SemEllipticSolver::new(HpMesh1D::uniform(4, 1.0, 6));
+        solver.load_rhs(|x| pi * pi * (pi * x).sin());
+        let u = solver.solve();
+        let x = global_node_coordinates(&solver);
+        let max_err = x
+            .iter()
+            .zip(u.iter())
+            .map(|(xi, ui)| (ui - (pi * xi).sin()).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(max_err < 1e-6, "max nodal error = {max_err}");
+    }
+    #[test]
+    fn test_sem_elliptic_handles_non_uniform_hp_mesh() {
+        let mesh = HpMesh1D {
+            lengths: vec![0.3, 0.5, 0.2],
+            degrees: vec![3, 5, 4],
+        };
+        let mut solver = SemEllipticSolver::new(mesh);
+        solver.load_rhs(|_x| 1.0);
+        let u = solver.solve();
+        let x = global_node_coordinates(&solver);
+        assert_eq!(u.len(), 3 + 5 + 4 + 1);
+        for (xi, ui) in x.iter().zip(u.iter()) {
+            let exact = 0.5 * xi * (1.0 - xi);
+            assert!(
+                (ui - exact).abs() < 1e-10,
+                "x = {xi}: u = {ui}, exact = {exact}"
+            );
+        }
+    }
+    #[test]
+    fn test_sem_elliptic_empty_mesh_is_an_empty_system() {
+        let mut solver = SemEllipticSolver::new(HpMesh1D::uniform(0, 1.0, 3));
+        assert_eq!(solver.mapping.n_global, 0);
+        solver.load_rhs(|_x| 1.0);
+        assert!(solver.rhs.is_empty());
+        assert!(solver.solve().is_empty());
+    }
     #[test]
     fn test_assemble_sem_stiffness_1d_size() {
         let k = assemble_sem_stiffness_1d(3, 3.0, 2);

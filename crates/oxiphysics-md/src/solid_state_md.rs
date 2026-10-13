@@ -844,24 +844,134 @@ pub fn debye_temperature_from_max_freq(omega_max: f64) -> f64 {
     HBAR * omega_max / KB
 }
 
-/// Compute the Debye heat capacity at constant volume (J mol⁻¹ K⁻¹).
+/// Positive abscissae of the symmetric 16-point Gauss-Legendre rule on `[-1, 1]`.
+const GL16_NODES: [f64; 8] = [
+    0.095_012_509_837_637_44,
+    0.281_603_550_779_258_9,
+    0.458_016_777_657_227_37,
+    0.617_876_244_402_643_8,
+    0.755_404_408_355_003,
+    0.865_631_202_387_831_8,
+    0.944_575_023_073_232_6,
+    0.989_400_934_991_649_9,
+];
+
+/// Weights belonging to [`GL16_NODES`] (each node appears with both signs).
+const GL16_WEIGHTS: [f64; 8] = [
+    0.189_450_610_455_068_5,
+    0.182_603_415_044_923_58,
+    0.169_156_519_395_002_54,
+    0.149_595_988_816_576_74,
+    0.124_628_971_255_533_88,
+    0.095_158_511_682_492_79,
+    0.062_253_523_938_647_894,
+    0.027_152_459_411_754_096,
+];
+
+/// Integrate `f` over `[a, b]` with the 16-point Gauss-Legendre rule
+/// (exact for polynomials up to degree 31).
+fn gauss_legendre_16(f: impl Fn(f64) -> f64, a: f64, b: f64) -> f64 {
+    let mid = 0.5 * (a + b);
+    let half = 0.5 * (b - a);
+    let sum: f64 = GL16_NODES
+        .iter()
+        .zip(GL16_WEIGHTS.iter())
+        .map(|(&node, &weight)| weight * (f(mid - half * node) + f(mid + half * node)))
+        .sum();
+    half * sum
+}
+
+/// Complete Debye integral `∫₀^∞ x⁴ eˣ / (eˣ − 1)² dx = 4π⁴/15`.
+const DEBYE_INTEGRAL_TO_INFINITY: f64 = 4.0 * PI * PI * PI * PI / 15.0;
+
+/// Argument `θ_D/T` from which the upper integration limit is replaced by
+/// infinity.  The neglected tail is `~ x⁴ e⁻ˣ`, below `1e-14` of the integral.
+const DEBYE_LOW_TEMPERATURE_ARGUMENT: f64 = 50.0;
+
+/// Argument `θ_D/T` below which the Taylor series of the heat-capacity function
+/// is used (its next term is `x⁸/532224`, below `1e-26`).
+const DEBYE_SERIES_ARGUMENT: f64 = 1.0e-3;
+
+/// Maximum width of one Gauss-Legendre panel.  The integrand is analytic with the
+/// nearest singularities at `±2πi`, so 16 points on panels of width 4 converge to
+/// machine precision.
+const DEBYE_PANEL_WIDTH: f64 = 4.0;
+
+/// Debye heat-capacity integrand `x⁴ eˣ / (eˣ − 1)²`, evaluated without overflow
+/// as `x⁴ e⁻ˣ / (1 − e⁻ˣ)²` with `1 − e⁻ˣ = −expm1(−x)`.
 ///
-/// Uses the Debye integral approximation in the limits:
-/// - Low T: C_V → 12/5 π⁴ R (T/Θ_D)³
-/// - High T: C_V → 3R (Dulong-Petit)
-pub fn debye_heat_capacity(temperature_k: f64, debye_temperature: f64) -> f64 {
-    let r_gas = 8.314_462_618_f64;
-    if temperature_k < 0.01 {
+/// The limit at `x → 0` is `x² → 0`.
+fn debye_cv_integrand(x: f64) -> f64 {
+    if x <= 0.0 {
         return 0.0;
     }
-    let t_ratio = temperature_k / debye_temperature;
-    if t_ratio > 2.0 {
-        // High-T: Dulong-Petit
-        3.0 * r_gas
-    } else {
-        // Low-T approximation
-        12.0 / 5.0 * PI * PI * PI * PI * r_gas * t_ratio.powi(3)
+    let one_minus_decay = -(-x).exp_m1();
+    x.powi(4) * (-x).exp() / (one_minus_decay * one_minus_decay)
+}
+
+/// Dimensionless Debye heat-capacity function `C_V / (3 N k_B)` at `x_D = θ_D / T`.
+///
+/// ```text
+/// C_V / (3 N k_B) = 3 / x_D³ · ∫₀^{x_D} x⁴ eˣ / (eˣ − 1)² dx
+/// ```
+///
+/// It tends to `1` (Dulong-Petit) as `x_D → 0` and to `4π⁴ / (5 x_D³)` (the Debye
+/// T³ law) as `x_D → ∞`, and equals `0.9517` at `T = θ_D`.  Evaluation:
+///
+/// - `x_D < 1e-3`: the Taylor series `1 − x²/20 + x⁴/560 − x⁶/18144`,
+/// - `1e-3 ≤ x_D < 50`: composite 16-point Gauss-Legendre quadrature on panels of
+///   width at most 4, with an overflow-free integrand,
+/// - `x_D ≥ 50`: the complete integral `4π⁴/15`.
+///
+/// The accuracy is about `1e-13` relative over the whole range.  Returns `NaN` for a
+/// negative or `NaN` argument and `1.0` for `x_D = 0`.
+pub fn debye_cv_function(x_d: f64) -> f64 {
+    if x_d.is_nan() || x_d < 0.0 {
+        return f64::NAN;
     }
+    if x_d == 0.0 {
+        return 1.0;
+    }
+    if x_d >= DEBYE_LOW_TEMPERATURE_ARGUMENT {
+        return 3.0 * DEBYE_INTEGRAL_TO_INFINITY / x_d.powi(3);
+    }
+    if x_d < DEBYE_SERIES_ARGUMENT {
+        let x2 = x_d * x_d;
+        return 1.0 - x2 / 20.0 + x2 * x2 / 560.0 - x2 * x2 * x2 / 18_144.0;
+    }
+    let n_panels = (x_d / DEBYE_PANEL_WIDTH).ceil() as usize;
+    let panel_width = x_d / n_panels as f64;
+    let integral: f64 = (0..n_panels)
+        .map(|panel| {
+            let lower = panel as f64 * panel_width;
+            gauss_legendre_16(debye_cv_integrand, lower, lower + panel_width)
+        })
+        .sum();
+    3.0 * integral / x_d.powi(3)
+}
+
+/// Compute the Debye heat capacity at constant volume (J mol⁻¹ K⁻¹).
+///
+/// ```text
+/// C_V = 9 R (T/Θ_D)³ ∫₀^{Θ_D/T} x⁴ eˣ / (eˣ − 1)² dx = 3 R · debye_cv_function(Θ_D/T)
+/// ```
+///
+/// The full Debye integral is evaluated (see [`debye_cv_function`]), so the result
+/// rises smoothly from the T³ law `12π⁴/5 · R (T/Θ_D)³` at low temperature through
+/// `2.855 R` at `T = Θ_D` to the Dulong-Petit value `3R` at high temperature and is
+/// bounded by `3R`.
+///
+/// Returns `0.0` for `T ≤ 0`, `NaN` for a `NaN` temperature or a negative or `NaN`
+/// `Θ_D`, and `3R` for `Θ_D = 0` (no quantum freeze-out).
+pub fn debye_heat_capacity(temperature_k: f64, debye_temperature: f64) -> f64 {
+    let r_gas = 8.314_462_618_f64;
+    if temperature_k.is_nan() {
+        return f64::NAN;
+    }
+    if temperature_k <= 0.0 {
+        return 0.0;
+    }
+    3.0 * r_gas * debye_cv_function(debye_temperature / temperature_k)
 }
 
 // ---------------------------------------------------------------------------
@@ -1343,6 +1453,128 @@ mod tests {
         let cv = debye_heat_capacity(10_000.0, 343.0);
         let r = 8.314_462_618_f64;
         assert!((cv - 3.0 * r).abs() < 0.01 * 3.0 * r);
+    }
+
+    const R_GAS: f64 = 8.314_462_618;
+
+    #[test]
+    fn gauss_legendre_16_is_exact_for_degree_31() {
+        // ∫₀¹ x³¹ dx = 1/32 and ∫₋₂³ (x⁷ − x) dx are integrated exactly.
+        let seventh = gauss_legendre_16(|x| x.powi(31), 0.0, 1.0);
+        assert!((seventh - 1.0 / 32.0).abs() < 1e-15, "got {seventh}");
+        let odd = gauss_legendre_16(|x| x.powi(7) - x, -2.0, 3.0);
+        let exact = (3.0_f64.powi(8) - 2.0_f64.powi(8)) / 8.0 - (9.0 - 4.0) / 2.0;
+        assert!((odd - exact).abs() < 1e-11 * exact.abs(), "got {odd}");
+    }
+
+    #[test]
+    fn debye_cv_function_matches_reference_values() {
+        // Reference values from 40-digit quadrature of 3/x_D³ ∫ x⁴eˣ/(eˣ−1)² dx.
+        let reference = [
+            (1.0e-3, 0.999_999_950_000_001_8),
+            (0.1, 0.999_500_178_516_329_7),
+            (0.5, 0.987_610_752_099_737_5),
+            (1.0, 0.951_732_135_703_279_4),
+            (2.0, 0.825_408_038_412_502_8),
+            (5.0, 0.368_634_823_605_172_4),
+            (10.0, 0.075_821_003_031_091_33),
+            (20.0, 0.009_740_756_600_704_59),
+            (50.0, 6.234_181_826_176_156e-4),
+            (60.0, 3.607_744_112_370_461e-4),
+        ];
+        for (x_d, expected) in reference {
+            let got = debye_cv_function(x_d);
+            assert!(
+                (got - expected).abs() <= 1e-11 * expected,
+                "x_D = {x_d}: got {got}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn debye_heat_capacity_at_the_debye_temperature_is_2p855_r() {
+        // Dulong-Petit is only reached asymptotically: at T = Θ_D the molar heat
+        // capacity is 2.8552 R, nowhere near the 233.8 R of the T³ law.
+        let cv = debye_heat_capacity(343.0, 343.0);
+        assert!(
+            (cv / R_GAS - 2.855_196_407_109_84).abs() < 1e-9,
+            "cv/R = {}",
+            cv / R_GAS
+        );
+        assert!((cv / R_GAS - 2.856).abs() < 0.01);
+    }
+
+    #[test]
+    fn debye_heat_capacity_follows_the_t_cubed_law_at_low_temperature() {
+        let theta = 400.0;
+        for fraction in [0.02, 0.01, 0.005] {
+            let t = fraction * theta;
+            let cv = debye_heat_capacity(t, theta);
+            let t3_law = 12.0 * PI.powi(4) / 5.0 * R_GAS * fraction.powi(3);
+            assert!(
+                (cv - t3_law).abs() < 0.01 * t3_law,
+                "T/Θ = {fraction}: cv = {cv}, T³ law = {t3_law}"
+            );
+        }
+    }
+
+    #[test]
+    fn debye_heat_capacity_approaches_3r_from_below_at_high_temperature() {
+        let cv = debye_heat_capacity(3430.0, 343.0);
+        assert!(cv < 3.0 * R_GAS);
+        assert!((cv - 3.0 * R_GAS).abs() < 0.005 * 3.0 * R_GAS, "cv = {cv}");
+        // High-temperature series: C_V/3R = 1 − (Θ/T)²/20 + ...
+        let expected = 3.0 * R_GAS * (1.0 - 0.01 / 20.0 + 1e-4 / 560.0);
+        assert!((cv - expected).abs() < 1e-9 * expected);
+    }
+
+    #[test]
+    fn debye_heat_capacity_is_monotone_and_bounded_by_dulong_petit() {
+        let theta = 250.0;
+        let mut previous = 0.0;
+        for step in 1..=2000 {
+            let t = step as f64 * 0.5; // 0.5 K .. 1000 K
+            let cv = debye_heat_capacity(t, theta);
+            assert!(
+                cv > previous,
+                "C_V must increase with T (T = {t}): {previous} -> {cv}"
+            );
+            assert!(cv < 3.0 * R_GAS, "C_V must stay below 3R (T = {t}): {cv}");
+            previous = cv;
+        }
+    }
+
+    #[test]
+    fn debye_heat_capacity_has_no_jump_at_twice_the_debye_temperature() {
+        // The former implementation switched from the T³ law (≈ 1870 R) to 3R at T = 2Θ.
+        let theta = 300.0;
+        let below = debye_heat_capacity(2.0 * theta * (1.0 - 1e-9), theta);
+        let above = debye_heat_capacity(2.0 * theta * (1.0 + 1e-9), theta);
+        assert!((above - below).abs() < 1e-7 * R_GAS);
+        // C_V(2Θ) = 2.9628 R.
+        assert!((below / R_GAS - 2.962_832_256_299_21).abs() < 1e-9);
+    }
+
+    #[test]
+    fn debye_cv_function_is_continuous_across_its_evaluation_branches() {
+        for boundary in [DEBYE_SERIES_ARGUMENT, DEBYE_LOW_TEMPERATURE_ARGUMENT] {
+            let below = debye_cv_function(boundary * (1.0 - 1e-12));
+            let above = debye_cv_function(boundary * (1.0 + 1e-12));
+            assert!(
+                (below - above).abs() <= 1e-9 * above.abs(),
+                "jump at {boundary}: {below} vs {above}"
+            );
+        }
+    }
+
+    #[test]
+    fn debye_heat_capacity_degenerate_inputs() {
+        assert_eq!(debye_heat_capacity(0.0, 343.0), 0.0);
+        assert_eq!(debye_heat_capacity(-5.0, 343.0), 0.0);
+        assert!(debye_heat_capacity(f64::NAN, 343.0).is_nan());
+        assert!(debye_heat_capacity(300.0, -1.0).is_nan());
+        assert!((debye_heat_capacity(300.0, 0.0) - 3.0 * R_GAS).abs() < 1e-12);
+        assert!((debye_heat_capacity(f64::INFINITY, 343.0) - 3.0 * R_GAS).abs() < 1e-12);
     }
 
     // --- Crystal atom / velocity-Verlet tests ---

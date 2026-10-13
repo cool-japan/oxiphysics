@@ -3,6 +3,7 @@
 // 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
+use crate::error::{PhysicsError, PhysicsResult};
 use crate::math::Real;
 use crate::math::{Quat, Vec3};
 use crate::types::{Aabb, BodyHandle, PhysicsConfig, TimeStep, Transform};
@@ -232,6 +233,12 @@ impl Body {
             .damp(self.linear_damping, self.angular_damping, dt);
     }
     /// Integrate positions from velocities over dt.
+    ///
+    /// The angular velocity is expressed in the **world** frame, like every
+    /// other angular quantity of the world (impulses, contacts, constraint
+    /// corrections), so the orientation advances as
+    /// `q <- normalize(q + dt/2 * (0, w) * q)`: the incremental rotation is
+    /// applied on the left of the current orientation.
     pub fn integrate_positions(&mut self, dt: Real) {
         if self.mode == BodyMode::Static {
             return;
@@ -247,9 +254,9 @@ impl Body {
         use nalgebra::Quaternion;
         let dq = Quaternion::new(
             -q.i * wx - q.j * wy - q.k * wz,
-            q.w * wx + q.j * wz - q.k * wy,
-            q.w * wy + q.k * wx - q.i * wz,
-            q.w * wz + q.i * wy - q.j * wx,
+            q.w * wx + wy * q.k - wz * q.j,
+            q.w * wy + wz * q.i - wx * q.k,
+            q.w * wz + wx * q.j - wy * q.i,
         );
         let new_q = Quaternion::new(q.w + dq.w, q.i + dq.i, q.j + dq.j, q.k + dq.k);
         let norm =
@@ -299,11 +306,25 @@ impl Frustum {
     }
 }
 /// Type of constraint between two bodies.
+///
+/// [`PhysicsWorld::step`] enforces [`BallSocket`](ConstraintKind::BallSocket),
+/// [`DistanceMin`](ConstraintKind::DistanceMin),
+/// [`DistanceMax`](ConstraintKind::DistanceMax) and
+/// [`DistanceFixed`](ConstraintKind::DistanceFixed) with a position-based
+/// (XPBD) solver. [`Hinge`](ConstraintKind::Hinge) and
+/// [`Contact`](ConstraintKind::Contact) are stored (and take part in island
+/// building) but are **not** solved by the world step; see
+/// [`ConstraintKind::is_solved_by_step`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConstraintKind {
     /// Fixes the relative position of two anchor points.
     BallSocket,
     /// Fixes relative position and one rotational axis.
+    ///
+    /// Not solved by the world step: [`Constraint`] carries no hinge axis, so
+    /// the rotational part cannot even be expressed, and solving only the
+    /// positional part would silently turn the hinge into a ball joint. Use
+    /// the joints of `oxiphysics-constraints` for hinges.
     Hinge,
     /// Maintains a minimum distance between bodies.
     DistanceMin,
@@ -312,9 +333,33 @@ pub enum ConstraintKind {
     /// Maintains an exact distance between bodies.
     DistanceFixed,
     /// Contact constraint (collision response).
+    ///
+    /// Not solved by the world step: contacts are produced by collision
+    /// detection and resolved through [`PhysicsWorld::resolve_contacts`].
     Contact,
 }
+impl ConstraintKind {
+    /// Whether [`PhysicsWorld::step`] enforces constraints of this kind.
+    ///
+    /// `true` for the ball-socket and the three distance kinds, `false` for
+    /// [`ConstraintKind::Hinge`] and [`ConstraintKind::Contact`].
+    pub const fn is_solved_by_step(self) -> bool {
+        matches!(
+            self,
+            ConstraintKind::BallSocket
+                | ConstraintKind::DistanceMin
+                | ConstraintKind::DistanceMax
+                | ConstraintKind::DistanceFixed
+        )
+    }
+}
 /// A constraint between two bodies (or one body and the world).
+///
+/// While `active`, [`PhysicsWorld::step`] enforces the constraint (for the
+/// kinds listed in [`ConstraintKind::is_solved_by_step`]) by moving and
+/// rotating the *dynamic* bodies involved; static, kinematic and sleeping
+/// bodies are treated as immovable references. Constraints that name a stale
+/// body handle, or the same body twice, are skipped.
 #[derive(Debug, Clone)]
 pub struct Constraint {
     /// First body handle. Required.
@@ -328,8 +373,16 @@ pub struct Constraint {
     /// Anchor point in body B's local space (or world space if `body_b` is None).
     pub anchor_b: [Real; 3],
     /// Target value (e.g., distance for distance constraints).
+    ///
+    /// Distance kinds measure the separation of the two anchor points; a
+    /// negative target is treated as zero. Ignored by
+    /// [`ConstraintKind::BallSocket`], whose target separation is zero.
     pub target: Real,
-    /// Compliance (softness) parameter; 0 = rigid.
+    /// Compliance (softness) parameter in m/N; 0 = rigid.
+    ///
+    /// This is the inverse stiffness of the equivalent spring (XPBD
+    /// compliance), independent of the time step. Negative values are treated
+    /// as rigid.
     pub compliance: Real,
     /// Whether this constraint is currently active.
     pub active: bool,
@@ -687,7 +740,7 @@ pub struct WorldStats {
 pub struct BodyVelocity {
     /// Linear velocity (m/s).
     pub linear: [Real; 3],
-    /// Angular velocity (rad/s).
+    /// Angular velocity (rad/s), expressed in the world frame.
     pub angular: [Real; 3],
 }
 impl BodyVelocity {
@@ -877,9 +930,17 @@ pub struct PhysicsWorld {
     pub fixed_dt: Real,
     /// Accumulated time not yet simulated.
     pub accumulator: Real,
+    /// Maximum number of fixed substeps one call of
+    /// [`PhysicsWorld::step_with_accumulator`] may run.
+    ///
+    /// Time that would need more substeps is dropped (all but at most one
+    /// `fixed_dt`), so a single long frame cannot snowball into ever more
+    /// work. Must be at least 1; the default is 8.
+    pub max_substeps: u32,
     /// All registered bodies.
     pub bodies: BodyArena,
-    /// All constraints.
+    /// All constraints; the active ones are enforced by every step (see
+    /// [`PhysicsWorld::add_constraint`]).
     pub constraints: Vec<Constraint>,
     /// Event queue (pending events from last step).
     pub events: VecDeque<PhysicsEvent>,
@@ -923,6 +984,12 @@ impl PhysicsWorld {
         self.bodies.len()
     }
     /// Add a constraint between bodies and return its index.
+    ///
+    /// The constraint is enforced by every subsequent [`PhysicsWorld::step`]
+    /// (see [`Constraint`] and [`ConstraintKind::is_solved_by_step`] for what
+    /// is supported). Indices are invalidated by
+    /// [`PhysicsWorld::remove_constraint`], which swaps the last constraint
+    /// into the freed slot.
     pub fn add_constraint(&mut self, constraint: Constraint) -> usize {
         let idx = self.constraints.len();
         self.constraints.push(constraint);
@@ -951,39 +1018,99 @@ impl PhysicsWorld {
         self.config.gravity = Vec3::new(gx, gy, gz);
     }
     /// Step the world forward by a fixed `TimeStep`.
+    ///
+    /// Every active [`Constraint`] of a kind that
+    /// [`ConstraintKind::is_solved_by_step`] reports as supported is enforced
+    /// after the bodies have been integrated (see
+    /// [`PhysicsWorld::add_constraint`]).
     pub fn step(&mut self, time_step: &TimeStep) {
         self.step_dt(time_step.dt);
     }
     /// Step the world forward by the given delta time, using fixed substeps.
+    ///
+    /// `dt` is added to [`PhysicsWorld::accumulator`] and consumed in
+    /// substeps of exactly [`PhysicsWorld::fixed_dt`]. At most
+    /// [`PhysicsWorld::max_substeps`] substeps run per call; if more would be
+    /// needed (a very long frame) the remaining backlog is dropped, keeping at
+    /// most one `fixed_dt` of leftover time, so the simulation can never fall
+    /// into a spiral of ever longer frames.
+    ///
     /// Returns the number of substeps taken.
-    pub fn step_with_accumulator(&mut self, dt: Real) -> u32 {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidInput`], leaving the world (and the
+    /// accumulator) untouched, when `dt` is NaN, infinite or negative, when
+    /// `fixed_dt` is not a finite positive number, when the accumulator is not
+    /// finite, or when `max_substeps` is zero.
+    pub fn step_with_accumulator(&mut self, dt: Real) -> PhysicsResult<u32> {
+        if !self.fixed_dt.is_finite() || self.fixed_dt <= 0.0 {
+            return Err(PhysicsError::InvalidInput {
+                field: "fixed_dt".to_string(),
+                reason: format!("must be finite and positive, got {}", self.fixed_dt),
+            });
+        }
+        if self.max_substeps == 0 {
+            return Err(PhysicsError::InvalidInput {
+                field: "max_substeps".to_string(),
+                reason: "must be at least 1, otherwise the world can never advance".to_string(),
+            });
+        }
+        if !self.accumulator.is_finite() {
+            return Err(PhysicsError::InvalidInput {
+                field: "accumulator".to_string(),
+                reason: format!("must be finite, got {}", self.accumulator),
+            });
+        }
+        if !dt.is_finite() || dt < 0.0 {
+            return Err(PhysicsError::InvalidInput {
+                field: "dt".to_string(),
+                reason: format!("must be finite and non-negative, got {dt}"),
+            });
+        }
         self.accumulator += dt;
         let mut steps = 0u32;
-        while self.accumulator >= self.fixed_dt {
+        while self.accumulator >= self.fixed_dt && steps < self.max_substeps {
             self.accumulator -= self.fixed_dt;
             self.step_dt(self.fixed_dt);
             steps += 1;
         }
-        steps
+        self.accumulator = self.accumulator.min(self.fixed_dt);
+        Ok(steps)
     }
     /// Perform one full simulation substep of duration `dt`.
+    ///
+    /// The substep runs in phases: integrate every body, enforce the
+    /// constraints, and only then evaluate sleeping, so that the sleep test
+    /// sees the velocities the constraint solver produced.
     fn step_dt(&mut self, dt: Real) {
         let gravity = [
             self.config.gravity.x,
             self.config.gravity.y,
             self.config.gravity.z,
         ];
-        let lin_sleep = self.config.linear_sleep_threshold;
-        let ang_sleep = self.config.angular_sleep_threshold;
-        let t_sleep = self.config.time_before_sleep;
         let indices: Vec<usize> = self.bodies.live_indices().collect();
         for &idx in &indices {
-            let slot = &mut self.bodies.slots[idx];
-            if let BodySlot::Occupied { body, generation } = slot {
-                let handle = BodyHandle::new(idx as u32, *generation);
+            if let BodySlot::Occupied { body, .. } = &mut self.bodies.slots[idx] {
                 body.integrate_velocities(gravity, dt);
                 body.integrate_positions(dt);
                 body.clear_forces();
+            }
+        }
+        self.solve_constraints(dt);
+        self.update_sleep_state(&indices, dt);
+        self.time += dt;
+    }
+    /// Advance the sleep timers of the bodies at `indices` by `dt`, putting
+    /// bodies to sleep (and emitting events) as their timers expire.
+    fn update_sleep_state(&mut self, indices: &[usize], dt: Real) {
+        let lin_sleep = self.config.linear_sleep_threshold;
+        let ang_sleep = self.config.angular_sleep_threshold;
+        let t_sleep = self.config.time_before_sleep;
+        for &idx in indices {
+            let slot = &mut self.bodies.slots[idx];
+            if let BodySlot::Occupied { body, generation } = slot {
+                let handle = BodyHandle::new(idx as u32, *generation);
                 if body.mode == BodyMode::Dynamic {
                     let fast = body.velocity.linear_speed_sq() > lin_sleep * lin_sleep
                         || body.velocity.angular_speed_sq() > ang_sleep * ang_sleep;
@@ -1006,7 +1133,6 @@ impl PhysicsWorld {
                 }
             }
         }
-        self.time += dt;
     }
     /// Recompute simulation islands using union-find on constraint graph.
     /// Islands group bodies that interact so they can be solved independently.

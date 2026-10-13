@@ -40,17 +40,18 @@ impl ElectrophoreticMobility {
             params,
         }
     }
-    /// Henry's function f(kappa * a).
+    /// Henry's function f(kappa * a) in Ohshima's (1994) approximation.
     ///
-    /// Limits: f → 1.0 for thin double layer (kappa*a → infinity),
-    ///         f → 1.5 for thick double layer (kappa*a → 0, Hückel limit).
+    /// Limits: f → 1.0 for a thick double layer (kappa*a → 0, Hückel limit),
+    ///         f → 1.5 for a thin double layer (kappa*a → infinity,
+    ///         Smoluchowski limit); monotonically increasing in between.
     ///
-    /// Approximate smooth interpolation:
-    ///   f = 1.0 + 2.5 / (1 + 2 * exp(-kappa_a))
+    ///   f = 1 + 1 / (2 * (1 + 2.5 / (kappa_a * (1 + 2 * exp(-kappa_a))))^3)
     ///
-    /// (Recovers ≈ 1.5 at kappa_a = 0 and ≈ 1.0 at kappa_a → ∞.)
+    /// This is the same implementation that
+    /// [`crate::electrokinetics::ElectrophoreticMobility::henry_function`] uses.
     pub fn henry_function(&self, kappa_a: f64) -> f64 {
-        1.0 + 2.5 / (1.0 + 2.0 * (-kappa_a).exp())
+        crate::electrokinetics::henry_function_ohshima(kappa_a)
     }
     /// Electrophoretic mobility (m^2/(V·s)).
     ///
@@ -318,7 +319,11 @@ impl PoissonSolver {
     /// Equation: nabla^2 phi = -rho / (epsilon_0 * epsilon_r)
     ///
     /// Gauss-Seidel update:
-    ///   phi\[i\] = (sum of 4 neighbours - rho\[i\] * dx^2 / epsilon_r) / 4
+    ///   phi\[i\] = (sum of 4 neighbours + rho\[i\] * dx^2 / (epsilon_0 * epsilon_r)) / 4
+    ///
+    /// Cells outside the `nx x ny` grid act as zero-potential (grounded
+    /// Dirichlet) neighbours, i.e. the grounded boundary sits one lattice
+    /// spacing beyond the first and last row/column.
     ///
     /// Returns the number of iterations used.
     pub fn solve_poisson_2d(
@@ -347,7 +352,7 @@ impl PoissonSolver {
                     };
                     let phi_s = if y > 0 { phi[(y - 1) * nx + x] } else { 0.0 };
                     let new_phi =
-                        (phi_e + phi_w + phi_n + phi_s - rho[idx] * dx2 / eps_total) / 4.0;
+                        (phi_e + phi_w + phi_n + phi_s + rho[idx] * dx2 / eps_total) / 4.0;
                     let change = (new_phi - phi[idx]).abs();
                     if change > max_change {
                         max_change = change;

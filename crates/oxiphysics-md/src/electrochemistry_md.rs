@@ -17,6 +17,10 @@
 use rand::RngExt;
 use std::f64::consts::PI;
 
+mod simulation;
+
+pub use simulation::ElectrochemicalMdSimulation;
+
 // ---------------------------------------------------------------------------
 // Physical Constants
 // ---------------------------------------------------------------------------
@@ -218,6 +222,18 @@ impl ElectrochemicalIon {
         // vel in A/fs = 1e-10/1e-15 m/s = 1e5 m/s
         let v2 = self.vel.iter().map(|v| v * v).sum::<f64>() * 1.0e10; // (m/s)^2
         0.5 * m * v2 / ELEMENTARY_CHARGE
+    }
+
+    /// Mass in atomic mass units (g/mol), the unit of the force-to-acceleration
+    /// conversion used by the simulation driver.
+    pub fn mass_amu(&self) -> f64 {
+        self.species.mass() * AVOGADRO * 1.0e3
+    }
+
+    /// Ionic radius of the species in Angstrom (contact distance of two ions is the
+    /// sum of their radii).
+    pub fn radius(&self) -> f64 {
+        self.species.ionic_radius()
     }
 
     /// Speed in Angstrom/fs.
@@ -1172,170 +1188,6 @@ impl LithiumIntercalation {
 }
 
 // ---------------------------------------------------------------------------
-// ElectrochemicalMdSimulation
-// ---------------------------------------------------------------------------
-
-/// High-level driver for electrochemical MD simulations.
-///
-/// Combines ions, electrode, GCS model, Marcus kinetics, and Li intercalation.
-#[derive(Debug, Clone)]
-pub struct ElectrochemicalMdSimulation {
-    /// Ions in the simulation box.
-    pub ions: Vec<ElectrochemicalIon>,
-    /// GCS double layer model.
-    pub gcs: GouyChapmanSternModel,
-    /// CPM electrode.
-    pub cpm: ConstantPotentialMd,
-    /// Marcus model for electron transfer.
-    pub marcus: MarcusElectronTransfer,
-    /// Li intercalation model.
-    pub intercalation: LithiumIntercalation,
-    /// Box size \[Lx, Ly, Lz\] in Angstrom.
-    pub box_size: [f64; 3],
-    /// Current simulation time in fs.
-    pub time: f64,
-    /// Integration timestep in fs.
-    pub dt: f64,
-    /// Temperature in K.
-    pub temperature: f64,
-    /// Dielectric constant of the solvent.
-    pub dielectric: f64,
-}
-
-impl ElectrochemicalMdSimulation {
-    /// Create a simulation for a Li-ion battery interface.
-    pub fn new_liion_interface(voltage: f64, temperature: f64, n_ions: usize) -> Self {
-        let box_len = 40.0; // Angstrom
-        let box_size = [box_len, box_len, box_len];
-        let mut rng = rand::rng();
-        let mut ions = Vec::with_capacity(n_ions);
-        let conc = 1.0; // mol/L
-        for i in 0..n_ions {
-            let species = if i % 2 == 0 {
-                IonicSpecies::Li
-            } else {
-                IonicSpecies::Pf6
-            };
-            let pos = [
-                rng.random_range(0.0..box_len),
-                rng.random_range(0.0..box_len),
-                rng.random_range(0.0..box_len),
-            ];
-            let mut ion = ElectrochemicalIon::new(pos, species);
-            ion.id = i;
-            ions.push(ion);
-        }
-        Self {
-            ions,
-            gcs: GouyChapmanSternModel::aqueous_kcl(conc, voltage, temperature),
-            cpm: ConstantPotentialMd::graphene_electrode(50, voltage, temperature),
-            marcus: MarcusElectronTransfer::li_couple(voltage, temperature),
-            intercalation: LithiumIntercalation::graphite_anode(temperature),
-            box_size,
-            time: 0.0,
-            dt: 1.0,
-            temperature,
-            dielectric: 78.5,
-        }
-    }
-
-    /// Compute total Coulomb energy in eV.
-    pub fn total_coulomb_energy(&self) -> f64 {
-        let n = self.ions.len();
-        let mut energy = 0.0;
-        for i in 0..n {
-            for j in (i + 1)..n {
-                energy += self.ions[i].coulomb_energy_ev(&self.ions[j], self.dielectric);
-            }
-        }
-        energy
-    }
-
-    /// Apply Langevin thermostat forces (white noise + friction).
-    pub fn apply_langevin(&mut self, gamma: f64) {
-        let mut rng = rand::rng();
-        let kbt_ev = BOLTZMANN * self.temperature / ELEMENTARY_CHARGE;
-        for ion in &mut self.ions {
-            let m = ion.species.mass();
-            let m_amu = m * AVOGADRO * 1.0e3; // Dalton
-            let sigma = (2.0 * gamma * kbt_ev * m_amu / self.dt).sqrt();
-            for k in 0..3 {
-                let noise: f64 = rng.random_range(-1.0_f64..1.0_f64);
-                ion.force[k] += sigma * noise - gamma * ion.vel[k] * m_amu;
-            }
-        }
-    }
-
-    /// Advance by one timestep using velocity Verlet.
-    pub fn step(&mut self) {
-        let dt = self.dt;
-        for ion in &mut self.ions {
-            let m_amu = ion.species.mass() * AVOGADRO * 1.0e3;
-            // half-step velocity
-            for k in 0..3 {
-                ion.vel[k] += 0.5 * ion.force[k] / m_amu * dt;
-            }
-            // position update
-            for k in 0..3 {
-                ion.pos[k] += ion.vel[k] * dt;
-                // periodic boundary conditions
-                ion.pos[k] = ion.pos[k].rem_euclid(self.box_size[k]);
-            }
-        }
-        // recompute forces (simplified: zero here; extend with real potentials)
-        for ion in &mut self.ions {
-            ion.zero_forces();
-        }
-        self.apply_langevin(0.01);
-        for ion in &mut self.ions {
-            let m_amu = ion.species.mass() * AVOGADRO * 1.0e3;
-            for k in 0..3 {
-                ion.vel[k] += 0.5 * ion.force[k] / m_amu * dt;
-            }
-        }
-        self.time += dt;
-    }
-
-    /// Run for n_steps timesteps.
-    pub fn run(&mut self, n_steps: usize) {
-        for _ in 0..n_steps {
-            self.step();
-        }
-    }
-
-    /// Total kinetic energy in eV.
-    pub fn total_kinetic_energy_ev(&self) -> f64 {
-        self.ions.iter().map(|i| i.kinetic_energy_ev()).sum()
-    }
-
-    /// Temperature estimate from kinetic energy in K.
-    pub fn temperature_estimate(&self) -> f64 {
-        let ke = self.total_kinetic_energy_ev() * ELEMENTARY_CHARGE; // J
-        let n = self.ions.len() as f64;
-        if n < 1.0 {
-            return 0.0;
-        }
-        2.0 * ke / (3.0 * n * BOLTZMANN)
-    }
-
-    /// Count cation-anion pairs within cutoff in Angstrom.
-    pub fn count_ion_pairs(&self, cutoff: f64) -> usize {
-        let n = self.ions.len();
-        let mut count = 0;
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let zi = self.ions[i].species.charge_number();
-                let zj = self.ions[j].species.charge_number();
-                if zi * zj < 0 && self.ions[i].distance_to(&self.ions[j]) < cutoff {
-                    count += 1;
-                }
-            }
-        }
-        count
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Utility Functions
 // ---------------------------------------------------------------------------
 
@@ -1751,32 +1603,6 @@ mod tests {
         let model = LithiumIntercalation::lfp_cathode(STD_TEMP);
         // LFP ~3.45 V vs Li/Li+
         assert!((model.material.average_potential() - 3.45).abs() < 0.01);
-    }
-
-    // --- ElectrochemicalMdSimulation ---
-
-    #[test]
-    fn test_sim_ion_count() {
-        let sim = ElectrochemicalMdSimulation::new_liion_interface(1.0, STD_TEMP, 10);
-        assert_eq!(sim.ions.len(), 10);
-    }
-
-    #[test]
-    fn test_sim_time_advances() {
-        let mut sim = ElectrochemicalMdSimulation::new_liion_interface(1.0, STD_TEMP, 4);
-        sim.run(5);
-        assert!(sim.time > 0.0);
-    }
-
-    #[test]
-    fn test_sim_ions_stay_in_box() {
-        let mut sim = ElectrochemicalMdSimulation::new_liion_interface(1.0, STD_TEMP, 8);
-        sim.run(10);
-        for ion in &sim.ions {
-            for k in 0..3 {
-                assert!(ion.pos[k] >= 0.0 && ion.pos[k] < sim.box_size[k]);
-            }
-        }
     }
 
     // --- Utility functions ---

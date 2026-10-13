@@ -4,6 +4,7 @@
 //! Random processes: Brownian motion, Poisson processes, Markov chains,
 //! continuous-time Markov chains, Lévy processes, and SDE solvers.
 
+use crate::error::PhysicsError;
 use std::f64::consts::PI;
 
 // ─── Minimal LCG RNG (no external rand crate needed in core logic) ───────────
@@ -473,18 +474,105 @@ impl ContinuousTimeMarkov {
         mc.stationary_distribution(tol, max_iter)
     }
 
-    /// Compute the mean first-passage time from state `i` to state `j`.
+    /// Compute the mean first-passage time from state `from` to state `to`.
     ///
-    /// Uses the fundamental matrix method for ergodic CTMCs.
+    /// For `from != to` this is the expected time until a chain started in
+    /// `from` first visits `to`.  The first-passage times `m_i` of the states
+    /// `i != to` satisfy the linear system
+    ///
+    /// ```text
+    /// sum_k Q[i][k] * m_k = -1   (i != to),     m_to = 0,
+    /// ```
+    ///
+    /// which is solved by Gaussian elimination with partial pivoting after it
+    /// has been restricted to the states that can be visited from `from`
+    /// without passing through `to` (so an unrelated absorbing state cannot
+    /// make the reduced system singular).
+    ///
+    /// For `from == to` the mean *recurrence* time is returned, i.e. the
+    /// expected time to leave `to` and come back to it:
+    /// `1/q_to + sum_k (Q[to][k] / q_to) * m_k`.  For an ergodic chain this is
+    /// `1 / (pi_to * q_to)`.
+    ///
+    /// Returns `f64::INFINITY` when `to` is not reached with probability one
+    /// (it is unreachable from `from`, the chain can get trapped elsewhere, or
+    /// a recurrence time is requested for an absorbing state) and `f64::NAN`
+    /// when `from` or `to` is out of range, `q` is not an
+    /// `n_states x n_states` matrix, or `q` contains non-finite entries.
     pub fn mean_first_passage_time(&self, from: usize, to: usize) -> f64 {
-        let pi = self.stationary_distribution(1e-10, 2000);
-        // For ergodic CTMC: m_{ij} = 1/(pi_j * q_j) where q_j is total rate out of j
-        let qj = -(self.q[to * self.n_states + to]);
-        if qj < 1e-300 || pi[to] < 1e-300 {
+        let n = self.n_states;
+        if from >= n || to >= n || self.q.len() != n * n || self.q.iter().any(|v| !v.is_finite()) {
+            return f64::NAN;
+        }
+        let exit_rate = -self.q[to * n + to];
+        // Entry states of the first-passage problem: `from` itself, or, for a
+        // recurrence time, the states `to` jumps to.
+        let seeds: Vec<usize> = if from == to {
+            if exit_rate <= 1e-300 {
+                return f64::INFINITY;
+            }
+            (0..n)
+                .filter(|&k| k != to && self.q[to * n + k] > 0.0)
+                .collect()
+        } else {
+            vec![from]
+        };
+        // States from which `to` can be reached (backward search over positive rates).
+        let mut can_reach = vec![false; n];
+        can_reach[to] = true;
+        let mut stack = vec![to];
+        while let Some(j) = stack.pop() {
+            for (i, reached) in can_reach.iter_mut().enumerate() {
+                if !*reached && self.q[i * n + j] > 0.0 {
+                    *reached = true;
+                    stack.push(i);
+                }
+            }
+        }
+        // States visited before `to` is hit (forward search that never expands `to`).
+        let mut in_set = vec![false; n];
+        let mut order: Vec<usize> = Vec::new();
+        for &s in &seeds {
+            if !in_set[s] {
+                in_set[s] = true;
+                order.push(s);
+                stack.push(s);
+            }
+        }
+        while let Some(i) = stack.pop() {
+            for (j, seen) in in_set.iter_mut().enumerate() {
+                if j != to && !*seen && self.q[i * n + j] > 0.0 {
+                    *seen = true;
+                    order.push(j);
+                    stack.push(j);
+                }
+            }
+        }
+        if order.is_empty() || order.iter().any(|&i| !can_reach[i]) {
             return f64::INFINITY;
         }
-        let _ = from;
-        1.0 / (pi[to] * qj)
+        let r = order.len();
+        let mut position = vec![usize::MAX; n];
+        for (p, &i) in order.iter().enumerate() {
+            position[i] = p;
+        }
+        let mut a = vec![0.0f64; r * r];
+        for (row, &i) in order.iter().enumerate() {
+            for (col, &k) in order.iter().enumerate() {
+                a[row * r + col] = self.q[i * n + k];
+            }
+        }
+        let Some(m) = solve_dense_partial_pivot(a, vec![-1.0f64; r], r) else {
+            return f64::INFINITY;
+        };
+        if from != to {
+            return m[position[from]];
+        }
+        let jump_weighted: f64 = seeds
+            .iter()
+            .map(|&k| self.q[to * n + k] * m[position[k]])
+            .sum();
+        (1.0 + jump_weighted) / exit_rate
     }
 
     /// Compute the expected holding time in state `i` (mean sojourn time).
@@ -525,6 +613,55 @@ fn expm_dense(a: &[f64], n: usize) -> Vec<f64> {
         result = mm(&result, &result, n);
     }
     result
+}
+
+/// Solve the dense system `a x = b` (row-major `a` of order `n`) by Gaussian
+/// elimination with partial pivoting.
+///
+/// Returns `None` when a pivot column is entirely zero (singular matrix) or
+/// the elimination produces a non-finite pivot.
+fn solve_dense_partial_pivot(mut a: Vec<f64>, mut b: Vec<f64>, n: usize) -> Option<Vec<f64>> {
+    for col in 0..n {
+        let mut pivot_row = col;
+        let mut best = a[col * n + col].abs();
+        for row in (col + 1)..n {
+            let candidate = a[row * n + col].abs();
+            if candidate > best {
+                best = candidate;
+                pivot_row = row;
+            }
+        }
+        if best == 0.0 || !best.is_finite() {
+            return None;
+        }
+        if pivot_row != col {
+            for j in 0..n {
+                a.swap(col * n + j, pivot_row * n + j);
+            }
+            b.swap(col, pivot_row);
+        }
+        let pivot = a[col * n + col];
+        for row in (col + 1)..n {
+            let factor = a[row * n + col] / pivot;
+            if factor != 0.0 {
+                for j in col..n {
+                    let above = a[col * n + j];
+                    a[row * n + j] -= factor * above;
+                }
+                let b_above = b[col];
+                b[row] -= factor * b_above;
+            }
+        }
+    }
+    let mut x = vec![0.0f64; n];
+    for i in (0..n).rev() {
+        let mut acc = b[i];
+        for j in (i + 1)..n {
+            acc -= a[i * n + j] * x[j];
+        }
+        x[i] = acc / a[i * n + i];
+    }
+    Some(x)
 }
 
 fn eye_n(n: usize) -> Vec<f64> {
@@ -602,6 +739,17 @@ impl LevyProcess {
     ///
     /// For index alpha in (0, 2] and skewness beta in \[-1, 1\].
     /// alpha=2 gives a Gaussian (Brownian motion scaling).
+    ///
+    /// The increments over a step `dt = t / n_steps` are
+    /// `loc*dt + scale*dt^(1/alpha) * Z` with `Z` a standard stable variate in
+    /// Samorodnitsky-Taqqu's `S_alpha(1, beta, 0)` parametrisation.  For
+    /// `alpha = 1` the scaling of a stable law adds the deterministic shift
+    /// `(2/pi) * beta * s * ln(s)` with `s = scale*dt`, which is included so
+    /// that increments over different step sizes remain mutually consistent.
+    ///
+    /// # Errors
+    /// Returns [`PhysicsError::InvalidInput`] if `alpha` is not in `(0, 2]`
+    /// or `beta` is not in `[-1, 1]` (NaN is rejected as well).
     pub fn alpha_stable(
         alpha: f64,
         beta: f64,
@@ -610,17 +758,45 @@ impl LevyProcess {
         t: f64,
         n_steps: usize,
         seed: u64,
-    ) -> Vec<f64> {
-        assert!(alpha > 0.0 && alpha <= 2.0, "alpha must be in (0, 2]");
-        assert!((-1.0..=1.0).contains(&beta), "beta must be in [-1, 1]");
+    ) -> Result<Vec<f64>, PhysicsError> {
+        if !(alpha > 0.0 && alpha <= 2.0) {
+            return Err(PhysicsError::InvalidInput {
+                field: "alpha".to_string(),
+                reason: format!("stability index must lie in (0, 2], got {alpha}"),
+            });
+        }
+        if !(-1.0..=1.0).contains(&beta) {
+            return Err(PhysicsError::InvalidInput {
+                field: "beta".to_string(),
+                reason: format!("skewness must lie in [-1, 1], got {beta}"),
+            });
+        }
         let dt = t / n_steps as f64;
+        let step_scale = scale * dt.powf(1.0 / alpha);
+        let step_shift = if (alpha - 1.0).abs() < 1e-10 && step_scale > 0.0 {
+            (2.0 / PI) * beta * step_scale * step_scale.ln()
+        } else {
+            0.0
+        };
         let mut rng = Lcg::new(seed);
         let mut path = vec![0.0f64; n_steps + 1];
         for i in 1..=n_steps {
             let z = Self::stable_sample(&mut rng, alpha, beta);
-            path[i] = path[i - 1] + loc * dt + scale * dt.powf(1.0 / alpha) * z;
+            path[i] = path[i - 1] + loc * dt + step_scale * z + step_shift;
         }
-        path
+        Ok(path)
+    }
+
+    /// Weron's Chambers-Mallows-Stuck transform for `alpha = 1`.
+    ///
+    /// `phi` is uniform on `(-pi/2, pi/2)` and `w` is a unit exponential variate;
+    /// the result is `S_1(1, beta, 0)`-distributed (standard Cauchy for `beta = 0`).
+    fn stable_sample_alpha_one(phi: f64, w: f64, beta: f64) -> f64 {
+        let half_pi = PI / 2.0;
+        // Strictly positive for |beta| <= 1 except at the extreme endpoints of phi.
+        let shifted = (half_pi + beta * phi).max(f64::MIN_POSITIVE);
+        let log_term = (half_pi * w * phi.cos() / shifted).ln();
+        (2.0 / PI) * (shifted * phi.tan() - beta * log_term)
     }
 
     fn stable_sample(rng: &mut Lcg, alpha: f64, beta: f64) -> f64 {
@@ -630,8 +806,7 @@ impl LevyProcess {
         let phi = PI * (rng.uniform() - 0.5);
         let w = -rng.uniform().max(1e-300).ln();
         if (alpha - 1.0).abs() < 1e-10 {
-            let b_phi = (PI / 2.0 + beta * phi).tan();
-            return (PI / 2.0) * (b_phi * phi - beta * (b_phi * phi.cos()).max(1e-300).ln());
+            return Self::stable_sample_alpha_one(phi, w, beta);
         }
         let zeta = -beta * (PI * alpha / 2.0).tan();
         let xi = (1.0 / alpha) * (beta * (PI * alpha / 2.0).tan()).atan();
@@ -1034,6 +1209,9 @@ pub fn periodogram(data: &[f64]) -> Vec<f64> {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+mod first_passage_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1264,24 +1442,264 @@ mod tests {
         assert!(fpt.is_finite() && fpt > 0.0);
     }
 
+    /// Three-state birth-death chain 0 <-> 1 <-> 2 with unit jump rates.
+    fn birth_death_ctmc() -> ContinuousTimeMarkov {
+        ContinuousTimeMarkov::new(vec![-1.0, 1.0, 0.0, 1.0, -2.0, 1.0, 0.0, 1.0, -1.0], 3)
+    }
+
+    /// SplitMix64 finaliser, used to decorrelate consecutive simulation seeds.
+    fn mix_seed(k: u64) -> u64 {
+        let mut z = k.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    #[test]
+    fn test_ctmc_first_passage_two_state_exact() {
+        let ctmc = simple_ctmc();
+        // The chain leaves state 0 at rate 2 straight into state 1 (and 1 -> 0 at rate 3).
+        assert!((ctmc.mean_first_passage_time(0, 1) - 0.5).abs() < 1e-12);
+        assert!((ctmc.mean_first_passage_time(1, 0) - 1.0 / 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_ctmc_first_passage_depends_on_start_state() {
+        let ctmc = birth_death_ctmc();
+        // m0 = 1 + m1 and m1 = 1/2 + m0/2  =>  m0 = 3, m1 = 2 (target state 2).
+        let from_zero = ctmc.mean_first_passage_time(0, 2);
+        let from_one = ctmc.mean_first_passage_time(1, 2);
+        assert!((from_zero - 3.0).abs() < 1e-12, "m(0->2) = {from_zero}");
+        assert!((from_one - 2.0).abs() < 1e-12, "m(1->2) = {from_one}");
+        assert!((ctmc.mean_first_passage_time(2, 0) - 3.0).abs() < 1e-12);
+        assert!((ctmc.mean_first_passage_time(0, 1) - 1.0).abs() < 1e-12);
+        assert!((ctmc.mean_first_passage_time(2, 1) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_ctmc_recurrence_time_matches_kac_formula() {
+        // Uniform stationary law: 1 / (pi_j q_j) = 3 for the end states, 3/2 for the middle one.
+        let ctmc = birth_death_ctmc();
+        assert!((ctmc.mean_first_passage_time(0, 0) - 3.0).abs() < 1e-12);
+        assert!((ctmc.mean_first_passage_time(1, 1) - 1.5).abs() < 1e-12);
+        let two_state = simple_ctmc();
+        let pi = two_state.stationary_distribution(1e-12, 20_000);
+        let kac = 1.0 / (pi[0] * 2.0);
+        assert!(
+            (two_state.mean_first_passage_time(0, 0) - kac).abs() < 1e-6,
+            "recurrence = {}, kac = {kac}",
+            two_state.mean_first_passage_time(0, 0)
+        );
+    }
+
+    #[test]
+    fn test_ctmc_first_passage_ignores_unreachable_absorbing_state() {
+        // State 3 is absorbing and cannot be reached from {0, 1, 2}.
+        let q = vec![
+            -1.0, 1.0, 0.0, 0.0, //
+            1.0, -2.0, 1.0, 0.0, //
+            0.0, 1.0, -1.0, 0.0, //
+            0.0, 0.0, 0.0, 0.0,
+        ];
+        let ctmc = ContinuousTimeMarkov::new(q, 4);
+        assert!((ctmc.mean_first_passage_time(0, 2) - 3.0).abs() < 1e-12);
+        assert!(ctmc.mean_first_passage_time(0, 3).is_infinite());
+    }
+
+    #[test]
+    fn test_ctmc_first_passage_infinite_when_target_not_surely_reached() {
+        // From 0 the chain is absorbed in 1 or 2 with equal probability.
+        let q = vec![
+            -2.0, 1.0, 1.0, //
+            0.0, 0.0, 0.0, //
+            0.0, 0.0, 0.0,
+        ];
+        let ctmc = ContinuousTimeMarkov::new(q, 3);
+        assert!(ctmc.mean_first_passage_time(0, 2).is_infinite());
+        // An absorbing state is never left, so it has no finite recurrence time.
+        assert!(ctmc.mean_first_passage_time(2, 2).is_infinite());
+    }
+
+    #[test]
+    fn test_ctmc_first_passage_invalid_inputs_are_nan() {
+        let ctmc = simple_ctmc();
+        assert!(ctmc.mean_first_passage_time(2, 0).is_nan());
+        assert!(ctmc.mean_first_passage_time(0, 7).is_nan());
+        let malformed = ContinuousTimeMarkov::new(vec![-1.0, 1.0, 1.0], 2);
+        assert!(malformed.mean_first_passage_time(0, 1).is_nan());
+        let non_finite = ContinuousTimeMarkov::new(vec![-1.0, f64::NAN, 1.0, -1.0], 2);
+        assert!(non_finite.mean_first_passage_time(0, 1).is_nan());
+    }
+
+    #[test]
+    fn test_ctmc_first_passage_matches_simulation() {
+        let ctmc = birth_death_ctmc();
+        let runs = 20_000u64;
+        let t_max = 80.0;
+        let mut total = 0.0;
+        for k in 0..runs {
+            let (times, states) = ctmc.simulate(0, t_max, mix_seed(k));
+            total += states
+                .iter()
+                .position(|&s| s == 2)
+                .map_or(t_max, |idx| times[idx]);
+        }
+        let mean = total / runs as f64;
+        let exact = ctmc.mean_first_passage_time(0, 2);
+        assert!(
+            (mean - exact).abs() < 0.1,
+            "simulated mean = {mean}, exact = {exact}"
+        );
+    }
+
     // ── LevyProcess ──────────────────────────────────────────────────────────
 
     #[test]
     fn test_alpha_stable_length() {
-        let path = LevyProcess::alpha_stable(1.5, 0.0, 1.0, 0.0, 1.0, 100, 42);
+        let path = LevyProcess::alpha_stable(1.5, 0.0, 1.0, 0.0, 1.0, 100, 42).unwrap();
         assert_eq!(path.len(), 101);
     }
 
     #[test]
     fn test_alpha_stable_starts_zero() {
-        let path = LevyProcess::alpha_stable(1.8, 0.2, 0.5, 0.0, 1.0, 50, 7);
+        let path = LevyProcess::alpha_stable(1.8, 0.2, 0.5, 0.0, 1.0, 50, 7).unwrap();
         assert_eq!(path[0], 0.0);
     }
 
     #[test]
     fn test_alpha_stable_finite() {
-        let path = LevyProcess::alpha_stable(1.5, 0.0, 1.0, 0.0, 1.0, 50, 1);
+        let path = LevyProcess::alpha_stable(1.5, 0.0, 1.0, 0.0, 1.0, 50, 1).unwrap();
         assert!(path.iter().all(|v| v.is_finite()));
+    }
+
+    /// Empirical characteristic function `(E cos(u X), E sin(u X))`.
+    fn empirical_cf(samples: &[f64], u: f64) -> (f64, f64) {
+        let n = samples.len() as f64;
+        let re = samples.iter().map(|&x| (u * x).cos()).sum::<f64>() / n;
+        let im = samples.iter().map(|&x| (u * x).sin()).sum::<f64>() / n;
+        (re, im)
+    }
+
+    /// Characteristic function of `S_1(sigma, beta, 0)` (Samorodnitsky-Taqqu):
+    /// `exp(-sigma |u| (1 + i beta (2/pi) sgn(u) ln|u|))`.
+    fn alpha_one_cf(sigma: f64, beta: f64, u: f64) -> (f64, f64) {
+        let magnitude = (-sigma * u.abs()).exp();
+        let phase = -sigma * u.abs() * beta * (2.0 / PI) * u.signum() * u.abs().ln();
+        (magnitude * phase.cos(), magnitude * phase.sin())
+    }
+
+    #[test]
+    fn test_stable_sample_alpha_one_is_standard_cauchy() {
+        let mut rng = Lcg::new(2024);
+        let n = 100_000;
+        let draws: Vec<f64> = (0..n)
+            .map(|_| LevyProcess::stable_sample(&mut rng, 1.0, 0.0))
+            .collect();
+        assert!(draws.iter().all(|v| v.is_finite()));
+        let mut magnitudes: Vec<f64> = draws.iter().map(|v| v.abs()).collect();
+        magnitudes.sort_by(|a, b| a.total_cmp(b));
+        // The standard Cauchy law has its quartiles at -1 and +1, i.e. median |X| = 1.
+        let median = 0.5 * (magnitudes[n / 2 - 1] + magnitudes[n / 2]);
+        assert!((median - 1.0).abs() < 0.03, "median |X| = {median}");
+        // P(|X| <= sqrt(3)) = 2/3 and P(X > 0) = 1/2.
+        let within = magnitudes.iter().filter(|&&v| v <= 3.0f64.sqrt()).count() as f64 / n as f64;
+        assert!(
+            (within - 2.0 / 3.0).abs() < 0.01,
+            "P(|X| <= sqrt 3) = {within}"
+        );
+        let positive = draws.iter().filter(|&&v| v > 0.0).count() as f64 / n as f64;
+        assert!((positive - 0.5).abs() < 0.01, "P(X > 0) = {positive}");
+    }
+
+    #[test]
+    fn test_stable_sample_alpha_one_skewed_matches_characteristic_function() {
+        for (beta, seed) in [(1.0, 5u64), (0.5, 6), (-0.7, 7)] {
+            let mut rng = Lcg::new(seed);
+            let draws: Vec<f64> = (0..200_000)
+                .map(|_| LevyProcess::stable_sample(&mut rng, 1.0, beta))
+                .collect();
+            for &u in &[0.5, 1.0, 2.0, -2.0] {
+                let (re, im) = empirical_cf(&draws, u);
+                let (expected_re, expected_im) = alpha_one_cf(1.0, beta, u);
+                assert!(
+                    (re - expected_re).abs() < 0.01 && (im - expected_im).abs() < 0.01,
+                    "beta = {beta}, u = {u}: empirical ({re}, {im}) vs ({expected_re}, {expected_im})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_stable_sample_alpha_one_finite_at_endpoints() {
+        for &phi in &[-PI / 2.0, PI / 2.0, 0.0] {
+            for &beta in &[-1.0, 0.0, 1.0] {
+                for &w in &[1e-16, 1.0, 600.0] {
+                    let x = LevyProcess::stable_sample_alpha_one(phi, w, beta);
+                    assert!(x.is_finite(), "phi = {phi}, beta = {beta}, w = {w}: {x}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_alpha_stable_alpha_one_path_is_cauchy_scaled() {
+        // Cauchy increments over dt have scale dt, so median |increment| / dt = 1.
+        let n_steps = 100_000;
+        let t = 50.0;
+        let dt = t / n_steps as f64;
+        let path = LevyProcess::alpha_stable(1.0, 0.0, 1.0, 0.0, t, n_steps, 11).unwrap();
+        assert!(path.iter().all(|v| v.is_finite()));
+        let mut scaled: Vec<f64> = path.windows(2).map(|w| (w[1] - w[0]).abs() / dt).collect();
+        scaled.sort_by(|a, b| a.total_cmp(b));
+        let median = 0.5 * (scaled[n_steps / 2 - 1] + scaled[n_steps / 2]);
+        assert!(
+            (median - 1.0).abs() < 0.03,
+            "median |increment|/dt = {median}"
+        );
+    }
+
+    #[test]
+    fn test_alpha_stable_alpha_one_skewed_increments_follow_scaled_law() {
+        // Increments over dt are S_1(scale*dt, beta, 0): the (2/pi) beta s ln s
+        // shift must be applied for every step size other than 1.
+        let n_steps = 200_000;
+        let dt = 0.5;
+        let beta = 0.8;
+        let path = LevyProcess::alpha_stable(1.0, beta, 1.0, 0.0, n_steps as f64 * dt, n_steps, 99)
+            .unwrap();
+        let increments: Vec<f64> = path.windows(2).map(|w| w[1] - w[0]).collect();
+        for &u in &[1.0, 2.0, -1.5] {
+            let (re, im) = empirical_cf(&increments, u);
+            let (expected_re, expected_im) = alpha_one_cf(dt, beta, u);
+            assert!(
+                (re - expected_re).abs() < 0.01 && (im - expected_im).abs() < 0.01,
+                "u = {u}: empirical ({re}, {im}) vs ({expected_re}, {expected_im})"
+            );
+        }
+    }
+
+    #[test]
+    fn test_alpha_stable_rejects_invalid_parameters() {
+        let invalid = [
+            (0.0, 0.0),
+            (-1.0, 0.0),
+            (2.5, 0.0),
+            (f64::NAN, 0.0),
+            (1.5, 1.5),
+            (1.5, -1.01),
+            (1.5, f64::NAN),
+        ];
+        for (alpha, beta) in invalid {
+            let result = LevyProcess::alpha_stable(alpha, beta, 1.0, 0.0, 1.0, 10, 1);
+            assert!(
+                matches!(result, Err(PhysicsError::InvalidInput { .. })),
+                "alpha = {alpha}, beta = {beta}: {result:?}"
+            );
+        }
+        assert!(LevyProcess::alpha_stable(2.0, 0.0, 1.0, 0.0, 1.0, 10, 1).is_ok());
+        assert!(LevyProcess::alpha_stable(1.0, 1.0, 1.0, 0.0, 1.0, 10, 1).is_ok());
+        let empty = LevyProcess::alpha_stable(1.5, 0.0, 1.0, 0.0, 1.0, 0, 1).unwrap();
+        assert_eq!(empty, vec![0.0]);
     }
 
     #[test]

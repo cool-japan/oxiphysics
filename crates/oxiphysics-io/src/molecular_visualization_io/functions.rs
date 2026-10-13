@@ -315,7 +315,12 @@ pub fn write_xsf_crystal(atoms: &[Atom], lattice: Lattice) -> String {
     }
     out
 }
-/// Write a simple POSCAR file from atoms and lattice.
+/// Write a VASP 5 POSCAR file from atoms and lattice.
+///
+/// The file has a species line, a counts line and a single `Cartesian`
+/// coordinate-mode line (scaling factor `1.0`, so positions are in angstroms).
+/// Atoms are grouped by species in order of first appearance, which is the
+/// order VASP assigns the counts to.
 pub fn write_poscar(comment: &str, lattice: Lattice, atoms: &[Atom]) -> String {
     let mut out = format!("{comment}\n1.0\n");
     for row in &lattice {
@@ -340,8 +345,7 @@ pub fn write_poscar(comment: &str, lattice: Lattice, atoms: &[Atom]) -> String {
             .collect::<Vec<_>>()
             .join("  "),
     );
-    out.push_str("\nDirect\n");
-    out.push_str("Cartesian\n");
+    out.push_str("\nCartesian\n");
     for e in &element_order {
         for a in atoms.iter().filter(|a| &a.element == e) {
             out.push_str(&format!(
@@ -606,6 +610,66 @@ mod tests {
         let s = write_poscar("test", lat, &atoms);
         assert!(s.contains("2.87"));
         assert!(s.contains("Fe"));
+    }
+    #[test]
+    fn test_poscar_write_parse_roundtrip_cartesian() {
+        let atoms = vec![
+            Atom::new("Fe", [0.0, 0.0, 0.0]),
+            Atom::new("Fe", [1.435, 1.435, 1.435]),
+        ];
+        let lat = [[2.87, 0.0, 0.0], [0.0, 2.87, 0.0], [0.0, 0.0, 2.87]];
+        let text = write_poscar("bcc Fe", lat, &atoms);
+        assert_eq!(
+            text.matches("Cartesian").count(),
+            1,
+            "exactly one coordinate-mode line expected:\n{text}"
+        );
+        assert!(!text.contains("Direct"), "no Direct line expected:\n{text}");
+        let parsed = PoscarFile::parse(&text).unwrap();
+        assert_eq!(parsed.coord_mode, PoscarCoordMode::Cartesian);
+        assert_eq!(parsed.species, vec!["Fe".to_string()]);
+        assert_eq!(parsed.counts, vec![2]);
+        assert_eq!(parsed.positions.len(), 2);
+        let cart = parsed.cartesian_positions();
+        let expected = [[0.0, 0.0, 0.0], [1.435, 1.435, 1.435]];
+        for (got, want) in cart.iter().zip(expected.iter()) {
+            for k in 0..3 {
+                assert!(
+                    (got[k] - want[k]).abs() < 1e-9,
+                    "got {got:?}, want {want:?}"
+                );
+            }
+        }
+        for (row, want) in parsed.lattice.iter().zip(lat.iter()) {
+            for k in 0..3 {
+                assert!((row[k] - want[k]).abs() < 1e-9);
+            }
+        }
+    }
+    #[test]
+    fn test_poscar_write_groups_species_and_roundtrips() {
+        let atoms = vec![
+            Atom::new("Na", [0.0, 0.0, 0.0]),
+            Atom::new("Cl", [2.8, 0.0, 0.0]),
+            Atom::new("Na", [2.8, 2.8, 0.0]),
+            Atom::new("Cl", [0.0, 2.8, 2.8]),
+        ];
+        let lat = [[5.6, 0.0, 0.0], [0.0, 5.6, 0.0], [0.0, 0.0, 5.6]];
+        let parsed = PoscarFile::parse(&write_poscar("rock salt", lat, &atoms)).unwrap();
+        assert_eq!(parsed.species, vec!["Na".to_string(), "Cl".to_string()]);
+        assert_eq!(parsed.counts, vec![2, 2]);
+        assert_eq!(parsed.n_atoms(), 4);
+        let expected = [
+            [0.0, 0.0, 0.0],
+            [2.8, 2.8, 0.0],
+            [2.8, 0.0, 0.0],
+            [0.0, 2.8, 2.8],
+        ];
+        for (got, want) in parsed.positions.iter().zip(expected.iter()) {
+            for k in 0..3 {
+                assert!((got[k] - want[k]).abs() < 1e-9, "got {got:?} want {want:?}");
+            }
+        }
     }
     fn sample_cif() -> &'static str {
         "data_test\n_cell_length_a 4.0\n_cell_length_b 4.0\n_cell_length_c 4.0\nloop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n_atom_site_occupancy\nFe1 Fe 0.0 0.0 0.0 1.0\nFe2 Fe 0.5 0.5 0.5 1.0\n"

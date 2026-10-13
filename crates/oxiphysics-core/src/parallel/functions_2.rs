@@ -803,3 +803,271 @@ mod tests_new_parallel {
         );
     }
 }
+#[cfg(test)]
+mod pool_tests {
+    use crate::parallel::{ParallelFor, WorkStealingPool};
+    use std::collections::HashSet;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    /// Barrier with a timeout: `wait` returns `true` only if all `parties`
+    /// callers were inside `wait` at the same time, and `false` after `timeout`.
+    struct Rendezvous {
+        arrived: Mutex<usize>,
+        all_here: Condvar,
+        parties: usize,
+    }
+    impl Rendezvous {
+        fn new(parties: usize) -> Self {
+            Self {
+                arrived: Mutex::new(0),
+                all_here: Condvar::new(),
+                parties,
+            }
+        }
+        fn wait(&self, timeout: Duration) -> bool {
+            let mut arrived = self.arrived.lock().unwrap_or_else(|e| e.into_inner());
+            *arrived += 1;
+            self.all_here.notify_all();
+            let (_guard, result) = self
+                .all_here
+                .wait_timeout_while(arrived, timeout, |count| *count < self.parties)
+                .unwrap_or_else(|e| e.into_inner());
+            !result.timed_out()
+        }
+    }
+
+    fn counting_task(counter: &Arc<AtomicUsize>) -> impl FnOnce() + Send + 'static + use<> {
+        let counter = Arc::clone(counter);
+        move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn tasks_run_concurrently_on_distinct_threads() {
+        // The four tasks can only finish while all of them are running at once, which
+        // is impossible if the pool executes them one after the other.
+        let pool = WorkStealingPool::new(4);
+        let gate = Arc::new(Rendezvous::new(4));
+        let met = Arc::new(AtomicUsize::new(0));
+        let ids = Arc::new(Mutex::new(HashSet::new()));
+        for _ in 0..4 {
+            let gate = Arc::clone(&gate);
+            let met = Arc::clone(&met);
+            let ids = Arc::clone(&ids);
+            pool.submit(move || {
+                ids.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(thread::current().id());
+                if gate.wait(Duration::from_secs(10)) {
+                    met.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+        }
+        pool.join();
+        assert_eq!(met.load(Ordering::SeqCst), 4, "tasks did not overlap");
+        assert_eq!(ids.lock().unwrap_or_else(|e| e.into_inner()).len(), 4);
+    }
+    #[test]
+    fn stats_count_real_executions() {
+        let pool = WorkStealingPool::new(3);
+        let counter = Arc::new(AtomicUsize::new(0));
+        for _ in 0..20 {
+            pool.submit(counting_task(&counter));
+        }
+        pool.wait_idle();
+        let stats = pool.stats();
+        assert_eq!(counter.load(Ordering::SeqCst), 20);
+        assert_eq!(stats.tasks_submitted, 20);
+        assert_eq!(stats.tasks_completed, 20);
+        assert_eq!(stats.n_workers, 3);
+        assert!(stats.max_queue_depth >= 1);
+        assert!((stats.completion_rate() - 1.0).abs() < 1e-15);
+        pool.join();
+    }
+    #[test]
+    fn stats_do_not_claim_tasks_that_have_not_finished() {
+        let pool = WorkStealingPool::new(1);
+        let (release, gate) = mpsc::channel::<()>();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let inner = Arc::clone(&counter);
+        pool.submit(move || {
+            let _ = gate.recv();
+            inner.fetch_add(1, Ordering::SeqCst);
+        });
+        let before = pool.stats();
+        assert_eq!(before.tasks_submitted, 1);
+        assert_eq!(before.tasks_completed, 0);
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+        release.send(()).expect("the task still owns the receiver");
+        pool.wait_idle();
+        let after = pool.stats();
+        assert_eq!(after.tasks_completed, 1);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        pool.join();
+    }
+    #[test]
+    fn panicking_task_is_reraised_by_join_and_does_not_strand_the_queue() {
+        // With a single worker, a panic that killed the worker would leave the three
+        // tasks queued behind it unexecuted.
+        let pool = WorkStealingPool::new(1);
+        let counter = Arc::new(AtomicUsize::new(0));
+        for _ in 0..3 {
+            pool.submit(counting_task(&counter));
+        }
+        pool.submit(|| panic!("boom"));
+        for _ in 0..3 {
+            pool.submit(counting_task(&counter));
+        }
+        let outcome = catch_unwind(AssertUnwindSafe(move || pool.join()));
+        let payload = outcome.expect_err("join must re-raise the task panic");
+        assert_eq!(payload.downcast_ref::<&str>(), Some(&"boom"));
+        assert_eq!(counter.load(Ordering::SeqCst), 6);
+    }
+    #[test]
+    fn panicked_tasks_are_not_counted_as_completed() {
+        let pool = WorkStealingPool::new(2);
+        let counter = Arc::new(AtomicUsize::new(0));
+        pool.submit(counting_task(&counter));
+        pool.submit(|| panic!("task failure"));
+        pool.submit(counting_task(&counter));
+        pool.wait_idle();
+        let stats = pool.stats();
+        assert_eq!(stats.tasks_submitted, 3);
+        assert_eq!(stats.tasks_completed, 2);
+        assert!((stats.completion_rate() - 2.0 / 3.0).abs() < 1e-15);
+        drop(pool);
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+    #[test]
+    fn dropping_the_pool_waits_for_queued_tasks() {
+        let pool = WorkStealingPool::new(2);
+        let counter = Arc::new(AtomicUsize::new(0));
+        for _ in 0..6 {
+            let counter = Arc::clone(&counter);
+            pool.submit(move || {
+                thread::sleep(Duration::from_millis(10));
+                counter.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        drop(pool);
+        assert_eq!(counter.load(Ordering::SeqCst), 6);
+    }
+    #[test]
+    fn join_waits_for_slow_tasks() {
+        let pool = WorkStealingPool::new(2);
+        let counter = Arc::new(AtomicUsize::new(0));
+        for _ in 0..4 {
+            let counter = Arc::clone(&counter);
+            pool.submit(move || {
+                thread::sleep(Duration::from_millis(30));
+                counter.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        pool.join();
+        assert_eq!(counter.load(Ordering::SeqCst), 4);
+    }
+    #[test]
+    fn single_worker_starts_tasks_in_submission_order() {
+        let pool = WorkStealingPool::new(1);
+        let order = Arc::new(Mutex::new(Vec::new()));
+        for index in 0..10_usize {
+            let order = Arc::clone(&order);
+            pool.submit(move || order.lock().unwrap_or_else(|e| e.into_inner()).push(index));
+        }
+        pool.join();
+        let order = order.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(*order, (0..10).collect::<Vec<usize>>());
+    }
+    #[test]
+    fn pool_can_be_reused_after_wait_idle() {
+        let pool = WorkStealingPool::new(2);
+        let counter = Arc::new(AtomicUsize::new(0));
+        for _ in 0..5 {
+            pool.submit(counting_task(&counter));
+        }
+        pool.wait_idle();
+        assert_eq!(counter.load(Ordering::SeqCst), 5);
+        for _ in 0..5 {
+            pool.submit(counting_task(&counter));
+        }
+        pool.wait_idle();
+        assert_eq!(counter.load(Ordering::SeqCst), 10);
+        assert_eq!(pool.stats().tasks_completed, 10);
+        pool.join();
+    }
+    #[test]
+    fn wait_idle_on_a_fresh_pool_returns_immediately() {
+        let pool = WorkStealingPool::new(2);
+        pool.wait_idle();
+        assert_eq!(pool.stats().tasks_submitted, 0);
+        pool.join();
+    }
+    #[test]
+    fn zero_threads_request_still_creates_one_worker() {
+        let pool = WorkStealingPool::new(0);
+        assert_eq!(pool.n_threads, 1);
+        assert_eq!(pool.stats().n_workers, 1);
+        let counter = Arc::new(AtomicUsize::new(0));
+        pool.submit(counting_task(&counter));
+        pool.join();
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn parallel_for_joins_every_chunk_and_reraises_the_first_panic() {
+        // Chunks: [0,2) [2,4) [4,6) [6,8); the first chunk panics at index 0, the other
+        // three still run to completion before the panic reaches the caller.
+        let counter = Arc::new(AtomicUsize::new(0));
+        let inner = Arc::clone(&counter);
+        let outcome = catch_unwind(AssertUnwindSafe(move || {
+            ParallelFor::with_chunks(4).run(0, 8, move |index| {
+                if index == 0 {
+                    panic!("chunk failure");
+                }
+                inner.fetch_add(1, Ordering::SeqCst);
+            });
+        }));
+        let payload = outcome.expect_err("run must re-raise the chunk panic");
+        assert_eq!(payload.downcast_ref::<&str>(), Some(&"chunk failure"));
+        assert_eq!(counter.load(Ordering::SeqCst), 6);
+    }
+    #[test]
+    fn parallel_for_without_panics_visits_every_index_once() {
+        let visits: Arc<Vec<AtomicUsize>> =
+            Arc::new((0..37).map(|_| AtomicUsize::new(0)).collect());
+        let inner = Arc::clone(&visits);
+        ParallelFor::with_chunks(5).run(0, 37, move |index| {
+            inner[index].fetch_add(1, Ordering::SeqCst);
+        });
+        assert!(visits.iter().all(|v| v.load(Ordering::SeqCst) == 1));
+    }
+    #[test]
+    fn tasks_can_be_submitted_from_several_threads() {
+        let pool = Arc::new(WorkStealingPool::new(4));
+        let counter = Arc::new(AtomicUsize::new(0));
+        let producers: Vec<_> = (0..4)
+            .map(|_| {
+                let pool = Arc::clone(&pool);
+                let counter = Arc::clone(&counter);
+                thread::spawn(move || {
+                    for _ in 0..50 {
+                        pool.submit(counting_task(&counter));
+                    }
+                })
+            })
+            .collect();
+        for producer in producers {
+            producer.join().expect("producer thread must not panic");
+        }
+        pool.wait_idle();
+        assert_eq!(counter.load(Ordering::SeqCst), 200);
+        let stats = pool.stats();
+        assert_eq!(stats.tasks_submitted, 200);
+        assert_eq!(stats.tasks_completed, 200);
+    }
+}

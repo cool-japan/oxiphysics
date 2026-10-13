@@ -52,13 +52,24 @@ mod tests_dynamics_ext {
         }
     }
     #[test]
-    fn test_coriolis_bias_nonzero_for_rotating_chain() {
+    fn test_coriolis_bias_nonzero_for_bent_rotating_chain() {
+        use std::f64::consts::FRAC_PI_2;
+        // Joint 0 spins with the elbow bent by 90 degrees: the centrifugal force
+        // of the distal link has a lever arm about the elbow, so C_1 = 0.5 for
+        // unit masses, unit lengths and an angular rate of 1.
+        let bias =
+            coriolis_bias_forces(2, &[1.0, 1.0], &[1.0, 1.0], &[0.0, FRAC_PI_2], &[1.0, 0.0]);
+        assert!(bias[0].abs() < 1e-12, "C_0 = {}", bias[0]);
+        assert!((bias[1] - 0.5).abs() < 1e-12, "C_1 = {}", bias[1]);
+    }
+    #[test]
+    fn test_coriolis_bias_zero_for_straight_rigidly_rotating_chain() {
+        // A straight chain rotating rigidly only has radial centripetal forces,
+        // which exert no torque about any joint.
         let bias = coriolis_bias_forces(2, &[1.0, 1.0], &[1.0, 1.0], &[0.0, 0.0], &[1.0, 0.0]);
-        let total: f64 = bias.iter().map(|&b| b.abs()).sum();
-        assert!(
-            total > 0.0,
-            "nonzero velocity should produce Coriolis forces"
-        );
+        for &b in &bias {
+            assert!(b.abs() < 1e-12, "bias should be zero, got {b}");
+        }
     }
     #[test]
     fn test_coriolis_bias_empty() {
@@ -76,7 +87,8 @@ mod tests_dynamics_ext {
             &[0.0, 0.0],
             &[0.0, 0.0],
             [0.0, 0.0, 0.0],
-        );
+        )
+        .expect("positive definite inertia matrix");
         assert_eq!(qdd.len(), 2);
         for &a in &qdd {
             assert!(a.abs() < 1e-10, "qdd should be zero, got {a}");
@@ -93,31 +105,51 @@ mod tests_dynamics_ext {
             &[0.0],
             &[5.0],
             [0.0, 0.0, 0.0],
-        );
+        )
+        .expect("positive definite inertia matrix");
         assert_eq!(qdd.len(), 1);
         assert!(
             qdd[0] > 0.0,
             "positive torque should give positive acceleration"
         );
+        // I_joint = I_com + m l^2 / 4 = 1.25, so q_dd = 5 / 1.25.
+        assert!((qdd[0] - 4.0).abs() < 1e-12, "q_dd = {}", qdd[0]);
     }
     #[test]
     fn test_forward_dynamics_full_empty() {
-        let qdd = forward_dynamics_full(0, &[], &[], &[], &[], &[], &[], [0.0; 3]);
+        let qdd = forward_dynamics_full(0, &[], &[], &[], &[], &[], &[], [0.0; 3])
+            .expect("an empty chain has no accelerations");
         assert!(qdd.is_empty());
     }
     #[test]
     fn test_kinetic_energy_zero_velocity() {
-        let ke = kinetic_energy(2, &[1.0, 0.5], &[0.0, 0.0], &[0.0, 0.0]);
+        let ke = kinetic_energy_planar(
+            2,
+            &[1.0, 1.0],
+            &[1.0, 1.0],
+            &[0.5, 0.5],
+            &[0.0, 0.0],
+            &[0.0, 0.0],
+        );
         assert!(ke.abs() < 1e-12, "KE with zero velocity = {ke}");
     }
     #[test]
     fn test_kinetic_energy_single_link_known() {
-        let ke = kinetic_energy(1, &[1.0], &[0.0], &[2.0]);
-        assert!((ke - 2.0).abs() < 1e-10, "KE = {ke}");
+        // Rod about its end: I_joint = I_com + m l^2 / 4 = 0.25 + 0.25 = 0.5, so
+        // KE = 0.5 * I_joint * omega^2 = 0.5 * 0.5 * 4 = 1.0.
+        let ke = kinetic_energy_planar(1, &[1.0], &[1.0], &[0.25], &[0.0], &[2.0]);
+        assert!((ke - 1.0).abs() < 1e-12, "KE = {ke}");
     }
     #[test]
     fn test_kinetic_energy_positive() {
-        let ke = kinetic_energy(2, &[1.0, 1.0], &[0.0, 0.0], &[1.0, 1.0]);
+        let ke = kinetic_energy_planar(
+            2,
+            &[1.0, 1.0],
+            &[1.0, 1.0],
+            &[0.1, 0.1],
+            &[0.0, 0.0],
+            &[1.0, 1.0],
+        );
         assert!(ke > 0.0, "nonzero velocity should give positive KE");
     }
     #[test]

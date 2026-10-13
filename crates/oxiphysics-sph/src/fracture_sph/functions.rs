@@ -118,26 +118,96 @@ pub fn symmetric_eigenvalues_3x3(a: &Mat3) -> [f64; 3] {
     eigs.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
     eigs
 }
-/// Return the principal direction for the maximum eigenvalue (simplified power iteration).
+/// Cross product of two 3D vectors.
+#[inline]
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+/// Unit eigenvector of the symmetric matrix `a` belonging to its largest
+/// eigenvalue (the direction of the maximum principal value).
+///
+/// With `λ_max` from [`symmetric_eigenvalues_3x3`], the matrix
+/// `M = A − λ_max I` is negative semi-definite and its null space is exactly
+/// the `λ_max` eigenspace. For a simple `λ_max` the null space is one
+/// dimensional and orthogonal to every row of `M`, so the cross product of two
+/// independent rows is the eigenvector; the cross product with the largest
+/// norm is taken because it is the best conditioned. When `λ_max` is repeated
+/// the rows of `M` are parallel, all cross products vanish, and any unit vector
+/// orthogonal to a row lies in the eigenspace (one is returned). For `M ≈ 0`
+/// (`A` is a multiple of the identity) every direction is an eigenvector and
+/// `[1, 0, 0]` is returned.
+///
+/// The sign of an eigenvector is arbitrary; the result is oriented so that its
+/// component of largest magnitude is positive, which makes it deterministic.
 pub fn max_eigenvector_3x3(a: &Mat3) -> [f64; 3] {
-    let eigs = symmetric_eigenvalues_3x3(a);
-    let lambda_max = eigs[2];
-    let shift: Mat3 = mat3_scale(&IDENTITY3, lambda_max - 1e-6);
-    let aa = mat3_sub(a, &shift);
-    let mut v = [1.0_f64, 0.0, 0.0];
-    for _ in 0..20 {
-        let av = mat3_vec(&aa, v);
-        let n = norm3(av);
-        if n < 1e-30 {
-            break;
-        }
-        v = [av[0] / n, av[1] / n, av[2] / n];
+    let lambda_max = symmetric_eigenvalues_3x3(a)[2];
+    if !lambda_max.is_finite() {
+        return [1.0, 0.0, 0.0];
     }
-    normalize3(v)
+    let m = mat3_sub(a, &mat3_scale(&IDENTITY3, lambda_max));
+    let rows = [m[0], m[1], m[2]];
+    let row_norms = [norm3(rows[0]), norm3(rows[1]), norm3(rows[2])];
+    let mut largest = 0;
+    for k in 1..3 {
+        if row_norms[k] > row_norms[largest] {
+            largest = k;
+        }
+    }
+    let scale = row_norms[largest];
+    if scale.is_nan() || scale < 1e-30 {
+        return [1.0, 0.0, 0.0];
+    }
+    let crosses = [
+        cross3(rows[0], rows[1]),
+        cross3(rows[0], rows[2]),
+        cross3(rows[1], rows[2]),
+    ];
+    let mut best = crosses[0];
+    let mut best_norm = norm3(best);
+    for c in &crosses[1..] {
+        let c_norm = norm3(*c);
+        if c_norm > best_norm {
+            best = *c;
+            best_norm = c_norm;
+        }
+    }
+    let direction = if best_norm > 1e-12 * scale * scale {
+        normalize3(best)
+    } else {
+        // Repeated λ_max: pick a unit vector orthogonal to the dominant row by
+        // crossing it with the coordinate axis it is least aligned with.
+        let row = rows[largest];
+        let mut axis = 0;
+        for k in 1..3 {
+            if row[k].abs() < row[axis].abs() {
+                axis = k;
+            }
+        }
+        let mut e = [0.0_f64; 3];
+        e[axis] = 1.0;
+        normalize3(cross3(row, e))
+    };
+    let mut pivot = 0;
+    for k in 1..3 {
+        if direction[k].abs() > direction[pivot].abs() {
+            pivot = k;
+        }
+    }
+    if direction[pivot] < 0.0 {
+        [-direction[0], -direction[1], -direction[2]]
+    } else {
+        direction
+    }
 }
 /// Wendland C2 kernel value in 3D.
 ///
-/// `W(r, h) = (21/(2πh³)) * (1 - r/(2h))⁴ * (1 + 2r/(2h))` for r < 2h.
+/// `W(r, h) = (21/(16πh³)) * (1 - q)⁴ * (1 + 4q)` with `q = r/(2h)` for
+/// `r < 2h`, and 0 beyond. The support radius is `2h` and the constant is the
+/// canonical `21/(2πH³)` for support `H = 2h`, so `∫ W dV = 1`.
 pub fn wendland_c2_3d(r: f64, h: f64) -> f64 {
     if h < 1e-30 {
         return 0.0;
@@ -146,11 +216,12 @@ pub fn wendland_c2_3d(r: f64, h: f64) -> f64 {
     if q >= 1.0 {
         return 0.0;
     }
-    let factor = 21.0 / (2.0 * PI * h * h * h);
+    let factor = 21.0 / (16.0 * PI * h * h * h);
     let t = 1.0 - q;
     factor * t * t * t * t * (1.0 + 4.0 * q)
 }
-/// Wendland C2 kernel gradient magnitude dW/dr.
+/// Wendland C2 kernel gradient magnitude dW/dr (same normalisation as
+/// [`wendland_c2_3d`]).
 pub fn wendland_c2_3d_grad(r: f64, h: f64) -> f64 {
     if h < 1e-30 || r < 1e-30 {
         return 0.0;
@@ -159,7 +230,7 @@ pub fn wendland_c2_3d_grad(r: f64, h: f64) -> f64 {
     if q >= 1.0 {
         return 0.0;
     }
-    let factor = 21.0 / (2.0 * PI * h * h * h);
+    let factor = 21.0 / (16.0 * PI * h * h * h);
     let t = 1.0 - q;
     let dw_dq = t * t * t * (-4.0 * (1.0 + 4.0 * q) + 4.0 * t);
     factor * dw_dq / (2.0 * h)
@@ -715,6 +786,211 @@ mod tests {
             "sum of eigenvalues {} != trace {}",
             sum,
             tr
+        );
+    }
+    /// Midpoint rule for `∫_0^{2h} 4π r² W(r) dr`.
+    fn kernel_volume_integral(h: f64) -> f64 {
+        let steps = 20_000;
+        let dr = 2.0 * h / steps as f64;
+        (0..steps)
+            .map(|k| {
+                let r = (k as f64 + 0.5) * dr;
+                4.0 * PI * r * r * wendland_c2_3d(r, h) * dr
+            })
+            .sum()
+    }
+    #[test]
+    fn test_wendland_c2_3d_is_normalised() {
+        for h in [0.01, 1.0] {
+            let integral = kernel_volume_integral(h);
+            assert!(
+                (integral - 1.0).abs() < 1e-4,
+                "∫W dV = {integral} for h = {h}, expected 1"
+            );
+        }
+    }
+    #[test]
+    fn test_wendland_c2_3d_central_value() {
+        let h = 0.5;
+        let expected = 21.0 / (16.0 * PI * h * h * h);
+        assert!((wendland_c2_3d(0.0, h) - expected).abs() < 1e-12 * expected);
+    }
+    #[test]
+    fn test_wendland_c2_3d_grad_is_derivative_of_kernel() {
+        for h in [0.01, 1.0] {
+            for frac in [0.2, 0.7, 1.3, 1.9] {
+                let r = frac * h;
+                let d = 1e-6 * h;
+                let numeric = (wendland_c2_3d(r + d, h) - wendland_c2_3d(r - d, h)) / (2.0 * d);
+                let analytic = wendland_c2_3d_grad(r, h);
+                assert!(
+                    (numeric - analytic).abs() < 1e-6 * analytic.abs(),
+                    "dW/dr at r = {frac} h, h = {h}: numeric {numeric}, analytic {analytic}"
+                );
+            }
+        }
+    }
+    /// Stress rate of a lattice in uniaxial strain rate: with a correctly
+    /// normalised kernel the SPH velocity gradient reproduces `ε̇` and the
+    /// stress increment is `(λ + 2μ) ε̇ dt` (an 8x over-normalised kernel
+    /// gives eight times that).
+    #[test]
+    fn test_update_stress_uniaxial_strain_rate_matches_hooke() {
+        let dx = 0.01;
+        let n_side = 7;
+        let strain_rate = 10.0;
+        let dt = 1e-6;
+        let density = 2500.0;
+        let mass = density * dx * dx * dx;
+        let mut particles = Vec::new();
+        for ix in 0..n_side {
+            for iy in 0..n_side {
+                for iz in 0..n_side {
+                    let pos = [ix as f64 * dx, iy as f64 * dx, iz as f64 * dx];
+                    let vel = [strain_rate * pos[0], 0.0, 0.0];
+                    particles.push(SphFractureParticle::new(pos, vel, mass, 0.015, density));
+                }
+            }
+        }
+        let mut sim = SphFractureSimulation::new(
+            particles,
+            make_damage_model(),
+            make_fracture_energy(),
+            dt,
+            0.015,
+        );
+        sim.update_stress();
+        let centre = (n_side * n_side * n_side - 1) / 2;
+        let e = 70e9;
+        let nu = 0.3;
+        let lambda = e * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
+        let mu = e / (2.0 * (1.0 + nu));
+        let sigma_xx = sim.particles[centre].stress[0][0];
+        let sigma_yy = sim.particles[centre].stress[1][1];
+        let expected_xx = (lambda + 2.0 * mu) * strain_rate * dt;
+        let expected_yy = lambda * strain_rate * dt;
+        assert!(
+            (sigma_xx - expected_xx).abs() < 0.03 * expected_xx,
+            "σ_xx = {sigma_xx}, expected {expected_xx}"
+        );
+        assert!(
+            (sigma_yy - expected_yy).abs() < 0.03 * expected_yy,
+            "σ_yy = {sigma_yy}, expected {expected_yy}"
+        );
+    }
+    #[test]
+    fn test_max_eigenvector_diagonal_picks_largest_eigenvalue() {
+        let a: Mat3 = [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]];
+        let v = max_eigenvector_3x3(&a);
+        assert!(v[0].abs() < 1e-12 && v[1].abs() < 1e-12, "v = {v:?}");
+        assert!((v[2].abs() - 1.0).abs() < 1e-12, "v = {v:?}");
+        let b: Mat3 = [[0.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 0.0]];
+        let w = max_eigenvector_3x3(&b);
+        assert!(w[0].abs() < 1e-12 && w[2].abs() < 1e-12, "w = {w:?}");
+        assert!((w[1].abs() - 1.0).abs() < 1e-12, "w = {w:?}");
+    }
+    #[test]
+    fn test_max_eigenvector_rotated_matrix() {
+        // R diag(1, 2, 5) Rᵀ with R a 30° rotation about x: the dominant
+        // eigenvector is R e_z = (0, -sin 30°, cos 30°).
+        let theta = 30.0_f64.to_radians();
+        let (s, c) = theta.sin_cos();
+        let r: Mat3 = [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]];
+        let d: Mat3 = [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 5.0]];
+        let rt: Mat3 = [[1.0, 0.0, 0.0], [0.0, c, s], [0.0, -s, c]];
+        let mul = |x: &Mat3, y: &Mat3| -> Mat3 {
+            let mut out = [[0.0f64; 3]; 3];
+            for i in 0..3 {
+                for j in 0..3 {
+                    for k in 0..3 {
+                        out[i][j] += x[i][k] * y[k][j];
+                    }
+                }
+            }
+            out
+        };
+        let a = mul(&mul(&r, &d), &rt);
+        let v = max_eigenvector_3x3(&a);
+        let expected = [0.0, -s, c];
+        let sign = dot3(v, expected).signum();
+        for k in 0..3 {
+            assert!(
+                (sign * v[k] - expected[k]).abs() < 1e-10,
+                "v = {v:?}, expected ±{expected:?}"
+            );
+        }
+    }
+    #[test]
+    fn test_max_eigenvector_repeated_maximum_lies_in_eigenspace() {
+        // λ_max = 3 is double (x-y plane); any unit vector there is valid.
+        let a: Mat3 = [[3.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 1.0]];
+        let v = max_eigenvector_3x3(&a);
+        assert!((norm3(v) - 1.0).abs() < 1e-12, "v = {v:?}");
+        assert!(v[2].abs() < 1e-12, "v must lie in the x-y plane: {v:?}");
+        // Isotropic stress: every direction is an eigenvector.
+        let iso: Mat3 = [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]];
+        let w = max_eigenvector_3x3(&iso);
+        assert!((norm3(w) - 1.0).abs() < 1e-12, "w = {w:?}");
+    }
+    #[test]
+    fn test_max_eigenvector_is_deterministic_in_sign() {
+        let a: Mat3 = [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]];
+        let v = max_eigenvector_3x3(&a);
+        assert!(v[2] > 0.0, "largest component must be positive: {v:?}");
+        let b: Mat3 = [[1.0, 0.5, 0.0], [0.5, -4.0, 0.0], [0.0, 0.0, 0.5]];
+        let w = max_eigenvector_3x3(&b);
+        let pivot = (0..3).fold(0, |m, k| if w[k].abs() > w[m].abs() { k } else { m });
+        assert!(w[pivot] > 0.0, "largest component must be positive: {w:?}");
+    }
+    #[test]
+    fn test_max_eigenvector_satisfies_eigen_equation_for_random_matrices() {
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 11) as f64) / ((1u64 << 53) as f64) * 2.0 - 1.0
+        };
+        for _ in 0..200 {
+            let (a00, a11, a22) = (next() * 1e6, next() * 1e6, next() * 1e6);
+            let (a01, a02, a12) = (next() * 1e6, next() * 1e6, next() * 1e6);
+            let a: Mat3 = [[a00, a01, a02], [a01, a11, a12], [a02, a12, a22]];
+            let lambda_max = symmetric_eigenvalues_3x3(&a)[2];
+            let v = max_eigenvector_3x3(&a);
+            assert!((norm3(v) - 1.0).abs() < 1e-12, "not a unit vector: {v:?}");
+            let av = mat3_vec(&a, v);
+            let residual = norm3([
+                av[0] - lambda_max * v[0],
+                av[1] - lambda_max * v[1],
+                av[2] - lambda_max * v[2],
+            ]);
+            assert!(
+                residual < 1e-8 * lambda_max.abs().max(1.0),
+                "A v != λ_max v for {a:?}: residual {residual}, λ_max {lambda_max}"
+            );
+        }
+    }
+    /// The damage update must orient the crack plane along the maximum
+    /// principal stress, not the minimum one.
+    #[test]
+    fn test_update_damage_aligns_crack_normal_with_max_principal_stress() {
+        let mut p = make_particle([0.0; 3], [0.0; 3]);
+        p.stress = [[1.0e6, 0.0, 0.0], [0.0, 5.0e8, 0.0], [0.0, 0.0, 2.0e6]];
+        p.damage = 0.2;
+        let mut sim = SphFractureSimulation::new(
+            vec![p],
+            make_damage_model(),
+            make_fracture_energy(),
+            1e-7,
+            0.01,
+        );
+        sim.update_damage();
+        let p = &sim.particles[0];
+        assert!(p.damage > 0.01, "damage {} must be active", p.damage);
+        let n = p.crack_normal;
+        assert!(
+            n[0].abs() < 1e-12 && n[2].abs() < 1e-12 && (n[1].abs() - 1.0).abs() < 1e-12,
+            "crack normal {n:?} must be ±e_y (σ_yy is the max principal stress)"
         );
     }
 }

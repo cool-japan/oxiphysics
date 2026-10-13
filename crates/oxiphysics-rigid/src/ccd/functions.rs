@@ -744,6 +744,8 @@ mod tests {
             toi: 0.0,
             body_a: 0,
             body_b: 1,
+            index_a: 0,
+            index_b: 1,
             contact_normal: [-1.0, 0.0, 0.0],
             contact_point: [0.0, 0.0, 0.0],
         };
@@ -762,6 +764,8 @@ mod tests {
             toi: 0.0,
             body_a: 0,
             body_b: 1,
+            index_a: 0,
+            index_b: 1,
             contact_normal: [-1.0, 0.0, 0.0],
             contact_point: [0.5, 0.0, 0.0],
         };

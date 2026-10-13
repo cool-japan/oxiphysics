@@ -15,8 +15,9 @@ use crate::assembly::{assemble_load_vector, assemble_stiffness};
 use crate::boundary::{DirichletBc, NeumannBc, apply_dirichlet, apply_neumann};
 use crate::constitutive::LinearElasticMaterial;
 use crate::element::LinearTetrahedron;
+use crate::error::Error;
 use crate::mesh::TetrahedralMesh;
-use crate::solvers::{jacobi_preconditioner, preconditioned_cg};
+use crate::solvers::{jacobi_preconditioner, pcg_solve};
 
 // ---------------------------------------------------------------------------
 // FEM error type
@@ -45,6 +46,22 @@ impl std::fmt::Display for FemError {
 
 impl std::error::Error for FemError {}
 
+impl From<Error> for FemError {
+    /// Map the crate-level [`Error`] onto the analysis error type so that the
+    /// fallible helpers (boundary-condition application, ...) can be used with `?`
+    /// inside functions that return [`FemError`].
+    fn from(err: Error) -> Self {
+        match err {
+            Error::SingularSystem => FemError::SingularSystem,
+            Error::NotConverged { .. } => FemError::SolverNotConverged,
+            Error::InvalidInput(message) | Error::General(message) => {
+                FemError::InvalidInput(message)
+            }
+            other => FemError::InvalidInput(other.to_string()),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Result type
 // ---------------------------------------------------------------------------
@@ -68,6 +85,8 @@ pub struct FemResult {
 ///
 /// Assembles the global stiffness matrix and load vector, applies boundary
 /// conditions, solves the linear system, and post-processes stresses and strains.
+/// Use [`try_solve`](Self::try_solve) to run it: it validates the problem and
+/// reports a solve that did not converge instead of returning garbage.
 pub struct LinearStaticAnalysis {
     /// Maximum iterations for the iterative solver.
     pub max_iter: usize,
@@ -90,25 +109,52 @@ impl LinearStaticAnalysis {
         Self::default()
     }
 
-    /// Run the analysis and return the results.
-    pub fn solve(
+    /// Run the analysis, validating the input and the numerical result.
+    ///
+    /// Assembles the global stiffness matrix and load vector, applies the
+    /// boundary conditions, solves `K·u = f` with Jacobi-preconditioned conjugate
+    /// gradients and recovers the element strains and stresses.
+    ///
+    /// # Errors
+    ///
+    /// - [`FemError::InvalidInput`] when the problem is ill-posed before any
+    ///   solve is attempted: an empty mesh, an element that references a missing
+    ///   node, a degenerate element (`|det J| < 1e-12·h³`, `h` being its longest
+    ///   edge), a Young's modulus that is not positive and finite, a Poisson ratio
+    ///   outside `(-1, ½)`, non-finite coordinates / loads / prescribed values /
+    ///   solver tolerance, a Dirichlet BC whose node or local DOF (0, 1, 2) does
+    ///   not exist, conflicting prescribed values for one DOF, or a Neumann BC on
+    ///   a missing node.
+    /// - [`FemError::SolverNotConverged`] when the conjugate-gradient iteration
+    ///   does not reach the relative residual `tolerance` within `max_iter`
+    ///   iterations — typically because the structure is not constrained against
+    ///   rigid-body motion, so that `K` is singular.
+    /// - [`FemError::SingularSystem`] when the displacement, strain or stress
+    ///   field contains a non-finite number.
+    pub fn try_solve(
         &self,
         mesh: &TetrahedralMesh,
         material: &LinearElasticMaterial,
         dirichlet_bcs: &[DirichletBc],
         neumann_bcs: &[NeumannBc],
         body_force: &Vec3,
-    ) -> FemResult {
-        let ndof = mesh.num_nodes() * 3;
+    ) -> Result<FemResult, FemError> {
+        self.validate_input(mesh, material, dirichlet_bcs, neumann_bcs, body_force)?;
 
         let mut k = assemble_stiffness(mesh, material);
         let mut f = assemble_load_vector(mesh, body_force);
 
         apply_neumann(&mut f, neumann_bcs);
-        apply_dirichlet(&mut k, &mut f, dirichlet_bcs);
+        apply_dirichlet(&mut k, &mut f, dirichlet_bcs)?;
 
         let precond = jacobi_preconditioner(&k);
-        let u = preconditioned_cg(&k, &f, &precond, self.max_iter, self.tolerance);
+        let (u, stats) = pcg_solve(&k, &f, &precond, self.max_iter, self.tolerance);
+        if !stats.converged {
+            return Err(FemError::SolverNotConverged);
+        }
+        if u.iter().any(|value| !value.is_finite()) {
+            return Err(FemError::SingularSystem);
+        }
 
         let num_nodes = mesh.num_nodes();
         let mut displacements = Vec::with_capacity(num_nodes);
@@ -156,12 +202,161 @@ impl LinearStaticAnalysis {
             stress.push(sig);
         }
 
-        let _ = ndof;
+        let all_finite = strain
+            .iter()
+            .chain(stress.iter())
+            .all(|voigt| voigt.iter().all(|component| component.is_finite()));
+        if !all_finite {
+            return Err(FemError::SingularSystem);
+        }
 
-        FemResult {
+        Ok(FemResult {
             displacements,
             stress,
             strain,
+        })
+    }
+
+    /// Run the analysis and return the results, without reporting failures.
+    ///
+    /// This is the infallible convenience form of [`try_solve`](Self::try_solve)
+    /// and delegates to it.  When `try_solve` fails (invalid input, a CG solve
+    /// that did not converge, a non-finite result, ...) every displacement,
+    /// strain and stress component of the returned [`FemResult`] is `NaN`, so a
+    /// failed analysis can never be mistaken for a valid one.  Prefer
+    /// [`try_solve`](Self::try_solve): it tells you *why* the analysis failed.
+    pub fn solve(
+        &self,
+        mesh: &TetrahedralMesh,
+        material: &LinearElasticMaterial,
+        dirichlet_bcs: &[DirichletBc],
+        neumann_bcs: &[NeumannBc],
+        body_force: &Vec3,
+    ) -> FemResult {
+        self.try_solve(mesh, material, dirichlet_bcs, neumann_bcs, body_force)
+            .unwrap_or_else(|_| FemResult::not_a_number(mesh.num_nodes(), mesh.num_elements()))
+    }
+
+    /// Check everything that would otherwise panic or silently corrupt the
+    /// system before it is assembled.
+    fn validate_input(
+        &self,
+        mesh: &TetrahedralMesh,
+        material: &LinearElasticMaterial,
+        dirichlet_bcs: &[DirichletBc],
+        neumann_bcs: &[NeumannBc],
+        body_force: &Vec3,
+    ) -> Result<(), FemError> {
+        let invalid = |message: String| Err(FemError::InvalidInput(message));
+        let num_nodes = mesh.num_nodes();
+        if num_nodes == 0 || mesh.num_elements() == 0 {
+            return invalid(format!(
+                "mesh must contain nodes and elements (nodes: {num_nodes}, elements: {})",
+                mesh.num_elements()
+            ));
+        }
+        if !(self.tolerance.is_finite() && self.tolerance > 0.0) {
+            return invalid(format!(
+                "solver tolerance must be finite and positive, got {}",
+                self.tolerance
+            ));
+        }
+        let young = material.young_modulus;
+        if !(young.is_finite() && young > 0.0) {
+            return invalid(format!(
+                "Young's modulus must be finite and positive, got {young}"
+            ));
+        }
+        let poisson = material.poisson_ratio;
+        if !(poisson.is_finite() && poisson > -1.0 && poisson < 0.5) {
+            return invalid(format!(
+                "Poisson's ratio must lie in (-1, 0.5), got {poisson}"
+            ));
+        }
+        if !body_force.iter().all(|c| c.is_finite()) {
+            return invalid("body force must be finite".to_string());
+        }
+        for (index, node) in mesh.nodes.iter().enumerate() {
+            if !node.iter().all(|c| c.is_finite()) {
+                return invalid(format!("node {index} has non-finite coordinates"));
+            }
+        }
+        for (index, elem) in mesh.elements.iter().enumerate() {
+            if let Some(&missing) = elem.iter().find(|&&node| node >= num_nodes) {
+                return invalid(format!(
+                    "element {index} references node {missing} but the mesh has {num_nodes} nodes"
+                ));
+            }
+            let corner = [
+                mesh.nodes[elem[0]],
+                mesh.nodes[elem[1]],
+                mesh.nodes[elem[2]],
+                mesh.nodes[elem[3]],
+            ];
+            if Self::is_degenerate_tetrahedron(&corner) {
+                return invalid(format!(
+                    "element {index} is degenerate (zero or numerically zero volume)"
+                ));
+            }
+        }
+        for (index, bc) in dirichlet_bcs.iter().enumerate() {
+            if bc.node >= num_nodes || bc.dof >= 3 {
+                return invalid(format!(
+                    "Dirichlet BC #{index} addresses node {} DOF {}, but the mesh has {num_nodes} \
+                     nodes with DOFs 0..3",
+                    bc.node, bc.dof
+                ));
+            }
+            if !bc.value.is_finite() {
+                return invalid(format!("Dirichlet BC #{index} has a non-finite value"));
+            }
+        }
+        for (index, bc) in neumann_bcs.iter().enumerate() {
+            if bc.node >= num_nodes {
+                return invalid(format!(
+                    "Neumann BC #{index} addresses node {} but the mesh has {num_nodes} nodes",
+                    bc.node
+                ));
+            }
+            if !bc.force.iter().all(|c| c.is_finite()) {
+                return invalid(format!("Neumann BC #{index} has a non-finite force"));
+            }
+        }
+        Ok(())
+    }
+
+    /// `true` when `|det J| < 1e-12·h³` (`h` = longest edge) or the geometry is
+    /// not finite, i.e. the B-matrix would divide by a (numerically) zero volume.
+    fn is_degenerate_tetrahedron(nodes: &[Vec3; 4]) -> bool {
+        let x10 = nodes[1] - nodes[0];
+        let x20 = nodes[2] - nodes[0];
+        let x30 = nodes[3] - nodes[0];
+        let det_j = x10.dot(&x20.cross(&x30));
+        let longest_edge = [
+            x10,
+            x20,
+            x30,
+            nodes[2] - nodes[1],
+            nodes[3] - nodes[1],
+            nodes[3] - nodes[2],
+        ]
+        .iter()
+        .map(|edge| edge.norm())
+        .fold(0.0_f64, f64::max);
+        // A NaN determinant or edge length makes the comparison false, so a
+        // non-finite geometry is reported as degenerate as well.
+        let well_shaped = det_j.abs() > 1e-12 * longest_edge.powi(3);
+        !well_shaped
+    }
+}
+
+impl FemResult {
+    /// A result whose every component is `NaN`, used to flag a failed analysis.
+    fn not_a_number(num_nodes: usize, num_elements: usize) -> Self {
+        Self {
+            displacements: vec![Vec3::new(f64::NAN, f64::NAN, f64::NAN); num_nodes],
+            stress: vec![[f64::NAN; 6]; num_elements],
+            strain: vec![[f64::NAN; 6]; num_elements],
         }
     }
 }
@@ -681,6 +876,13 @@ impl DynamicAnalysis {
     /// Updates displacement `u`, velocity `v`, and acceleration `a` from time `t`
     /// to time `t + dt`.
     ///
+    /// The Newmark updates are `u₊ = ũ + β·dt²·a₊` and `v₊ = ṽ + γ·dt·a₊` with
+    /// the predictors `ũ = u + dt·v + dt²·(½ − β)·a` and `ṽ = v + dt·(1 − γ)·a`.
+    /// Substituting them into the equation of motion at `t + dt`,
+    /// `M·a₊ + C·v₊ + K·u₊ = f₊`, gives a system for the *acceleration*
+    ///
+    /// `(M + γ·dt·C + β·dt²·K) · a₊ = f₊ − K·ũ − C·ṽ`.
+    ///
     /// Typical parameter choices:
     /// - Constant average acceleration (unconditionally stable): β = 0.25, γ = 0.5
     /// - Linear acceleration (conditionally stable): β = 1/6, γ = 0.5
@@ -704,24 +906,25 @@ impl DynamicAnalysis {
             .collect();
         let v_pred: Vec<f64> = (0..n).map(|i| v[i] + dt * (1.0 - gamma) * a[i]).collect();
 
-        // Effective stiffness K_eff = M/(β·dt²) + γ/(β·dt)·C + K
-        let c1 = 1.0 / (beta * dt * dt);
-        let c2 = gamma / (beta * dt);
+        // System matrix for the acceleration: A = M + γ·dt·C + β·dt²·K
+        let c_damping = gamma * dt;
+        let c_stiffness = beta * dt * dt;
 
-        let mut k_eff = vec![0.0; n * n];
+        let mut a_eff = vec![0.0; n * n];
         for i in 0..n {
             for j in 0..n {
-                k_eff[i * n + j] =
-                    c1 * self.m[i * n + j] + c2 * self.c[i * n + j] + self.k[i * n + j];
+                a_eff[i * n + j] = self.m[i * n + j]
+                    + c_damping * self.c[i * n + j]
+                    + c_stiffness * self.k[i * n + j];
             }
         }
 
-        // Effective force
+        // Right-hand side: f₊ − K·ũ − C·ṽ
         let ku_pred = Self::mv(&self.k, &u_pred, n);
         let cv_pred = Self::mv(&self.c, &v_pred, n);
         let rhs: Vec<f64> = (0..n).map(|i| f_ext[i] - ku_pred[i] - cv_pred[i]).collect();
 
-        let a_new = Self::solve(&k_eff, &rhs, n);
+        let a_new = Self::solve(&a_eff, &rhs, n);
         let u_new: Vec<f64> = (0..n)
             .map(|i| u_pred[i] + beta * dt * dt * a_new[i])
             .collect();
@@ -730,9 +933,25 @@ impl DynamicAnalysis {
         (u_new, v_new, a_new)
     }
 
-    /// One step of the Wilson-θ method.
+    /// One step of the Wilson-θ method (Bathe, *Finite Element Procedures*, ch. 9).
     ///
-    /// `theta` is typically 1.37–1.42 for unconditional stability.
+    /// The acceleration is assumed to vary linearly over the extended interval
+    /// `[t, t + τ]`, `τ = θ·dt`.  The displacement at `t + τ` follows from
+    ///
+    /// `(K + 6/τ²·M + 3/τ·C) · u_τ = f̂`
+    ///
+    /// with `f̂ = f_prev + θ·(f_ext − f_prev) + M·(6/τ²·u + 6/τ·v + 2a)
+    /// + C·(3/τ·u + 2v + τ/2·a)`, and the state at `t + dt` is recovered from
+    /// `a₊ = 6/(θ·τ²)·(u_τ − u) − 6/(θ·τ)·v + (1 − 3/θ)·a`,
+    /// `v₊ = v + dt/2·(a + a₊)`, `u₊ = u + dt·v + dt²/6·(2a + a₊)`.
+    ///
+    /// `theta` must be at least 1.366 for unconditional stability (1.37–1.42 is
+    /// typical); `theta = 1` reduces to the linear-acceleration method.
+    ///
+    /// # Arguments
+    /// * `u`, `v`, `a` – displacement, velocity and acceleration at time `t`
+    /// * `f_prev`      – external load at time `t`
+    /// * `f_ext`       – external load at time `t + dt`
     ///
     /// # Returns
     /// `(u_{n+1}, v_{n+1}, a_{n+1})`
@@ -741,6 +960,7 @@ impl DynamicAnalysis {
         u: &[f64],
         v: &[f64],
         a: &[f64],
+        f_prev: &[f64],
         f_ext: &[f64],
         dt: f64,
         theta: f64,
@@ -748,47 +968,42 @@ impl DynamicAnalysis {
         let n = self.n;
         let tau = theta * dt;
 
-        // Effective stiffness K_eff = 6/(θ²dt²)·M + 3/(θdt)·C + K
-        let c1 = 6.0 / (tau * tau);
-        let c2 = 3.0 / tau;
+        // Effective stiffness K̂ = K + 6/τ²·M + 3/τ·C
+        let c_mass = 6.0 / (tau * tau);
+        let c_damping = 3.0 / tau;
 
-        let mut k_eff = vec![0.0; n * n];
+        let mut k_hat = vec![0.0; n * n];
         for i in 0..n {
             for j in 0..n {
-                k_eff[i * n + j] =
-                    c1 * self.m[i * n + j] + c2 * self.c[i * n + j] + self.k[i * n + j];
+                k_hat[i * n + j] =
+                    self.k[i * n + j] + c_mass * self.m[i * n + j] + c_damping * self.c[i * n + j];
             }
         }
 
-        // Extrapolated force at t + θ·dt: linear extrapolation
-        // f_tau ≈ f_t + θ*(f_ext - f_t)  but we have only f_ext (at t+dt),
-        // so approximate f_tau = f_ext (conservative)
-        let f_tau = f_ext.to_vec();
-
-        // Effective RHS
-        let mu = Self::mv(&self.m, u, n);
-        let mv_curr = Self::mv(&self.m, v, n);
-        let ma = Self::mv(&self.m, a, n);
-        let cu = Self::mv(&self.c, u, n);
-        let cv_curr = Self::mv(&self.c, v, n);
-
+        // Effective load at t + τ:
+        //   f̂ = f_prev + θ(f_ext − f_prev) + M(6/τ²·u + 6/τ·v + 2a) + C(3/τ·u + 2v + τ/2·a)
+        let mass_arg: Vec<f64> = (0..n)
+            .map(|i| c_mass * u[i] + 6.0 / tau * v[i] + 2.0 * a[i])
+            .collect();
+        let damping_arg: Vec<f64> = (0..n)
+            .map(|i| c_damping * u[i] + 2.0 * v[i] + 0.5 * tau * a[i])
+            .collect();
+        let mass_term = Self::mv(&self.m, &mass_arg, n);
+        let damping_term = Self::mv(&self.c, &damping_arg, n);
         let rhs: Vec<f64> = (0..n)
-            .map(|i| {
-                f_tau[i] + c1 * mu[i] + c2 * mv_curr[i] + 2.0 * ma[i]
-                    - self.k[i * n..i * n + n]
-                        .iter()
-                        .zip(u.iter())
-                        .map(|(kij, uj)| kij * uj)
-                        .sum::<f64>()
-                    + (c2 * cu[i] + cv_curr[i])
-            })
+            .map(|i| f_prev[i] + theta * (f_ext[i] - f_prev[i]) + mass_term[i] + damping_term[i])
             .collect();
 
-        // Solve for a at t + θ·dt
-        let a_tau = Self::solve(&k_eff, &rhs, n);
+        // Displacement at t + τ
+        let u_tau = Self::solve(&k_hat, &rhs, n);
 
-        // Interpolate back to t + dt
-        let a_new: Vec<f64> = (0..n).map(|i| a[i] + (a_tau[i] - a[i]) / theta).collect();
+        // Acceleration, velocity and displacement at t + dt
+        let a_new: Vec<f64> = (0..n)
+            .map(|i| {
+                6.0 / (theta * tau * tau) * (u_tau[i] - u[i]) - 6.0 / (theta * tau) * v[i]
+                    + (1.0 - 3.0 / theta) * a[i]
+            })
+            .collect();
         let v_new: Vec<f64> = (0..n)
             .map(|i| v[i] + dt / 2.0 * (a[i] + a_new[i]))
             .collect();
@@ -1272,66 +1487,6 @@ mod tests {
         assert!((norm - 1.0).abs() < 1e-6, "mass norm = {norm}");
     }
 
-    // ---- DynamicAnalysis tests ----
-
-    /// 1-DOF undamped free vibration: M·ü + K·u = 0.
-    /// Verifies the Newmark method produces a bounded, oscillatory response.
-    #[test]
-    fn test_newmark_free_vibration() {
-        let m_val = 1.0_f64;
-        let k_val = 100.0_f64;
-        let dt = 0.001;
-        let beta = 0.25;
-        let gamma = 0.5;
-
-        let da = DynamicAnalysis::new(vec![m_val], vec![0.0], vec![k_val], 1);
-        let mut u = vec![1.0_f64];
-        let mut v = vec![0.0_f64];
-        let mut a = vec![-k_val / m_val];
-
-        for _ in 0..100 {
-            let (un, vn, an) = da.newmark_beta_step(&u, &v, &a, &[0.0], dt, beta, gamma);
-            u = un;
-            v = vn;
-            a = an;
-        }
-        // Displacement should stay bounded (energy conservation)
-        assert!(u[0].abs() <= 1.01, "u should be bounded, got {}", u[0]);
-    }
-
-    #[test]
-    fn test_newmark_static_equilibrium() {
-        // Apply constant force f to 1-DOF with damping: should move toward u_static = f/k
-        let da = DynamicAnalysis::new(vec![1.0], vec![0.1], vec![10.0], 1);
-        let mut u = vec![0.0_f64];
-        let mut v = vec![0.0_f64];
-        let mut a = vec![0.0_f64];
-        let f = vec![5.0_f64]; // static → u_static = 5/10 = 0.5
-        for _ in 0..5000 {
-            let (un, vn, an) = da.newmark_beta_step(&u, &v, &a, &f, 0.01, 0.25, 0.5);
-            u = un;
-            v = vn;
-            a = an;
-        }
-        // Should be in the general vicinity of the static solution
-        assert!(u[0] > 0.0, "u should be positive, got {}", u[0]);
-    }
-
-    #[test]
-    fn test_wilson_theta_step_displacement_sign() {
-        // Force applied in positive direction → displacement must be positive
-        let da = DynamicAnalysis::new(vec![1.0], vec![0.0], vec![1.0], 1);
-        let u = vec![0.0_f64];
-        let v = vec![0.0_f64];
-        let a = vec![0.0_f64];
-        let (u_new, _, _) = da.wilson_theta_step(&u, &v, &a, &[1.0], 0.01, 1.4);
-        assert!(
-            u_new[0] >= 0.0,
-            "displacement should be non-negative, got {}",
-            u_new[0]
-        );
-    }
-
     // ---- LinearStaticAnalysis tests ----
 
     #[test]
@@ -1372,13 +1527,15 @@ mod tests {
             max_iter: 20000,
             tolerance: 1e-10,
         };
-        let result = analysis.solve(
-            &mesh,
-            &material,
-            &dirichlet_bcs,
-            &neumann_bcs,
-            &Vec3::new(0.0, 0.0, 0.0),
-        );
+        let result = analysis
+            .try_solve(
+                &mesh,
+                &material,
+                &dirichlet_bcs,
+                &neumann_bcs,
+                &Vec3::new(0.0, 0.0, 0.0),
+            )
+            .expect("cantilever analysis must converge");
 
         let max_y_disp = free_end_nodes
             .iter()
@@ -1536,13 +1693,15 @@ mod tests {
             tolerance: 1e-12,
         };
 
-        let result = analysis.solve(
-            &mesh,
-            &material,
-            &dirichlet_bcs,
-            &neumann_bcs,
-            &Vec3::new(0.0, 0.0, 0.0),
-        );
+        let result = analysis
+            .try_solve(
+                &mesh,
+                &material,
+                &dirichlet_bcs,
+                &neumann_bcs,
+                &Vec3::new(0.0, 0.0, 0.0),
+            )
+            .expect("cantilever analysis must converge");
 
         let max_y_disp = free_end_nodes
             .iter()

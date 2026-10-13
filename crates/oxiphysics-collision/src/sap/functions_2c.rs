@@ -735,4 +735,127 @@ mod tests {
         let hits = sweep_window_query(&eps, 5.0, 6.0);
         assert!(hits.is_empty(), "no bodies in [5,6]");
     }
+
+    // ── reorder_axes must never change which pairs are reported ─────────────
+
+    /// Unit boxes 1 and 2 overlap on Y and Z but are 4 apart on X; box 3 sits
+    /// far away on Y so that Y has by far the largest centre variance.
+    fn x_separated_scene() -> [(u64, [f64; 3], [f64; 3]); 3] {
+        [
+            (1, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),
+            (2, [5.0, 0.0, 0.0], [6.0, 1.0, 1.0]),
+            (3, [10.0, 200.0, 0.0], [11.0, 201.0, 1.0]),
+        ]
+    }
+
+    #[test]
+    fn sap_reorder_axes_to_y_still_rejects_x_separated_pair() {
+        let mut sap = SweepAndPrune::new();
+        sap.add_object_batch(&x_separated_scene());
+        assert_eq!(sap.sweep_axis(), 0);
+        assert!(sap.query_overlapping_pairs().is_empty());
+        let axis = sap.reorder_axes();
+        assert_eq!(axis, 1, "Y has the largest variance");
+        assert_eq!(sap.sweep_axis(), 1);
+        // Boxes 1 and 2 overlap on the new sweep axis (Y) and on Z but not on X;
+        // the filter must therefore test X, not Y again.
+        assert!(
+            sap.query_overlapping_pairs().is_empty(),
+            "boxes 4 apart on X must not be reported after reorder_axes"
+        );
+    }
+
+    #[test]
+    fn sap_update_and_add_use_the_reordered_sweep_axis() {
+        let mut sap = SweepAndPrune::new();
+        sap.add_object_batch(&x_separated_scene());
+        assert_eq!(sap.reorder_axes(), 1);
+        // Move box 2 so that it overlaps box 1 on every axis.
+        sap.update_object(2, [0.5, 0.0, 0.0], [1.5, 1.0, 1.0]);
+        assert_eq!(sap.query_overlapping_pairs(), vec![(1, 2)]);
+        // Every endpoint value must now come from the Y extents.
+        for ep in &sap.sorted_x {
+            let obj = sap
+                .objects
+                .iter()
+                .find(|o| o.id == ep.object_id)
+                .expect("endpoint belongs to a registered object");
+            let expected = if ep.is_min { obj.min[1] } else { obj.max[1] };
+            assert_eq!(ep.value, expected, "endpoint of object {}", ep.object_id);
+        }
+        // A late arrival is inserted with Y endpoints as well and found.
+        sap.add_object(4, [0.2, 0.2, 0.2], [0.8, 0.8, 0.8]);
+        assert_eq!(sap.query_overlapping_pairs(), vec![(1, 2), (1, 4), (2, 4)]);
+    }
+
+    #[test]
+    fn sap_pairs_match_brute_force_for_every_sweep_axis() {
+        // Stretch one axis so that reorder_axes selects it, then compare the
+        // reported pairs with the brute-force AABB test.
+        for stretch_axis in 0..3usize {
+            let mut state = 0x9E37_79B9_7F4A_7C15u64 ^ stretch_axis as u64;
+            let mut next = move || {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (state >> 33) as f64 / (1u64 << 31) as f64
+            };
+            let mut objects: Vec<(u64, [f64; 3], [f64; 3])> = Vec::new();
+            for id in 0..60u64 {
+                let mut min = [next() * 10.0, next() * 10.0, next() * 10.0];
+                min[stretch_axis] *= 40.0;
+                let size = [0.5 + next() * 2.0, 0.5 + next() * 2.0, 0.5 + next() * 2.0];
+                let max = [min[0] + size[0], min[1] + size[1], min[2] + size[2]];
+                objects.push((id, min, max));
+            }
+            let mut expected: Vec<(u64, u64)> = Vec::new();
+            for (i, a) in objects.iter().enumerate() {
+                for b in &objects[i + 1..] {
+                    let overlap = (0..3).all(|k| a.1[k] <= b.2[k] && b.1[k] <= a.2[k]);
+                    if overlap {
+                        expected.push((a.0.min(b.0), a.0.max(b.0)));
+                    }
+                }
+            }
+            expected.sort_unstable();
+            let mut sap = SweepAndPrune::new();
+            sap.add_object_batch(&objects);
+            assert_eq!(sap.query_overlapping_pairs(), expected, "sweep on X");
+            assert_eq!(sap.reorder_axes(), stretch_axis, "axis chosen by variance");
+            assert_eq!(
+                sap.query_overlapping_pairs(),
+                expected,
+                "sweep on axis {stretch_axis}"
+            );
+        }
+    }
+
+    #[test]
+    fn incremental_sap_reorder_axes_keeps_every_axis_in_the_pair_test() {
+        let mut sap = IncrementalSap::new();
+        for (id, min, max) in x_separated_scene() {
+            sap.insert(id as u32, Aabb3 { min, max });
+        }
+        assert!(sap.query_pairs().is_empty());
+        let x_before: Vec<f64> = sap.endpoints_x.iter().map(|e| e.value).collect();
+        assert_eq!(sap.reorder_axes(), 1, "Y has the largest variance");
+        let x_after: Vec<f64> = sap.endpoints_x.iter().map(|e| e.value).collect();
+        assert_eq!(
+            x_before, x_after,
+            "reorder_axes must not overwrite the X endpoint list with Y values"
+        );
+        assert!(
+            sap.query_pairs().is_empty(),
+            "boxes 1 and 2 are separated on X and must stay unpaired"
+        );
+        // Updates after the reorder still write X coordinates into the X list.
+        sap.update(
+            2,
+            Aabb3 {
+                min: [0.5, 0.0, 0.0],
+                max: [1.5, 1.0, 1.0],
+            },
+        );
+        assert_eq!(sap.query_pairs(), vec![(1, 2)]);
+    }
 }

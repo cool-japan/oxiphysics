@@ -46,12 +46,34 @@ engine.add_sphere_collider(ball, 0.5);
 const ground = engine.add_static_body(0.0, 0.0, 0.0);
 engine.add_plane_collider(ground, 0.0, 1.0, 0.0, 0.0);
 
-// Simulate for one second (with internal substeps).
-engine.step(1.0);
+// Simulate for one second as 60 frames of 1/60 s.  step() consumes the
+// elapsed time in fixed substeps (1/60 s each, at most 4 per call), so call
+// it once per animation frame with the frame time; a single step(1.0)
+// would integrate only the first 4 substeps and drop the rest.
+for (let i = 0; i < 60; i++) engine.step(1 / 60);
 
 const [x, y, z] = engine.get_position(ball);
 console.log(`Ball fell to y=${y.toFixed(3)}`);
 ```
+
+Creating bodies and colliders (`add_*`) and `step()` validate their input and
+throw a JavaScript exception for invalid values (non-positive mass or
+dimensions, `NaN`, a zero plane normal, a negative time step, ...).  Body and
+collider handles are opaque integers (slot index plus a generation counter):
+a handle of a removed body is rejected instead of controlling whichever body
+reuses its slot (use `WasmPhysicsEngine.handle_index(handle)` if you need a small
+index for renderer-side tables).  The state setters (`set_velocity`,
+`set_position`, `apply_force`, `apply_torque`, `apply_impulse`, ...) return
+`false` instead of throwing for a stale handle or a non-finite value and leave
+the body untouched.
+
+Spheres, oriented boxes, capsules and cylinders (axis along the body-local Y
+axis) and infinite planes all collide with each other and are hit by
+`raycast`.  Like every collider, a plane is expressed in the frame of its body:
+`add_plane_collider(body, nx, ny, nz, offset)` on a body at position `p` lies at
+`n . x = offset + n . p` (use a static body at the origin for a world-space
+ground plane).  Torques and `apply_impulse_at_point` act through the inertia
+tensor derived from the attached colliders.
 
 ---
 

@@ -22,6 +22,13 @@ impl Default for BvhBroadphase {
 }
 
 impl BroadPhase for BvhBroadphase {
+    /// Overlapping pairs of `aabbs`, found by a pruned self-traversal of the
+    /// hierarchy.
+    ///
+    /// Also correct on a hierarchy that was never built (for example one
+    /// created with [`Default`]) or that no longer matches `aabbs`: a
+    /// temporary hierarchy is built from `aabbs` in that case, see
+    /// [`BvhBroadphase::find_all_pairs`].
     fn find_pairs(&self, aabbs: &[Aabb]) -> Vec<CollisionPair> {
         self.find_all_pairs(aabbs)
     }

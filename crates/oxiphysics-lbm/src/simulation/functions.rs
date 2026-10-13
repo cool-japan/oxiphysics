@@ -527,12 +527,18 @@ mod tests_simulation_extra {
         assert!(ma.is_finite(), "mean Ma = {ma}");
     }
     #[test]
-    fn test_ensemble_runner_velocity_variance_nonneg() {
-        let cfg = LbmConfig::d2q9(4, 4, 1.0 / 6.0);
-        let mut runner = EnsembleRunner::new(cfg, 3, 20);
+    fn test_ensemble_runner_velocity_variance_positive_for_perturbed_members() {
+        // The old test only asserted `variance >= 0`, which a runner whose
+        // members were all identical also satisfies.  A perturbed ensemble
+        // must really spread.
+        let mut cfg = LbmConfig::d2q9(4, 4, 1.0 / 6.0);
+        cfg.body_force = Some([1e-5, 0.0, 0.0]);
+        let mut runner = EnsembleRunner::new(cfg, 3, 50);
+        runner.perturbation_amplitude = 1e-3;
         runner.run_all();
         let var = runner.velocity_variance();
-        assert!(var >= 0.0, "variance = {var}");
+        assert!(var > 0.0, "variance = {var}");
+        assert!(var.is_finite());
     }
     #[test]
     fn test_full_step_loop_runs() {

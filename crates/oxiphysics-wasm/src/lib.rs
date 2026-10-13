@@ -10,26 +10,40 @@
 //! ## Quick Start
 //!
 //! ```no_run
-//! use oxiphysics_wasm::{WasmPhysicsEngine, SimulationConfig};
+//! use oxiphysics_wasm::WasmPhysicsEngine;
 //!
+//! # fn main() -> Result<(), oxiphysics_wasm::Error> {
 //! // Create an engine with Earth gravity
 //! let mut engine = WasmPhysicsEngine::new(0.0, -9.81, 0.0);
 //!
 //! // Add a 1 kg sphere at height 10 m
-//! let ball = engine.add_dynamic_body(1.0, 0.0, 10.0, 0.0);
-//! engine.add_sphere_collider(ball, 0.5);
+//! let ball = engine.add_dynamic_body(1.0, 0.0, 10.0, 0.0)?;
+//! engine.add_sphere_collider(ball, 0.5)?;
 //!
 //! // Add a ground plane
-//! let ground = engine.add_static_body(0.0, 0.0, 0.0);
-//! engine.add_plane_collider(ground, 0.0, 1.0, 0.0, 0.0);
+//! let ground = engine.add_static_body(0.0, 0.0, 0.0)?;
+//! engine.add_plane_collider(ground, 0.0, 1.0, 0.0, 0.0)?;
 //!
-//! // Simulate for 1 second (many substeps internally)
-//! engine.step(1.0);
+//! // Simulate for 1 second as 60 frames of 1/60 s.  `step` consumes the
+//! // elapsed time in fixed substeps (1/60 s each, at most 4 per call), so it
+//! // is meant to be called once per rendered frame with the frame time -
+//! // a single `step(1.0)` would integrate only the first 4 substeps.
+//! for _ in 0..60 {
+//!     engine.step(1.0 / 60.0)?;
+//! }
+//! assert!((engine.time() - 1.0).abs() < 1e-9);
 //!
 //! // Query position
 //! let pos = engine.get_position(ball);
 //! assert!(pos[1] < 10.0, "ball should have fallen");
+//! # Ok(())
+//! # }
 //! ```
+//!
+//! Every operation that creates something (`add_*`) validates its input and
+//! returns an [`Error`] for invalid values (non-positive masses or
+//! dimensions, `NaN`, stale handles, ...); in JavaScript these surface as
+//! thrown exceptions.
 
 use wasm_bindgen::prelude::*;
 

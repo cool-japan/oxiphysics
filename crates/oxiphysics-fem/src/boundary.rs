@@ -9,6 +9,7 @@
 //! Dense-matrix variants are provided for small self-contained systems;
 //! the sparse (`CsrMatrix`) variants are used in the main pipeline.
 
+use crate::error::{Error, Result};
 use crate::sparse::CsrMatrix;
 
 // ── DirichletBc ───────────────────────────────────────────────────────────────
@@ -483,17 +484,23 @@ pub fn apply_time_dependent_dense(
 }
 
 /// Apply time-dependent Dirichlet BCs to a sparse system.
+///
+/// # Errors
+///
+/// Propagates every error of [`apply_dirichlet`]: an out-of-range node or
+/// local DOF, a non-finite or conflicting prescribed value, or a matrix/vector
+/// size mismatch.  On error `k` and `f` are left untouched.
 pub fn apply_time_dependent_sparse(
     k: &mut CsrMatrix,
     f: &mut [f64],
     bcs: &[TimeDependentBC],
     t: f64,
-) {
+) -> Result<()> {
     let dirichlet_bcs: Vec<DirichletBc> = bcs
         .iter()
         .map(|bc| DirichletBc::new(bc.node_id, bc.dof, bc.value_at(t)))
         .collect();
-    apply_dirichlet(k, f, &dirichlet_bcs);
+    apply_dirichlet(k, f, &dirichlet_bcs)
 }
 
 // ── ContactBC ─────────────────────────────────────────────────────────────────
@@ -873,7 +880,131 @@ impl BoundarySet {
 
 // ── Sparse CsrMatrix variants (original API) ──────────────────────────────────
 
-/// Apply Dirichlet boundary conditions by row/column zeroing (CSR).
+/// Impose prescribed values on DOFs of a CSR system by symmetric row/column
+/// elimination in a single sweep over the stored entries.
+///
+/// For every prescribed DOF `i` with value `u_i`:
+/// - row `i` becomes an identity row (`K[i][i] = 1`, all other entries `0`),
+/// - the column of `i` is zeroed in every other row and its contribution is
+///   moved to the right-hand side, `f[j] -= K[j][i] * u_i`,
+/// - `f[i] = u_i`.
+///
+/// Elimination preserves the symmetry of `K` and avoids the ill-conditioning of
+/// penalty methods.  The cost is `O(nnz + n_prescribed)`: a lookup table
+/// `prescribed: Vec<Option<f64>>` is built once and the rows are visited exactly
+/// once, instead of rescanning the whole matrix for every constrained DOF.
+///
+/// A fixed row without a stored diagonal entry (an orphan DOF that no element
+/// touches) gets one inserted, so the result is always a proper identity row.
+///
+/// Prescribing the same DOF several times with the *same* value is allowed (a
+/// corner node that belongs to two constrained faces); prescribing conflicting
+/// values is rejected.
+///
+/// # Errors
+///
+/// All input is validated before anything is modified, so `k` and `f` are
+/// untouched when an error is returned:
+/// - [`Error::InvalidInput`] if `K` is not square or its CSR arrays are
+///   inconsistent, `f.len() != K.nrows`, a prescribed value is not finite, or one
+///   DOF is given two different values;
+/// - [`Error::DofOutOfRange`] if a DOF index is `>= K.nrows`.
+pub(crate) fn eliminate_prescribed_dofs(
+    k: &mut CsrMatrix,
+    f: &mut [f64],
+    prescribed_dofs: &[(usize, f64)],
+) -> Result<()> {
+    let n = k.nrows;
+    if k.ncols != n {
+        return Err(Error::InvalidInput(format!(
+            "stiffness matrix must be square, got {} x {}",
+            k.nrows, k.ncols
+        )));
+    }
+    if k.row_ptr.len() != n + 1
+        || k.col_indices.len() != k.values.len()
+        || k.row_ptr[0] != 0
+        || k.row_ptr[n] != k.values.len()
+        || k.row_ptr.windows(2).any(|pair| pair[0] > pair[1])
+    {
+        return Err(Error::InvalidInput(
+            "stiffness matrix has an inconsistent CSR structure".to_string(),
+        ));
+    }
+    if f.len() != n {
+        return Err(Error::InvalidInput(format!(
+            "load vector has length {} but the stiffness matrix has {n} rows",
+            f.len()
+        )));
+    }
+
+    let mut prescribed: Vec<Option<f64>> = vec![None; n];
+    for &(dof, value) in prescribed_dofs {
+        if dof >= n {
+            return Err(Error::DofOutOfRange { dof, n });
+        }
+        if !value.is_finite() {
+            return Err(Error::InvalidInput(format!(
+                "prescribed value for DOF {dof} is not finite ({value})"
+            )));
+        }
+        match prescribed[dof] {
+            Some(existing) if existing != value => {
+                return Err(Error::InvalidInput(format!(
+                    "conflicting prescribed values {existing} and {value} for DOF {dof}"
+                )));
+            }
+            _ => prescribed[dof] = Some(value),
+        }
+    }
+    if prescribed_dofs.is_empty() {
+        return Ok(());
+    }
+
+    let mut rows_without_diagonal: Vec<usize> = Vec::new();
+    for row in 0..n {
+        let start = k.row_ptr[row];
+        let end = k.row_ptr[row + 1];
+        if prescribed[row].is_some() {
+            let mut has_diagonal = false;
+            for idx in start..end {
+                if k.col_indices[idx] == row && !has_diagonal {
+                    k.values[idx] = 1.0;
+                    has_diagonal = true;
+                } else {
+                    k.values[idx] = 0.0;
+                }
+            }
+            if !has_diagonal {
+                rows_without_diagonal.push(row);
+            }
+        } else {
+            let mut transferred = 0.0;
+            for idx in start..end {
+                let fixed_value = prescribed.get(k.col_indices[idx]).copied().flatten();
+                if let Some(value) = fixed_value {
+                    if value != 0.0 {
+                        transferred += k.values[idx] * value;
+                    }
+                    k.values[idx] = 0.0;
+                }
+            }
+            f[row] -= transferred;
+        }
+    }
+
+    for &(dof, _) in prescribed_dofs {
+        if let Some(value) = prescribed[dof] {
+            f[dof] = value;
+        }
+    }
+    for row in rows_without_diagonal {
+        k.set(row, row, 1.0);
+    }
+    Ok(())
+}
+
+/// Apply Dirichlet boundary conditions by row/column elimination (CSR).
 ///
 /// For each prescribed DOF `i` with value `u_i`:
 /// - Off-diagonal entries in row and column `i` are zeroed
@@ -881,52 +1012,42 @@ impl BoundarySet {
 /// - `f[i]` is set to `u_i`
 /// - The load vector is adjusted: `f[j] -= K[j][i] * u_i` for all other DOFs `j`
 ///
-/// This approach preserves symmetry and avoids ill-conditioning.
-pub fn apply_dirichlet(k: &mut CsrMatrix, f: &mut [f64], bcs: &[DirichletBc]) {
+/// This approach preserves symmetry and avoids ill-conditioning.  A lookup table
+/// of the prescribed values is built once and the stored entries are visited in
+/// a single sweep, so the cost is `O(nnz + n_bc)` instead of one full-matrix scan
+/// per boundary condition.  A fixed row without a stored diagonal entry (an
+/// orphan DOF that no element touches) gets one inserted, and prescribing the
+/// same DOF several times with the *same* value is allowed.
+///
+/// # Errors
+///
+/// Returns an error, leaving `k` and `f` untouched, when
+/// - [`Error::DofOutOfRange`]: a constrained global DOF `3 * node + dof` is not a
+///   row of `k` (or its computation overflows);
+/// - [`Error::InvalidInput`]: a local `dof` is not 0, 1 or 2 (it would silently
+///   alias a DOF of the next node), a prescribed value is not finite, one DOF is
+///   constrained to two different values, `k` is not square, or `f.len()` differs
+///   from the number of rows of `k`.
+pub fn apply_dirichlet(k: &mut CsrMatrix, f: &mut [f64], bcs: &[DirichletBc]) -> Result<()> {
+    let mut prescribed: Vec<(usize, f64)> = Vec::with_capacity(bcs.len());
     for bc in bcs {
-        let dof = bc.global_dof();
-        assert!(dof < k.nrows, "BC DOF {dof} out of range");
-
-        if bc.value.abs() > 0.0 {
-            for (row, f_row) in f.iter_mut().enumerate().take(k.nrows) {
-                if row == dof {
-                    continue;
-                }
-                let rs = k.row_ptr[row];
-                let re = k.row_ptr[row + 1];
-                for idx in rs..re {
-                    if k.col_indices[idx] == dof {
-                        *f_row -= k.values[idx] * bc.value;
-                    }
-                }
-            }
+        if bc.dof >= 3 {
+            return Err(Error::InvalidInput(format!(
+                "Dirichlet BC on node {}: local DOF {} must be 0, 1 or 2",
+                bc.node, bc.dof
+            )));
         }
-
-        let start = k.row_ptr[dof];
-        let end = k.row_ptr[dof + 1];
-        for idx in start..end {
-            if k.col_indices[idx] == dof {
-                k.values[idx] = 1.0;
-            } else {
-                k.values[idx] = 0.0;
-            }
-        }
-
-        for row in 0..k.nrows {
-            if row == dof {
-                continue;
-            }
-            let rs = k.row_ptr[row];
-            let re = k.row_ptr[row + 1];
-            for idx in rs..re {
-                if k.col_indices[idx] == dof {
-                    k.values[idx] = 0.0;
-                }
-            }
-        }
-
-        f[dof] = bc.value;
+        let global = bc
+            .node
+            .checked_mul(3)
+            .and_then(|base| base.checked_add(bc.dof))
+            .ok_or(Error::DofOutOfRange {
+                dof: usize::MAX,
+                n: k.nrows,
+            })?;
+        prescribed.push((global, bc.value));
     }
+    eliminate_prescribed_dofs(k, f, &prescribed)
 }
 
 /// Apply Neumann boundary conditions by adding forces to the load vector (CSR).
@@ -968,7 +1089,7 @@ mod tests {
             dof: 1,
             value: 0.0,
         }];
-        apply_dirichlet(&mut k, &mut f, &bcs);
+        apply_dirichlet(&mut k, &mut f, &bcs).expect("valid BCs");
 
         assert_eq!(k.get(1, 0), 0.0);
         assert!((k.get(1, 1) - 1.0).abs() < 1e-12);
@@ -989,7 +1110,7 @@ mod tests {
             dof: 0,
             value: 0.0,
         }];
-        apply_dirichlet(&mut k, &mut f, &bcs);
+        apply_dirichlet(&mut k, &mut f, &bcs).expect("valid BCs");
 
         assert!((k.get(0, 0) - 1.0).abs() < 1e-12, "diagonal should be 1");
         assert!(

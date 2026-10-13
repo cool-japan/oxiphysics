@@ -330,7 +330,9 @@ struct NernstPlanckCollideConfig {
     nx: usize,
     ny: usize,
     tau: f64,
-    z_val: f64,
+    /// Ionic diffusivity D (lattice units).
+    diffusivity: f64,
+    /// Thermal voltage V_T = k_B T / (z e), valence already included.
     thermal_voltage: f64,
     /// +1.0 for cations, -1.0 for anions.
     sign: f64,
@@ -341,7 +343,9 @@ struct NernstPlanckCollideConfig {
 /// Cation (+z) and anion (-z) distributions are evolved with:
 /// - Diffusion (BGK collision)
 /// - Advection by fluid velocity
-/// - Migration flux: ±D z c ∇φ / (kT)
+/// - Migration: the ions drift with velocity `±D E / V_T` (`E = −∇φ`,
+///   `V_T = k_B T / (z e)`), i.e. the flux `±(D z e / k_B T) c E`; the
+///   valence is contained in `V_T`
 pub struct NernstPlanckLbm {
     /// Grid width.
     pub nx: usize,
@@ -448,7 +452,10 @@ impl NernstPlanckLbm {
         W_LBM[q] * c * (1.0 + cu / C_SQ + cu * cu / (2.0 * C_SQ * C_SQ) - u2 / (2.0 * C_SQ))
     }
 
-    /// Performs one BGK collision step with migration body force.
+    /// Performs one BGK collision step with electromigration.
+    ///
+    /// The equilibrium is evaluated at the fluid velocity plus the ionic drift
+    /// velocity `sign * D * E / V_T` (Nernst–Einstein mobility `D / V_T`).
     ///
     /// `ux`, `uy`: fluid velocity field (length nx*ny each).
     /// `ex`, `ey`: electric field -∇φ (length nx*ny each), positive pointing toward bulk.
@@ -465,12 +472,12 @@ impl NernstPlanckLbm {
             nx,
             ny,
             tau,
-            z_val,
+            diffusivity,
             thermal_voltage,
             sign,
         } = cfg;
         let inv_tau = 1.0 / tau;
-        let mig = sign * z_val / thermal_voltage;
+        let mig = sign * diffusivity / thermal_voltage;
         for i in 0..nx {
             for j in 0..ny {
                 let cell = i * ny + j;
@@ -508,7 +515,7 @@ impl NernstPlanckLbm {
                 nx: self.nx,
                 ny: self.ny,
                 tau: self.tau,
-                z_val: self.z_val,
+                diffusivity: self.diffusivity,
                 thermal_voltage: self.thermal_voltage,
                 sign: 1.0,
             },
@@ -523,7 +530,7 @@ impl NernstPlanckLbm {
                 nx: self.nx,
                 ny: self.ny,
                 tau: self.tau,
-                z_val: self.z_val,
+                diffusivity: self.diffusivity,
                 thermal_voltage: self.thermal_voltage,
                 sign: -1.0,
             },
@@ -1121,6 +1128,91 @@ mod tests {
         assert!(
             (final_total - initial_total).abs() / initial_total < 1e-8,
             "total anion mass should be conserved after one step"
+        );
+    }
+
+    /// Evolve a Gaussian cation and anion bump (uniform along y, no flow) in a
+    /// uniform field `E_x` and return the centroid shifts (cation, anion) plus
+    /// the Nernst–Einstein expectation `D E / V_T` per step times the number of
+    /// steps.
+    fn np_lbm_drift_of_gaussian_bump(z_val: f64, thermal_voltage: f64) -> (f64, f64, f64) {
+        let (nx, ny) = (128, 4);
+        let diffusivity = 1.0 / 6.0;
+        let e_field = 0.04;
+        let steps = 450;
+        let mut np = NernstPlanckLbm::new(nx, ny, diffusivity, z_val, thermal_voltage, 0.0);
+        for i in 0..nx {
+            let x = i as f64 - (nx / 2) as f64;
+            let c = (-x * x / 50.0).exp();
+            for j in 0..ny {
+                for (q, w) in W_LBM.iter().enumerate() {
+                    let k = np.idx(i, j, q);
+                    np.f_cation[k] = w * c;
+                    np.f_anion[k] = w * c;
+                }
+            }
+        }
+        let centroid = |c: &[f64]| -> f64 {
+            let mass: f64 = c.iter().sum();
+            let moment: f64 = c
+                .iter()
+                .enumerate()
+                .map(|(k, &v)| v * (k / ny) as f64)
+                .sum();
+            moment / mass
+        };
+        let cation_start = centroid(&np.cation_concentration());
+        let anion_start = centroid(&np.anion_concentration());
+        let (cation_mass, anion_mass) = (np.total_cation(), np.total_anion());
+        let zero = vec![0.0; nx * ny];
+        let ex = vec![e_field; nx * ny];
+        for _ in 0..steps {
+            np.step(&zero, &zero, &ex, &zero);
+        }
+        assert!((np.total_cation() - cation_mass).abs() < 1e-9 * cation_mass);
+        assert!((np.total_anion() - anion_mass).abs() < 1e-9 * anion_mass);
+        let cation_shift = centroid(&np.cation_concentration()) - cation_start;
+        let anion_shift = centroid(&np.anion_concentration()) - anion_start;
+        let expected = diffusivity * e_field / thermal_voltage * steps as f64;
+        (cation_shift, anion_shift, expected)
+    }
+
+    /// Migration drift is `±D E / V_T` per step (Nernst–Einstein), not `z E / V_T`.
+    #[test]
+    fn test_np_lbm_migration_drift_is_d_e_over_vt() {
+        let (cation, anion, expected) = np_lbm_drift_of_gaussian_bump(1.0, 1.0);
+        assert!((expected - 3.0).abs() < 1e-9, "test setup: {expected}");
+        assert!(
+            (cation - expected).abs() < 0.05 * expected,
+            "cation drift {cation} cells, expected {expected}"
+        );
+        assert!(
+            (anion + expected).abs() < 0.05 * expected,
+            "anion drift {anion} cells, expected {}",
+            -expected
+        );
+    }
+
+    /// The valence enters only through V_T = k_B T / (z e): a divalent ion
+    /// (V_T halved) drifts exactly twice as fast, not z^2 times.
+    #[test]
+    fn test_np_lbm_valence_enters_only_through_thermal_voltage() {
+        let (cation_z1, _, expected_z1) = np_lbm_drift_of_gaussian_bump(1.0, 1.0);
+        let (cation_z2, anion_z2, expected_z2) = np_lbm_drift_of_gaussian_bump(2.0, 0.5);
+        assert!((expected_z2 - 2.0 * expected_z1).abs() < 1e-9);
+        assert!(
+            (cation_z2 - expected_z2).abs() < 0.05 * expected_z2,
+            "divalent cation drift {cation_z2}, expected {expected_z2}"
+        );
+        assert!(
+            (anion_z2 + expected_z2).abs() < 0.05 * expected_z2,
+            "divalent anion drift {anion_z2}, expected {}",
+            -expected_z2
+        );
+        assert!(
+            (cation_z2 / cation_z1 - 2.0).abs() < 0.05,
+            "drift ratio {} should be 2",
+            cation_z2 / cation_z1
         );
     }
 

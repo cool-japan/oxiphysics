@@ -1,6 +1,7 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
+use super::corotational;
 use super::functions::{
     add3, cross3, dot3, len2_3, length3, normalize3, quat_rotate, scale3, sub3,
 };
@@ -111,33 +112,12 @@ impl FEMGpuSolver {
         }
     }
     /// Compute total strain energy (sum over elements).
+    ///
+    /// Elements that reference a node outside `buf` contribute nothing.
     pub fn strain_energy(&self, buf: &DeformableGpuBuffer) -> f64 {
         self.elements
             .iter()
-            .map(|elem| {
-                let [ia, ib, ic, id] = elem.nodes;
-                if ia >= buf.len() || ib >= buf.len() || ic >= buf.len() || id >= buf.len() {
-                    return 0.0;
-                }
-                let (_lambda, mu) = elem.lame();
-                let pairs = [
-                    (buf.positions[ib], buf.positions[ia]),
-                    (buf.positions[ic], buf.positions[ia]),
-                    (buf.positions[id], buf.positions[ia]),
-                ];
-                pairs
-                    .iter()
-                    .zip(elem.dm_inv.iter())
-                    .map(|((pb, pa), dm_row)| {
-                        let ds = sub3(*pb, *pa);
-                        let rest_dir_len =
-                            (dm_row[0] * dm_row[0] + dm_row[1] * dm_row[1] + dm_row[2] * dm_row[2])
-                                .sqrt();
-                        let stretch = length3(ds) * rest_dir_len;
-                        0.5 * mu * (stretch - 1.0) * (stretch - 1.0) * elem.rest_volume
-                    })
-                    .sum::<f64>()
-            })
+            .map(|elem| elem.strain_energy(&buf.positions))
             .sum()
     }
 }
@@ -950,14 +930,25 @@ impl DeformableGpuNode {
         0.5 * self.mass * dot3(self.vel, self.vel)
     }
 }
-/// Corotational FEM element: stores rest-pose shape matrix inverse.
+/// Corotational linear-elastic tetrahedral FEM element.
+///
+/// With the edge matrices `Ds = [x_b − x_a | x_c − x_a | x_d − x_a]` (current) and
+/// `Dm` (rest) the deformation gradient is `F = Ds · Dm⁻¹`.  The strain energy is
+///
+/// `E = V₀ · [ μ‖F − R‖²_F + (λ/2) · tr(RᵀF − I)² ]`,
+///
+/// where `R` is the rotation factor of the polar decomposition `F = R S`.  Rigid
+/// motions leave the energy unchanged, the rest pose is force free, and the nodal
+/// forces are the exact negative gradient of `E`.
 #[derive(Debug, Clone)]
 pub struct CorotationalElement {
     /// Node indices `[a, b, c, d]`.
     pub nodes: [usize; 4],
-    /// Rest-pose shape matrix inverse (3×3, row-major).
+    /// Transpose of the inverse rest-pose edge matrix, `Dm⁻ᵀ` (3×3, row-major):
+    /// row `r` is column `r` of `Dm⁻¹`.  Set by [`from_rest`](Self::from_rest).
     pub dm_inv: [[f64; 3]; 3],
-    /// Rest volume (m³).
+    /// Rest volume (m³); `0` for a degenerate rest tetrahedron, which then
+    /// carries no energy and no force.
     pub rest_volume: f64,
     /// Young's modulus (Pa).
     pub youngs_modulus: f64,
@@ -967,7 +958,9 @@ pub struct CorotationalElement {
 impl CorotationalElement {
     /// Construct a corotational element from four node positions.
     ///
-    /// `rest` – rest-pose positions for nodes `[a, b, c, d]`.
+    /// `rest` – rest-pose positions for nodes `[a, b, c, d]`.  A rest
+    /// tetrahedron whose edge vectors are linearly dependent (relative
+    /// determinant below `1e-12`) is degenerate: it gets `rest_volume = 0`.
     pub fn from_rest(nodes: [usize; 4], rest: &[[f64; 3]; 4], e: f64, nu: f64) -> Self {
         let ra = rest[0];
         let rb = rest[1];
@@ -976,30 +969,26 @@ impl CorotationalElement {
         let c0 = sub3(rb, ra);
         let c1 = sub3(rc, ra);
         let c2 = sub3(rd, ra);
-        let det = c0[0] * (c1[1] * c2[2] - c1[2] * c2[1]) - c0[1] * (c1[0] * c2[2] - c1[2] * c2[0])
-            + c0[2] * (c1[0] * c2[1] - c1[1] * c2[0]);
-        let rest_volume = det.abs() / 6.0;
-        let dm_inv = if det.abs() > 1e-15 {
-            let inv_det = 1.0 / det;
-            [
-                [
-                    (c1[1] * c2[2] - c1[2] * c2[1]) * inv_det,
-                    (c0[2] * c2[1] - c0[1] * c2[2]) * inv_det,
-                    (c0[1] * c1[2] - c0[2] * c1[1]) * inv_det,
-                ],
-                [
-                    (c1[2] * c2[0] - c1[0] * c2[2]) * inv_det,
-                    (c0[0] * c2[2] - c0[2] * c2[0]) * inv_det,
-                    (c0[2] * c1[0] - c0[0] * c1[2]) * inv_det,
-                ],
-                [
-                    (c1[0] * c2[1] - c1[1] * c2[0]) * inv_det,
-                    (c0[1] * c2[0] - c0[0] * c2[1]) * inv_det,
-                    (c0[0] * c1[1] - c0[1] * c1[0]) * inv_det,
-                ],
-            ]
+        let det = dot3(c0, cross3(c1, c2));
+        let edge_scale = length3(c0) * length3(c1) * length3(c2);
+        let degenerate = det.is_nan() || det.abs() <= 1.0e-12 * edge_scale;
+        let (rest_volume, dm_inv) = if degenerate {
+            (0.0, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
         } else {
-            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+            // Rows of Dm⁻¹ are (c1×c2, c2×c0, c0×c1)/det, so its columns -- the
+            // rows of Dm⁻ᵀ stored below -- are assembled component by component.
+            let inv_det = 1.0 / det;
+            let r0 = scale3(cross3(c1, c2), inv_det);
+            let r1 = scale3(cross3(c2, c0), inv_det);
+            let r2 = scale3(cross3(c0, c1), inv_det);
+            (
+                det.abs() / 6.0,
+                [
+                    [r0[0], r1[0], r2[0]],
+                    [r0[1], r1[1], r2[1]],
+                    [r0[2], r1[2], r2[2]],
+                ],
+            )
         };
         Self {
             nodes,
@@ -1009,60 +998,95 @@ impl CorotationalElement {
             poisson_ratio: nu,
         }
     }
-    /// Compute Lamé parameters.
+    /// Compute Lamé parameters `(λ, μ)`.
+    ///
+    /// Poisson's ratio is clamped to `[-0.999, 0.4999]`: `λ` diverges for an
+    /// incompressible material (`ν = 0.5`) and would turn every force into NaN.
     pub fn lame(&self) -> (f64, f64) {
         let e = self.youngs_modulus;
-        let nu = self.poisson_ratio;
+        let nu = self.poisson_ratio.clamp(-0.999, 0.4999);
         let lambda = e * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
         let mu = e / (2.0 * (1.0 + nu));
         (lambda, mu)
     }
+    /// Deformation gradient `F = Ds · Dm⁻¹` for the current node `positions`.
+    ///
+    /// Returns `None` if a node index is outside `positions`.
+    pub fn deformation_gradient(&self, positions: &[[f64; 3]]) -> Option<[[f64; 3]; 3]> {
+        let [ia, ib, ic, id] = self.nodes;
+        let pa = *positions.get(ia)?;
+        let edges = [
+            sub3(*positions.get(ib)?, pa),
+            sub3(*positions.get(ic)?, pa),
+            sub3(*positions.get(id)?, pa),
+        ];
+        let mut f = [[0.0; 3]; 3];
+        for (a, row) in f.iter_mut().enumerate() {
+            for (b, entry) in row.iter_mut().enumerate() {
+                let dm_col = self.dm_inv[b];
+                *entry =
+                    edges[0][a] * dm_col[0] + edges[1][a] * dm_col[1] + edges[2][a] * dm_col[2];
+            }
+        }
+        Some(f)
+    }
+    /// Elastic strain energy (J) of this element at the given node `positions`.
+    ///
+    /// `E = V₀ [ μ‖F − R‖² + (λ/2) tr(RᵀF − I)² ]`; zero for a degenerate rest
+    /// shape or when a node index is outside `positions`.
+    pub fn strain_energy(&self, positions: &[[f64; 3]]) -> f64 {
+        if self.rest_volume <= 0.0 {
+            return 0.0;
+        }
+        let Some(f) = self.deformation_gradient(positions) else {
+            return 0.0;
+        };
+        let (lambda, mu) = self.lame();
+        let r = corotational::polar_rotation(&f);
+        let mut diff = f;
+        for (diff_row, r_row) in diff.iter_mut().zip(r.iter()) {
+            for (d, rv) in diff_row.iter_mut().zip(r_row.iter()) {
+                *d -= rv;
+            }
+        }
+        let trace_term =
+            corotational::trace(&corotational::mul(&corotational::transpose(&r), &f)) - 3.0;
+        self.rest_volume
+            * (mu * corotational::frobenius_sq(&diff) + 0.5 * lambda * trace_term * trace_term)
+    }
     /// Compute nodal forces for this element given current positions.
     ///
-    /// Returns forces for nodes `[a, b, c, d]` in order.
+    /// Returns forces for nodes `[a, b, c, d]` in order.  The first
+    /// Piola-Kirchhoff stress is `P = 2μ(F − R) + λ tr(RᵀF − I) R`; the forces on
+    /// nodes `b`, `c`, `d` are the columns of `−V₀ · P · Dm⁻ᵀ` and node `a` takes
+    /// the negative sum, so the element is force free at rest and in any rigid
+    /// motion and exerts no net force or torque.
     pub fn compute_nodal_forces(&self, positions: &[[f64; 3]]) -> [[f64; 3]; 4] {
-        let [ia, ib, ic, id] = self.nodes;
-        if ia >= positions.len()
-            || ib >= positions.len()
-            || ic >= positions.len()
-            || id >= positions.len()
-        {
-            return [[0.0; 3]; 4];
+        let mut forces = [[0.0f64; 3]; 4];
+        if self.rest_volume <= 0.0 {
+            return forces;
         }
-        let pa = positions[ia];
-        let pb = positions[ib];
-        let pc = positions[ic];
-        let pd = positions[id];
-        let ds0 = sub3(pb, pa);
-        let ds1 = sub3(pc, pa);
-        let ds2 = sub3(pd, pa);
-        let (_lambda, mu) = self.lame();
-        let mut fa = [0.0f64; 3];
-        let mut fb = [0.0f64; 3];
-        let mut fc = [0.0f64; 3];
-        let mut fd = [0.0f64; 3];
-        let f_col = |ds: [f64; 3], dm_row: [f64; 3]| -> [f64; 3] {
-            [
-                ds[0] * dm_row[0] + ds[1] * dm_row[1] + ds[2] * dm_row[2],
-                ds0[0] * dm_row[0] + ds0[1] * dm_row[1] + ds0[2] * dm_row[2],
-                ds1[0] * dm_row[0] + ds1[1] * dm_row[1] + ds1[2] * dm_row[2],
-            ]
+        let Some(f) = self.deformation_gradient(positions) else {
+            return forces;
         };
-        let _ = f_col;
-        for (ds, dm_row, fp) in [
-            (ds0, self.dm_inv[0], &mut fb),
-            (ds1, self.dm_inv[1], &mut fc),
-            (ds2, self.dm_inv[2], &mut fd),
-        ] {
-            let rest_dir_len =
-                (dm_row[0] * dm_row[0] + dm_row[1] * dm_row[1] + dm_row[2] * dm_row[2]).sqrt();
-            let stretch = length3(ds) * rest_dir_len;
-            let dir = normalize3(ds);
-            let f_elastic = scale3(dir, -mu * (stretch - 1.0) * self.rest_volume);
-            *fp = add3(*fp, f_elastic);
-            fa = add3(fa, scale3(f_elastic, -1.0));
+        let (lambda, mu) = self.lame();
+        let r = corotational::polar_rotation(&f);
+        let trace_term = lambda
+            * (corotational::trace(&corotational::mul(&corotational::transpose(&r), &f)) - 3.0);
+        let mut piola = [[0.0; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                piola[i][j] = 2.0 * mu * (f[i][j] - r[i][j]) + trace_term * r[i][j];
+            }
         }
-        [fa, fb, fc, fd]
+        for column in 0..3 {
+            for i in 0..3 {
+                let h: f64 = (0..3).map(|l| piola[i][l] * self.dm_inv[l][column]).sum();
+                forces[column + 1][i] = -self.rest_volume * h;
+            }
+        }
+        forces[0] = scale3(add3(add3(forces[1], forces[2]), forces[3]), -1.0);
+        forces
     }
 }
 /// Shape-matching constraint: pulls a group of particles toward a reference shape.

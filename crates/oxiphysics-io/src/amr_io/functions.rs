@@ -493,6 +493,179 @@ mod tests {
         let h2 = AmrCheckpoint::read(path.to_str().unwrap_or("")).expect("read");
         assert_eq!(h2.levels[1].cells[1].coords, [1, 0, 0]);
     }
+    fn unique_checkpoint_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "oxiphysics_amr_ckpt_{}_{tag}.amrc",
+            std::process::id()
+        ))
+    }
+    fn push_u32(buf: &mut Vec<u8>, v: u32) {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    fn push_f64(buf: &mut Vec<u8>, v: f64) {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    /// Magic, version, time, cycle and the announced level count.
+    fn checkpoint_prefix(num_levels: u32) -> Vec<u8> {
+        let mut buf = Vec::new();
+        push_u32(&mut buf, CHECKPOINT_MAGIC);
+        push_u32(&mut buf, CHECKPOINT_VERSION);
+        push_f64(&mut buf, 0.5);
+        buf.extend_from_slice(&7u64.to_le_bytes());
+        push_u32(&mut buf, num_levels);
+        buf
+    }
+    /// Level index, cell size and domain bounds of one level record.
+    fn level_prefix(level: u32) -> Vec<u8> {
+        let mut buf = Vec::new();
+        push_u32(&mut buf, level);
+        push_f64(&mut buf, 1.0);
+        for b in [0.0, 0.0, 0.0, 4.0, 4.0, 4.0] {
+            push_f64(&mut buf, b);
+        }
+        buf
+    }
+    #[test]
+    fn test_checkpoint_truncated_at_every_offset_returns_err() {
+        let h = make_two_level_hierarchy();
+        let path = unique_checkpoint_path("every_offset");
+        AmrCheckpoint::write(path.to_str().unwrap_or(""), &h).expect("write");
+        let bytes = std::fs::read(&path).expect("read back");
+        let full = AmrCheckpoint::from_bytes(&bytes).expect("complete file must decode");
+        assert_eq!(full.num_levels(), 2);
+        assert_eq!(full.total_cells(), 7);
+        assert_eq!(full.cycle, 42);
+        for len in 0..bytes.len() {
+            let err = AmrCheckpoint::from_bytes(&bytes[..len])
+                .expect_err("a truncated checkpoint must not decode");
+            assert_eq!(
+                err.kind(),
+                io::ErrorKind::UnexpectedEof,
+                "prefix of {len} bytes: {err}"
+            );
+        }
+        std::fs::remove_file(&path).ok();
+    }
+    #[test]
+    fn test_checkpoint_read_truncated_file_returns_err() {
+        let h = make_two_level_hierarchy();
+        let path = unique_checkpoint_path("trunc_file_src");
+        AmrCheckpoint::write(path.to_str().unwrap_or(""), &h).expect("write");
+        let bytes = std::fs::read(&path).expect("read back");
+        std::fs::remove_file(&path).ok();
+        for (tag, len) in [
+            ("empty", 0),
+            ("magic_only", 4),
+            ("header", 27),
+            ("mid_level", bytes.len() / 2),
+            ("last_byte", bytes.len() - 1),
+        ] {
+            let cut = unique_checkpoint_path(tag);
+            std::fs::write(&cut, &bytes[..len]).expect("write truncated file");
+            let result = AmrCheckpoint::read(cut.to_str().unwrap_or(""));
+            std::fs::remove_file(&cut).ok();
+            let err = result.expect_err("truncated file must not decode");
+            assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof, "{tag}: {err}");
+        }
+    }
+    #[test]
+    fn test_checkpoint_unsupported_version_rejected() {
+        let mut bytes = checkpoint_prefix(0);
+        bytes[4..8].copy_from_slice(&(CHECKPOINT_VERSION + 1).to_le_bytes());
+        let err = AmrCheckpoint::from_bytes(&bytes).expect_err("version mismatch");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("version"), "message: {err}");
+        let ok = AmrCheckpoint::from_bytes(&checkpoint_prefix(0)).expect("empty hierarchy");
+        assert_eq!(ok.num_levels(), 0);
+        assert_eq!(ok.cycle, 7);
+        assert!((ok.time - 0.5).abs() < 1e-15);
+    }
+    #[test]
+    fn test_checkpoint_huge_counts_do_not_allocate_or_panic() {
+        // Level count far larger than the bytes that follow.
+        let err = AmrCheckpoint::from_bytes(&checkpoint_prefix(u32::MAX)).expect_err("levels");
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        // Field-name count.
+        let mut bytes = checkpoint_prefix(1);
+        bytes.extend(level_prefix(0));
+        push_u32(&mut bytes, u32::MAX);
+        let err = AmrCheckpoint::from_bytes(&bytes).expect_err("field names");
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        // Field-name length.
+        let mut bytes = checkpoint_prefix(1);
+        bytes.extend(level_prefix(0));
+        push_u32(&mut bytes, 1);
+        push_u32(&mut bytes, u32::MAX);
+        let err = AmrCheckpoint::from_bytes(&bytes).expect_err("name length");
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        // Cell count.
+        let mut bytes = checkpoint_prefix(1);
+        bytes.extend(level_prefix(0));
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, u32::MAX);
+        let err = AmrCheckpoint::from_bytes(&bytes).expect_err("cells");
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        // Per-cell value count.
+        let mut bytes = checkpoint_prefix(1);
+        bytes.extend(level_prefix(0));
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 1);
+        for coord in [0i64, 0, 0] {
+            bytes.extend_from_slice(&coord.to_le_bytes());
+        }
+        push_u32(&mut bytes, u32::MAX);
+        let err = AmrCheckpoint::from_bytes(&bytes).expect_err("cell values");
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+    #[test]
+    fn test_checkpoint_corrupted_bytes_never_panic() {
+        let h = make_two_level_hierarchy();
+        let path = unique_checkpoint_path("corrupt_sweep");
+        AmrCheckpoint::write(path.to_str().unwrap_or(""), &h).expect("write");
+        let bytes = std::fs::read(&path).expect("read back");
+        std::fs::remove_file(&path).ok();
+        let mut decoded = 0usize;
+        let mut rejected = 0usize;
+        for at in 0..bytes.len() {
+            for fill in [0x00u8, 0x01, 0x7F, 0x80, 0xFF] {
+                let mut corrupt = bytes.clone();
+                corrupt[at] = fill;
+                match AmrCheckpoint::from_bytes(&corrupt) {
+                    Ok(hierarchy) => {
+                        decoded += 1;
+                        for grid in &hierarchy.levels {
+                            // The refinement ratio is `1 << level`, which
+                            // would overflow for an implausible level.
+                            assert!(grid.level_meta.level < usize::BITS as usize);
+                            assert!(grid.level_meta.refinement_ratio() >= 1);
+                        }
+                    }
+                    Err(_) => rejected += 1,
+                }
+            }
+        }
+        // Payload bytes (cell values) still decode, structural bytes (counts,
+        // lengths, magic, version) are rejected.
+        assert!(decoded > 0, "no corrupted checkpoint decoded");
+        assert!(rejected > 0, "no corrupted checkpoint was rejected");
+    }
+    #[test]
+    fn test_checkpoint_invalid_utf8_and_level_rejected() {
+        let mut bytes = checkpoint_prefix(1);
+        bytes.extend(level_prefix(0));
+        push_u32(&mut bytes, 1);
+        push_u32(&mut bytes, 2);
+        bytes.extend_from_slice(&[0xFF, 0xFE]);
+        push_u32(&mut bytes, 0);
+        let err = AmrCheckpoint::from_bytes(&bytes).expect_err("bad utf8");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let mut bytes = checkpoint_prefix(1);
+        bytes.extend(level_prefix(u32::MAX));
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 0);
+        let err = AmrCheckpoint::from_bytes(&bytes).expect_err("implausible level");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
     #[test]
     fn test_empty_hierarchy() {
         let h = AmrHierarchy::new();

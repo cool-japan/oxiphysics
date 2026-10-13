@@ -2,51 +2,72 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use std::sync::OnceLock;
+
 use oxiphysics_core::math::{Real, Vec3};
 
 use super::functions::*;
+use super::solid::HullSolid;
 
 /// A convex hull defined by a set of vertices (uses nalgebra `Vec3`).
-#[derive(Debug, Clone)]
+///
+/// The [`Shape`](crate::shape::Shape) implementation treats the hull as the
+/// uniform solid spanned by `vertices`: volume, centre of mass and inertia
+/// tensor come from exact polyhedral integration over the hull facets, and
+/// ray casts intersect the facets.  The facets are computed lazily on first
+/// use and cached.  Vertex sets that span no volume (fewer than four points,
+/// or all points coplanar or collinear, or a non-finite coordinate) have zero
+/// volume and inertia, their centre of mass is the vertex mean and ray casts
+/// never hit.
+#[derive(Clone)]
 pub struct ConvexHull {
     /// Vertices of the convex hull.
     pub vertices: Vec<Vec3>,
+    /// Facets and mass properties derived from `vertices`.
+    solid: OnceLock<SolidCache>,
 }
+
+/// Derived polyhedron together with the vertex list it was built from.
+///
+/// `vertices` is a public field, so the cache remembers its source and is
+/// ignored if the vertices were changed after it was filled.
+#[derive(Clone)]
+struct SolidCache {
+    source: Vec<Vec3>,
+    solid: Option<HullSolid>,
+}
+
+impl std::fmt::Debug for ConvexHull {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConvexHull")
+            .field("vertices", &self.vertices)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ConvexHull {
     /// Create a new convex hull from vertices.
     pub fn new(vertices: Vec<Vec3>) -> Self {
-        Self { vertices }
+        Self {
+            vertices,
+            solid: OnceLock::new(),
+        }
     }
-    /// Compute volume and center of mass via tetrahedral decomposition.
-    /// Returns (volume, center_of_mass).
-    pub(super) fn tetra_decomposition(&self) -> (Real, Vec3) {
-        if self.vertices.len() < 4 {
-            return (0.0, Vec3::zeros());
-        }
-        let reference = self.centroid();
-        let n = self.vertices.len();
-        let mut total_volume = 0.0;
-        let mut weighted_center = Vec3::zeros();
-        for i in 1..n {
-            for j in (i + 1)..n {
-                let a = self.vertices[0] - reference;
-                let b = self.vertices[i] - reference;
-                let c = self.vertices[j] - reference;
-                let vol = a.dot(&b.cross(&c)) / 6.0;
-                let tet_center =
-                    (reference + self.vertices[0] + self.vertices[i] + self.vertices[j]) * 0.25;
-                total_volume += vol;
-                weighted_center += tet_center * vol;
-            }
-        }
-        if total_volume.abs() > 1e-12 {
-            weighted_center /= total_volume;
-            (total_volume.abs(), weighted_center)
+    /// Run `f` on the polyhedron spanned by the current `vertices`
+    /// (`None` if they span no volume).
+    pub(super) fn with_solid<R>(&self, f: impl FnOnce(Option<&HullSolid>) -> R) -> R {
+        let cache = self.solid.get_or_init(|| SolidCache {
+            source: self.vertices.clone(),
+            solid: HullSolid::build(&self.vertices),
+        });
+        if cache.source == self.vertices {
+            f(cache.solid.as_ref())
         } else {
-            (0.0, self.centroid())
+            f(HullSolid::build(&self.vertices).as_ref())
         }
     }
-    fn centroid(&self) -> Vec3 {
+    /// Mean of the vertices (zero for an empty hull).
+    pub(super) fn centroid(&self) -> Vec3 {
         if self.vertices.is_empty() {
             return Vec3::zeros();
         }
@@ -104,19 +125,42 @@ pub struct ConvexHull3D {
 impl ConvexHull3D {
     /// Build a convex hull from a point cloud using the Quickhull algorithm.
     ///
-    /// Returns `None` if the input has fewer than 4 non-coplanar points.
+    /// Returns `None` if the input has fewer than 4 non-coplanar points or if
+    /// any coordinate is not finite.  The degeneracy and visibility tolerances
+    /// scale with the extent of the cloud, so a cloud and a scaled copy of it
+    /// yield the same hull.
     pub fn build(points: &[[f64; 3]]) -> Option<ConvexHull3D> {
-        if points.len() < 4 {
+        if points.len() < 4 || points.iter().any(|p| p.iter().any(|c| !c.is_finite())) {
             return None;
         }
+        let extent = (0..3)
+            .map(|axis| {
+                let lo = points.iter().map(|p| p[axis]).fold(f64::INFINITY, f64::min);
+                let hi = points
+                    .iter()
+                    .map(|p| p[axis])
+                    .fold(f64::NEG_INFINITY, f64::max);
+                hi - lo
+            })
+            .fold(0.0_f64, f64::max);
+        // Tolerances relative to the size of the cloud: a facet normal (a
+        // cross product, length ~ extent²) is degenerate below `min_normal_sq`,
+        // the seed tetrahedron needs a vertex `seed_distance` off the seed
+        // plane, and a point is outside a facet if it is more than
+        // `visible_distance` above its plane (a geometric distance, so thin
+        // sliver facets are judged like fat ones).
+        let min_normal_sq = 1e-24 * extent.powi(4);
+        let seed_distance = 1e-12 * extent;
+        let visible_distance = 1e-10 * extent;
         let (i0, i1) = ch_extreme_pair(points)?;
         let i2 = ch_farthest_from_line(points, i0, i1)?;
         let n_seed = face_normal(points[i0], points[i1], points[i2]);
-        if dot(n_seed, n_seed) < 1e-24 {
+        if dot(n_seed, n_seed) < min_normal_sq {
             return None;
         }
         let i3 = ch_farthest_from_plane(points, n_seed, points[i0], &[i0, i1, i2])?;
-        if face_plane_dist(n_seed, points[i0], points[i3]).abs() < 1e-12 {
+        let seed_length = dot(n_seed, n_seed).sqrt();
+        if face_plane_dist(n_seed, points[i0], points[i3]).abs() < seed_distance * seed_length {
             return None;
         }
         let tet = [i0, i1, i2, i3];
@@ -128,7 +172,7 @@ impl ConvexHull3D {
             ([i1, i2, i3], i0),
         ];
         for (face, interior) in &combos {
-            if let Some(oriented) = ch_orient_face(*face, *interior, points) {
+            if let Some(oriented) = ch_orient_face(*face, *interior, points, min_normal_sq) {
                 hull.push(oriented);
             }
         }
@@ -140,7 +184,9 @@ impl ConvexHull3D {
                 .enumerate()
                 .filter(|(_, face)| {
                     let n = face_normal(points[face[0]], points[face[1]], points[face[2]]);
-                    face_plane_dist(n, points[face[0]], p) > 1e-10
+                    let length = dot(n, n).sqrt();
+                    length > 0.0
+                        && face_plane_dist(n, points[face[0]], p) > visible_distance * length
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -156,25 +202,15 @@ impl ConvexHull3D {
                 .collect();
             for (e0, e1) in horizon {
                 let n_new = face_normal(points[e0], points[e1], points[p_idx]);
-                if dot(n_new, n_new) < 1e-24 {
+                if dot(n_new, n_new) < min_normal_sq {
                     continue;
                 }
-                let interior_ref = new_hull.first().and_then(|f| {
-                    f.iter()
-                        .find(|&&v| v != e0 && v != e1 && v != p_idx)
-                        .copied()
-                });
-                let oriented = match interior_ref {
-                    Some(ref_v) => {
-                        if face_plane_dist(n_new, points[e0], points[ref_v]) > 0.0 {
-                            [e1, e0, p_idx]
-                        } else {
-                            [e0, e1, p_idx]
-                        }
-                    }
-                    None => [e0, e1, p_idx],
-                };
-                new_hull.push(oriented);
+                // The horizon edge runs e0 -> e1 in the removed visible facet, so
+                // winding the replacement as (e0, e1, p) keeps it consistent with
+                // the facet across the edge.  No geometric orientation test is
+                // used: for (nearly) coplanar input the sign of a distance to a
+                // coplanar reference vertex is rounding noise.
+                new_hull.push([e0, e1, p_idx]);
             }
             hull = new_hull;
         }
@@ -185,14 +221,12 @@ impl ConvexHull3D {
         used.sort_unstable();
         used.dedup();
         let vertices: Vec<[f64; 3]> = used.iter().map(|&i| points[i]).collect();
-        let remap = |old: usize| -> usize {
-            used.binary_search(&old)
-                .expect("element must be present in sorted list")
-        };
+        // Every face index was collected into `used`, so the search succeeds.
+        let remap = |old: usize| used.binary_search(&old).ok();
         let faces: Vec<[usize; 3]> = hull
             .iter()
-            .map(|f| [remap(f[0]), remap(f[1]), remap(f[2])])
-            .collect();
+            .map(|f| Some([remap(f[0])?, remap(f[1])?, remap(f[2])?]))
+            .collect::<Option<_>>()?;
         Some(ConvexHull3D { vertices, faces })
     }
     /// Volume via signed tetrahedral decomposition from the centroid.
@@ -341,9 +375,6 @@ impl ConvexHull3D {
             let c = sub(self.vertices[face[2]], com);
             let signed_vol = dot(a, cross(b, c)) / 6.0;
             total_vol += signed_vol;
-            for &(p, q) in &[(a, b), (b, c), (a, c), (a, a), (b, b), (c, c)] {
-                let _ = (p, q);
-            }
             let ax = a[0];
             let ay = a[1];
             let az = a[2];

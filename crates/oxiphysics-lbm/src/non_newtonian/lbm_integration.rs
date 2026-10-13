@@ -8,6 +8,7 @@
 //! collision routines, and utility functions.
 
 use super::{CS2, LocalViscosityModel, MU_MAX, MU_MIN, NonNewtonianFluid, NonNewtonianModel};
+use crate::lattice::{equilibrium_d2q9, macros_from_d2q9, shear_rate_magnitude_d2q9};
 
 // ---------------------------------------------------------------------------
 // NonNewtonianLBM
@@ -746,10 +747,151 @@ pub(crate) const C9_NN: [[i32; 2]; 9] = [
     [1, -1],
 ];
 
+// ---------------------------------------------------------------------------
+// Self-consistent relaxation time from the non-equilibrium stress
+// ---------------------------------------------------------------------------
+
+/// Smallest relaxation time the self-consistent solver will return.
+///
+/// It keeps `omega = 1/tau` strictly below the BGK stability limit of 2 even
+/// when the viscosity model returns (almost) zero.
+const TAU_MIN: f64 = 0.5 + 1.0e-6;
+
+/// Maximum number of Steffensen (Aitken-accelerated fixed-point) iterations
+/// before the solver falls back to bracketing.
+const SELF_CONSISTENT_MAX_ITERATIONS: usize = 16;
+
+/// Relative tolerance on the relaxation time of the self-consistent solver.
+const SELF_CONSISTENT_TOL: f64 = 1.0e-12;
+
+/// Solve for the BGK relaxation time of a D2Q9 node whose viscosity depends on
+/// the local shear rate.
+///
+/// To first order in the Chapman-Enskog expansion the non-equilibrium
+/// momentum flux of a BGK node is `Pi_neq = -2 rho cs^2 tau S`, so the local
+/// shear rate `gamma = sqrt(2 S:S)` can be read from the non-equilibrium
+/// populations,
+///
+/// ```text
+/// gamma(tau) = sqrt(2 Pi_neq:Pi_neq) / (2 rho cs^2 tau)
+/// ```
+///
+/// (see [`shear_rate_magnitude_d2q9`]).  The relaxation time in turn follows
+/// from the rheology, `tau = 1/2 + nu(gamma)/cs^2`, which makes `tau` and
+/// `gamma` mutually dependent.  This function returns the self-consistent
+/// solution of
+///
+/// ```text
+/// tau = 1/2 + nu( gamma(tau) ) / cs^2 .
+/// ```
+///
+/// The solver iterates the fixed-point map `tau -> 1/2 + nu(gamma(tau))/cs^2`
+/// from the trial value `tau = 1` with Aitken (Steffensen) acceleration, which
+/// converges in a handful of viscosity evaluations for the usual rheologies and
+/// also for maps with slope outside `(-1, 1)` (strong shear thickening, yield
+/// stress close to the yield point) where plain iteration oscillates or crawls.
+/// A residual check guards the result; if the accelerated iteration fails, the
+/// root of `tau - T(tau)` is bracketed and bisected in `ln(tau - 1/2)`, which
+/// is always convergent (for a viscosity jump, as in an un-yielded Bingham
+/// plug, the solution is the point where the jump is crossed).
+///
+/// A node at equilibrium (`fneq = 0`) has no shear, so the zero-shear
+/// relaxation time `1/2 + nu(0)/cs^2` is returned.  The result is never below
+/// `1/2 + 1e-6`.
+///
+/// # Arguments
+/// * `fneq` -- non-equilibrium populations `f - feq` of the node
+/// * `rho` -- node density
+/// * `viscosity` -- kinematic viscosity as a function of the scalar shear rate
+pub fn non_newtonian_relaxation_time_d2q9<F: Fn(f64) -> f64>(
+    fneq: &[f64; 9],
+    rho: f64,
+    viscosity: F,
+) -> f64 {
+    let shear_at = |tau: f64| -> f64 {
+        if rho > 0.0 {
+            shear_rate_magnitude_d2q9(fneq, rho, tau)
+        } else {
+            0.0
+        }
+    };
+    // The fixed-point map T(tau) = 1/2 + nu(gamma(tau)) / cs^2.
+    let map = |tau: f64| -> f64 { (0.5 + viscosity(shear_at(tau)) / CS2).max(TAU_MIN) };
+
+    // No shear (or no mass, or a non-finite state): the shear rate does not
+    // depend on tau and there is nothing to iterate.
+    let trial_shear = shear_at(1.0);
+    if !(trial_shear.is_finite() && trial_shear > 0.0) {
+        return map(1.0);
+    }
+
+    // Steffensen iteration on the fixed-point map.
+    let mut tau = 1.0_f64;
+    for _ in 0..SELF_CONSISTENT_MAX_ITERATIONS {
+        let t1 = map(tau);
+        let t2 = map(t1);
+        let denominator = t2 - 2.0 * t1 + tau;
+        let scale = tau.abs() + t1.abs() + t2.abs();
+        let accelerated = tau - (t1 - tau) * (t1 - tau) / denominator;
+        let next = if denominator.abs() > f64::EPSILON * scale
+            && accelerated.is_finite()
+            && accelerated > TAU_MIN
+        {
+            accelerated
+        } else {
+            t2
+        };
+        if (next - tau).abs() <= SELF_CONSISTENT_TOL * next {
+            // Accept only a genuine fixed point of the map.
+            if (map(next) - next).abs() <= 1.0e-9 * next {
+                return next;
+            }
+            break;
+        }
+        tau = next;
+    }
+
+    // Safeguarded fallback: bracket and bisect the root of g(tau) = tau - T(tau).
+    let residual = |tau: f64| -> f64 { tau - map(tau) };
+    if residual(TAU_MIN) >= 0.0 {
+        return TAU_MIN;
+    }
+    let mut hi = 2.0_f64;
+    for _ in 0..64 {
+        if residual(hi) > 0.0 {
+            break;
+        }
+        hi *= 4.0;
+    }
+    let mut x_lo = (TAU_MIN - 0.5).ln();
+    let mut x_hi = (hi - 0.5).ln();
+    for _ in 0..200 {
+        let x_mid = 0.5 * (x_lo + x_hi);
+        if residual(0.5 + x_mid.exp()) < 0.0 {
+            x_lo = x_mid;
+        } else {
+            x_hi = x_mid;
+        }
+        if x_hi - x_lo < 1.0e-15 {
+            break;
+        }
+    }
+    0.5 + (0.5 * (x_lo + x_hi)).exp()
+}
+
+// ---------------------------------------------------------------------------
+// apply_non_newtonian_collision
+// ---------------------------------------------------------------------------
+
 /// Apply a non-Newtonian BGK collision to a single D2Q9 node.
 ///
 /// The local shear rate is estimated from the second invariant of the
-/// non-equilibrium stress tensor (Chapman-Enskog approximation).
+/// non-equilibrium stress tensor of the node (Chapman-Enskog approximation,
+/// see [`non_newtonian_relaxation_time_d2q9`]); it is therefore independent of
+/// the bulk velocity `u` (a uniformly translating fluid is not sheared) and
+/// does not vanish at a stagnation point inside a sheared region.  Because the
+/// relaxation time depends on the shear rate and vice versa, the
+/// self-consistent `tau` is solved for.
 ///
 /// # Arguments
 /// * `f` -- D2Q9 distribution functions for this node (modified in-place)
@@ -775,12 +917,13 @@ pub fn apply_non_newtonian_collision(
             W9_NN[i] * rho * (1.0 + eu / CS2 + eu * eu / (2.0 * CS2 * CS2) - u_sq / (2.0 * CS2));
     }
 
-    // Estimate local shear rate from velocity magnitude (simple approximation)
-    let shear_rate = u_sq.sqrt();
-
-    // Get effective viscosity and compute omega
-    let nu_eff = model.viscosity(shear_rate);
-    let tau = effective_tau(nu_eff, CS2, 1.0);
+    // Shear rate from the non-equilibrium part of the populations, solved
+    // together with the relaxation time it determines.
+    let mut fneq = [0.0_f64; 9];
+    for i in 0..9 {
+        fneq[i] = f[i] - feq[i];
+    }
+    let tau = non_newtonian_relaxation_time_d2q9(&fneq, rho, |gamma| model.viscosity(gamma));
     let omega = 1.0 / tau;
 
     // BGK relaxation
@@ -796,34 +939,32 @@ pub fn apply_non_newtonian_collision(
 /// Perform a single BGK collision step on a 2D grid using a spatially varying
 /// non-Newtonian viscosity model.
 ///
-/// The relaxation time tau(x,y) is computed from the local shear rate, which is
-/// estimated from the non-equilibrium part of the distributions.
+/// The relaxation time tau(x,y) is computed from the local shear rate
+/// `gamma = sqrt(2 Pi_neq:Pi_neq) / (2 rho cs^2 tau)` of the non-equilibrium
+/// momentum flux `Pi_neq` (all three independent components `Pi_xx`, `Pi_yy`,
+/// `Pi_xy` enter).  Since `tau = 1/2 + nu(gamma)/cs^2` itself depends on the
+/// shear rate, the self-consistent pair is solved for, see
+/// [`non_newtonian_relaxation_time_d2q9`].  The model's viscosity is the
+/// kinematic viscosity in lattice units.
+///
+/// `pop` holds one population array per node (`n >= nx * ny` entries are
+/// required; only the first `nx * ny` are collided).
 pub fn non_newtonian_bgk_step_2d<M: LocalViscosityModel>(
     pop: &mut [[f64; 9]],
     nx: usize,
     ny: usize,
     model: &M,
 ) {
-    use crate::lattice::{CS2, D2Q9_VELOCITIES, equilibrium_d2q9, macros_from_d2q9};
     let n = nx * ny;
     for cell in pop[..n].iter_mut() {
         let f_copy = *cell;
         let (rho, ux, uy) = macros_from_d2q9(&f_copy);
         let feq = equilibrium_d2q9(rho, ux, uy);
-        // Estimate shear rate from |fneq|
-        let mut pi_xy = 0.0f64;
-        let mut pi_xx = 0.0f64;
-        for (q, c) in D2Q9_VELOCITIES.iter().enumerate() {
-            let cx = c[0] as f64;
-            let cy = c[1] as f64;
-            let fneq_q = f_copy[q] - feq[q];
-            pi_xy += cx * cy * fneq_q;
-            pi_xx += cx * cx * fneq_q;
+        let mut fneq = [0.0_f64; 9];
+        for q in 0..9 {
+            fneq[q] = f_copy[q] - feq[q];
         }
-        // Approximate |S| = sqrt(pi_xy^2 + ...) / (2 rho cs^2 tau) <- iterative
-        let gamma_approx = (pi_xy * pi_xy + pi_xx * pi_xx).sqrt();
-        let mu = model.viscosity(gamma_approx);
-        let tau = 0.5 + mu / CS2;
+        let tau = non_newtonian_relaxation_time_d2q9(&fneq, rho, |gamma| model.viscosity(gamma));
         let omega = 1.0 / tau;
         for (fi, &feq_i) in cell.iter_mut().zip(feq.iter()) {
             *fi += omega * (feq_i - *fi);

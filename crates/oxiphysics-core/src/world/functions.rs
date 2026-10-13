@@ -111,7 +111,7 @@ mod tests {
     fn test_world_step_with_accumulator_substeps() {
         let mut world = PhysicsWorld::new();
         world.fixed_dt = 1.0 / 60.0;
-        let steps = world.step_with_accumulator(1.0 / 30.0);
+        let steps = world.step_with_accumulator(1.0 / 30.0).unwrap();
         assert_eq!(steps, 2);
     }
     #[test]

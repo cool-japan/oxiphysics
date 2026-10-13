@@ -6,12 +6,39 @@
 //! Exposes a JSON-oriented surface around frame-level profiling with named
 //! scopes, call counts, and nanosecond timing, suitable for use across the
 //! WASM boundary.
+//!
+//! # Clock
+//!
+//! All timings come from [`crate::wasm_helpers::now_ms`] (`performance.now()`
+//! on `wasm32`, a monotonic `Instant` baseline natively).  `std::time::Instant`
+//! is deliberately not used directly: on `wasm32-unknown-unknown` it panics,
+//! which aborts the whole WebAssembly instance.  When a target exposes no
+//! clock at all, the affected timings are reported as `0` and
+//! [`WasmFrameReport::clock_available`] is `false` instead of a made-up number.
 
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
 use wasm_bindgen::prelude::*;
 
-use crate::wasm_helpers::{err_to_jsvalue, to_js_value};
+use crate::wasm_helpers::{err_to_jsvalue, now_ms, to_js_value};
+
+/// Nanoseconds between two [`now_ms`] samples.
+///
+/// Returns `None` when either endpoint is missing (the target has no clock) or
+/// the interval is not finite.  A negative interval (a clock that stepped
+/// backwards) is clamped to zero.
+fn elapsed_ns(start: Option<f64>, end: Option<f64>) -> Option<u64> {
+    let elapsed_ms = end? - start?;
+    if !elapsed_ms.is_finite() {
+        return None;
+    }
+    Some((elapsed_ms.max(0.0) * 1.0e6) as u64)
+}
+
+/// Serde default for [`WasmFrameReport::clock_available`]: reports produced
+/// before the field existed were always measured with a real clock.
+fn default_clock_available() -> bool {
+    true
+}
 
 // ---------------------------------------------------------------------------
 // WasmScopeNode
@@ -34,8 +61,15 @@ pub struct WasmScopeNode {
 /// Per-frame profiling summary produced by [`WasmProfilerSession::end_frame`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmFrameReport {
-    /// Total wall-clock nanoseconds for the frame.
+    /// Total wall-clock nanoseconds for the frame (`0` when the frame was not
+    /// begun with [`WasmProfilerSession::begin_frame`] or no clock exists).
     pub frame_ns: u64,
+    /// `false` when the platform exposed no clock for at least one timing
+    /// sample of this frame; every unmeasurable duration is then reported as
+    /// `0` rather than fabricated.  Always `true` on browsers, workers and
+    /// native targets.
+    #[serde(default = "default_clock_available")]
+    pub clock_available: bool,
     /// Root of the scope tree (name = `"frame"`).
     pub root: WasmScopeNode,
 }
@@ -102,20 +136,15 @@ struct ArenaNode {
 /// On drop, records elapsed nanoseconds and pops the scope off the stack.
 pub struct WasmScopeGuard<'a> {
     session: &'a mut WasmProfilerSession,
-    start: Instant,
+    /// Clock sample taken when the scope opened (`None` without a clock).
+    start: Option<f64>,
     node_idx: usize,
 }
 
 impl Drop for WasmScopeGuard<'_> {
     fn drop(&mut self) {
-        let elapsed_ns = self.start.elapsed().as_nanos() as u64;
-        if let Some(node) = self.session.arena.get_mut(self.node_idx) {
-            node.total_ns += elapsed_ns;
-            if elapsed_ns > node.max_ns {
-                node.max_ns = elapsed_ns;
-            }
-            node.call_count += 1;
-        }
+        let elapsed_ns = self.session.elapsed_since(self.start);
+        self.session.record_scope(self.node_idx, elapsed_ns);
         self.session.stack.pop();
     }
 }
@@ -132,11 +161,16 @@ impl Drop for WasmScopeGuard<'_> {
 pub struct WasmProfilerSession {
     arena: Vec<ArenaNode>,
     stack: Vec<usize>,
-    /// Parallel stack of scope start `Instant`s used by the JS-facing
+    /// Parallel stack of scope start clock samples (milliseconds from
+    /// [`now_ms`], `None` when the target has no clock) used by the JS-facing
     /// `push_scope_js` / `pop_scope_js` API.  The Rust-side RAII `scope()`
     /// API does not push to this stack.
-    scope_starts: Vec<Instant>,
-    frame_start: Option<Instant>,
+    scope_starts: Vec<Option<f64>>,
+    /// Clock sample taken by [`Self::begin_frame`], in milliseconds.
+    frame_start: Option<f64>,
+    /// Set when any clock sample of the current frame was unavailable; it
+    /// becomes `!clock_available` in the next [`WasmFrameReport`].
+    clock_missed: bool,
 }
 
 impl WasmProfilerSession {
@@ -147,6 +181,38 @@ impl WasmProfilerSession {
             stack: Vec::new(),
             scope_starts: Vec::new(),
             frame_start: None,
+            clock_missed: false,
+        }
+    }
+
+    /// Take one clock sample, remembering when the target has no clock.
+    fn sample_clock(&mut self) -> Option<f64> {
+        let now = now_ms();
+        if now.is_none() {
+            self.clock_missed = true;
+        }
+        now
+    }
+
+    /// Nanoseconds elapsed since the clock sample `start`, or `0` when the
+    /// interval could not be measured (which flags the frame as clockless).
+    fn elapsed_since(&mut self, start: Option<f64>) -> u64 {
+        let end = self.sample_clock();
+        match elapsed_ns(start, end) {
+            Some(ns) => ns,
+            None => {
+                self.clock_missed = true;
+                0
+            }
+        }
+    }
+
+    /// Fold one finished call of arena node `node_idx` into its statistics.
+    fn record_scope(&mut self, node_idx: usize, elapsed_ns: u64) {
+        if let Some(node) = self.arena.get_mut(node_idx) {
+            node.total_ns = node.total_ns.saturating_add(elapsed_ns);
+            node.max_ns = node.max_ns.max(elapsed_ns);
+            node.call_count += 1;
         }
     }
 
@@ -155,7 +221,8 @@ impl WasmProfilerSession {
         self.arena.clear();
         self.stack.clear();
         self.scope_starts.clear();
-        self.frame_start = Some(Instant::now());
+        self.clock_missed = false;
+        self.frame_start = self.sample_clock();
     }
 
     /// Open a named scope.  Returns a guard that records time on drop.
@@ -178,19 +245,26 @@ impl WasmProfilerSession {
                 idx
             });
         self.stack.push(node_idx);
+        let start = self.sample_clock();
         WasmScopeGuard {
             session: self,
-            start: Instant::now(),
+            start,
             node_idx,
         }
     }
 
     /// Finalise the current frame and return a [`WasmFrameReport`].
+    ///
+    /// Any scope left open (a `push_scope` without its `pop_scope`) is
+    /// discarded together with the frame, so the next frame starts from an
+    /// empty scope stack.
     pub fn end_frame(&mut self) -> WasmFrameReport {
-        let frame_ns = self
-            .frame_start
-            .take()
-            .map_or(0, |s| s.elapsed().as_nanos() as u64);
+        let frame_ns = match self.frame_start.take() {
+            Some(start) => self.elapsed_since(Some(start)),
+            None => 0,
+        };
+        let clock_available = !self.clock_missed;
+        self.clock_missed = false;
 
         // Build scope tree from arena
         let root_children: Vec<WasmScopeNode> = self
@@ -211,8 +285,13 @@ impl WasmProfilerSession {
 
         self.arena.clear();
         self.stack.clear();
+        self.scope_starts.clear();
 
-        WasmFrameReport { frame_ns, root }
+        WasmFrameReport {
+            frame_ns,
+            clock_available,
+            root,
+        }
     }
 
     fn build_node(&self, idx: usize) -> WasmScopeNode {
@@ -287,7 +366,8 @@ impl WasmProfilerSession {
                 idx
             });
         self.stack.push(node_idx);
-        self.scope_starts.push(Instant::now());
+        let start = self.sample_clock();
+        self.scope_starts.push(start);
     }
 
     /// Close the most recently opened scope.
@@ -298,14 +378,8 @@ impl WasmProfilerSession {
         let (Some(node_idx), Some(start)) = (self.stack.pop(), self.scope_starts.pop()) else {
             return;
         };
-        let elapsed_ns = start.elapsed().as_nanos() as u64;
-        if let Some(node) = self.arena.get_mut(node_idx) {
-            node.total_ns += elapsed_ns;
-            if elapsed_ns > node.max_ns {
-                node.max_ns = elapsed_ns;
-            }
-            node.call_count += 1;
-        }
+        let elapsed_ns = self.elapsed_since(start);
+        self.record_scope(node_idx, elapsed_ns);
     }
 
     /// Finalise the current frame and return the report as a `JsValue`.
@@ -469,5 +543,171 @@ mod tests {
         let _ = s.end_frame();
         s.begin_frame();
         assert_eq!(s.node_count(), 0, "begin_frame should clear arena");
+    }
+
+    // ---- wasm-safe clock regression (F5717 / F5719) -----------------------
+
+    /// Busy-wait until `ms` milliseconds have elapsed on the profiler's clock.
+    fn spin_for_ms(ms: f64) {
+        let start = now_ms().expect("native clock is always available");
+        while now_ms().expect("native clock is always available") - start < ms {
+            std::hint::spin_loop();
+        }
+    }
+
+    #[test]
+    fn test_elapsed_ns_converts_milliseconds() {
+        assert_eq!(elapsed_ns(Some(1.0), Some(3.5)), Some(2_500_000));
+        assert_eq!(elapsed_ns(Some(10.0), Some(10.0)), Some(0));
+    }
+
+    #[test]
+    fn test_elapsed_ns_without_clock_is_unmeasurable() {
+        assert_eq!(elapsed_ns(None, Some(1.0)), None);
+        assert_eq!(elapsed_ns(Some(1.0), None), None);
+        assert_eq!(elapsed_ns(None, None), None);
+        assert_eq!(elapsed_ns(Some(f64::NAN), Some(1.0)), None);
+        assert_eq!(elapsed_ns(Some(0.0), Some(f64::INFINITY)), None);
+    }
+
+    #[test]
+    fn test_elapsed_ns_backwards_clock_clamps_to_zero() {
+        assert_eq!(elapsed_ns(Some(5.0), Some(4.0)), Some(0));
+    }
+
+    #[test]
+    fn test_profiler_raii_scope_measures_real_time() {
+        let report = one_frame(|s| {
+            let _guard = s.scope("work");
+            spin_for_ms(2.0);
+        });
+        assert!(report.clock_available);
+        let work = &report.root.children[0];
+        assert_eq!(work.call_count, 1);
+        assert!(
+            work.total_ns >= 2_000_000,
+            "a 2 ms scope was recorded as {} ns",
+            work.total_ns
+        );
+        assert_eq!(work.max_ns, work.total_ns);
+        assert!(
+            report.frame_ns >= work.total_ns,
+            "frame {} ns shorter than its scope {} ns",
+            report.frame_ns,
+            work.total_ns
+        );
+        assert_eq!(report.root.total_ns, report.frame_ns);
+    }
+
+    #[test]
+    fn test_profiler_js_push_pop_measures_real_time() {
+        // The JS-facing begin_frame / push_scope / pop_scope / end_frame path
+        // is the one that trapped on wasm32 when it used `Instant::now`.
+        let mut s = WasmProfilerSession::new_js();
+        s.begin_frame_js();
+        s.push_scope_js("physics");
+        assert_eq!(s.scope_depth_js(), 1);
+        spin_for_ms(1.0);
+        s.push_scope_js("narrowphase");
+        spin_for_ms(1.0);
+        s.pop_scope_js();
+        s.pop_scope_js();
+        assert_eq!(s.scope_depth_js(), 0);
+        let report = s.end_frame();
+        assert!(report.clock_available);
+        let physics = &report.root.children[0];
+        assert_eq!(physics.name, "physics");
+        assert_eq!(physics.call_count, 1);
+        assert!(physics.total_ns >= 2_000_000, "got {}", physics.total_ns);
+        let narrow = &physics.children[0];
+        assert_eq!(narrow.name, "narrowphase");
+        assert!(narrow.total_ns >= 1_000_000, "got {}", narrow.total_ns);
+        assert!(narrow.total_ns <= physics.total_ns);
+    }
+
+    #[test]
+    fn test_profiler_end_frame_discards_unbalanced_scopes() {
+        let mut s = WasmProfilerSession::new();
+        s.begin_frame();
+        s.push_scope_js("leaked");
+        assert_eq!(s.scope_starts.len(), 1);
+        let _ = s.end_frame();
+        assert_eq!(s.scope_depth_js(), 0, "scope stack survived end_frame");
+        assert!(
+            s.scope_starts.is_empty(),
+            "stale scope start times survived end_frame"
+        );
+        // A stray pop after the frame ended must be a harmless no-op.
+        s.pop_scope_js();
+        assert_eq!(s.scope_depth_js(), 0);
+        // The next frame starts clean and times its own scope.
+        s.begin_frame();
+        s.push_scope_js("fresh");
+        s.pop_scope_js();
+        let report = s.end_frame();
+        assert_eq!(report.root.children.len(), 1);
+        assert_eq!(report.root.children[0].name, "fresh");
+        assert_eq!(report.root.children[0].call_count, 1);
+    }
+
+    #[test]
+    fn test_profiler_missing_clock_is_reported_not_fabricated() {
+        let mut s = WasmProfilerSession::new();
+        s.begin_frame();
+        s.push_scope_js("x");
+        // Emulate a clockless target: `now_ms()` returned `None` at push time.
+        s.scope_starts[0] = None;
+        spin_for_ms(1.0);
+        s.pop_scope_js();
+        let report = s.end_frame();
+        assert!(
+            !report.clock_available,
+            "an unmeasured scope must clear clock_available"
+        );
+        let x = &report.root.children[0];
+        assert_eq!(x.call_count, 1, "the call is still counted");
+        assert_eq!(x.total_ns, 0, "unmeasured time must be 0, not invented");
+        assert_eq!(x.max_ns, 0);
+
+        // The flag is per frame: the next, fully measured frame is available.
+        let report = one_frame(|s| {
+            let _g = s.scope("y");
+        });
+        assert!(report.clock_available);
+    }
+
+    #[test]
+    fn test_profiler_end_frame_without_begin_reports_zero_frame() {
+        let mut s = WasmProfilerSession::new();
+        let report = s.end_frame();
+        assert_eq!(report.frame_ns, 0);
+        assert_eq!(report.root.total_ns, 0);
+        assert!(report.root.children.is_empty());
+        assert!(report.clock_available);
+    }
+
+    #[test]
+    fn test_frame_report_json_clock_available_roundtrip_and_default() {
+        let report = one_frame(|s| {
+            let _g = s.scope("a");
+        });
+        let json = report.to_json();
+        assert!(json.contains("\"clock_available\":true"), "json = {json}");
+        let back: WasmFrameReport = serde_json::from_str(&json).expect("round trip");
+        assert!(back.clock_available);
+        assert_eq!(back.root.children.len(), 1);
+
+        // Reports serialised before the field existed still parse, and are
+        // treated as measured with a real clock.
+        let legacy = r#"{"frame_ns":42,"root":{"name":"frame","call_count":1,
+            "total_ns":42,"max_ns":42,"children":[]}}"#;
+        let old: WasmFrameReport = serde_json::from_str(legacy).expect("legacy json");
+        assert_eq!(old.frame_ns, 42);
+        assert!(old.clock_available);
+
+        let unmeasured = r#"{"frame_ns":0,"clock_available":false,"root":{"name":"frame",
+            "call_count":1,"total_ns":0,"max_ns":0,"children":[]}}"#;
+        let flagged: WasmFrameReport = serde_json::from_str(unmeasured).expect("flagged json");
+        assert!(!flagged.clock_available);
     }
 }

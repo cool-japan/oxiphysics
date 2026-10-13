@@ -2,11 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use std::sync::{Arc, Mutex};
+use std::any::Any;
+use std::collections::VecDeque;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
-
-/// Shared work queue type alias for boxed closures.
-type WorkQueue = Arc<Mutex<Vec<Box<dyn FnOnce() + Send + 'static>>>>;
 
 /// Statistics collected from a thread pool execution.
 #[derive(Debug, Clone, Default)]
@@ -72,6 +72,9 @@ impl ParallelFor {
         }
     }
     /// Execute `f(i)` for every `i` in `start..end` in parallel.
+    ///
+    /// All chunks are joined before the call returns.  If a chunk panicked, the
+    /// payload of the first panic (in chunk order) is re-raised on the calling thread.
     pub fn run(&self, start: usize, end: usize, f: impl Fn(usize) + Send + Sync + 'static) {
         if start >= end {
             return;
@@ -92,8 +95,14 @@ impl ParallelFor {
             handles.push(h);
             cs = ce;
         }
+        let mut first_panic = None;
         for h in handles {
-            h.join().expect("ParallelFor: worker thread panicked");
+            if let Err(payload) = h.join() {
+                first_panic.get_or_insert(payload);
+            }
+        }
+        if let Some(payload) = first_panic {
+            resume_unwind(payload);
         }
     }
     /// Execute `f(i)` for every `i` in `0..n` in parallel.
@@ -211,94 +220,257 @@ impl ThreadPool {
         (n_items / divisor).max(1)
     }
 }
-/// A simple thread pool using `std::thread` and channels.
+/// A boxed task executed by a [`WorkStealingPool`] worker.
+type PoolTask = Box<dyn FnOnce() + Send + 'static>;
+
+/// Mutable state of a [`WorkStealingPool`], protected by one mutex.
+struct PoolState {
+    /// Tasks waiting for a free worker, in submission order.
+    queue: VecDeque<PoolTask>,
+    /// Set when the pool is closed: workers exit once the queue is empty.
+    shutdown: bool,
+    /// Number of tasks currently being executed.
+    running: usize,
+    /// Counters reported by [`WorkStealingPool::stats`].
+    stats: ThreadPoolStats,
+    /// Payload of the first task that panicked, re-raised by `join`.
+    first_panic: Option<Box<dyn Any + Send + 'static>>,
+}
+
+/// State shared between a [`WorkStealingPool`] and its worker threads.
+struct PoolShared {
+    state: Mutex<PoolState>,
+    /// Signalled when a task is queued or the pool is closed.
+    work_available: Condvar,
+    /// Signalled when the last outstanding task has finished.
+    idle: Condvar,
+}
+
+impl PoolShared {
+    /// Locks the pool state, recovering from a poisoned mutex (the state is only
+    /// modified by short, panic-free critical sections).
+    fn lock(&self) -> MutexGuard<'_, PoolState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    /// Runs a task that has already been counted in `running`, catching a panic
+    /// so that it cannot kill the calling worker, and records the outcome.
+    fn run_task(&self, task: PoolTask) {
+        let outcome = catch_unwind(AssertUnwindSafe(task));
+        let mut state = self.lock();
+        state.running -= 1;
+        match outcome {
+            Ok(()) => state.stats.tasks_completed += 1,
+            Err(payload) => {
+                if state.first_panic.is_none() {
+                    state.first_panic = Some(payload);
+                }
+            }
+        }
+        if state.queue.is_empty() && state.running == 0 {
+            self.idle.notify_all();
+        }
+    }
+    /// Main loop of a worker thread: execute queued tasks until the pool is
+    /// closed and the queue is drained.
+    fn worker_loop(&self) {
+        loop {
+            let task = {
+                let mut state = self.lock();
+                loop {
+                    if let Some(task) = state.queue.pop_front() {
+                        state.running += 1;
+                        break Some(task);
+                    }
+                    if state.shutdown {
+                        break None;
+                    }
+                    state = self
+                        .work_available
+                        .wait(state)
+                        .unwrap_or_else(|e| e.into_inner());
+                }
+            };
+            match task {
+                Some(task) => self.run_task(task),
+                None => return,
+            }
+        }
+    }
+}
+
+/// A fixed-size thread pool with one shared first-in-first-out task queue.
 ///
-/// Tasks are dispatched via a shared work queue (protected by a `Mutex`).
-/// Each worker thread pops tasks and executes them until the pool is dropped.
+/// `n_threads` worker threads are started by [`new`](Self::new) and sleep on a
+/// condition variable while the queue is empty.  [`submit`](Self::submit) queues
+/// a task and wakes a worker, so independent tasks run concurrently; tasks are
+/// handed out in submission order.
+///
+/// * [`wait_idle`](Self::wait_idle) blocks until every task submitted so far has
+///   finished, and [`stats`](Self::stats) reports how many tasks were really
+///   submitted and completed.
+/// * [`join`](Self::join) closes the pool, waits for all queued tasks to finish
+///   and stops the workers.  Dropping the pool without calling `join` does the
+///   same.
+/// * A task that panics does not stop its worker.  The payload of the first
+///   panic is re-raised by [`join`](Self::join) (it is discarded when the pool is
+///   simply dropped); a panicked task is not counted as completed.
 ///
 /// # Example
-/// ```no_run
-/// # use oxiphysics_core::parallel::WorkStealingPool;
+/// ```
+/// use oxiphysics_core::parallel::WorkStealingPool;
+/// use std::sync::Arc;
+/// use std::sync::atomic::{AtomicUsize, Ordering};
+///
 /// let pool = WorkStealingPool::new(4);
+/// let counter = Arc::new(AtomicUsize::new(0));
+/// for _ in 0..16 {
+///     let counter = Arc::clone(&counter);
+///     pool.submit(move || {
+///         counter.fetch_add(1, Ordering::Relaxed);
+///     });
+/// }
 /// pool.join(); // wait for all tasks to complete
+/// assert_eq!(counter.load(Ordering::Relaxed), 16);
 /// ```
 pub struct WorkStealingPool {
-    /// Shared queue of boxed closures.
-    pub(super) queue: WorkQueue,
-    /// Join handles for worker threads.
-    pub(super) handles: Vec<thread::JoinHandle<()>>,
+    /// State shared with the worker threads.
+    shared: Arc<PoolShared>,
+    /// Join handles of the worker threads.
+    handles: Vec<thread::JoinHandle<()>>,
     /// Number of worker threads.
     pub n_threads: usize,
-    /// Statistics tracker.
-    pub(super) stats: Arc<Mutex<ThreadPoolStats>>,
 }
 impl WorkStealingPool {
-    /// Create a new `WorkStealingPool` with `n_threads` worker threads.
+    /// Create a new `WorkStealingPool` with `n_threads` worker threads
+    /// (at least one).
+    ///
+    /// If the operating system refuses to start some of the threads the pool
+    /// works with the ones that did start (`n_threads` then holds the actual
+    /// count); a pool without any worker runs every submitted task directly on
+    /// the calling thread.
     pub fn new(n_threads: usize) -> Self {
-        let n = n_threads.max(1);
-        let queue: WorkQueue = Arc::new(Mutex::new(Vec::new()));
-        let stats = Arc::new(Mutex::new(ThreadPoolStats::new(n)));
-        let handles = (0..n)
-            .map(|_| {
-                let q = Arc::clone(&queue);
-                thread::spawn(move || {
-                    loop {
-                        let task = {
-                            let mut locked = q.lock().unwrap_or_else(|e| e.into_inner());
-                            if locked.is_empty() {
-                                break;
-                            }
-                            locked.pop()
-                        };
-                        if let Some(f) = task {
-                            f();
-                        }
-                    }
-                })
-            })
+        Self::with_spawner(n_threads, |index, shared| {
+            thread::Builder::new()
+                .name(format!("oxiphysics-pool-{index}"))
+                .spawn(move || shared.worker_loop())
+                .ok()
+        })
+    }
+    /// Builds a pool whose worker threads are started by `spawn(index, shared)`;
+    /// workers for which `spawn` returns `None` are simply missing.
+    fn with_spawner(
+        n_threads: usize,
+        spawn: impl Fn(usize, Arc<PoolShared>) -> Option<thread::JoinHandle<()>>,
+    ) -> Self {
+        let requested = n_threads.max(1);
+        let shared = Arc::new(PoolShared {
+            state: Mutex::new(PoolState {
+                queue: VecDeque::new(),
+                shutdown: false,
+                running: 0,
+                stats: ThreadPoolStats::new(requested),
+                first_panic: None,
+            }),
+            work_available: Condvar::new(),
+            idle: Condvar::new(),
+        });
+        let handles: Vec<thread::JoinHandle<()>> = (0..requested)
+            .filter_map(|index| spawn(index, Arc::clone(&shared)))
             .collect();
+        let started = handles.len();
+        shared.lock().stats.n_workers = started;
         Self {
-            queue,
+            shared,
             handles,
-            n_threads: n,
-            stats,
+            n_threads: started,
         }
     }
     /// Submit a task to the pool.
+    ///
+    /// The task is queued and picked up by the next free worker.  Tasks are
+    /// started in the order in which they were submitted.
     pub fn submit(&self, f: impl FnOnce() + Send + 'static) {
-        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-        q.push(Box::new(f));
-        let depth = q.len();
-        drop(q);
-        let mut s = self.stats.lock().unwrap_or_else(|e| e.into_inner());
-        s.tasks_submitted += 1;
-        if depth > s.max_queue_depth {
-            s.max_queue_depth = depth;
+        let task: PoolTask = Box::new(f);
+        let mut state = self.shared.lock();
+        state.stats.tasks_submitted += 1;
+        if self.handles.is_empty() {
+            state.running += 1;
+            drop(state);
+            self.shared.run_task(task);
+            return;
+        }
+        state.queue.push_back(task);
+        let depth = state.queue.len();
+        if depth > state.stats.max_queue_depth {
+            state.stats.max_queue_depth = depth;
+        }
+        drop(state);
+        self.shared.work_available.notify_one();
+    }
+    /// Block until every task submitted so far has finished running.
+    ///
+    /// The pool stays usable afterwards: more tasks can be submitted.  The call
+    /// must not be made from inside a task of the same pool, because that task
+    /// would wait for itself.
+    pub fn wait_idle(&self) {
+        let mut state = self.shared.lock();
+        while !(state.queue.is_empty() && state.running == 0) {
+            state = self
+                .shared
+                .idle
+                .wait(state)
+                .unwrap_or_else(|e| e.into_inner());
         }
     }
-    /// Wait for all submitted tasks to complete.
+    /// Closes the pool, lets the workers finish the queued tasks and joins them.
     ///
-    /// This consumes the pool. Any remaining tasks in the queue are executed
-    /// by the calling thread after workers have exited.
-    pub fn join(self) {
-        let remaining: Vec<_> = {
-            let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-            q.drain(..).collect()
-        };
-        let count = remaining.len();
-        for task in remaining {
-            task();
+    /// A worker cannot join itself: when the last owner of the pool is dropped by
+    /// one of the pool's own workers (a task holding the final `Arc`), that worker
+    /// is skipped and ends by itself as soon as the queue is drained.
+    ///
+    /// Returns the payload of the first panic raised by a task or a worker.
+    fn shutdown_and_join(&mut self) -> Option<Box<dyn Any + Send + 'static>> {
+        self.shared.lock().shutdown = true;
+        self.shared.work_available.notify_all();
+        let handles = std::mem::take(&mut self.handles);
+        let current = (!handles.is_empty()).then(|| thread::current().id());
+        let mut worker_panic = None;
+        for handle in handles {
+            if Some(handle.thread().id()) == current {
+                continue;
+            }
+            if let Err(payload) = handle.join() {
+                worker_panic.get_or_insert(payload);
+            }
         }
-        for h in self.handles {
-            let _ = h.join();
+        let mut state = self.shared.lock();
+        state.first_panic.take().or(worker_panic)
+    }
+    /// Wait for all submitted tasks to complete and stop the worker threads.
+    ///
+    /// This consumes the pool.  Workers keep taking tasks from the queue until it
+    /// is empty, so every task submitted before the call has run when `join`
+    /// returns.  If a task panicked, the payload of the first panic is re-raised
+    /// on the calling thread once all workers have stopped.
+    pub fn join(mut self) {
+        if let Some(payload) = self.shutdown_and_join() {
+            resume_unwind(payload);
         }
-        let mut s = self.stats.lock().unwrap_or_else(|e| e.into_inner());
-        s.tasks_completed = s.tasks_submitted;
-        let _ = count;
     }
     /// Returns a snapshot of pool statistics.
+    ///
+    /// `tasks_submitted` counts calls to [`submit`](Self::submit), `tasks_completed`
+    /// the tasks that have run to completion (a task that panicked is not
+    /// counted), and `max_queue_depth` the longest queue observed.
     pub fn stats(&self) -> ThreadPoolStats {
-        self.stats.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.shared.lock().stats.clone()
+    }
+}
+impl Drop for WorkStealingPool {
+    /// Waits for the queued tasks to finish and stops the workers; a task panic
+    /// is discarded (use [`WorkStealingPool::join`] to observe it).
+    fn drop(&mut self) {
+        drop(self.shutdown_and_join());
     }
 }
 /// Extended thread pool statistics with timing information.
@@ -456,5 +628,86 @@ impl SoaVec3 {
             .zip(self.zs.iter())
             .map(|((&x, &y), &z)| x * x + y * y + z * z)
             .collect()
+    }
+}
+#[cfg(test)]
+mod degraded_pool_tests {
+    use super::WorkStealingPool;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn pool_without_any_worker_runs_tasks_on_the_calling_thread() {
+        let pool = WorkStealingPool::with_spawner(4, |_index, _shared| None);
+        assert_eq!(pool.n_threads, 0);
+        assert_eq!(pool.stats().n_workers, 0);
+        let counter = Arc::new(AtomicUsize::new(0));
+        for _ in 0..5 {
+            let counter = Arc::clone(&counter);
+            pool.submit(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            });
+            // Executed synchronously: the effect is visible as soon as `submit` returns.
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 5);
+        pool.wait_idle();
+        let stats = pool.stats();
+        assert_eq!(stats.tasks_submitted, 5);
+        assert_eq!(stats.tasks_completed, 5);
+        pool.join();
+    }
+    #[test]
+    fn inline_task_panic_is_reraised_by_join() {
+        let pool = WorkStealingPool::with_spawner(2, |_index, _shared| None);
+        pool.submit(|| panic!("inline failure"));
+        assert_eq!(pool.stats().tasks_completed, 0);
+        let outcome = catch_unwind(AssertUnwindSafe(move || pool.join()));
+        let payload = outcome.expect_err("join must re-raise the task panic");
+        assert_eq!(payload.downcast_ref::<&str>(), Some(&"inline failure"));
+    }
+    #[test]
+    fn dropping_the_last_pool_handle_on_a_worker_thread_does_not_join_itself() {
+        // The task owns the final `Arc` of the pool; dropping it on the worker thread
+        // must not try to join that very thread (which deadlocks or panics).
+        let pool = Arc::new(WorkStealingPool::new(2));
+        let (release, gate) = mpsc::channel::<()>();
+        let finished = Arc::new(AtomicUsize::new(0));
+        let inner_pool = Arc::clone(&pool);
+        let inner_finished = Arc::clone(&finished);
+        pool.submit(move || {
+            let _ = gate.recv();
+            drop(inner_pool);
+            inner_finished.fetch_add(1, Ordering::SeqCst);
+        });
+        drop(pool);
+        release.send(()).expect("the task still owns the receiver");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while finished.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(finished.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn pool_keeps_the_workers_that_could_be_started() {
+        let pool = WorkStealingPool::with_spawner(4, |index, shared| {
+            index
+                .is_multiple_of(2)
+                .then(|| thread::spawn(move || shared.worker_loop()))
+        });
+        assert_eq!(pool.n_threads, 2);
+        assert_eq!(pool.stats().n_workers, 2);
+        let counter = Arc::new(AtomicUsize::new(0));
+        for _ in 0..10 {
+            let counter = Arc::clone(&counter);
+            pool.submit(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        pool.join();
+        assert_eq!(counter.load(Ordering::SeqCst), 10);
     }
 }

@@ -1016,8 +1016,31 @@ impl CompositeLaminateClt {
         let h = self.total_thickness_mm();
         1.5 * v_per_width / h
     }
-    /// Tsai-Wu failure index (simplified plane stress) for the critical ply.
-    /// Returns max FI over all plies (FI > 1 = failure).
+    /// Tsai-Wu failure index of the critical ply under in-plane resultants.
+    ///
+    /// `nx`, `ny` and `nxy` are the membrane force resultants per unit width
+    /// (N/mm) in laminate axes, `xt`/`xc` the longitudinal tensile/compressive
+    /// strengths, `yt`/`yc` the transverse ones and `s` the in-plane shear
+    /// strength of the plies (all MPa, positive magnitudes).
+    ///
+    /// The ply stresses come from classical lamination theory: the stiffness
+    /// `Q̄` of every ply (GPa moduli converted to MPa) is assembled into the
+    /// extension-bending matrices `A`, `B`, `D`; the mid-plane strains and
+    /// curvatures follow from `[A B; B D] [ε⁰; κ] = [N; 0]` (no applied
+    /// moments, so an unsymmetric laminate is free to curve and `B = 0`
+    /// recovers `ε⁰ = A⁻¹ N` for symmetric ones).  The stress `Q̄ (ε⁰ + z κ)`
+    /// of each ply is rotated into its material axes `(σ1, σ2, τ12)` and
+    /// inserted into the Tsai-Wu criterion
+    /// `F1σ1 + F2σ2 + F11σ1² + F22σ2² + F66τ12² + 2F12σ1σ2` with
+    /// `F12 = −½√(F11 F22)`.  Both surfaces of every ply are checked, so the
+    /// through-thickness strain variation of unsymmetric laminates is
+    /// covered.
+    ///
+    /// Returns the maximum index over all plies (FI >= 1 means failure; a
+    /// single 0° ply loaded with `nx = xt · t` gives exactly 1).  Returns
+    /// `f64::INFINITY` when the laminate cannot carry in-plane load (no plies
+    /// or zero thickness) and `f64::NAN` for non-physical ply data, non-finite
+    /// loads or strengths that are not positive and finite.
     pub fn tsai_wu_index(
         &self,
         nx: f64,
@@ -1029,40 +1052,7 @@ impl CompositeLaminateClt {
         yc: f64,
         s: f64,
     ) -> f64 {
-        self.plies
-            .iter()
-            .map(|p| {
-                let (angle, t, e1, e2, g12, nu12) = *p;
-                let nu21 = nu12 * e2 / e1;
-                let denom = 1.0 - nu12 * nu21;
-                let q11 = e1 / denom;
-                let q22 = e2 / denom;
-                let q12 = nu12 * e2 / denom;
-                let q66 = g12;
-                let c = angle.to_radians().cos();
-                let sc = angle.to_radians().sin();
-                let c2 = c * c;
-                let s2 = sc * sc;
-                let c4 = c2 * c2;
-                let s4 = s2 * s2;
-                let q11b = q11 * c4 + 2.0 * (q12 + 2.0 * q66) * s2 * c2 + q22 * s4;
-                let q22b = q11 * s4 + 2.0 * (q12 + 2.0 * q66) * s2 * c2 + q22 * c4;
-                let q66b = (q11 + q22 - 2.0 * q12 - 2.0 * q66) * s2 * c2 + q66 * (c4 + s4);
-                let sigma1 = q11b * nx / t;
-                let sigma2 = q22b * ny / t;
-                let tau = q66b * nxy / t;
-                let f1 = 1.0 / xt - 1.0 / xc;
-                let f2 = 1.0 / yt - 1.0 / yc;
-                let f11 = 1.0 / (xt * xc);
-                let f22 = 1.0 / (yt * yc);
-                let f66 = 1.0 / (s * s);
-                f1 * sigma1
-                    + f2 * sigma2
-                    + f11 * sigma1.powi(2)
-                    + f22 * sigma2.powi(2)
-                    + f66 * tau.powi(2)
-            })
-            .fold(f64::NEG_INFINITY, f64::max)
+        super::clt_failure::tsai_wu_index(&self.plies, nx, ny, nxy, xt, xc, yt, yc, s)
     }
     /// Delamination onset criterion: Ye delamination criterion for interlaminar stresses.
     /// Returns reserve factor (>1 = safe).

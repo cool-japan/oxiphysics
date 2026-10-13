@@ -973,10 +973,13 @@ impl MeshSimplification {
             })
             .collect();
 
+        // `total_cmp` is a total order even for NaN errors (degenerate input), and the
+        // vertex pair breaks ties so the result does not depend on `HashMap` iteration order.
         candidates.sort_by(|a, b| {
             a.error
-                .partial_cmp(&b.error)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&b.error)
+                .then_with(|| a.v0.cmp(&b.v0))
+                .then_with(|| a.v1.cmp(&b.v1))
         });
 
         // Greedy collapse
@@ -1019,23 +1022,32 @@ impl MeshSimplification {
             removed_count += prev_len - faces.len();
         }
 
-        // Build output mesh with only referenced vertices
-        let mut new_mesh = MeshData::new();
-        let mut new_index: HashMap<usize, usize> = HashMap::new();
-        for f in &faces {
-            let mut new_face = [0usize; 3];
-            for (k, &vi) in f.iter().enumerate() {
-                let entry_count = new_index.len();
-                let new_vi = *new_index.entry(vi).or_insert(entry_count);
-                if new_vi == new_index.len() - 1 {
-                    new_mesh.add_vertex(vertices[vi]);
-                }
-                new_face[k] = new_vi;
-            }
-            new_mesh.add_face(new_face[0], new_face[1], new_face[2]);
-        }
-        new_mesh
+        compact_mesh(&vertices, &faces)
     }
+}
+
+/// Build a mesh from `faces` that holds only the vertices they reference.
+///
+/// Output vertices are numbered in order of first use, so a vertex shared by several
+/// faces is stored exactly once. Faces that reference a vertex outside `vertices` are
+/// dropped.
+fn compact_mesh(vertices: &[[f64; 3]], faces: &[[usize; 3]]) -> MeshData {
+    let mut mesh = MeshData::new();
+    let mut remap = vec![usize::MAX; vertices.len()];
+    for face in faces {
+        if face.iter().any(|&vi| vi >= vertices.len()) {
+            continue;
+        }
+        let mut new_face = [0usize; 3];
+        for (slot, &vi) in new_face.iter_mut().zip(face.iter()) {
+            if remap[vi] == usize::MAX {
+                remap[vi] = mesh.add_vertex(vertices[vi]);
+            }
+            *slot = remap[vi];
+        }
+        mesh.add_face(new_face[0], new_face[1], new_face[2]);
+    }
+    mesh
 }
 
 /// Follow the redirect chain to find the canonical representative vertex.
@@ -1430,6 +1442,161 @@ mod tests {
         m.add_face(0, 1, 2);
         let out = s.simplify(&m, 1);
         assert_eq!(out.faces.len(), 1);
+    }
+
+    /// Square grid of `n x n` cells in the z = 0 plane, two triangles per cell.
+    fn grid_mesh(n: usize) -> MeshData {
+        let mut m = MeshData::new();
+        for j in 0..=n {
+            for i in 0..=n {
+                m.add_vertex([i as f64, j as f64, 0.0]);
+            }
+        }
+        let stride = n + 1;
+        for j in 0..n {
+            for i in 0..n {
+                let a = j * stride + i;
+                let b = a + 1;
+                let c = a + stride;
+                let d = c + 1;
+                m.add_face(a, b, d);
+                m.add_face(a, d, c);
+            }
+        }
+        m
+    }
+
+    /// Assert the structural invariants every simplified mesh must satisfy.
+    fn assert_consistent(out: &MeshData) {
+        let mut referenced = std::collections::BTreeSet::new();
+        for face in &out.faces {
+            assert!(
+                face.iter().all(|&vi| vi < out.vertices.len()),
+                "face {face:?} indexes past {} vertices",
+                out.vertices.len()
+            );
+            assert!(
+                face[0] != face[1] && face[1] != face[2] && face[0] != face[2],
+                "degenerate face {face:?}"
+            );
+            referenced.extend(face.iter().copied());
+        }
+        assert_eq!(
+            out.vertices.len(),
+            referenced.len(),
+            "every output vertex must be referenced by a face"
+        );
+        let mut positions = std::collections::BTreeSet::new();
+        for v in &out.vertices {
+            assert!(
+                positions.insert([v[0].to_bits(), v[1].to_bits(), v[2].to_bits()]),
+                "duplicate output vertex position {v:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_compact_mesh_keeps_shared_vertex_positions() {
+        // Faces [0,1,2] and [2,3,4] share vertex 2, the most recently inserted one.
+        let vertices = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+        ];
+        let out = compact_mesh(&vertices, &[[0, 1, 2], [2, 3, 4]]);
+        assert_eq!(out.vertices, vertices.to_vec());
+        assert_eq!(out.faces, vec![[0, 1, 2], [2, 3, 4]]);
+    }
+
+    #[test]
+    fn test_compact_mesh_renumbers_in_first_use_order() {
+        let vertices = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+        ];
+        let out = compact_mesh(&vertices, &[[5, 1, 3], [3, 1, 0]]);
+        assert_eq!(
+            out.vertices,
+            vec![
+                [5.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0]
+            ]
+        );
+        assert_eq!(out.faces, vec![[0, 1, 2], [2, 1, 3]]);
+    }
+
+    #[test]
+    fn test_compact_mesh_drops_faces_with_unknown_vertices() {
+        let vertices = [[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let out = compact_mesh(&vertices, &[[0, 1, 2], [0, 1, 9]]);
+        assert_eq!(out.faces, vec![[0, 1, 2]]);
+        assert_eq!(out.vertices.len(), 3);
+    }
+
+    #[test]
+    fn test_simplify_grid_output_is_consistent() {
+        let s = MeshSimplification::new();
+        let m = grid_mesh(4);
+        assert_eq!(m.faces.len(), 32);
+        assert_consistent(&m);
+        let out = s.simplify(&m, 16);
+        assert!(!out.faces.is_empty());
+        assert!(out.faces.len() <= 16, "{} faces", out.faces.len());
+        assert_consistent(&out);
+        // A planar mesh stays planar and inside the original bounding box.
+        for v in &out.vertices {
+            assert!(v[2].abs() < 1e-12);
+            assert!((-1e-12..=4.0 + 1e-12).contains(&v[0]), "{v:?}");
+            assert!((-1e-12..=4.0 + 1e-12).contains(&v[1]), "{v:?}");
+        }
+    }
+
+    #[test]
+    fn test_simplify_triangle_strip_is_consistent() {
+        // Every face of a strip reuses the vertex inserted by the previous face.
+        let mut m = MeshData::new();
+        for i in 0..8 {
+            m.add_vertex([i as f64, (i % 2) as f64, 0.0]);
+        }
+        for i in 0..6usize {
+            if i.is_multiple_of(2) {
+                m.add_face(i, i + 1, i + 2);
+            } else {
+                m.add_face(i + 1, i, i + 2);
+            }
+        }
+        let out = MeshSimplification::new().simplify(&m, 4);
+        assert!(out.faces.len() <= 4);
+        assert_consistent(&out);
+    }
+
+    #[test]
+    fn test_simplify_is_deterministic() {
+        let s = MeshSimplification::new();
+        let m = grid_mesh(5);
+        let a = s.simplify(&m, 20);
+        let b = s.simplify(&m, 20);
+        assert_eq!(a.faces, b.faces);
+        assert_eq!(a.vertices, b.vertices);
+    }
+
+    #[test]
+    fn test_simplify_tolerates_non_finite_vertices() {
+        let mut m = grid_mesh(3);
+        m.vertices[5] = [f64::NAN, 0.0, 0.0];
+        let out = MeshSimplification::new().simplify(&m, 8);
+        assert!(out.faces.len() <= 8);
+        for face in &out.faces {
+            assert!(face.iter().all(|&vi| vi < out.vertices.len()));
+        }
     }
 
     // -- Material tests -------------------------------------------------------

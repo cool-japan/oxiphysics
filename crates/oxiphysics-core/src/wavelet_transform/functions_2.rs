@@ -81,8 +81,9 @@ mod tests {
         let db = DaubechiesWavelet::new(2);
         let signal = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
         let level = db.forward(&signal);
-        assert_eq!(level.approx.len(), 5);
-        assert_eq!(level.detail.len(), 5);
+        // Critically sampled: half as many coefficients as samples in each band.
+        assert_eq!(level.approx.len(), 4);
+        assert_eq!(level.detail.len(), 4);
     }
     #[test]
     fn test_daubechies_db3_forward() {

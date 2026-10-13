@@ -341,96 +341,164 @@ impl AmrCheckpoint {
         Ok(())
     }
     /// Read a checkpoint file written by `AmrCheckpoint::write`.
+    ///
+    /// Truncated or corrupt files produce an `Err`, never a panic: every field
+    /// is bounds-checked and the element counts announced in the file are
+    /// validated against the bytes that remain before anything is allocated.
     pub fn read(path: &str) -> io::Result<AmrHierarchy> {
         let mut raw = Vec::new();
         File::open(path)?.read_to_end(&mut raw)?;
-        let mut cursor = 0usize;
-        macro_rules! read_u32 {
-            () => {{
-                let v =
-                    u32::from_le_bytes(raw[cursor..cursor + 4].try_into().map_err(|_| {
-                        io::Error::new(io::ErrorKind::InvalidData, "short read u32")
-                    })?);
-                cursor += 4;
-                v
-            }};
-        }
-        macro_rules! read_u64 {
-            () => {{
-                let v =
-                    u64::from_le_bytes(raw[cursor..cursor + 8].try_into().map_err(|_| {
-                        io::Error::new(io::ErrorKind::InvalidData, "short read u64")
-                    })?);
-                cursor += 8;
-                v
-            }};
-        }
-        macro_rules! read_i64 {
-            () => {{
-                let v =
-                    i64::from_le_bytes(raw[cursor..cursor + 8].try_into().map_err(|_| {
-                        io::Error::new(io::ErrorKind::InvalidData, "short read i64")
-                    })?);
-                cursor += 8;
-                v
-            }};
-        }
-        macro_rules! read_f64 {
-            () => {{
-                let v =
-                    f64::from_le_bytes(raw[cursor..cursor + 8].try_into().map_err(|_| {
-                        io::Error::new(io::ErrorKind::InvalidData, "short read f64")
-                    })?);
-                cursor += 8;
-                v
-            }};
-        }
-        let magic = read_u32!();
+        Self::from_bytes(&raw)
+    }
+    /// Decode a checkpoint held in memory (the byte layout written by
+    /// [`AmrCheckpoint::write`]).
+    ///
+    /// Returns `ErrorKind::UnexpectedEof` when the buffer ends before the
+    /// announced content and `ErrorKind::InvalidData` for a wrong magic number,
+    /// an unsupported version, invalid UTF-8 or an implausible refinement level.
+    pub fn from_bytes(raw: &[u8]) -> io::Result<AmrHierarchy> {
+        let mut cur = CheckpointCursor::new(raw);
+        let magic = cur.read_u32()?;
         if magic != CHECKPOINT_MAGIC {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "bad magic"));
         }
-        let _version = read_u32!();
-        let time = read_f64!();
-        let cycle = read_u64!();
-        let num_levels = read_u32!() as usize;
+        let version = cur.read_u32()?;
+        if version != CHECKPOINT_VERSION {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "unsupported AMR checkpoint version {version} (supported: {CHECKPOINT_VERSION})"
+                ),
+            ));
+        }
+        let time = cur.read_f64()?;
+        let cycle = cur.read_u64()?;
+        let num_levels = cur.read_count(CHECKPOINT_MIN_LEVEL_BYTES)?;
         let mut hierarchy = AmrHierarchy::new();
         hierarchy.time = time;
         hierarchy.cycle = cycle;
         for _ in 0..num_levels {
-            let level = read_u32!() as usize;
-            let cell_size = read_f64!();
+            let level = cur.read_len()?;
+            if level >= usize::BITS as usize {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("implausible AMR refinement level {level}"),
+                ));
+            }
+            let cell_size = cur.read_f64()?;
             let mut domain_bounds = [0.0f64; 6];
             for b in &mut domain_bounds {
-                *b = read_f64!();
+                *b = cur.read_f64()?;
             }
             let lm = AmrLevel::new(level, cell_size, domain_bounds);
-            let num_fields = read_u32!() as usize;
+            let num_fields = cur.read_count(CHECKPOINT_MIN_FIELD_NAME_BYTES)?;
             let mut field_names = Vec::with_capacity(num_fields);
             for _ in 0..num_fields {
-                let len = read_u32!() as usize;
-                let bytes = raw[cursor..cursor + len].to_vec();
-                cursor += len;
-                field_names.push(
-                    String::from_utf8(bytes)
-                        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad utf8"))?,
-                );
+                let len = cur.read_len()?;
+                let name = std::str::from_utf8(cur.take(len)?)
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad utf8"))?;
+                field_names.push(name.to_owned());
             }
             let mut grid = AmrGrid::new(lm, field_names);
-            let num_cells = read_u32!() as usize;
+            let num_cells = cur.read_count(CHECKPOINT_MIN_CELL_BYTES)?;
+            grid.cells.reserve(num_cells);
             for _ in 0..num_cells {
-                let i = read_i64!();
-                let j = read_i64!();
-                let k = read_i64!();
-                let nd = read_u32!() as usize;
+                let i = cur.read_i64()?;
+                let j = cur.read_i64()?;
+                let k = cur.read_i64()?;
+                let nd = cur.read_count(CHECKPOINT_VALUE_BYTES)?;
                 let mut data = Vec::with_capacity(nd);
                 for _ in 0..nd {
-                    data.push(read_f64!());
+                    data.push(cur.read_f64()?);
                 }
                 grid.add_cell(AmrCell::new(level, [i, j, k], data));
             }
             hierarchy.add_level(grid);
         }
         Ok(hierarchy)
+    }
+}
+/// Smallest encoded size of one level record: level, cell size, six domain
+/// bounds, field-name count and cell count.
+const CHECKPOINT_MIN_LEVEL_BYTES: usize = 4 + 8 + 6 * 8 + 4 + 4;
+/// Smallest encoded size of one field name: its length prefix.
+const CHECKPOINT_MIN_FIELD_NAME_BYTES: usize = 4;
+/// Smallest encoded size of one cell: three coordinates and the value count.
+const CHECKPOINT_MIN_CELL_BYTES: usize = 3 * 8 + 4;
+/// Encoded size of one `f64` field value.
+const CHECKPOINT_VALUE_BYTES: usize = 8;
+/// Bounds-checked little-endian reader over a checkpoint byte buffer.
+///
+/// Every accessor returns `ErrorKind::UnexpectedEof` instead of panicking when
+/// the buffer is too short.
+struct CheckpointCursor<'a> {
+    raw: &'a [u8],
+    pos: usize,
+}
+impl<'a> CheckpointCursor<'a> {
+    fn new(raw: &'a [u8]) -> Self {
+        Self { raw, pos: 0 }
+    }
+    /// Bytes not yet consumed.
+    fn remaining(&self) -> usize {
+        self.raw.len().saturating_sub(self.pos)
+    }
+    fn truncated(&self, wanted: usize) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!(
+                "AMR checkpoint truncated: {wanted} byte(s) needed at offset {}, {} available",
+                self.pos,
+                self.remaining()
+            ),
+        )
+    }
+    /// Consume exactly `n` bytes.
+    fn take(&mut self, n: usize) -> io::Result<&'a [u8]> {
+        let end = self.pos.checked_add(n).ok_or_else(|| self.truncated(n))?;
+        let bytes = self
+            .raw
+            .get(self.pos..end)
+            .ok_or_else(|| self.truncated(n))?;
+        self.pos = end;
+        Ok(bytes)
+    }
+    fn read_array<const N: usize>(&mut self) -> io::Result<[u8; N]> {
+        let bytes = self.take(N)?;
+        <[u8; N]>::try_from(bytes).map_err(|_| self.truncated(N))
+    }
+    fn read_u32(&mut self) -> io::Result<u32> {
+        Ok(u32::from_le_bytes(self.read_array::<4>()?))
+    }
+    fn read_u64(&mut self) -> io::Result<u64> {
+        Ok(u64::from_le_bytes(self.read_array::<8>()?))
+    }
+    fn read_i64(&mut self) -> io::Result<i64> {
+        Ok(i64::from_le_bytes(self.read_array::<8>()?))
+    }
+    fn read_f64(&mut self) -> io::Result<f64> {
+        Ok(f64::from_le_bytes(self.read_array::<8>()?))
+    }
+    /// Read a `u32` length or index as a `usize`.
+    fn read_len(&mut self) -> io::Result<usize> {
+        let value = self.read_u32()?;
+        usize::try_from(value)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "length does not fit in usize"))
+    }
+    /// Read an element count and verify that the remaining bytes can hold that
+    /// many elements of at least `min_item_bytes` each.
+    ///
+    /// A count that passes this check is safe to pre-allocate: it can never
+    /// exceed `remaining / min_item_bytes`.
+    fn read_count(&mut self, min_item_bytes: usize) -> io::Result<usize> {
+        let count = self.read_len()?;
+        let needed = count
+            .checked_mul(min_item_bytes)
+            .ok_or_else(|| self.truncated(usize::MAX))?;
+        if needed > self.remaining() {
+            return Err(self.truncated(needed));
+        }
+        Ok(count)
     }
 }
 /// A multi-level AMR hierarchy.

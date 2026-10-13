@@ -6,7 +6,7 @@ use std::f64::consts::PI;
 
 use super::types::{
     AdiabaticEos, ArtificialViscosity, AstroParticle, BBox3, CoolingFunction, GravitationalSph,
-    OctreeNode,
+    OctreeNode, ViscoPair,
 };
 
 /// Gravitational constant G in CGS: 6.674e-8 cm^3 g^-1 s^-2.
@@ -82,14 +82,22 @@ pub fn cubic_spline_dw(r: f64, h: f64) -> f64 {
     }
 }
 /// Compute SPH density for all particles using direct summation.
+///
+/// Only gas particles act as SPH sources: sink particles are collisionless
+/// point masses that interact through gravity only, so their mass is not
+/// smoothed into the gas density.
 pub fn compute_density(particles: &mut [AstroParticle]) {
     let n = particles.len();
     let positions: Vec<[f64; 3]> = particles.iter().map(|p| p.pos).collect();
     let masses: Vec<f64> = particles.iter().map(|p| p.mass).collect();
     let hs: Vec<f64> = particles.iter().map(|p| p.h).collect();
+    let is_gas: Vec<bool> = particles.iter().map(|p| !p.is_sink).collect();
     for i in 0..n {
         let mut rho = 0.0;
         for j in 0..n {
+            if !is_gas[j] {
+                continue;
+            }
             let r = dist3(positions[i], positions[j]);
             let h_avg = 0.5 * (hs[i] + hs[j]);
             rho += masses[j] * cubic_spline_w(r, h_avg);
@@ -103,6 +111,9 @@ pub fn compute_div_v(idx: usize, particles: &[AstroParticle]) -> f64 {
     let mut div_v = 0.0;
     for (j, pj) in particles.iter().enumerate() {
         if j == idx {
+            continue;
+        }
+        if pj.is_sink {
             continue;
         }
         let rij = sub3(pi.pos, pj.pos);
@@ -129,6 +140,9 @@ pub fn compute_curl_v_mag(idx: usize, particles: &[AstroParticle]) -> f64 {
         if j == idx {
             continue;
         }
+        if pj.is_sink {
+            continue;
+        }
         let rij = sub3(pi.pos, pj.pos);
         let r = norm3(rij);
         if r < 1e-30 || pj.density < 1e-30 {
@@ -145,9 +159,160 @@ pub fn compute_curl_v_mag(idx: usize, particles: &[AstroParticle]) -> f64 {
     }
     norm3(curl)
 }
+/// Accumulate the SPH hydrodynamic accelerations and internal-energy rates.
+///
+/// For every pair of gas particles inside the kernel support the standard
+/// symmetric SPH equations with Monaghan artificial viscosity are evaluated
+/// (sink particles take no part in the hydrodynamics):
+///
+/// ```text
+/// dv_i/dt = −Σ_j m_j (P_i/ρ_i² + P_j/ρ_j² + Π_ij) ∇_i W_ij
+/// du_i/dt =  Σ_j m_j (P_i/ρ_i² + ½ Π_ij) v_ij · ∇_i W_ij
+/// ```
+///
+/// with `∇_i W_ij = (dW/dr)(r_ij, h̄) r̂_ij`, `h̄ = ½ (h_i + h_j)` and
+/// `Π_ij` the Balsara-limited artificial viscosity
+/// ([`ArtificialViscosity::compute_pi_balsara`]) whose per-particle limiter
+/// `f_i = |∇·v|_i / (|∇·v|_i + |∇×v|_i + 10⁻⁴ c_i / h_i)` is evaluated with
+/// [`compute_div_v`] and [`compute_curl_v_mag`] and stored in
+/// [`AstroParticle::balsara_switch`].
+///
+/// Every pair interaction is antisymmetric, so total linear momentum is
+/// conserved exactly and the sum of kinetic and thermal energy is conserved
+/// by the pair terms.
+///
+/// The results are **added** to `acc` and `du_dt` (like
+/// [`GravitationalSph::compute_gravity`] adds to `acc`); callers reset both
+/// before accumulating.  Densities and pressures must be up to date
+/// ([`compute_density`] followed by [`AdiabaticEos::apply`]).  `gamma` is the
+/// adiabatic index used to turn pressure into the sound speed that enters the
+/// viscosity.
+pub fn compute_hydro_forces(
+    particles: &mut [AstroParticle],
+    gamma: f64,
+    viscosity: &ArtificialViscosity,
+) {
+    let n = particles.len();
+    let balsara: Vec<f64> = {
+        let view: &[AstroParticle] = particles;
+        (0..n)
+            .map(|i| {
+                let p = &view[i];
+                if p.is_sink {
+                    0.0
+                } else {
+                    viscosity.balsara_switch(
+                        compute_div_v(i, view),
+                        compute_curl_v_mag(i, view),
+                        p.sound_speed(gamma),
+                        p.h,
+                    )
+                }
+            })
+            .collect()
+    };
+
+    let mut d_acc = vec![[0.0_f64; 3]; n];
+    let mut d_du = vec![0.0_f64; n];
+    for i in 0..n {
+        let pi = &particles[i];
+        if pi.is_sink || pi.density < 1e-30 {
+            continue;
+        }
+        let press_i = pi.pressure / (pi.density * pi.density);
+        let cs_i = pi.sound_speed(gamma);
+        for j in (i + 1)..n {
+            let pj = &particles[j];
+            if pj.is_sink || pj.density < 1e-30 {
+                continue;
+            }
+            let rij = sub3(pi.pos, pj.pos);
+            let r = norm3(rij);
+            if r < 1e-30 {
+                continue;
+            }
+            let h_avg = 0.5 * (pi.h + pj.h);
+            let dw = cubic_spline_dw(r, h_avg);
+            if dw == 0.0 {
+                continue;
+            }
+            let grad_w = [dw * rij[0] / r, dw * rij[1] / r, dw * rij[2] / r];
+            let press_j = pj.pressure / (pj.density * pj.density);
+            let pi_ij = viscosity.compute_pi_balsara(
+                ViscoPair {
+                    ri: pi.pos,
+                    rj: pj.pos,
+                    vi: pi.vel,
+                    vj: pj.vel,
+                    rho_i: pi.density,
+                    rho_j: pj.density,
+                    cs_i,
+                    cs_j: pj.sound_speed(gamma),
+                    hi: pi.h,
+                    hj: pj.h,
+                },
+                balsara[i],
+                balsara[j],
+            );
+            let coeff = press_i + press_j + pi_ij;
+            for d in 0..3 {
+                d_acc[i][d] -= pj.mass * coeff * grad_w[d];
+                d_acc[j][d] += pi.mass * coeff * grad_w[d];
+            }
+            let v_dot_grad_w = dot3(sub3(pi.vel, pj.vel), grad_w);
+            d_du[i] += pj.mass * (press_i + 0.5 * pi_ij) * v_dot_grad_w;
+            d_du[j] += pi.mass * (press_j + 0.5 * pi_ij) * v_dot_grad_w;
+        }
+    }
+
+    for (idx, p) in particles.iter_mut().enumerate() {
+        p.balsara_switch = balsara[idx];
+        if p.is_sink {
+            continue;
+        }
+        for (a, da) in p.acc.iter_mut().zip(d_acc[idx].iter()) {
+            *a += da;
+        }
+        p.du_dt += d_du[idx];
+    }
+}
+/// Recompute density, pressure, and the full force field of the system.
+///
+/// Resets `acc` and `du_dt` of every particle and then accumulates
+/// self-gravity ([`GravitationalSph::compute_gravity`]) and the SPH
+/// hydrodynamics ([`compute_hydro_forces`]).  Call it once before the first
+/// [`leapfrog_step`] so the opening half-kick uses consistent forces;
+/// [`leapfrog_step`] calls it itself after every drift.
+pub fn compute_forces(
+    particles: &mut [AstroParticle],
+    gravity: &GravitationalSph,
+    eos: &AdiabaticEos,
+    viscosity: &ArtificialViscosity,
+) {
+    compute_density(particles);
+    eos.apply(particles);
+    for p in particles.iter_mut() {
+        p.acc = [0.0; 3];
+        p.du_dt = 0.0;
+    }
+    gravity.compute_gravity(particles);
+    compute_hydro_forces(particles, eos.gamma, viscosity);
+}
 /// Leapfrog (kick-drift-kick) integrator for astrophysical SPH.
 ///
-/// Advances particles by one time step dt.
+/// Advances particles by one time step dt.  The opening half-kick uses the
+/// accelerations and `du/dt` stored in the particles (left by the previous
+/// call, or initialised with [`compute_forces`] before the first step); the
+/// particles are then drifted and the forces are recomputed with
+/// [`compute_forces`] — self-gravity, SPH pressure gradients and the
+/// Balsara-limited artificial viscosity `viscosity` — before the closing
+/// half-kick.  Sink particles are not kicked.
+///
+/// The velocity-dependent terms of the force evaluation (viscosity and the
+/// `P dV` work in `du/dt`) use velocities predicted to the end of the step,
+/// `v + ½ dt a`, instead of the half-step velocities; this keeps the scheme
+/// second-order accurate and the total energy drift small.  The predicted
+/// velocities are discarded again before the closing kick.
 pub fn leapfrog_step(
     particles: &mut [AstroParticle],
     dt: f64,
@@ -155,7 +320,6 @@ pub fn leapfrog_step(
     eos: &AdiabaticEos,
     viscosity: &ArtificialViscosity,
 ) {
-    let _ = viscosity;
     for p in particles.iter_mut() {
         if p.is_sink {
             continue;
@@ -173,12 +337,19 @@ pub fn leapfrog_step(
             *pos_d += dt * vel_d;
         }
     }
-    compute_density(particles);
-    eos.apply(particles);
+    let half_step_velocities: Vec<[f64; 3]> = particles.iter().map(|p| p.vel).collect();
     for p in particles.iter_mut() {
-        p.acc = [0.0; 3];
+        if p.is_sink {
+            continue;
+        }
+        for (v, &a) in p.vel.iter_mut().zip(p.acc.iter()) {
+            *v += 0.5 * dt * a;
+        }
     }
-    gravity.compute_gravity(particles);
+    compute_forces(particles, gravity, eos, viscosity);
+    for (p, v_half) in particles.iter_mut().zip(half_step_velocities) {
+        p.vel = v_half;
+    }
     for p in particles.iter_mut() {
         if p.is_sink {
             continue;
@@ -884,5 +1055,355 @@ mod tests_extended {
         let cosmo = Cosmology::new(70.0, 0.3, 0.7);
         let pv = cosmo.peculiar_velocity([100.0, 0.0, 0.0], [1.0, 0.0, 0.0], 1.0);
         assert!((pv[0] - 30.0).abs() < 1.0);
+    }
+}
+#[cfg(test)]
+mod tests_hydro {
+    use super::*;
+    use crate::astrophysical_sph::types::*;
+
+    const GAMMA: f64 = 5.0 / 3.0;
+
+    /// Uniform cubic lattice of `n`³ gas particles centred on the origin.
+    fn gas_lattice(n: usize, dx: f64, rho: f64, u: f64, h_over_dx: f64) -> Vec<AstroParticle> {
+        let centre = (n as f64 - 1.0) * 0.5;
+        let mass = rho * dx * dx * dx;
+        let mut particles = Vec::with_capacity(n * n * n);
+        for i in 0..n {
+            for j in 0..n {
+                for k in 0..n {
+                    let pos = [
+                        (i as f64 - centre) * dx,
+                        (j as f64 - centre) * dx,
+                        (k as f64 - centre) * dx,
+                    ];
+                    particles.push(AstroParticle::new(mass, pos, [0.0; 3], u, h_over_dx * dx));
+                }
+            }
+        }
+        particles
+    }
+
+    fn total_energy(particles: &[AstroParticle]) -> f64 {
+        particles
+            .iter()
+            .map(|p| p.kinetic_energy() + p.thermal_energy())
+            .sum()
+    }
+
+    fn total_thermal_energy(particles: &[AstroParticle]) -> f64 {
+        particles.iter().map(|p| p.thermal_energy()).sum()
+    }
+
+    fn total_momentum(particles: &[AstroParticle]) -> [f64; 3] {
+        let mut mom = [0.0; 3];
+        for p in particles {
+            for (m, v) in mom.iter_mut().zip(p.vel.iter()) {
+                *m += p.mass * v;
+            }
+        }
+        mom
+    }
+
+    fn max_extent(particles: &[AstroParticle]) -> f64 {
+        particles
+            .iter()
+            .flat_map(|p| p.pos.iter().map(|x| x.abs()))
+            .fold(0.0, f64::max)
+    }
+
+    fn no_gravity() -> GravitationalSph {
+        GravitationalSph::new(0.0, 0.01)
+    }
+
+    /// Prime density, pressure and forces of an isolated, gravity-free gas.
+    fn prime(particles: &mut [AstroParticle], viscosity: &ArtificialViscosity) {
+        compute_forces(
+            particles,
+            &no_gravity(),
+            &AdiabaticEos::monatomic(),
+            viscosity,
+        );
+    }
+
+    #[test]
+    fn hydro_pair_is_antisymmetric_and_mutually_repulsive() {
+        let eos = AdiabaticEos::monatomic();
+        let mut ps = vec![
+            AstroParticle::new(1.0e-3, [0.0, 0.0, 0.0], [0.0; 3], 3.0, 0.12),
+            AstroParticle::new(2.0e-3, [0.1, 0.0, 0.0], [0.0; 3], 1.0, 0.12),
+        ];
+        compute_density(&mut ps);
+        eos.apply(&mut ps);
+        compute_hydro_forces(&mut ps, GAMMA, &ArtificialViscosity::standard());
+
+        // The SPH pair force is repulsive and equal and opposite in momentum.
+        assert!(ps[0].acc[0] < 0.0, "a_i = {:?}", ps[0].acc);
+        assert!(ps[1].acc[0] > 0.0, "a_j = {:?}", ps[1].acc);
+        for d in 0..3 {
+            let sum = ps[0].mass * ps[0].acc[d] + ps[1].mass * ps[1].acc[d];
+            let scale = (ps[0].mass * ps[0].acc[d]).abs().max(1.0e-30);
+            assert!(sum.abs() <= 1.0e-12 * scale, "momentum sum {sum} (dim {d})");
+        }
+        // Particles at rest: no compression work.
+        assert!(ps[0].du_dt.abs() < 1.0e-14 && ps[1].du_dt.abs() < 1.0e-14);
+    }
+
+    #[test]
+    fn hydro_pair_with_viscosity_conserves_energy_and_heats() {
+        let eos = AdiabaticEos::monatomic();
+        let make = |viscosity: &ArtificialViscosity| {
+            let mut ps = vec![
+                AstroParticle::new(1.0e-3, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 1.5, 0.12),
+                AstroParticle::new(1.0e-3, [0.1, 0.0, 0.0], [-1.0, 0.0, 0.0], 1.5, 0.12),
+            ];
+            compute_density(&mut ps);
+            eos.apply(&mut ps);
+            compute_hydro_forces(&mut ps, GAMMA, viscosity);
+            ps
+        };
+        let with_visc = make(&ArtificialViscosity::standard());
+        let without = make(&ArtificialViscosity::new(0.0, 0.0));
+
+        // dE/dt = Σ m (v·a + du/dt) vanishes for any pair interaction.
+        for ps in [&with_visc, &without] {
+            let mut rate = 0.0;
+            let mut scale = 0.0_f64;
+            for p in ps.iter() {
+                let v_dot_a: f64 = p.vel.iter().zip(p.acc.iter()).map(|(v, a)| v * a).sum();
+                rate += p.mass * (v_dot_a + p.du_dt);
+                scale = scale.max((p.mass * p.du_dt).abs());
+            }
+            assert!(
+                rate.abs() <= 1.0e-12 * scale,
+                "dE/dt = {rate}, scale {scale}"
+            );
+        }
+
+        // Approaching pair: compression heats both, and the viscosity adds
+        // dissipative heating and a stronger repulsion.
+        for p in &without {
+            assert!(p.du_dt > 0.0);
+        }
+        for (a, b) in with_visc.iter().zip(without.iter()) {
+            assert!(a.du_dt > b.du_dt, "{} <= {}", a.du_dt, b.du_dt);
+        }
+        assert!(with_visc[0].acc[0] < without[0].acc[0]);
+        assert!(with_visc[1].acc[0] > without[1].acc[0]);
+    }
+
+    #[test]
+    fn hydro_forces_vanish_in_lattice_interior_and_push_surface_outward() {
+        let mut ps = gas_lattice(7, 0.1, 1.0, 1.5, 1.2);
+        prime(&mut ps, &ArtificialViscosity::standard());
+        let centre = 3 * 49 + 3 * 7 + 3;
+        let centre_acc = norm3(ps[centre].acc);
+        let corner_acc = norm3(ps[0].acc);
+        assert!(corner_acc > 1.0, "corner acceleration {corner_acc}");
+        assert!(
+            centre_acc < 1.0e-9 * corner_acc,
+            "interior pressure forces must cancel: {centre_acc} vs {corner_acc}"
+        );
+        // Corner (−,−,−) is pushed along (−,−,−): away from the cube.
+        let outward = dot3(ps[0].acc, ps[0].pos) / norm3(ps[0].pos);
+        assert!(outward > 0.9 * corner_acc, "outward component {outward}");
+        // Internal energy only changes through compression: nothing moves yet.
+        assert!(ps.iter().all(|p| p.du_dt.abs() < 1.0e-12));
+    }
+
+    #[test]
+    fn balsara_switch_is_stored_high_for_compression_and_zero_for_rotation() {
+        let mut converging = gas_lattice(7, 0.1, 1.0, 1.5, 1.2);
+        for p in converging.iter_mut() {
+            p.vel = [-2.0 * p.pos[0], -2.0 * p.pos[1], -2.0 * p.pos[2]];
+        }
+        prime(&mut converging, &ArtificialViscosity::standard());
+        let centre = 3 * 49 + 3 * 7 + 3;
+        assert!(
+            converging[centre].balsara_switch > 0.99,
+            "f = {}",
+            converging[centre].balsara_switch
+        );
+
+        let mut rotating = gas_lattice(7, 0.1, 1.0, 1.5, 1.2);
+        for p in rotating.iter_mut() {
+            p.vel = [-2.0 * p.pos[1], 2.0 * p.pos[0], 0.0];
+        }
+        prime(&mut rotating, &ArtificialViscosity::standard());
+        assert!(
+            rotating.iter().all(|p| p.balsara_switch < 1.0e-6),
+            "rigid rotation is divergence-free: the Balsara switch must vanish"
+        );
+    }
+
+    #[test]
+    fn viscosity_is_wired_into_forces_for_converging_flow() {
+        let build = |viscosity: &ArtificialViscosity| {
+            let mut ps = gas_lattice(7, 0.1, 1.0, 1.5, 1.2);
+            for p in ps.iter_mut() {
+                p.vel = [-2.0 * p.pos[0], -2.0 * p.pos[1], -2.0 * p.pos[2]];
+            }
+            prime(&mut ps, viscosity);
+            ps
+        };
+        let with_visc = build(&ArtificialViscosity::standard());
+        let without = build(&ArtificialViscosity::new(0.0, 0.0));
+
+        let heating = |ps: &[AstroParticle]| ps.iter().map(|p| p.mass * p.du_dt).sum::<f64>();
+        assert!(
+            heating(&with_visc) > 1.05 * heating(&without),
+            "viscous heating missing: {} vs {}",
+            heating(&with_visc),
+            heating(&without)
+        );
+        let max_diff = with_visc
+            .iter()
+            .zip(without.iter())
+            .map(|(a, b)| norm3(sub3(a.acc, b.acc)))
+            .fold(0.0, f64::max);
+        assert!(max_diff > 0.1, "viscous force missing: {max_diff}");
+    }
+
+    #[test]
+    fn sink_particles_take_no_part_in_the_hydrodynamics() {
+        let gas = || {
+            vec![
+                AstroParticle::new(1.0e-3, [0.0, 0.0, 0.0], [0.0; 3], 3.0, 0.12),
+                AstroParticle::new(1.0e-3, [0.2, 0.0, 0.0], [0.0; 3], 1.0, 0.12),
+            ]
+        };
+        let eos = AdiabaticEos::monatomic();
+        let visc = ArtificialViscosity::standard();
+
+        let mut reference = gas();
+        compute_forces(&mut reference, &no_gravity(), &eos, &visc);
+
+        let mut with_sink = gas();
+        with_sink.push(AstroParticle::new_sink(
+            5.0,
+            [0.1, 0.0, 0.0],
+            [0.0; 3],
+            0.05,
+        ));
+        compute_forces(&mut with_sink, &no_gravity(), &eos, &visc);
+
+        for (a, b) in reference.iter().zip(with_sink.iter()) {
+            assert!((a.density - b.density).abs() <= 1.0e-12 * a.density);
+            for d in 0..3 {
+                assert!((a.acc[d] - b.acc[d]).abs() <= 1.0e-12 * a.acc[0].abs().max(1.0e-30));
+            }
+            assert!((a.du_dt - b.du_dt).abs() <= 1.0e-12);
+        }
+        assert_eq!(with_sink[2].acc, [0.0; 3]);
+        assert_eq!(with_sink[2].du_dt, 0.0);
+    }
+
+    #[test]
+    fn leapfrog_expands_isolated_gas_cube_and_conserves_energy_and_momentum() {
+        let eos = AdiabaticEos::monatomic();
+        let visc = ArtificialViscosity::standard();
+        let grav = no_gravity();
+        let mut ps = gas_lattice(5, 0.1, 1.0, 1.5, 1.2);
+        prime(&mut ps, &visc);
+        let e0 = total_energy(&ps);
+        let u0 = total_thermal_energy(&ps);
+        let extent0 = max_extent(&ps);
+
+        for _ in 0..25 {
+            leapfrog_step(&mut ps, 0.01, &grav, &eos, &visc);
+        }
+
+        // Without any hydrodynamic force the gas would stay frozen in place.
+        assert!(
+            max_extent(&ps) > 1.5 * extent0,
+            "cube must expand: {} vs {extent0}",
+            max_extent(&ps)
+        );
+        // Expansion converts thermal energy into kinetic energy ...
+        assert!(
+            total_thermal_energy(&ps) < 0.6 * u0,
+            "adiabatic expansion must cool the gas"
+        );
+        let kinetic: f64 = ps.iter().map(|p| p.kinetic_energy()).sum();
+        assert!(kinetic > 0.3 * e0, "kinetic energy {kinetic} vs {e0}");
+        // ... while the total energy and linear momentum are conserved.
+        let drift = (total_energy(&ps) - e0).abs() / e0;
+        assert!(drift < 0.01, "energy drift {drift}");
+        let mom = total_momentum(&ps);
+        assert!(norm3(mom) < 1.0e-12, "momentum {mom:?}");
+    }
+
+    #[test]
+    fn leapfrog_conserves_momentum_for_asymmetric_flow() {
+        let eos = AdiabaticEos::monatomic();
+        let visc = ArtificialViscosity::standard();
+        let grav = no_gravity();
+        let mut ps = gas_lattice(4, 0.1, 1.0, 1.5, 1.2);
+        // Bulk drift plus a shear and a compressive component: nonzero momentum.
+        for p in ps.iter_mut() {
+            p.vel = [
+                0.3 + 0.5 * p.pos[1] - 0.4 * p.pos[0],
+                -0.2 + 0.1 * p.pos[2],
+                0.05 - 0.3 * p.pos[2],
+            ];
+        }
+        prime(&mut ps, &visc);
+        let mom0 = total_momentum(&ps);
+        assert!(norm3(mom0) > 1.0e-3);
+        for _ in 0..10 {
+            leapfrog_step(&mut ps, 0.005, &grav, &eos, &visc);
+        }
+        let mom1 = total_momentum(&ps);
+        for d in 0..3 {
+            assert!(
+                (mom1[d] - mom0[d]).abs() < 1.0e-12 * norm3(mom0),
+                "momentum[{d}] changed: {} -> {}",
+                mom0[d],
+                mom1[d]
+            );
+        }
+    }
+
+    #[test]
+    fn leapfrog_energy_error_decreases_quadratically_with_dt() {
+        let eos = AdiabaticEos::monatomic();
+        let visc = ArtificialViscosity::standard();
+        let grav = no_gravity();
+        let drift = |dt: f64, steps: usize| {
+            let mut ps = gas_lattice(5, 0.1, 1.0, 1.5, 1.2);
+            prime(&mut ps, &visc);
+            let e0 = total_energy(&ps);
+            for _ in 0..steps {
+                leapfrog_step(&mut ps, dt, &grav, &eos, &visc);
+            }
+            (total_energy(&ps) - e0).abs() / e0
+        };
+        let coarse = drift(0.01, 25);
+        let fine = drift(0.005, 50);
+        assert!(coarse < 0.01, "coarse drift {coarse}");
+        assert!(
+            fine < coarse / 2.5,
+            "second-order scheme: halving dt must cut the drift by more than 2.5x \
+             (coarse {coarse}, fine {fine})"
+        );
+    }
+
+    #[test]
+    fn leapfrog_with_gravity_still_collapses_pressureless_cold_gas() {
+        // Cold gas (u ≈ 0, no pressure) under self-gravity contracts: the
+        // hydrodynamic forces must not disturb the gravitational collapse.
+        let eos = AdiabaticEos::monatomic();
+        let visc = ArtificialViscosity::standard();
+        let grav = GravitationalSph::new(1.0, 0.05);
+        let mut ps = gas_lattice(4, 0.1, 1.0, 1.0e-12, 1.2);
+        compute_forces(&mut ps, &grav, &eos, &visc);
+        let extent0 = max_extent(&ps);
+        for _ in 0..10 {
+            leapfrog_step(&mut ps, 0.01, &grav, &eos, &visc);
+        }
+        assert!(
+            max_extent(&ps) < extent0,
+            "self-gravity must contract the cloud"
+        );
     }
 }

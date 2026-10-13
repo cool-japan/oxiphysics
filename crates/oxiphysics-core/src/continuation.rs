@@ -8,6 +8,8 @@
 //! bifurcation point detection, branch switching, turning-point location,
 //! stability analysis, and generic path-following with event detection.
 
+use nalgebra::{DMatrix, SVD};
+
 /// Residual function F(u, λ) → ℝⁿ.
 pub type ResidualFn = dyn Fn(&[f64], f64) -> Vec<f64>;
 /// Jacobian function J(u, λ) → ℝⁿˣⁿ.
@@ -477,63 +479,106 @@ pub fn classify_bifurcation(
 // branch_switching
 // ---------------------------------------------------------------------------
 
-/// Switch to a secondary branch at a detected bifurcation point.
+/// Compute a unit vector spanning the (approximate) null space of the square
+/// Jacobian `j`: the right singular vector of its smallest singular value.
 ///
-/// Computes a perturbation in the null-space direction of the Jacobian at the
-/// bifurcation state, then returns a new `ContinuationState` on the secondary
-/// branch displaced by `epsilon`.
+/// The sign is fixed so that the component of largest magnitude is positive,
+/// which makes the result deterministic.  Returns `None` when `j` is empty, is
+/// not an `n × n` matrix, holds non-finite entries, or when the SVD does not
+/// converge.
+fn jacobian_null_direction(j: &[Vec<f64>], n: usize) -> Option<Vec<f64>> {
+    if n == 0 || j.len() != n || j.iter().any(|row| row.len() != n) {
+        return None;
+    }
+    if j.iter().flatten().any(|v| !v.is_finite()) {
+        return None;
+    }
+    let matrix = DMatrix::from_fn(n, n, |r, c| j[r][c]);
+    // The unordered SVD avoids nalgebra's NaN-panicking sort; the smallest
+    // singular value is located explicitly below.
+    let svd = SVD::try_new_unordered(matrix, false, true, f64::EPSILON * 5.0, 100 * n)?;
+    let v_t = svd.v_t.as_ref()?;
+    let (smallest, _) = svd
+        .singular_values
+        .iter()
+        .enumerate()
+        .min_by(|a, b| a.1.total_cmp(b.1))?;
+    let mut phi: Vec<f64> = (0..n).map(|c| v_t[(smallest, c)]).collect();
+    let norm = phi.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if !norm.is_finite() || norm < 1e-14 {
+        return None;
+    }
+    let pivot = phi.iter().copied().fold(
+        0.0_f64,
+        |best, x| if x.abs() > best.abs() { x } else { best },
+    );
+    let sign = if pivot < 0.0 { -1.0 } else { 1.0 };
+    for x in &mut phi {
+        *x = sign * *x / norm;
+    }
+    Some(phi)
+}
+
+/// Predict a point on the secondary branch at a simple bifurcation point.
+///
+/// At a simple bifurcation the Jacobian `J = ∂F/∂u` is singular with a
+/// one-dimensional kernel spanned by `φ`.  This function computes `φ` as the
+/// right singular vector of the smallest singular value of `J(u, λ)` (so that
+/// `J φ ≈ 0`, a genuine null vector rather than a column of `J`), and returns
+/// the state displaced by `epsilon` along it: `u + ε φ`, with `λ` unchanged and
+/// the tangent set to `[φ; 0]`.  The sign of `φ` is fixed (largest component
+/// positive); pass a negative `epsilon` to switch to the opposite side.
+///
+/// The result is only a predictor; use [`BranchSwitching::switch`] to also
+/// correct it onto the secondary branch.
+///
+/// Returns `None` if `epsilon` is zero or not finite, or if no null direction
+/// can be computed (empty, non-square or non-finite Jacobian, SVD failure).
 pub fn branch_switching(
     state: &ContinuationState,
     jac: &JacobianFn,
     epsilon: f64,
-) -> ContinuationState {
+) -> Option<ContinuationState> {
+    if !epsilon.is_finite() || epsilon == 0.0 {
+        return None;
+    }
     let n = state.u.len();
     let j = jac(&state.u, state.lambda);
-    let mut null_dir = vec![0.0_f64; n];
-    let mut min_col_norm = f64::MAX;
-    for col in 0..n {
-        let col_norm: f64 = j.iter().map(|row| row[col] * row[col]).sum::<f64>().sqrt();
-        if col_norm < min_col_norm {
-            min_col_norm = col_norm;
-            for (nd, jrow) in null_dir.iter_mut().zip(j.iter()) {
-                *nd = jrow[col];
-            }
-        }
-    }
-    let norm: f64 = null_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
-    if norm > 1e-14 {
-        for x in &mut null_dir {
-            *x /= norm;
-        }
-    } else {
-        null_dir[0] = 1.0;
-    }
+    let null_dir = jacobian_null_direction(&j, n)?;
     let u_new: Vec<f64> = state
         .u
         .iter()
         .zip(&null_dir)
         .map(|(&ui, &di)| ui + epsilon * di)
         .collect();
-    let mut tangent_new = null_dir.clone();
+    let mut tangent_new = null_dir;
     tangent_new.push(0.0);
-    ContinuationState {
+    Some(ContinuationState {
         lambda: state.lambda,
         u: u_new,
         tangent: tangent_new,
         arc_length: state.arc_length,
         ds: state.ds,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
 // BranchSwitching — bordered-system approach
 // ---------------------------------------------------------------------------
 
-/// Bordered-system branch switching at a bifurcation point.
+/// Bordered-Newton branch switching at a simple bifurcation point.
 ///
-/// Solves the bordered system `[J, v; w^T, 0] [du; dσ] = [-F; 0]` where `v`
-/// and `w` are the (approximate) null vectors of `J` to switch branches.
-/// Returns the perturbed state on the new branch.
+/// The predictor displaces the bifurcation state by `epsilon` along the null
+/// vector `φ` of `J = ∂F/∂u` (see [`branch_switching`]).  The corrector is
+/// Newton's method on the bordered system
+///
+/// ```text
+/// [ J    F_λ ] [Δu]     [ −F(u, λ)             ]
+/// [ φᵀ    0  ] [Δλ]  =  [ −(φ·(u − u₀) − ε)    ]
+/// ```
+///
+/// which pins the displacement along `φ` to `ε` and so converges to the
+/// secondary branch rather than back to the primary one.
 pub struct BranchSwitching {
     /// Perturbation magnitude ε applied in the null-space direction.
     pub epsilon: f64,
@@ -553,11 +598,57 @@ impl BranchSwitching {
         }
     }
 
-    /// Switch branch at `state` using the bordered system approach.
+    /// Switch branch at the bifurcation `state` using the bordered system.
     ///
-    /// Returns the new continuation state on the secondary branch.
-    pub fn switch(&self, state: &ContinuationState, jac: &JacobianFn) -> ContinuationState {
-        branch_switching(state, jac, self.epsilon)
+    /// `f` is the residual `F(u, λ)` and `jac` its Jacobian with respect to
+    /// `u`.  Returns the converged state on the secondary branch, whose tangent
+    /// is the (normalised) secant from the bifurcation point and whose
+    /// `arc_length` is advanced by the length of that secant.  Returns `None`
+    /// if the null direction cannot be computed (see [`branch_switching`]) or
+    /// if the bordered Newton corrector fails to converge to `tol` within
+    /// `max_iter` iterations.  A negative `epsilon` selects the opposite side
+    /// of the secondary branch.
+    pub fn switch(
+        &self,
+        state: &ContinuationState,
+        f: &ResidualFn,
+        jac: &JacobianFn,
+    ) -> Option<ContinuationState> {
+        let predicted = branch_switching(state, jac, self.epsilon)?;
+        // Anchor of the bordering constraint φ·(u − u₀) = ε: the bifurcation
+        // point itself, with border vector [φ; 0] and step ε.
+        let anchor = ContinuationState {
+            lambda: state.lambda,
+            u: state.u.clone(),
+            tangent: predicted.tangent.clone(),
+            arc_length: state.arc_length,
+            ds: self.epsilon,
+        };
+        let corrected = corrector_newton(&predicted, &anchor, f, jac, self.tol, self.max_iter);
+        if !corrected.converged {
+            return None;
+        }
+
+        let mut tangent: Vec<f64> = corrected
+            .u
+            .iter()
+            .zip(&state.u)
+            .map(|(new, old)| new - old)
+            .collect();
+        tangent.push(corrected.lambda - state.lambda);
+        let secant_length = tangent.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if secant_length > 1e-14 {
+            for x in &mut tangent {
+                *x /= secant_length;
+            }
+        }
+        Some(ContinuationState {
+            lambda: corrected.lambda,
+            u: corrected.u,
+            tangent,
+            arc_length: state.arc_length + secant_length,
+            ds: state.ds,
+        })
     }
 }
 
@@ -1091,20 +1182,21 @@ mod tests {
     fn test_branch_switching_perturbs_solution() {
         let s = ContinuationState::new(1.0, vec![1.0, 0.0], 0.1);
         let jac2d = |_u: &[f64], _lam: f64| vec![vec![1e-15, 0.0], vec![0.0, 1.0]];
-        let s_branch = branch_switching(&s, &jac2d, 0.01);
-        let diff: f64 =
-            s.u.iter()
-                .zip(&s_branch.u)
-                .map(|(a, b)| (a - b).abs())
-                .sum();
-        assert!(diff > 0.0, "branch switching must perturb the solution");
+        let s_branch = branch_switching(&s, &jac2d, 0.01).expect("null direction exists");
+        // The (near-)null vector of diag(1e-15, 1) is e₀.
+        assert!(
+            (s_branch.u[0] - 1.01).abs() < 1e-12,
+            "u0 = {}",
+            s_branch.u[0]
+        );
+        assert!(s_branch.u[1].abs() < 1e-12, "u1 = {}", s_branch.u[1]);
     }
 
     #[test]
     fn test_branch_switching_preserves_lambda() {
         let s = ContinuationState::new(2.5, vec![1.0], 0.05);
         let jac_id = |_u: &[f64], _lam: f64| vec![vec![1.0]];
-        let s2 = branch_switching(&s, &jac_id, 0.1);
+        let s2 = branch_switching(&s, &jac_id, 0.1).expect("1x1 Jacobian has a null direction");
         assert!((s2.lambda - 2.5).abs() < 1e-12);
     }
 
@@ -1246,12 +1338,210 @@ mod tests {
 
     #[test]
     fn test_branch_switching_struct() {
-        let bs = BranchSwitching::new(0.01, 20, 1e-8);
-        let s = ContinuationState::new(1.0, vec![1.0, 0.0], 0.1);
-        let jac2d = |_u: &[f64], _lam: f64| vec![vec![1e-15, 0.0], vec![0.0, 1.0]];
-        let s2 = bs.switch(&s, &jac2d);
-        let diff: f64 = s.u.iter().zip(&s2.u).map(|(a, b)| (a - b).abs()).sum();
-        assert!(diff > 0.0);
+        // 2-D pitchfork F = [u0³ − λu0, u1 + u0] at the trivial solution
+        // (u = 0, λ = 0): J = [[0, 0], [1, 1]] has kernel span{[1, −1]/√2}.
+        let eps = 0.01;
+        let bs = BranchSwitching::new(eps, 20, 1e-10);
+        let s = ContinuationState::new(0.0, vec![0.0, 0.0], 0.1);
+        let s2 = bs
+            .switch(&s, &f2d_pitch, &jac2d_pitch)
+            .expect("bordered Newton must converge");
+        let u0 = eps / 2.0_f64.sqrt();
+        assert!((s2.u[0] - u0).abs() < 1e-10, "u0 = {}", s2.u[0]);
+        assert!((s2.u[1] + u0).abs() < 1e-10, "u1 = {}", s2.u[1]);
+        // On the secondary branch u0² = λ.
+        assert!((s2.lambda - u0 * u0).abs() < 1e-10, "λ = {}", s2.lambda);
+        let res = f2d_pitch(&s2.u, s2.lambda);
+        assert!(res.iter().all(|r| r.abs() < 1e-9), "residual {res:?}");
+    }
+
+    /// Pitchfork in `v` with an inert component `u`: F = (u, v³ − λv).
+    fn f_pitch_uv(u: &[f64], lam: f64) -> Vec<f64> {
+        vec![u[0], u[1].powi(3) - lam * u[1]]
+    }
+    fn jac_pitch_uv(u: &[f64], lam: f64) -> Vec<Vec<f64>> {
+        vec![vec![1.0, 0.0], vec![0.0, 3.0 * u[1] * u[1] - lam]]
+    }
+
+    fn l2(x: &[f64]) -> f64 {
+        x.iter().map(|v| v * v).sum::<f64>().sqrt()
+    }
+
+    #[test]
+    fn test_branch_switching_null_direction_is_kernel_not_jacobian_column() {
+        // Rank-1 Jacobian: range = span{[1, 2]}, kernel = span{[1, −2]}.  The
+        // old implementation copied the smallest-norm *column* [1, 2]/√5 (a
+        // range vector) instead of the kernel vector.
+        let jac = |_u: &[f64], _lam: f64| vec![vec![2.0, 1.0], vec![4.0, 2.0]];
+        let s = ContinuationState::new(0.0, vec![0.0, 0.0], 0.1);
+        let eps = 0.1;
+        let b = branch_switching(&s, &jac, eps).expect("null direction exists");
+        let phi: Vec<f64> = b.u.iter().map(|x| x / eps).collect();
+        assert!((l2(&phi) - 1.0).abs() < 1e-12, "|φ| = {}", l2(&phi));
+        let j = jac(&s.u, s.lambda);
+        let j_phi: Vec<f64> = j
+            .iter()
+            .map(|row| row.iter().zip(&phi).map(|(a, b)| a * b).sum())
+            .collect();
+        assert!(l2(&j_phi) < 1e-12, "J·φ = {j_phi:?}");
+        // Sign convention: the component of largest magnitude is positive.
+        let expected = [-1.0 / 5.0_f64.sqrt(), 2.0 / 5.0_f64.sqrt()];
+        assert!((phi[0] - expected[0]).abs() < 1e-12, "φ = {phi:?}");
+        assert!((phi[1] - expected[1]).abs() < 1e-12, "φ = {phi:?}");
+        // The tangent is [φ; 0].
+        assert_eq!(b.tangent.len(), 3);
+        assert!((b.tangent[0] - phi[0]).abs() < 1e-12);
+        assert!(b.tangent[2].abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_branch_switching_zero_column_is_not_misread_as_null_direction() {
+        // J = diag(1, 0): ker J = span{e₁}.  A zero column used to trigger the
+        // `null_dir[0] = 1` fallback, i.e. the range direction e₀.
+        let jac = |_u: &[f64], _lam: f64| vec![vec![1.0, 0.0], vec![0.0, 0.0]];
+        let s = ContinuationState::new(0.0, vec![0.0, 0.0], 0.1);
+        let b = branch_switching(&s, &jac, 0.25).expect("null direction exists");
+        assert!(b.u[0].abs() < 1e-14, "u0 = {}", b.u[0]);
+        assert!((b.u[1] - 0.25).abs() < 1e-14, "u1 = {}", b.u[1]);
+    }
+
+    #[test]
+    fn test_branch_switching_three_dimensional_kernel() {
+        // Graph-Laplacian-like Jacobian with kernel span{[1, 1, 1]/√3}.
+        let jac = |_u: &[f64], _lam: f64| {
+            vec![
+                vec![1.0, -1.0, 0.0],
+                vec![0.0, 1.0, -1.0],
+                vec![-1.0, 0.0, 1.0],
+            ]
+        };
+        let s = ContinuationState::new(0.0, vec![0.0; 3], 0.1);
+        let b = branch_switching(&s, &jac, 0.3).expect("null direction exists");
+        let third = 1.0 / 3.0_f64.sqrt();
+        for (i, ui) in b.u.iter().enumerate() {
+            assert!((ui - 0.3 * third).abs() < 1e-12, "u[{i}] = {ui}");
+        }
+    }
+
+    #[test]
+    fn test_branch_switching_sign_convention_and_negative_epsilon() {
+        let jac = |_u: &[f64], _lam: f64| vec![vec![1.0, 0.0], vec![0.0, 0.0]];
+        let s = ContinuationState::new(1.5, vec![0.0, 0.0], 0.1);
+        let plus = branch_switching(&s, &jac, 0.1).expect("ok");
+        let minus = branch_switching(&s, &jac, -0.1).expect("ok");
+        // Largest component of φ is positive: φ = +e₁.
+        assert!((plus.u[1] - 0.1).abs() < 1e-14);
+        assert!((minus.u[1] + 0.1).abs() < 1e-14);
+        assert!((plus.tangent[1] - 1.0).abs() < 1e-14);
+        assert!((minus.tangent[1] - 1.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_branch_switching_rejects_invalid_input() {
+        let s = ContinuationState::new(0.0, vec![0.0, 0.0], 0.1);
+        let good = |_u: &[f64], _lam: f64| vec![vec![1.0, 0.0], vec![0.0, 0.0]];
+        assert!(branch_switching(&s, &good, 0.0).is_none(), "zero ε");
+        assert!(branch_switching(&s, &good, f64::NAN).is_none(), "NaN ε");
+        assert!(branch_switching(&s, &good, f64::INFINITY).is_none(), "∞ ε");
+
+        let ragged = |_u: &[f64], _lam: f64| vec![vec![1.0, 0.0], vec![0.0]];
+        assert!(branch_switching(&s, &ragged, 0.1).is_none(), "ragged J");
+        let short = |_u: &[f64], _lam: f64| vec![vec![1.0, 0.0]];
+        assert!(branch_switching(&s, &short, 0.1).is_none(), "1×2 J");
+        let nan = |_u: &[f64], _lam: f64| vec![vec![1.0, f64::NAN], vec![0.0, 0.0]];
+        assert!(branch_switching(&s, &nan, 0.1).is_none(), "NaN in J");
+
+        let empty = ContinuationState::new(0.0, Vec::new(), 0.1);
+        let empty_jac = |_u: &[f64], _lam: f64| Vec::<Vec<f64>>::new();
+        assert!(branch_switching(&empty, &empty_jac, 0.1).is_none(), "n = 0");
+    }
+
+    #[test]
+    fn test_branch_switching_pitchfork_reaches_secondary_branch() {
+        // F(u, v, λ) = (u, v³ − λv) at the origin: J = diag(1, 0), φ = ±e_v.
+        let eps = 0.05;
+        let bs = BranchSwitching::new(eps, 25, 1e-12);
+        let s = ContinuationState::new(0.0, vec![0.0, 0.0], 0.1);
+        let sw = bs
+            .switch(&s, &f_pitch_uv, &jac_pitch_uv)
+            .expect("bordered Newton must converge");
+        assert!(sw.u[0].abs() < 1e-10, "u = {}", sw.u[0]);
+        assert!((sw.u[1] - eps).abs() < 1e-10, "v = {}", sw.u[1]);
+        // v ≠ 0 is the non-trivial branch: λ = v² = ε².
+        assert!((sw.lambda - eps * eps).abs() < 1e-10, "λ = {}", sw.lambda);
+        let res = f_pitch_uv(&sw.u, sw.lambda);
+        assert!(l2(&res) < 1e-10, "|F| = {}", l2(&res));
+        // The tangent is the unit secant from the bifurcation point.
+        assert!((l2(&sw.tangent) - 1.0).abs() < 1e-12);
+        assert!(sw.tangent[1] > 0.99);
+        assert!(sw.arc_length > 0.0);
+    }
+
+    #[test]
+    fn test_branch_switching_negative_epsilon_selects_opposite_branch() {
+        let eps = 0.05;
+        let bs = BranchSwitching::new(-eps, 25, 1e-12);
+        let s = ContinuationState::new(0.0, vec![0.0, 0.0], 0.1);
+        let sw = bs
+            .switch(&s, &f_pitch_uv, &jac_pitch_uv)
+            .expect("bordered Newton must converge");
+        assert!((sw.u[1] + eps).abs() < 1e-10, "v = {}", sw.u[1]);
+        assert!((sw.lambda - eps * eps).abs() < 1e-10, "λ = {}", sw.lambda);
+        assert!(l2(&f_pitch_uv(&sw.u, sw.lambda)) < 1e-10);
+    }
+
+    #[test]
+    fn test_branch_switching_transcritical_branch() {
+        // F = (u, v² − λv): trivial branch v = 0 crosses v = λ at the origin.
+        let f = |u: &[f64], lam: f64| vec![u[0], u[1] * u[1] - lam * u[1]];
+        let jac = |u: &[f64], lam: f64| vec![vec![1.0, 0.0], vec![0.0, 2.0 * u[1] - lam]];
+        let eps = 0.1;
+        let bs = BranchSwitching::new(eps, 25, 1e-12);
+        let s = ContinuationState::new(0.0, vec![0.0, 0.0], 0.1);
+        let sw = bs.switch(&s, &f, &jac).expect("converges");
+        assert!((sw.u[1] - eps).abs() < 1e-10, "v = {}", sw.u[1]);
+        assert!((sw.lambda - eps).abs() < 1e-10, "λ = {}", sw.lambda);
+    }
+
+    #[test]
+    fn test_branch_switching_honours_corrector_budget() {
+        // With no Newton iterations the corrector cannot converge ⇒ None.
+        let s = ContinuationState::new(0.0, vec![0.0, 0.0], 0.1);
+        let starved = BranchSwitching::new(0.05, 0, 1e-12);
+        assert!(starved.switch(&s, &f_pitch_uv, &jac_pitch_uv).is_none());
+        // An unreachable tolerance also fails instead of reporting success.
+        let impossible = BranchSwitching::new(0.05, 3, 0.0);
+        assert!(impossible.switch(&s, &f_pitch_uv, &jac_pitch_uv).is_none());
+        // A zero perturbation would just return the bifurcation point.
+        let zero = BranchSwitching::new(0.0, 25, 1e-12);
+        assert!(zero.switch(&s, &f_pitch_uv, &jac_pitch_uv).is_none());
+    }
+
+    #[test]
+    fn test_branch_switching_result_can_be_continued_along_secondary_branch() {
+        let bs = BranchSwitching::new(0.05, 25, 1e-12);
+        let s = ContinuationState::new(0.0, vec![0.0, 0.0], 0.1);
+        let mut state = bs
+            .switch(&s, &f_pitch_uv, &jac_pitch_uv)
+            .expect("bordered Newton must converge");
+        state.ds = 0.05;
+        let stepper = PseudoArcLengthContinuation::new(1e-10, 25, 3, 1e-6, 0.2);
+        let mut last_v = state.u[1];
+        for _ in 0..5 {
+            let next = stepper
+                .step(&mut state, &f_pitch_uv, &jac_pitch_uv)
+                .expect("continuation along the secondary branch must succeed");
+            assert!(next.u[1] > last_v, "v must keep growing along the branch");
+            // Stay on the non-trivial branch λ = v².
+            assert!(
+                (next.lambda - next.u[1] * next.u[1]).abs() < 1e-8,
+                "λ = {}, v² = {}",
+                next.lambda,
+                next.u[1] * next.u[1]
+            );
+            last_v = next.u[1];
+            state = next;
+        }
     }
 
     #[test]

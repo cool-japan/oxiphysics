@@ -20,8 +20,6 @@
 //!   coordination number, dihedral angle, and RMSD.
 //! - [`TransitionPathSampling`]: Two-ended shooting for reactive trajectories.
 
-use rand::Rng;
-
 use rand::RngExt;
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -234,166 +232,9 @@ impl CollectiveVariable {
 // RemdController
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Swap scheduling strategy for REMD.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SwapSchedule {
-    /// Try neighbours in order 0↔1, 2↔3, … then 1↔2, 3↔4, … alternating.
-    EvenOdd,
-    /// Random pair selection.
-    Random,
-}
+mod remd;
 
-/// Replica Exchange Molecular Dynamics controller.
-///
-/// Supports temperature REMD and Hamiltonian REMD, with configurable swap
-/// scheduling and detailed acceptance tracking per pair.
-#[derive(Debug, Clone)]
-pub struct RemdController {
-    /// Temperature of each replica (K).
-    pub temperatures: Vec<f64>,
-    /// Potential energy of each replica (kJ/mol).
-    pub energies: Vec<f64>,
-    /// Mapping: `replica_index[k]` is the configuration currently at slot `k`.
-    pub replica_index: Vec<usize>,
-    /// Swap schedule.
-    pub schedule: SwapSchedule,
-    /// Per-pair acceptance counters: `(attempts, accepted)`.
-    pub pair_stats: Vec<(u64, u64)>,
-    /// Global step counter.
-    pub step: u64,
-    /// Swap attempt interval (MD steps between swap attempts).
-    pub swap_interval: u64,
-    /// Hamiltonian REMD lambda parameters (one per replica). `None` → temperature REMD.
-    pub lambda: Option<Vec<f64>>,
-}
-
-impl RemdController {
-    /// Create a temperature REMD controller with a geometric ladder.
-    pub fn new_geometric(t_min: f64, t_max: f64, n_replicas: usize, swap_interval: u64) -> Self {
-        let mut temps = Vec::with_capacity(n_replicas);
-        if n_replicas <= 1 {
-            temps.push(t_min);
-        } else {
-            let ratio = (t_max / t_min).powf(1.0 / (n_replicas as f64 - 1.0));
-            for i in 0..n_replicas {
-                temps.push(t_min * ratio.powi(i as i32));
-            }
-        }
-        let n = temps.len();
-        Self {
-            temperatures: temps,
-            energies: vec![0.0; n],
-            replica_index: (0..n).collect(),
-            schedule: SwapSchedule::EvenOdd,
-            pair_stats: vec![(0, 0); n.saturating_sub(1)],
-            step: 0,
-            swap_interval,
-            lambda: None,
-        }
-    }
-
-    /// Create a Hamiltonian REMD controller.
-    pub fn new_hamiltonian(temperature: f64, lambdas: Vec<f64>, swap_interval: u64) -> Self {
-        let n = lambdas.len();
-        Self {
-            temperatures: vec![temperature; n],
-            energies: vec![0.0; n],
-            replica_index: (0..n).collect(),
-            schedule: SwapSchedule::EvenOdd,
-            pair_stats: vec![(0, 0); n.saturating_sub(1)],
-            step: 0,
-            swap_interval,
-            lambda: Some(lambdas),
-        }
-    }
-
-    /// Number of replicas.
-    pub fn n_replicas(&self) -> usize {
-        self.temperatures.len()
-    }
-
-    /// Update energies from the simulation.
-    pub fn set_energies(&mut self, energies: &[f64]) {
-        let n = energies.len().min(self.energies.len());
-        self.energies[..n].copy_from_slice(&energies[..n]);
-    }
-
-    /// Attempt swaps according to the current schedule.
-    /// Returns a list of pairs that were actually swapped.
-    pub fn attempt_swaps(&mut self) -> Vec<(usize, usize)> {
-        let n = self.n_replicas();
-        if n < 2 {
-            return Vec::new();
-        }
-        let mut rng = rand::rng();
-        let mut swapped = Vec::new();
-
-        match self.schedule {
-            SwapSchedule::EvenOdd => {
-                let offset = (self.step % 2) as usize;
-                let mut i = offset;
-                while i + 1 < n {
-                    if self.try_swap(i, i + 1, &mut rng) {
-                        swapped.push((i, i + 1));
-                    }
-                    i += 2;
-                }
-            }
-            SwapSchedule::Random => {
-                let i = rng.random_range(0..n - 1);
-                if self.try_swap(i, i + 1, &mut rng) {
-                    swapped.push((i, i + 1));
-                }
-            }
-        }
-        self.step += 1;
-        swapped
-    }
-
-    /// Try to swap replicas `i` and `j` using Metropolis criterion.
-    fn try_swap(&mut self, i: usize, j: usize, rng: &mut impl Rng) -> bool {
-        let beta_i = 1.0 / (KB_KJMOL * self.temperatures[i]);
-        let beta_j = 1.0 / (KB_KJMOL * self.temperatures[j]);
-        let delta = (beta_i - beta_j) * (self.energies[i] - self.energies[j]);
-        let pair_idx = i.min(j);
-        self.pair_stats[pair_idx].0 += 1;
-        let accept = if delta <= 0.0 {
-            true
-        } else {
-            let r: f64 = rng.random_range(0.0..1.0);
-            r < (-delta).exp()
-        };
-        if accept {
-            self.pair_stats[pair_idx].1 += 1;
-            self.energies.swap(i, j);
-            self.replica_index.swap(i, j);
-        }
-        accept
-    }
-
-    /// Acceptance ratio for the pair `(i, i+1)`.
-    pub fn acceptance_ratio(&self, pair_index: usize) -> f64 {
-        let (att, acc) = self.pair_stats[pair_index];
-        if att == 0 {
-            0.0
-        } else {
-            acc as f64 / att as f64
-        }
-    }
-
-    /// Overall acceptance ratio across all pairs.
-    pub fn overall_acceptance(&self) -> f64 {
-        let (total_att, total_acc): (u64, u64) = self
-            .pair_stats
-            .iter()
-            .fold((0, 0), |(a, b), &(x, y)| (a + x, b + y));
-        if total_att == 0 {
-            0.0
-        } else {
-            total_acc as f64 / total_att as f64
-        }
-    }
-}
+pub use remd::{RemdController, SwapSchedule};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WellTemperedMetadynamics
@@ -1633,43 +1474,6 @@ mod tests {
         let coord = cv.evaluate(&pos);
         // First neighbour very close → ~1, second very far → ~0
         assert!(coord > 0.8 && coord < 2.1, "coord = {coord}");
-    }
-
-    // ── RemdController ──────────────────────────────────────────────────
-
-    #[test]
-    fn test_remd_geometric_ladder() {
-        let remd = RemdController::new_geometric(300.0, 600.0, 4, 100);
-        assert_eq!(remd.n_replicas(), 4);
-        assert!((remd.temperatures[0] - 300.0).abs() < 1e-6);
-        assert!((remd.temperatures[3] - 600.0).abs() < 1.0);
-        // Check geometric spacing
-        let ratio = remd.temperatures[1] / remd.temperatures[0];
-        let ratio2 = remd.temperatures[2] / remd.temperatures[1];
-        assert!((ratio - ratio2).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_remd_swap_always_accept_downhill() {
-        let mut remd = RemdController::new_geometric(300.0, 400.0, 2, 1);
-        // Set energies so swap is always favourable
-        remd.set_energies(&[100.0, 50.0]); // lower T has higher E
-        let swapped = remd.attempt_swaps();
-        // With ΔE<0 at higher beta, should accept
-        assert!(!swapped.is_empty() || remd.pair_stats[0].0 > 0);
-    }
-
-    #[test]
-    fn test_remd_hamiltonian() {
-        let remd = RemdController::new_hamiltonian(300.0, vec![0.0, 0.5, 1.0], 50);
-        assert_eq!(remd.n_replicas(), 3);
-        assert!(remd.lambda.is_some());
-    }
-
-    #[test]
-    fn test_remd_acceptance_initially_zero() {
-        let remd = RemdController::new_geometric(300.0, 400.0, 3, 10);
-        assert!((remd.overall_acceptance() - 0.0).abs() < 1e-12);
     }
 
     // ── WellTemperedMetadynamics ────────────────────────────────────────

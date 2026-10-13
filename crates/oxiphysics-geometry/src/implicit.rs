@@ -6,6 +6,8 @@
 //! Provides SDF primitives, smooth blending operations, voxel SDF grids,
 //! marching cubes isosurface extraction, dual contouring, and ray marching.
 
+use crate::mc_tables::{MC_CORNER_OFFSETS, MC_EDGE_TABLE, MC_TRI_TABLE, case_index};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper functions
 // ─────────────────────────────────────────────────────────────────────────────
@@ -64,6 +66,13 @@ fn vec3_norm(a: [f64; 3]) -> [f64; 3] {
 }
 fn vec3_sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 fn vec3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
@@ -546,303 +555,12 @@ impl IsoMesh {
 /// Marching Cubes isosurface extraction (Lorensen-Cline).
 pub struct MarchingCubes;
 
-// Marching Cubes edge table (which edges are intersected for each case)
-const MC_EDGE_TABLE: [u16; 256] = [
-    0x000, 0x109, 0x203, 0x30a, 0x406, 0x50f, 0x605, 0x70c, 0x80c, 0x905, 0xa0f, 0xb06, 0xc0a,
-    0xd03, 0xe09, 0xf00, 0x190, 0x099, 0x393, 0x29a, 0x596, 0x49f, 0x795, 0x69c, 0x99c, 0x895,
-    0xb9f, 0xa96, 0xd9a, 0xc93, 0xf99, 0xe90, 0x230, 0x339, 0x033, 0x13a, 0x636, 0x73f, 0x435,
-    0x53c, 0xa3c, 0xb35, 0x83f, 0x936, 0xe3a, 0xf33, 0xc39, 0xd30, 0x3a0, 0x2a9, 0x1a3, 0x0aa,
-    0x7a6, 0x6af, 0x5a5, 0x4ac, 0xbac, 0xaa5, 0x9af, 0x8a6, 0xfaa, 0xea3, 0xda9, 0xca0, 0x460,
-    0x569, 0x663, 0x76a, 0x066, 0x16f, 0x265, 0x36c, 0xc6c, 0xd65, 0xe6f, 0xf66, 0x86a, 0x963,
-    0xa69, 0xb60, 0x5f0, 0x4f9, 0x7f3, 0x6fa, 0x1f6, 0x0ff, 0x3f5, 0x2fc, 0xdfc, 0xcf5, 0xfff,
-    0xef6, 0x9fa, 0x8f3, 0xbf9, 0xaf0, 0x650, 0x759, 0x453, 0x55a, 0x256, 0x35f, 0x055, 0x15c,
-    0xe5c, 0xf55, 0xc5f, 0xd56, 0xa5a, 0xb53, 0x859, 0x950, 0x7c0, 0x6c9, 0x5c3, 0x4ca, 0x3c6,
-    0x2cf, 0x1c5, 0x0cc, 0xfcc, 0xec5, 0xdcf, 0xcc6, 0xbca, 0xac3, 0x9c9, 0x8c0, 0x8c0, 0x9c9,
-    0xac3, 0xbca, 0xcc6, 0xdcf, 0xec5, 0xfcc, 0x0cc, 0x1c5, 0x2cf, 0x3c6, 0x4ca, 0x5c3, 0x6c9,
-    0x7c0, 0x950, 0x859, 0xb53, 0xa5a, 0xd56, 0xc5f, 0xf55, 0xe5c, 0x15c, 0x055, 0x35f, 0x256,
-    0x55a, 0x453, 0x759, 0x650, 0xaf0, 0xbf9, 0x8f3, 0x9fa, 0xef6, 0xfff, 0xcf5, 0xdfc, 0x2fc,
-    0x3f5, 0x0ff, 0x1f6, 0x6fa, 0x7f3, 0x4f9, 0x5f0, 0xb60, 0xa69, 0x963, 0x86a, 0xf66, 0xe6f,
-    0xd65, 0xc6c, 0x36c, 0x265, 0x16f, 0x066, 0x76a, 0x663, 0x569, 0x460, 0xca0, 0xda9, 0xea3,
-    0xfaa, 0x8a6, 0x9af, 0xaa5, 0xbac, 0x4ac, 0x5a5, 0x6af, 0x7a6, 0x0aa, 0x1a3, 0x2a9, 0x3a0,
-    0xd30, 0xc39, 0xf33, 0xe3a, 0x936, 0x83f, 0xb35, 0xa3c, 0x53c, 0x435, 0x73f, 0x636, 0x13a,
-    0x033, 0x339, 0x230, 0xe90, 0xf99, 0xc93, 0xd9a, 0xa96, 0xb9f, 0x895, 0x99c, 0x69c, 0x795,
-    0x49f, 0x596, 0x29a, 0x393, 0x099, 0x190, 0xf00, 0xe09, 0xd03, 0xc0a, 0xb06, 0xa0f, 0x905,
-    0x80c, 0x70c, 0x605, 0x50f, 0x406, 0x30a, 0x203, 0x109, 0x000,
-];
-
-// Marching cubes triangle table (15 ints per case, -1 terminated/padded)
-// Using a subset — full 256-entry table with 16 shorts each
-const MC_TRI_TABLE: [[i8; 16]; 256] = include_mc_tri_table();
-
-const fn include_mc_tri_table() -> [[i8; 16]; 256] {
-    // Compact representation: each entry lists edge indices forming triangles, -1 = end
-    // This is the standard Lorensen-Cline table
-    [
-        [
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        ],
-        [0, 8, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [0, 1, 9, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [1, 8, 3, 9, 8, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [1, 2, 10, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [0, 8, 3, 1, 2, 10, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [9, 2, 10, 0, 2, 9, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [2, 8, 3, 2, 10, 8, 10, 9, 8, -1, -1, -1, -1, -1, -1, -1],
-        [3, 11, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [0, 11, 2, 8, 11, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [1, 9, 0, 2, 3, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [1, 11, 2, 1, 9, 11, 9, 8, 11, -1, -1, -1, -1, -1, -1, -1],
-        [3, 10, 1, 11, 10, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [0, 10, 1, 0, 8, 10, 8, 11, 10, -1, -1, -1, -1, -1, -1, -1],
-        [3, 9, 0, 3, 11, 9, 11, 10, 9, -1, -1, -1, -1, -1, -1, -1],
-        [9, 8, 10, 10, 8, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [4, 7, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [4, 3, 0, 7, 3, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [0, 1, 9, 8, 4, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [4, 1, 9, 4, 7, 1, 7, 3, 1, -1, -1, -1, -1, -1, -1, -1],
-        [1, 2, 10, 8, 4, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [3, 4, 7, 3, 0, 4, 1, 2, 10, -1, -1, -1, -1, -1, -1, -1],
-        [9, 2, 10, 9, 0, 2, 8, 4, 7, -1, -1, -1, -1, -1, -1, -1],
-        [2, 10, 9, 2, 9, 7, 2, 7, 3, 7, 9, 4, -1, -1, -1, -1],
-        [8, 4, 7, 3, 11, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [11, 4, 7, 11, 2, 4, 2, 0, 4, -1, -1, -1, -1, -1, -1, -1],
-        [9, 0, 1, 8, 4, 7, 2, 3, 11, -1, -1, -1, -1, -1, -1, -1],
-        [4, 7, 11, 9, 4, 11, 9, 11, 2, 9, 2, 1, -1, -1, -1, -1],
-        [3, 10, 1, 3, 11, 10, 7, 8, 4, -1, -1, -1, -1, -1, -1, -1],
-        [1, 11, 10, 1, 4, 11, 1, 0, 4, 7, 11, 4, -1, -1, -1, -1],
-        [4, 7, 8, 9, 0, 11, 9, 11, 10, 11, 0, 3, -1, -1, -1, -1],
-        [4, 7, 11, 4, 11, 9, 9, 11, 10, -1, -1, -1, -1, -1, -1, -1],
-        [9, 5, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [9, 5, 4, 0, 8, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [0, 5, 4, 1, 5, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [8, 5, 4, 8, 3, 5, 3, 1, 5, -1, -1, -1, -1, -1, -1, -1],
-        [1, 2, 10, 9, 5, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [3, 0, 8, 1, 2, 10, 4, 9, 5, -1, -1, -1, -1, -1, -1, -1],
-        [5, 2, 10, 5, 4, 2, 4, 0, 2, -1, -1, -1, -1, -1, -1, -1],
-        [2, 10, 5, 3, 2, 5, 3, 5, 4, 3, 4, 8, -1, -1, -1, -1],
-        [9, 5, 4, 2, 3, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [0, 11, 2, 0, 8, 11, 4, 9, 5, -1, -1, -1, -1, -1, -1, -1],
-        [0, 5, 4, 0, 1, 5, 2, 3, 11, -1, -1, -1, -1, -1, -1, -1],
-        [2, 1, 5, 2, 5, 8, 2, 8, 11, 4, 8, 5, -1, -1, -1, -1],
-        [10, 3, 11, 10, 1, 3, 9, 5, 4, -1, -1, -1, -1, -1, -1, -1],
-        [4, 9, 5, 0, 8, 1, 8, 10, 1, 8, 11, 10, -1, -1, -1, -1],
-        [5, 4, 0, 5, 0, 11, 5, 11, 10, 11, 0, 3, -1, -1, -1, -1],
-        [5, 4, 8, 5, 8, 10, 10, 8, 11, -1, -1, -1, -1, -1, -1, -1],
-        [9, 7, 8, 5, 7, 9, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [9, 3, 0, 9, 5, 3, 5, 7, 3, -1, -1, -1, -1, -1, -1, -1],
-        [0, 7, 8, 0, 1, 7, 1, 5, 7, -1, -1, -1, -1, -1, -1, -1],
-        [1, 5, 3, 3, 5, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [9, 7, 8, 9, 5, 7, 10, 1, 2, -1, -1, -1, -1, -1, -1, -1],
-        [10, 1, 2, 9, 5, 0, 5, 3, 0, 5, 7, 3, -1, -1, -1, -1],
-        [8, 0, 2, 8, 2, 5, 8, 5, 7, 10, 5, 2, -1, -1, -1, -1],
-        [2, 10, 5, 2, 5, 3, 3, 5, 7, -1, -1, -1, -1, -1, -1, -1],
-        [7, 9, 5, 7, 8, 9, 3, 11, 2, -1, -1, -1, -1, -1, -1, -1],
-        [9, 5, 7, 9, 7, 2, 9, 2, 0, 2, 7, 11, -1, -1, -1, -1],
-        [2, 3, 11, 0, 1, 8, 1, 7, 8, 1, 5, 7, -1, -1, -1, -1],
-        [11, 2, 1, 11, 1, 7, 7, 1, 5, -1, -1, -1, -1, -1, -1, -1],
-        [9, 5, 8, 8, 5, 7, 10, 1, 3, 10, 3, 11, -1, -1, -1, -1],
-        [5, 7, 0, 5, 0, 9, 7, 11, 0, 1, 0, 10, 11, 10, 0, -1],
-        [11, 10, 0, 11, 0, 3, 10, 5, 0, 8, 0, 7, 5, 7, 0, -1],
-        [11, 10, 5, 7, 11, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [10, 6, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [0, 8, 3, 5, 10, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [9, 0, 1, 5, 10, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [1, 8, 3, 1, 9, 8, 5, 10, 6, -1, -1, -1, -1, -1, -1, -1],
-        [1, 6, 5, 2, 6, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [1, 6, 5, 1, 2, 6, 3, 0, 8, -1, -1, -1, -1, -1, -1, -1],
-        [9, 6, 5, 9, 0, 6, 0, 2, 6, -1, -1, -1, -1, -1, -1, -1],
-        [5, 9, 8, 5, 8, 2, 5, 2, 6, 3, 2, 8, -1, -1, -1, -1],
-        [2, 3, 11, 10, 6, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [11, 0, 8, 11, 2, 0, 10, 6, 5, -1, -1, -1, -1, -1, -1, -1],
-        [0, 1, 9, 2, 3, 11, 5, 10, 6, -1, -1, -1, -1, -1, -1, -1],
-        [5, 10, 6, 1, 9, 2, 9, 11, 2, 9, 8, 11, -1, -1, -1, -1],
-        [6, 3, 11, 6, 5, 3, 5, 1, 3, -1, -1, -1, -1, -1, -1, -1],
-        [0, 8, 11, 0, 11, 5, 0, 5, 1, 5, 11, 6, -1, -1, -1, -1],
-        [3, 11, 6, 0, 3, 6, 0, 6, 5, 0, 5, 9, -1, -1, -1, -1],
-        [6, 5, 9, 6, 9, 11, 11, 9, 8, -1, -1, -1, -1, -1, -1, -1],
-        [5, 10, 6, 4, 7, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [4, 3, 0, 4, 7, 3, 6, 5, 10, -1, -1, -1, -1, -1, -1, -1],
-        [1, 9, 0, 5, 10, 6, 8, 4, 7, -1, -1, -1, -1, -1, -1, -1],
-        [10, 6, 5, 1, 9, 7, 1, 7, 3, 7, 9, 4, -1, -1, -1, -1],
-        [6, 1, 2, 6, 5, 1, 4, 7, 8, -1, -1, -1, -1, -1, -1, -1],
-        [1, 2, 5, 5, 2, 6, 3, 0, 4, 3, 4, 7, -1, -1, -1, -1],
-        [8, 4, 7, 9, 0, 5, 0, 6, 5, 0, 2, 6, -1, -1, -1, -1],
-        [7, 3, 9, 7, 9, 4, 3, 2, 9, 5, 9, 6, 2, 6, 9, -1],
-        [3, 11, 2, 7, 8, 4, 10, 6, 5, -1, -1, -1, -1, -1, -1, -1],
-        [5, 10, 6, 4, 7, 2, 4, 2, 0, 2, 7, 11, -1, -1, -1, -1],
-        [0, 1, 9, 4, 7, 8, 2, 3, 11, 5, 10, 6, -1, -1, -1, -1],
-        [9, 2, 1, 9, 11, 2, 9, 4, 11, 7, 11, 4, 5, 10, 6, -1],
-        [8, 4, 7, 3, 11, 5, 3, 5, 1, 5, 11, 6, -1, -1, -1, -1],
-        [5, 1, 11, 5, 11, 6, 1, 0, 11, 7, 11, 4, 0, 4, 11, -1],
-        [0, 5, 9, 0, 6, 5, 0, 3, 6, 11, 6, 3, 8, 4, 7, -1],
-        [6, 5, 9, 6, 9, 11, 4, 7, 9, 7, 11, 9, -1, -1, -1, -1],
-        [10, 4, 9, 6, 4, 10, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [4, 10, 6, 4, 9, 10, 0, 8, 3, -1, -1, -1, -1, -1, -1, -1],
-        [10, 0, 1, 10, 6, 0, 6, 4, 0, -1, -1, -1, -1, -1, -1, -1],
-        [8, 3, 1, 8, 1, 6, 8, 6, 4, 6, 1, 10, -1, -1, -1, -1],
-        [1, 4, 9, 1, 2, 4, 2, 6, 4, -1, -1, -1, -1, -1, -1, -1],
-        [3, 0, 8, 1, 2, 9, 2, 4, 9, 2, 6, 4, -1, -1, -1, -1],
-        [0, 2, 4, 4, 2, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [8, 3, 2, 8, 2, 4, 4, 2, 6, -1, -1, -1, -1, -1, -1, -1],
-        [10, 4, 9, 10, 6, 4, 11, 2, 3, -1, -1, -1, -1, -1, -1, -1],
-        [0, 8, 2, 2, 8, 11, 4, 9, 10, 4, 10, 6, -1, -1, -1, -1],
-        [3, 11, 2, 0, 1, 6, 0, 6, 4, 6, 1, 10, -1, -1, -1, -1],
-        [6, 4, 1, 6, 1, 10, 4, 8, 1, 2, 1, 11, 8, 11, 1, -1],
-        [9, 6, 4, 9, 3, 6, 9, 1, 3, 11, 6, 3, -1, -1, -1, -1],
-        [8, 11, 1, 8, 1, 0, 11, 6, 1, 9, 1, 4, 6, 4, 1, -1],
-        [3, 11, 6, 3, 6, 0, 0, 6, 4, -1, -1, -1, -1, -1, -1, -1],
-        [6, 4, 8, 11, 6, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [7, 10, 6, 7, 8, 10, 8, 9, 10, -1, -1, -1, -1, -1, -1, -1],
-        [0, 7, 3, 0, 10, 7, 0, 9, 10, 6, 7, 10, -1, -1, -1, -1],
-        [10, 6, 7, 1, 10, 7, 1, 7, 8, 1, 8, 0, -1, -1, -1, -1],
-        [10, 6, 7, 10, 7, 1, 1, 7, 3, -1, -1, -1, -1, -1, -1, -1],
-        [1, 2, 6, 1, 6, 8, 1, 8, 9, 8, 6, 7, -1, -1, -1, -1],
-        [2, 6, 9, 2, 9, 1, 6, 7, 9, 0, 9, 3, 7, 3, 9, -1],
-        [7, 8, 0, 7, 0, 6, 6, 0, 2, -1, -1, -1, -1, -1, -1, -1],
-        [7, 3, 2, 6, 7, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [2, 3, 11, 10, 6, 8, 10, 8, 9, 8, 6, 7, -1, -1, -1, -1],
-        [2, 0, 7, 2, 7, 11, 0, 9, 7, 6, 7, 10, 9, 10, 7, -1],
-        [1, 8, 0, 1, 7, 8, 1, 10, 7, 6, 7, 10, 2, 3, 11, -1],
-        [11, 2, 1, 11, 1, 7, 10, 6, 1, 6, 7, 1, -1, -1, -1, -1],
-        [8, 9, 6, 8, 6, 7, 9, 1, 6, 11, 6, 3, 1, 3, 6, -1],
-        [0, 9, 1, 11, 6, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [7, 8, 0, 7, 0, 6, 3, 11, 0, 11, 6, 0, -1, -1, -1, -1],
-        [7, 11, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [7, 6, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [3, 0, 8, 11, 7, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [0, 1, 9, 11, 7, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [8, 1, 9, 8, 3, 1, 11, 7, 6, -1, -1, -1, -1, -1, -1, -1],
-        [10, 1, 2, 6, 11, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [1, 2, 10, 3, 0, 8, 6, 11, 7, -1, -1, -1, -1, -1, -1, -1],
-        [2, 9, 0, 2, 10, 9, 6, 11, 7, -1, -1, -1, -1, -1, -1, -1],
-        [6, 11, 7, 2, 10, 3, 10, 8, 3, 10, 9, 8, -1, -1, -1, -1],
-        [7, 2, 3, 6, 2, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [7, 0, 8, 7, 6, 0, 6, 2, 0, -1, -1, -1, -1, -1, -1, -1],
-        [2, 7, 6, 2, 3, 7, 0, 1, 9, -1, -1, -1, -1, -1, -1, -1],
-        [1, 6, 2, 1, 8, 6, 1, 9, 8, 8, 7, 6, -1, -1, -1, -1],
-        [10, 7, 6, 10, 1, 7, 1, 3, 7, -1, -1, -1, -1, -1, -1, -1],
-        [10, 7, 6, 1, 7, 10, 1, 8, 7, 1, 0, 8, -1, -1, -1, -1],
-        [0, 3, 7, 0, 7, 10, 0, 10, 9, 6, 10, 7, -1, -1, -1, -1],
-        [7, 6, 10, 7, 10, 8, 8, 10, 9, -1, -1, -1, -1, -1, -1, -1],
-        [6, 8, 4, 11, 8, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [3, 6, 11, 3, 0, 6, 0, 4, 6, -1, -1, -1, -1, -1, -1, -1],
-        [8, 6, 11, 8, 4, 6, 9, 0, 1, -1, -1, -1, -1, -1, -1, -1],
-        [9, 4, 6, 9, 6, 3, 9, 3, 1, 11, 3, 6, -1, -1, -1, -1],
-        [6, 8, 4, 6, 11, 8, 2, 10, 1, -1, -1, -1, -1, -1, -1, -1],
-        [1, 2, 10, 3, 0, 11, 0, 6, 11, 0, 4, 6, -1, -1, -1, -1],
-        [4, 11, 8, 4, 6, 11, 0, 2, 9, 2, 10, 9, -1, -1, -1, -1],
-        [10, 9, 3, 10, 3, 2, 9, 4, 3, 11, 3, 6, 4, 6, 3, -1],
-        [8, 2, 3, 8, 4, 2, 4, 6, 2, -1, -1, -1, -1, -1, -1, -1],
-        [0, 4, 2, 4, 6, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [1, 9, 0, 2, 3, 4, 2, 4, 6, 4, 3, 8, -1, -1, -1, -1],
-        [1, 9, 4, 1, 4, 2, 2, 4, 6, -1, -1, -1, -1, -1, -1, -1],
-        [8, 1, 3, 8, 6, 1, 8, 4, 6, 6, 10, 1, -1, -1, -1, -1],
-        [10, 1, 0, 10, 0, 6, 6, 0, 4, -1, -1, -1, -1, -1, -1, -1],
-        [4, 6, 3, 4, 3, 8, 6, 10, 3, 0, 3, 9, 10, 9, 3, -1],
-        [10, 9, 4, 6, 10, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [4, 9, 5, 7, 6, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [0, 8, 3, 4, 9, 5, 11, 7, 6, -1, -1, -1, -1, -1, -1, -1],
-        [5, 0, 1, 5, 4, 0, 7, 6, 11, -1, -1, -1, -1, -1, -1, -1],
-        [11, 7, 6, 8, 3, 4, 3, 5, 4, 3, 1, 5, -1, -1, -1, -1],
-        [9, 5, 4, 10, 1, 2, 7, 6, 11, -1, -1, -1, -1, -1, -1, -1],
-        [6, 11, 7, 1, 2, 10, 0, 8, 3, 4, 9, 5, -1, -1, -1, -1],
-        [7, 6, 11, 5, 4, 10, 4, 2, 10, 4, 0, 2, -1, -1, -1, -1],
-        [3, 4, 8, 3, 5, 4, 3, 2, 5, 10, 5, 2, 11, 7, 6, -1],
-        [7, 2, 3, 7, 6, 2, 5, 4, 9, -1, -1, -1, -1, -1, -1, -1],
-        [9, 5, 4, 0, 8, 6, 0, 6, 2, 6, 8, 7, -1, -1, -1, -1],
-        [3, 6, 2, 3, 7, 6, 1, 5, 0, 5, 4, 0, -1, -1, -1, -1],
-        [6, 2, 8, 6, 8, 7, 2, 1, 8, 4, 8, 5, 1, 5, 8, -1],
-        [9, 5, 4, 10, 1, 6, 1, 7, 6, 1, 3, 7, -1, -1, -1, -1],
-        [1, 6, 10, 1, 7, 6, 1, 0, 7, 8, 7, 0, 9, 5, 4, -1],
-        [4, 0, 10, 4, 10, 5, 0, 3, 10, 6, 10, 7, 3, 7, 10, -1],
-        [7, 6, 10, 7, 10, 8, 5, 4, 10, 4, 8, 10, -1, -1, -1, -1],
-        [6, 9, 5, 6, 11, 9, 11, 8, 9, -1, -1, -1, -1, -1, -1, -1],
-        [3, 6, 11, 0, 6, 3, 0, 5, 6, 0, 9, 5, -1, -1, -1, -1],
-        [0, 11, 8, 0, 5, 11, 0, 1, 5, 5, 6, 11, -1, -1, -1, -1],
-        [6, 11, 3, 6, 3, 5, 5, 3, 1, -1, -1, -1, -1, -1, -1, -1],
-        [1, 2, 10, 9, 5, 11, 9, 11, 8, 11, 5, 6, -1, -1, -1, -1],
-        [0, 11, 3, 0, 6, 11, 0, 9, 6, 5, 6, 9, 1, 2, 10, -1],
-        [11, 8, 5, 11, 5, 6, 8, 0, 5, 10, 5, 2, 0, 2, 5, -1],
-        [6, 11, 3, 6, 3, 5, 2, 10, 3, 10, 5, 3, -1, -1, -1, -1],
-        [5, 8, 9, 5, 2, 8, 5, 6, 2, 3, 8, 2, -1, -1, -1, -1],
-        [9, 5, 6, 9, 6, 0, 0, 6, 2, -1, -1, -1, -1, -1, -1, -1],
-        [1, 5, 8, 1, 8, 0, 5, 6, 8, 3, 8, 2, 6, 2, 8, -1],
-        [1, 5, 6, 2, 1, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [1, 3, 6, 1, 6, 10, 3, 8, 6, 5, 6, 9, 8, 9, 6, -1],
-        [10, 1, 0, 10, 0, 6, 9, 5, 0, 5, 6, 0, -1, -1, -1, -1],
-        [0, 3, 8, 5, 6, 10, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [10, 5, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [11, 5, 10, 7, 5, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [11, 5, 10, 11, 7, 5, 8, 3, 0, -1, -1, -1, -1, -1, -1, -1],
-        [5, 11, 7, 5, 10, 11, 1, 9, 0, -1, -1, -1, -1, -1, -1, -1],
-        [10, 7, 5, 10, 11, 7, 9, 8, 1, 8, 3, 1, -1, -1, -1, -1],
-        [11, 1, 2, 11, 7, 1, 7, 5, 1, -1, -1, -1, -1, -1, -1, -1],
-        [0, 8, 3, 1, 2, 7, 1, 7, 5, 7, 2, 11, -1, -1, -1, -1],
-        [9, 7, 5, 9, 2, 7, 9, 0, 2, 2, 11, 7, -1, -1, -1, -1],
-        [7, 5, 2, 7, 2, 11, 5, 9, 2, 3, 2, 8, 9, 8, 2, -1],
-        [2, 5, 10, 2, 3, 5, 3, 7, 5, -1, -1, -1, -1, -1, -1, -1],
-        [8, 2, 0, 8, 5, 2, 8, 7, 5, 10, 2, 5, -1, -1, -1, -1],
-        [9, 0, 1, 5, 10, 3, 5, 3, 7, 3, 10, 2, -1, -1, -1, -1],
-        [9, 8, 2, 9, 2, 1, 8, 7, 2, 10, 2, 5, 7, 5, 2, -1],
-        [1, 3, 5, 3, 7, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [0, 8, 7, 0, 7, 1, 1, 7, 5, -1, -1, -1, -1, -1, -1, -1],
-        [9, 0, 3, 9, 3, 5, 5, 3, 7, -1, -1, -1, -1, -1, -1, -1],
-        [9, 8, 7, 5, 9, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [5, 8, 4, 5, 10, 8, 10, 11, 8, -1, -1, -1, -1, -1, -1, -1],
-        [5, 0, 4, 5, 11, 0, 5, 10, 11, 11, 3, 0, -1, -1, -1, -1],
-        [0, 1, 9, 8, 4, 10, 8, 10, 11, 10, 4, 5, -1, -1, -1, -1],
-        [10, 11, 4, 10, 4, 5, 11, 3, 4, 9, 4, 1, 3, 1, 4, -1],
-        [2, 5, 1, 2, 8, 5, 2, 11, 8, 4, 5, 8, -1, -1, -1, -1],
-        [0, 4, 11, 0, 11, 3, 4, 5, 11, 2, 11, 1, 5, 1, 11, -1],
-        [0, 2, 5, 0, 5, 9, 2, 11, 5, 4, 5, 8, 11, 8, 5, -1],
-        [9, 4, 5, 2, 11, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [2, 5, 10, 3, 5, 2, 3, 4, 5, 3, 8, 4, -1, -1, -1, -1],
-        [5, 10, 2, 5, 2, 4, 4, 2, 0, -1, -1, -1, -1, -1, -1, -1],
-        [3, 10, 2, 3, 5, 10, 3, 8, 5, 4, 5, 8, 0, 1, 9, -1],
-        [5, 10, 2, 5, 2, 4, 1, 9, 2, 9, 4, 2, -1, -1, -1, -1],
-        [8, 4, 5, 8, 5, 3, 3, 5, 1, -1, -1, -1, -1, -1, -1, -1],
-        [0, 4, 5, 1, 0, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [8, 4, 5, 8, 5, 3, 9, 0, 5, 0, 3, 5, -1, -1, -1, -1],
-        [9, 4, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [4, 11, 7, 4, 9, 11, 9, 10, 11, -1, -1, -1, -1, -1, -1, -1],
-        [0, 8, 3, 4, 9, 7, 9, 11, 7, 9, 10, 11, -1, -1, -1, -1],
-        [1, 10, 11, 1, 11, 4, 1, 4, 0, 7, 4, 11, -1, -1, -1, -1],
-        [3, 1, 4, 3, 4, 8, 1, 10, 4, 7, 4, 11, 10, 11, 4, -1],
-        [4, 11, 7, 9, 11, 4, 9, 2, 11, 9, 1, 2, -1, -1, -1, -1],
-        [9, 7, 4, 9, 11, 7, 9, 1, 11, 2, 11, 1, 0, 8, 3, -1],
-        [11, 7, 4, 11, 4, 2, 2, 4, 0, -1, -1, -1, -1, -1, -1, -1],
-        [11, 7, 4, 11, 4, 2, 8, 3, 4, 3, 2, 4, -1, -1, -1, -1],
-        [2, 9, 10, 2, 7, 9, 2, 3, 7, 7, 4, 9, -1, -1, -1, -1],
-        [9, 10, 7, 9, 7, 4, 10, 2, 7, 8, 7, 0, 2, 0, 7, -1],
-        [3, 7, 10, 3, 10, 2, 7, 4, 10, 1, 10, 0, 4, 0, 10, -1],
-        [1, 10, 2, 8, 7, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [4, 9, 1, 4, 1, 7, 7, 1, 3, -1, -1, -1, -1, -1, -1, -1],
-        [4, 9, 1, 4, 1, 7, 0, 8, 1, 8, 7, 1, -1, -1, -1, -1],
-        [4, 0, 3, 7, 4, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [4, 8, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [9, 10, 8, 10, 11, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [3, 0, 9, 3, 9, 11, 11, 9, 10, -1, -1, -1, -1, -1, -1, -1],
-        [0, 1, 10, 0, 10, 8, 8, 10, 11, -1, -1, -1, -1, -1, -1, -1],
-        [3, 1, 10, 11, 3, 10, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [1, 2, 11, 1, 11, 9, 9, 11, 8, -1, -1, -1, -1, -1, -1, -1],
-        [3, 0, 9, 3, 9, 11, 1, 2, 9, 2, 11, 9, -1, -1, -1, -1],
-        [0, 2, 11, 8, 0, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [3, 2, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [2, 3, 8, 2, 8, 10, 10, 8, 9, -1, -1, -1, -1, -1, -1, -1],
-        [9, 10, 2, 0, 9, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [2, 3, 8, 2, 8, 10, 0, 1, 8, 1, 10, 8, -1, -1, -1, -1],
-        [1, 10, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [1, 3, 8, 9, 1, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [0, 9, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [0, 3, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-        [
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        ],
-    ]
-}
-
 impl MarchingCubes {
     /// Extract an isosurface from a 3D SDF grid at the given isovalue.
+    ///
+    /// A node is *inside* when its value is strictly below `isovalue`.  The
+    /// triangles are wound counter-clockwise when seen from outside, so their
+    /// normals point towards increasing field values.
     pub fn extract(grid: &SdfGrid3D, isovalue: f64) -> IsoMesh {
         let mut mesh = IsoMesh::new();
         // Cube vertex offsets
@@ -933,7 +651,9 @@ impl MarchingCubes {
                         let b = edge_verts[tri_row[ti + 1] as usize];
                         let c = edge_verts[tri_row[ti + 2] as usize];
                         if a != usize::MAX && b != usize::MAX && c != usize::MAX {
-                            mesh.triangles.push([a, b, c]);
+                            // The table winds into the solid; swap two vertices
+                            // so the triangle faces out of it.
+                            mesh.triangles.push([a, c, b]);
                         }
                         ti += 3;
                     }
@@ -1046,115 +766,228 @@ impl DualContouring {
 // Marching Tetrahedra
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Kuhn (Freudenthal) split of the unit cube into six tetrahedra that share the
+/// main diagonal `0 -> 6` (corner numbering of [`crate::mc_tables`]).
+///
+/// The tetrahedra tile the cube exactly (each has volume 1/6).  Every cube is split
+/// along the same diagonal direction, so the triangulations of the faces shared by
+/// neighbouring cubes coincide and the decomposition is conforming.
+const KUHN_TETS: [[usize; 4]; 6] = [
+    [0, 1, 2, 6],
+    [0, 2, 3, 6],
+    [0, 3, 7, 6],
+    [0, 7, 4, 6],
+    [0, 4, 5, 6],
+    [0, 5, 1, 6],
+];
+
+/// The six edges of a tetrahedron as pairs of local vertex indices.
+const TET_EDGES: [[usize; 2]; 6] = [[0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]];
+
+/// Triangles of every inside/outside configuration of a tetrahedron, as triples of
+/// [`TET_EDGES`] indices (`-1` ends a row).
+///
+/// Bit `i` of the case index is set when local vertex `i` is inside (`value <
+/// isovalue`).  A lone inside or lone outside vertex cuts one triangle off its
+/// three edges; a 2|2 split crosses four edges and yields a quad that is cut into
+/// two triangles.  The winding is deliberately not encoded here: the tetrahedra of
+/// the Kuhn split have mixed handedness, so every emitted triangle is oriented
+/// against the field gradient when it is generated.
+const TET_TRI_CASES: [[i8; 7]; 16] = [
+    [-1, -1, -1, -1, -1, -1, -1],
+    [0, 1, 2, -1, -1, -1, -1],
+    [0, 3, 4, -1, -1, -1, -1],
+    [1, 3, 4, 1, 4, 2, -1],
+    [1, 3, 5, -1, -1, -1, -1],
+    [0, 3, 5, 0, 5, 2, -1],
+    [0, 4, 5, 0, 5, 1, -1],
+    [2, 4, 5, -1, -1, -1, -1],
+    [2, 4, 5, -1, -1, -1, -1],
+    [0, 4, 5, 0, 5, 1, -1],
+    [0, 3, 5, 0, 5, 2, -1],
+    [1, 3, 5, -1, -1, -1, -1],
+    [1, 3, 4, 1, 4, 2, -1],
+    [0, 3, 4, -1, -1, -1, -1],
+    [0, 1, 2, -1, -1, -1, -1],
+    [-1, -1, -1, -1, -1, -1, -1],
+];
+
 /// Marching tetrahedra isosurface extraction.
 ///
-/// Subdivides each cube into 5 tetrahedra and applies the tetrahedron case table.
+/// Splits every grid cell into six tetrahedra around its main diagonal (the Kuhn
+/// split) and applies the 16-case tetrahedron table, which is
+/// free of the ambiguous configurations of marching cubes.  A node is *inside*
+/// when its value is strictly below the isovalue.  The result is an indexed mesh:
+///
+/// * every crossed edge of the tetrahedral lattice yields exactly one vertex that
+///   is shared by all triangles around it, so a closed surface gives a watertight
+///   mesh in which every edge belongs to two triangles;
+/// * triangles are wound counter-clockwise when seen from outside (their normals
+///   point towards increasing field values);
+/// * the per-vertex normals are the normalised grid gradient at the vertex.
 pub struct MarchingTetrahedra;
+
+/// A grid node seen from inside one tetrahedron.
+#[derive(Clone, Copy)]
+struct TetNode {
+    /// Flat index of the node in the grid.
+    index: usize,
+    /// World position of the node.
+    pos: [f64; 3],
+    /// Field value at the node.
+    value: f64,
+}
+
+/// Incremental mesh builder that welds the crossing points of shared edges.
+struct TetMeshBuilder<'a> {
+    grid: &'a SdfGrid3D,
+    iso: f64,
+    /// Vertex index per crossed edge, keyed by `(lower node, upper node)`.  A
+    /// crossing that falls exactly on a node is keyed by `(node, node)`, so that
+    /// the crossings of all edges meeting at the node are one vertex.
+    vertex_of: std::collections::HashMap<(usize, usize), usize>,
+    mesh: IsoMesh,
+}
+
+impl<'a> TetMeshBuilder<'a> {
+    fn new(grid: &'a SdfGrid3D, iso: f64) -> Self {
+        Self {
+            grid,
+            iso,
+            vertex_of: std::collections::HashMap::new(),
+            mesh: IsoMesh::new(),
+        }
+    }
+
+    /// Index of the vertex where the surface crosses the edge `a`-`b`.
+    ///
+    /// The crossing is always interpolated from the node with the lower grid index
+    /// to the one with the higher index, so every tetrahedron sharing the edge
+    /// computes the bit-identical position.
+    fn crossing_vertex(&mut self, a: TetNode, b: TetNode) -> usize {
+        let (lo, hi) = if a.index <= b.index { (a, b) } else { (b, a) };
+        let dv = hi.value - lo.value;
+        let t = if dv == 0.0 {
+            0.5
+        } else {
+            ((self.iso - lo.value) / dv).clamp(0.0, 1.0)
+        };
+        let key = if t <= 0.0 {
+            (lo.index, lo.index)
+        } else if t >= 1.0 {
+            (hi.index, hi.index)
+        } else {
+            (lo.index, hi.index)
+        };
+        if let Some(&id) = self.vertex_of.get(&key) {
+            return id;
+        }
+        let pos = if t <= 0.0 {
+            lo.pos
+        } else if t >= 1.0 {
+            hi.pos
+        } else {
+            vec3_add(lo.pos, vec3_scale(vec3_sub(hi.pos, lo.pos), t))
+        };
+        let id = self.mesh.vertices.len();
+        self.mesh.vertices.push(pos);
+        self.vertex_of.insert(key, id);
+        id
+    }
+
+    /// Emit the triangles of one tetrahedron.
+    fn process_tet(&mut self, tet: [TetNode; 4]) {
+        let mut case = 0usize;
+        for (i, node) in tet.iter().enumerate() {
+            if node.value < self.iso {
+                case |= 1 << i;
+            }
+        }
+        for row in TET_TRI_CASES[case].chunks_exact(3) {
+            let [Ok(e0), Ok(e1), Ok(e2)] = [row[0], row[1], row[2]].map(usize::try_from) else {
+                break;
+            };
+            let ends = |e: usize| {
+                let [a, b] = TET_EDGES[e];
+                (tet[a], tet[b])
+            };
+            let (a0, b0) = ends(e0);
+            let (a1, b1) = ends(e1);
+            let (a2, b2) = ends(e2);
+            let mut ids = [
+                self.crossing_vertex(a0, b0),
+                self.crossing_vertex(a1, b1),
+                self.crossing_vertex(a2, b2),
+            ];
+            if ids[0] == ids[1] || ids[1] == ids[2] || ids[0] == ids[2] {
+                // Crossings that coincide on a node leave a zero-area triangle.
+                continue;
+            }
+            // Every crossed edge of the triangle runs from an inside to an outside
+            // node, and the (linear) field increases along it: the outward
+            // normal must make an acute angle with that direction.
+            let (inside, outside) = if a0.value < self.iso {
+                (a0, b0)
+            } else {
+                (b0, a0)
+            };
+            let p = ids.map(|id| self.mesh.vertices[id]);
+            let normal = vec3_cross(vec3_sub(p[1], p[0]), vec3_sub(p[2], p[0]));
+            if vec3_dot(normal, normal) == 0.0 {
+                continue;
+            }
+            if vec3_dot(normal, vec3_sub(outside.pos, inside.pos)) < 0.0 {
+                ids.swap(1, 2);
+            }
+            self.mesh.triangles.push(ids);
+        }
+    }
+
+    /// Fill in the per-vertex normals and return the mesh.
+    fn finish(mut self) -> IsoMesh {
+        self.mesh.normals = self
+            .mesh
+            .vertices
+            .iter()
+            .map(|&p| vec3_norm(self.grid.gradient(p)))
+            .collect();
+        self.mesh
+    }
+}
 
 impl MarchingTetrahedra {
     /// Extract isosurface from SDF grid using marching tetrahedra.
     pub fn extract(grid: &SdfGrid3D, isovalue: f64) -> IsoMesh {
-        let mut mesh = IsoMesh::new();
+        let mut builder = TetMeshBuilder::new(grid, isovalue);
         let nx = grid.nx.saturating_sub(1);
         let ny = grid.ny.saturating_sub(1);
         let nz = grid.nz.saturating_sub(1);
 
-        // 5-tetrahedra decomposition of a cube
-        let tet_indices: [[usize; 4]; 5] = [
-            [0, 1, 3, 5],
-            [1, 3, 5, 6],
-            [0, 3, 4, 5],
-            [3, 5, 6, 7],
-            [0, 3, 4, 7],
-        ];
-        let corner_offsets: [[usize; 3]; 8] = [
-            [0, 0, 0],
-            [1, 0, 0],
-            [1, 1, 0],
-            [0, 1, 0],
-            [0, 0, 1],
-            [1, 0, 1],
-            [1, 1, 1],
-            [0, 1, 1],
-        ];
-
         for iz in 0..nz {
             for iy in 0..ny {
                 for ix in 0..nx {
-                    let mut cvals = [0.0f64; 8];
-                    let mut cpos = [[0.0f64; 3]; 8];
-                    for (ci, &[dx, dy, dz]) in corner_offsets.iter().enumerate() {
-                        cpos[ci] = grid.voxel_center(ix + dx, iy + dy, iz + dz);
-                        cvals[ci] = grid.get(ix + dx, iy + dy, iz + dz);
+                    let corners: [TetNode; 8] = std::array::from_fn(|c| {
+                        let [di, dj, dk] = MC_CORNER_OFFSETS[c];
+                        let (i, j, k) = (ix + di, iy + dj, iz + dk);
+                        let index = grid.index(i, j, k);
+                        TetNode {
+                            index,
+                            pos: grid.voxel_center(i, j, k),
+                            value: grid.data[index],
+                        }
+                    });
+                    let values: [f64; 8] = std::array::from_fn(|c| corners[c].value);
+                    let case = case_index(&values, isovalue);
+                    if case == 0 || case == 255 {
+                        continue;
                     }
-
-                    for &tet in &tet_indices {
-                        let tv: [usize; 4] = tet;
-                        let tp: [[f64; 3]; 4] =
-                            [cpos[tv[0]], cpos[tv[1]], cpos[tv[2]], cpos[tv[3]]];
-                        let td: [f64; 4] = [cvals[tv[0]], cvals[tv[1]], cvals[tv[2]], cvals[tv[3]]];
-                        Self::process_tet(&tp, &td, isovalue, &mut mesh);
+                    for tet in &KUHN_TETS {
+                        builder.process_tet(tet.map(|c| corners[c]));
                     }
                 }
             }
         }
-        mesh
-    }
-
-    fn interp(p0: [f64; 3], p1: [f64; 3], d0: f64, d1: f64, iso: f64) -> [f64; 3] {
-        let t = ((iso - d0) / (d1 - d0 + 1e-30)).clamp(0.0, 1.0);
-        [
-            p0[0] + t * (p1[0] - p0[0]),
-            p0[1] + t * (p1[1] - p0[1]),
-            p0[2] + t * (p1[2] - p0[2]),
-        ]
-    }
-
-    fn process_tet(pos: &[[f64; 3]; 4], vals: &[f64; 4], iso: f64, mesh: &mut IsoMesh) {
-        let idx: u8 = vals.iter().enumerate().fold(
-            0u8,
-            |acc, (i, &v)| {
-                if v < iso { acc | (1 << i) } else { acc }
-            },
-        );
-        // Tetrahedron case table: 16 cases, emit 0, 1, or 2 triangles
-        let edges: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
-        let tri_cases: [[i8; 7]; 16] = [
-            [-1, -1, -1, -1, -1, -1, -1],
-            [0, 3, 2, -1, -1, -1, -1],
-            [0, 1, 4, -1, -1, -1, -1],
-            [1, 3, 2, 1, 4, 3, -1],
-            [1, 2, 5, -1, -1, -1, -1],
-            [0, 3, 5, 0, 5, 1, -1],
-            [0, 2, 5, 0, 5, 4, -1],
-            [3, 5, 4, -1, -1, -1, -1],
-            [3, 5, 4, -1, -1, -1, -1],
-            [0, 5, 2, 0, 4, 5, -1],
-            [0, 5, 3, 0, 1, 5, -1],
-            [1, 2, 5, -1, -1, -1, -1],
-            [1, 3, 2, 1, 4, 3, -1],
-            [0, 1, 4, -1, -1, -1, -1],
-            [0, 3, 2, -1, -1, -1, -1],
-            [-1, -1, -1, -1, -1, -1, -1],
-        ];
-        let tc = tri_cases[idx as usize];
-        let mut ti = 0;
-        while ti < 6 && tc[ti] >= 0 {
-            let ei0 = tc[ti] as usize;
-            let ei1 = tc[ti + 1] as usize;
-            let ei2 = tc[ti + 2] as usize;
-            let (a0, a1) = edges[ei0];
-            let (b0, b1) = edges[ei1];
-            let (c0, c1) = edges[ei2];
-            let pa = Self::interp(pos[a0], pos[a1], vals[a0], vals[a1], iso);
-            let pb = Self::interp(pos[b0], pos[b1], vals[b0], vals[b1], iso);
-            let pc = Self::interp(pos[c0], pos[c1], vals[c0], vals[c1], iso);
-            let vi = mesh.vertices.len();
-            mesh.vertices.extend_from_slice(&[pa, pb, pc]);
-            mesh.normals.extend_from_slice(&[[0.0, 1.0, 0.0]; 3]);
-            mesh.triangles.push([vi, vi + 1, vi + 2]);
-            ti += 3;
-        }
+        builder.finish()
     }
 }
 
@@ -1575,5 +1408,297 @@ mod tests {
     fn test_pi_used() {
         // Just ensure PI import is used
         let _ = PI;
+    }
+}
+
+#[cfg(test)]
+mod marching_tetrahedra_tests {
+    use super::*;
+    use crate::mc_tables::test_support::{
+        area_and_volume, degenerate_triangle_count, edge_valence_histogram,
+        is_closed_and_consistently_oriented,
+    };
+    use std::f64::consts::PI;
+
+    /// Signed volume of the tetrahedron `(a, b, c, d)`.
+    fn tet_volume(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
+        let n = vec3_cross(vec3_sub(b, a), vec3_sub(c, a));
+        vec3_dot(n, vec3_sub(d, a)) / 6.0
+    }
+
+    fn corner(c: usize) -> [f64; 3] {
+        let [i, j, k] = MC_CORNER_OFFSETS[c];
+        [i as f64, j as f64, k as f64]
+    }
+
+    /// Centre of the sphere sampled by [`sphere_grid`].  It is off the lattice of
+    /// grid nodes, so that no node lies exactly on the surface.
+    fn sphere_center(n: usize, voxel: f64) -> [f64; 3] {
+        let half = 0.5 * n as f64 * voxel;
+        [half + 0.013, half - 0.007, half + 0.0031]
+    }
+
+    /// Sphere sampled on a cubic grid whose nodes avoid the surface exactly.
+    fn sphere_grid(n: usize, voxel: f64, radius: f64) -> SdfGrid3D {
+        let s = ImplicitSphere::new(sphere_center(n, voxel), radius);
+        SdfGrid3D::from_sdf(n, n, n, [0.0; 3], voxel, |p| s.sdf(p))
+    }
+
+    #[test]
+    fn kuhn_tets_tile_the_unit_cube() {
+        let mut total = 0.0;
+        for tet in &KUHN_TETS {
+            let v = tet_volume(
+                corner(tet[0]),
+                corner(tet[1]),
+                corner(tet[2]),
+                corner(tet[3]),
+            )
+            .abs();
+            assert!((v - 1.0 / 6.0).abs() < 1e-15, "tet {tet:?} has volume {v}");
+            total += v;
+        }
+        assert!((total - 1.0).abs() < 1e-14, "total volume {total}");
+        // All six tets contain the main diagonal 0-6 and use every corner.
+        let mut used = [false; 8];
+        for tet in &KUHN_TETS {
+            assert!(tet.contains(&0) && tet.contains(&6));
+            for &c in tet {
+                used[c] = true;
+            }
+        }
+        assert!(used.iter().all(|&u| u), "corner 2 or 7 left unused");
+    }
+
+    #[test]
+    fn kuhn_split_is_conforming_across_cube_faces() {
+        // The diagonal a tet face puts on a cube face, as a sorted corner pair.
+        let face_diagonals = |axis: usize, side: usize| -> Vec<[usize; 2]> {
+            let mut out = Vec::new();
+            for tet in &KUHN_TETS {
+                // Corners of the tet lying on this cube face.
+                let on_face: Vec<usize> = tet
+                    .iter()
+                    .copied()
+                    .filter(|&c| MC_CORNER_OFFSETS[c][axis] == side)
+                    .collect();
+                if on_face.len() == 3 {
+                    // A triangle on the face: its diagonal joins the two corners
+                    // that differ in two coordinates.
+                    for a in 0..3 {
+                        for b in (a + 1)..3 {
+                            let (ca, cb) = (on_face[a], on_face[b]);
+                            let differing = (0..3)
+                                .filter(|&k| MC_CORNER_OFFSETS[ca][k] != MC_CORNER_OFFSETS[cb][k])
+                                .count();
+                            if differing == 2 {
+                                let mut pair = [ca, cb];
+                                pair.sort_unstable();
+                                out.push(pair);
+                            }
+                        }
+                    }
+                }
+            }
+            out.sort_unstable();
+            out.dedup();
+            out
+        };
+        for axis in 0..3 {
+            let lower = face_diagonals(axis, 0);
+            let upper = face_diagonals(axis, 1);
+            assert_eq!(lower.len(), 1, "axis {axis}: one diagonal per face");
+            assert_eq!(upper.len(), 1, "axis {axis}: one diagonal per face");
+            // Translating the lower face by +1 along `axis` must reproduce the
+            // diagonal of the upper face of the neighbouring cube.
+            let translate = |c: usize| -> usize {
+                let mut off = MC_CORNER_OFFSETS[c];
+                off[axis] = 1;
+                (0..8)
+                    .find(|&q| MC_CORNER_OFFSETS[q] == off)
+                    .expect("every offset is a cube corner")
+            };
+            let mut mapped = [translate(lower[0][0]), translate(lower[0][1])];
+            mapped.sort_unstable();
+            assert_eq!(mapped, upper[0], "axis {axis}: faces disagree");
+        }
+    }
+
+    #[test]
+    fn tet_case_table_cuts_exactly_the_crossed_edges() {
+        for (case, row) in TET_TRI_CASES.iter().enumerate() {
+            let inside = |v: usize| (case >> v) & 1 == 1;
+            let mut crossed = [false; 6];
+            for (e, &[a, b]) in TET_EDGES.iter().enumerate() {
+                crossed[e] = inside(a) != inside(b);
+            }
+            let mut used = [false; 6];
+            let mut triangles = 0;
+            for t in row.chunks_exact(3) {
+                if t[0] < 0 {
+                    break;
+                }
+                triangles += 1;
+                for &e in t {
+                    let e = usize::try_from(e).expect("non-negative edge index");
+                    assert!(crossed[e], "case {case}: edge {e} does not cross");
+                    used[e] = true;
+                }
+            }
+            assert_eq!(used, crossed, "case {case}: every crossed edge is used");
+            let inside_count = (0..4).filter(|&v| inside(v)).count();
+            let expected = match inside_count {
+                0 | 4 => 0,
+                1 | 3 => 1,
+                _ => 2,
+            };
+            assert_eq!(triangles, expected, "case {case}");
+        }
+    }
+
+    #[test]
+    fn sphere_mesh_is_watertight_outward_and_accurate() {
+        let radius = 1.0;
+        let grid = sphere_grid(24, 0.13, radius);
+        let mesh = MarchingTetrahedra::extract(&grid, 0.0);
+        assert!(mesh.num_triangles() > 1000, "{}", mesh.num_triangles());
+        assert_eq!(mesh.normals.len(), mesh.vertices.len());
+        assert_eq!(
+            edge_valence_histogram(&mesh.triangles),
+            vec![(2, mesh.triangles.len() * 3 / 2)],
+            "every edge must be shared by exactly two triangles"
+        );
+        assert!(is_closed_and_consistently_oriented(&mesh.triangles));
+        assert_eq!(
+            degenerate_triangle_count(&mesh.vertices, &mesh.triangles),
+            0
+        );
+        let (area, volume) = area_and_volume(&mesh.vertices, &mesh.triangles);
+        let exact_area = 4.0 * PI * radius * radius;
+        let exact_volume = 4.0 / 3.0 * PI * radius.powi(3);
+        assert!(
+            (area / exact_area - 1.0).abs() < 0.03,
+            "area {area} vs {exact_area}"
+        );
+        assert!(
+            volume > 0.0,
+            "triangles must face outwards, volume {volume}"
+        );
+        assert!(
+            (volume / exact_volume - 1.0).abs() < 0.03,
+            "volume {volume} vs {exact_volume}"
+        );
+    }
+
+    #[test]
+    fn vertex_normals_follow_the_sdf_gradient_not_plus_y() {
+        let grid = sphere_grid(20, 0.15, 1.0);
+        let mesh = MarchingTetrahedra::extract(&grid, 0.0);
+        let center = sphere_center(20, 0.15);
+        let mut worst = 1.0_f64;
+        for (p, n) in mesh.vertices.iter().zip(mesh.normals.iter()) {
+            assert!(
+                (vec3_len(*n) - 1.0).abs() < 1e-9,
+                "normal {n:?} is not unit"
+            );
+            let radial = vec3_norm(vec3_sub(*p, center));
+            worst = worst.min(vec3_dot(radial, *n));
+        }
+        assert!(
+            worst > 0.95,
+            "normals deviate from the radial direction: {worst}"
+        );
+        assert!(
+            mesh.normals.iter().any(|n| n[0].abs() > 0.5),
+            "normals must not all be +Y"
+        );
+    }
+
+    #[test]
+    fn triangle_winding_matches_the_vertex_normals() {
+        let grid = sphere_grid(18, 0.17, 1.0);
+        let mesh = MarchingTetrahedra::extract(&grid, 0.0);
+        for t in &mesh.triangles {
+            let (a, b, c) = (
+                mesh.vertices[t[0]],
+                mesh.vertices[t[1]],
+                mesh.vertices[t[2]],
+            );
+            let face = vec3_cross(vec3_sub(b, a), vec3_sub(c, a));
+            let avg = vec3_add(
+                vec3_add(mesh.normals[t[0]], mesh.normals[t[1]]),
+                mesh.normals[t[2]],
+            );
+            assert!(vec3_dot(face, avg) > 0.0, "triangle {t:?} faces inwards");
+        }
+    }
+
+    #[test]
+    fn crossing_on_a_node_leaves_no_degenerate_triangles() {
+        // f = x - 2.5 vanishes exactly on the node plane x = 2.5 (nodes sit at
+        // half-integers), so every crossing snaps onto a node.
+        let grid = SdfGrid3D::from_sdf(6, 5, 5, [0.0; 3], 1.0, |p| p[0] - 2.5);
+        let mesh = MarchingTetrahedra::extract(&grid, 0.0);
+        assert!(!mesh.triangles.is_empty());
+        assert_eq!(
+            degenerate_triangle_count(&mesh.vertices, &mesh.triangles),
+            0
+        );
+        for v in &mesh.vertices {
+            assert!((v[0] - 2.5).abs() < 1e-12, "vertex off the plane: {v:?}");
+        }
+        // The plane spans the nodes 0.5..4.5 in y and z: a 4 x 4 patch.
+        let (area, _) = area_and_volume(&mesh.vertices, &mesh.triangles);
+        assert!((area - 16.0).abs() < 1e-12, "area {area}");
+        for t in &mesh.triangles {
+            let (a, b, c) = (
+                mesh.vertices[t[0]],
+                mesh.vertices[t[1]],
+                mesh.vertices[t[2]],
+            );
+            let n = vec3_cross(vec3_sub(b, a), vec3_sub(c, a));
+            assert!(n[0] > 0.0, "triangle {t:?} must face +x");
+        }
+    }
+
+    #[test]
+    fn marching_cubes_triangles_face_outwards_like_the_tetrahedra() {
+        let grid = sphere_grid(20, 0.15, 1.0);
+        let sphere_centre = sphere_center(20, 0.15);
+        let mesh = MarchingCubes::extract(&grid, 0.0);
+        assert!(mesh.num_triangles() > 500, "{}", mesh.num_triangles());
+        let mut volume = 0.0;
+        for t in &mesh.triangles {
+            let (a, b, c) = (
+                mesh.vertices[t[0]],
+                mesh.vertices[t[1]],
+                mesh.vertices[t[2]],
+            );
+            let face = vec3_cross(vec3_sub(b, a), vec3_sub(c, a));
+            let centroid = vec3_scale(vec3_add(vec3_add(a, b), c), 1.0 / 3.0);
+            assert!(
+                vec3_dot(face, vec3_sub(centroid, sphere_centre)) > 0.0,
+                "triangle {t:?} faces inwards"
+            );
+            volume += vec3_dot(a, vec3_cross(b, c)) / 6.0;
+        }
+        let exact = 4.0 / 3.0 * PI;
+        assert!(
+            (volume / exact - 1.0).abs() < 0.05,
+            "volume {volume} vs {exact}"
+        );
+    }
+
+    #[test]
+    fn empty_for_constant_and_degenerate_grids() {
+        let outside = SdfGrid3D::from_sdf(4, 4, 4, [0.0; 3], 1.0, |_| 1.0);
+        assert_eq!(
+            MarchingTetrahedra::extract(&outside, 0.0).num_triangles(),
+            0
+        );
+        let inside = SdfGrid3D::from_sdf(4, 4, 4, [0.0; 3], 1.0, |_| -1.0);
+        assert_eq!(MarchingTetrahedra::extract(&inside, 0.0).num_triangles(), 0);
+        let flat = SdfGrid3D::from_sdf(1, 4, 4, [0.0; 3], 1.0, |p| p[1] - 2.0);
+        assert_eq!(MarchingTetrahedra::extract(&flat, 0.0).num_triangles(), 0);
     }
 }

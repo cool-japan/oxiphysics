@@ -1,5 +1,6 @@
 //! Parse URDF XML into the in-memory [`UrdfRobot`] data model.
 
+use super::functions::{Vec3, rpy_to_mat3};
 use super::types::{
     JointLimits, JointType, UrdfGeometry, UrdfInertial, UrdfJoint, UrdfLink, UrdfRobot,
     UrdfVisualElement,
@@ -56,13 +57,19 @@ fn parse_link(el: &XmlElement) -> UrdfResult<UrdfLink> {
 }
 
 /// Parse an `<inertial>` element into a [`UrdfInertial`].
+///
+/// URDF expresses the inertia tensor in the *inertial frame*: the frame whose
+/// origin is the centre of mass and whose orientation is the `rpy` of
+/// `<inertial><origin>`. [`UrdfInertial`] stores the tensor in the *link*
+/// frame, so the tensor is rotated here (`I_link = R · I · Rᵀ`, with
+/// `R = rpy_to_mat3(rpy)`); an absent or all-zero `rpy` leaves it untouched.
 fn parse_inertial(el: &XmlElement) -> UrdfResult<UrdfInertial> {
     let mass = match el.child("mass") {
         Some(mass_el) => req_float(mass_el, "value")?,
         None => 0.0,
     };
-    // The `rpy` of an inertial origin is ignored; `UrdfInertial` has no rpy field.
     let com = opt_vec3(el.child("origin"), "xyz", [0.0; 3])?;
+    let rpy = opt_vec3(el.child("origin"), "rpy", [0.0; 3])?;
     let (inertia_diag, inertia_off) = match el.child("inertia") {
         Some(in_el) => {
             let ixx = req_float(in_el, "ixx")?;
@@ -71,7 +78,7 @@ fn parse_inertial(el: &XmlElement) -> UrdfResult<UrdfInertial> {
             let ixy = opt_float(Some(in_el), "ixy", 0.0)?;
             let ixz = opt_float(Some(in_el), "ixz", 0.0)?;
             let iyz = opt_float(Some(in_el), "iyz", 0.0)?;
-            ([ixx, iyy, izz], [ixy, ixz, iyz])
+            rotate_inertia_to_link_frame([ixx, iyy, izz], [ixy, ixz, iyz], rpy)
         }
         None => ([0.0; 3], [0.0; 3]),
     };
@@ -81,6 +88,44 @@ fn parse_inertial(el: &XmlElement) -> UrdfResult<UrdfInertial> {
         inertia_diag,
         inertia_off,
     })
+}
+
+/// Rotate an inertia tensor from the inertial frame into the link frame.
+///
+/// `diag = [ixx, iyy, izz]` and `off = [ixy, ixz, iyz]` describe the symmetric
+/// tensor `I` in the inertial frame; `rpy` is the orientation of that frame
+/// relative to the link frame. Returns `(diag, off)` of `R · I · Rᵀ` with
+/// `R = rpy_to_mat3(rpy)`. The result is symmetrised so the off-diagonal terms
+/// are exactly consistent, and an all-zero `rpy` returns the input bit-for-bit.
+fn rotate_inertia_to_link_frame(diag: Vec3, off: Vec3, rpy: Vec3) -> (Vec3, Vec3) {
+    if rpy == [0.0; 3] {
+        return (diag, off);
+    }
+    let r = rpy_to_mat3(rpy);
+    let inertia = [
+        [diag[0], off[0], off[1]],
+        [off[0], diag[1], off[2]],
+        [off[1], off[2], diag[2]],
+    ];
+    // r_i = R · I
+    let mut r_i = [[0.0_f64; 3]; 3];
+    for (i, row) in r_i.iter_mut().enumerate() {
+        for (j, cell) in row.iter_mut().enumerate() {
+            *cell = (0..3).map(|k| r[i][k] * inertia[k][j]).sum();
+        }
+    }
+    // rotated = (R · I) · Rᵀ
+    let mut rotated = [[0.0_f64; 3]; 3];
+    for (i, row) in rotated.iter_mut().enumerate() {
+        for (j, cell) in row.iter_mut().enumerate() {
+            *cell = (0..3).map(|k| r_i[i][k] * r[j][k]).sum();
+        }
+    }
+    let sym = |a: usize, b: usize| 0.5 * (rotated[a][b] + rotated[b][a]);
+    (
+        [rotated[0][0], rotated[1][1], rotated[2][2]],
+        [sym(0, 1), sym(0, 2), sym(1, 2)],
+    )
 }
 
 /// Parse a `<visual>` or `<collision>` element into a [`UrdfVisualElement`].
@@ -510,6 +555,132 @@ mod tests {
             validate_tree(&robot),
             Err(UrdfError::KinematicCycle(_))
         ));
+    }
+
+    /// Build a one-link URDF whose inertial origin carries `rpy` and whose
+    /// inertia element carries the supplied attributes.
+    fn inertial_urdf(rpy: &str, inertia_attrs: &str) -> String {
+        format!(
+            r#"<robot name="r">
+  <link name="base">
+    <inertial>
+      <mass value="2.0"/>
+      <origin xyz="0.1 0.2 0.3" rpy="{rpy}"/>
+      <inertia {inertia_attrs}/>
+    </inertial>
+  </link>
+</robot>"#
+        )
+    }
+
+    fn assert_vec3_close(actual: [f64; 3], expected: [f64; 3], tol: f64, what: &str) {
+        for i in 0..3 {
+            assert!(
+                (actual[i] - expected[i]).abs() < tol,
+                "{what}[{i}]: got {} expected {}",
+                actual[i],
+                expected[i]
+            );
+        }
+    }
+
+    #[test]
+    fn inertial_rpy_quarter_yaw_swaps_x_and_y_moments() {
+        let urdf = inertial_urdf("0 0 1.5707963267948966", r#"ixx="1.0" iyy="2.0" izz="3.0""#);
+        let robot = parse_urdf(&urdf).unwrap();
+        let inertial = &robot.links["base"].inertial;
+        assert_vec3_close(inertial.inertia_diag, [2.0, 1.0, 3.0], 1e-12, "diag");
+        assert_vec3_close(inertial.inertia_off, [0.0, 0.0, 0.0], 1e-12, "off");
+        // The centre of mass is untouched by the inertial rpy.
+        assert_eq!(inertial.com, [0.1, 0.2, 0.3]);
+        assert_eq!(inertial.mass, 2.0);
+    }
+
+    #[test]
+    fn inertial_rpy_quarter_roll_swaps_y_and_z_moments() {
+        let urdf = inertial_urdf("1.5707963267948966 0 0", r#"ixx="1.0" iyy="2.0" izz="3.0""#);
+        let robot = parse_urdf(&urdf).unwrap();
+        let inertial = &robot.links["base"].inertial;
+        assert_vec3_close(inertial.inertia_diag, [1.0, 3.0, 2.0], 1e-12, "diag");
+        assert_vec3_close(inertial.inertia_off, [0.0, 0.0, 0.0], 1e-12, "off");
+    }
+
+    #[test]
+    fn inertial_rpy_rotates_products_of_inertia_with_correct_sign() {
+        // R = Rz(90 deg); R * [[1, .5, 0], [.5, 2, 0], [0, 0, 3]] * R^T
+        //   = [[2, -.5, 0], [-.5, 1, 0], [0, 0, 3]].
+        let urdf = inertial_urdf(
+            "0 0 1.5707963267948966",
+            r#"ixx="1.0" iyy="2.0" izz="3.0" ixy="0.5""#,
+        );
+        let robot = parse_urdf(&urdf).unwrap();
+        let inertial = &robot.links["base"].inertial;
+        assert_vec3_close(inertial.inertia_diag, [2.0, 1.0, 3.0], 1e-12, "diag");
+        assert_vec3_close(inertial.inertia_off, [-0.5, 0.0, 0.0], 1e-12, "off");
+    }
+
+    #[test]
+    fn inertial_rpy_preserves_rotation_invariants() {
+        let (ixx, iyy, izz) = (1.0, 2.0, 3.0);
+        let (ixy, ixz, iyz) = (0.2, -0.1, 0.3);
+        let urdf = inertial_urdf(
+            "0.3 -0.7 1.1",
+            &format!(r#"ixx="{ixx}" iyy="{iyy}" izz="{izz}" ixy="{ixy}" ixz="{ixz}" iyz="{iyz}""#),
+        );
+        let robot = parse_urdf(&urdf).unwrap();
+        let inertial = &robot.links["base"].inertial;
+        let [a, b, c] = inertial.inertia_diag;
+        let [d, e, f] = inertial.inertia_off;
+
+        // The trace and the determinant of a symmetric tensor are invariant
+        // under the similarity transform R * I * R^T.
+        assert!((a + b + c - (ixx + iyy + izz)).abs() < 1e-12, "trace");
+        let det = |xx: f64, yy: f64, zz: f64, xy: f64, xz: f64, yz: f64| {
+            xx * (yy * zz - yz * yz) - xy * (xy * zz - yz * xz) + xz * (xy * yz - yy * xz)
+        };
+        let det_in = det(ixx, iyy, izz, ixy, ixz, iyz);
+        let det_out = det(a, b, c, d, e, f);
+        assert!((det_out - det_in).abs() < 1e-12, "determinant");
+        // A non-trivial rotation must actually change the tensor.
+        assert!((a - ixx).abs() > 1e-3 || (b - iyy).abs() > 1e-3 || (d - ixy).abs() > 1e-3);
+    }
+
+    #[test]
+    fn inertial_rpy_zero_leaves_tensor_bit_exact() {
+        let urdf = inertial_urdf(
+            "0 0 0",
+            r#"ixx="0.1" iyy="0.2" izz="0.3" ixy="0.01" ixz="0.02" iyz="0.03""#,
+        );
+        let robot = parse_urdf(&urdf).unwrap();
+        let inertial = &robot.links["base"].inertial;
+        assert_eq!(inertial.inertia_diag, [0.1, 0.2, 0.3]);
+        assert_eq!(inertial.inertia_off, [0.01, 0.02, 0.03]);
+    }
+
+    #[test]
+    fn inertial_rpy_malformed_value_errors() {
+        let urdf = inertial_urdf("0 0", r#"ixx="1.0" iyy="2.0" izz="3.0""#);
+        assert!(matches!(
+            parse_urdf(&urdf),
+            Err(UrdfError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn inertial_rpy_survives_write_and_reparse() {
+        let urdf = inertial_urdf(
+            "0.4 0.5 0.6",
+            r#"ixx="1.0" iyy="2.0" izz="3.0" ixy="0.1" ixz="0.2" iyz="0.3""#,
+        );
+        let first = parse_urdf(&urdf).unwrap();
+        // The writer always emits `rpy="0 0 0"`, so the tensor it prints must
+        // already be the link-frame tensor and the second parse is identical.
+        let written = super::super::urdf_writer::write_urdf(&first);
+        let second = parse_urdf(&written).unwrap();
+        let a = &first.links["base"].inertial;
+        let b = &second.links["base"].inertial;
+        assert_eq!(a.inertia_diag, b.inertia_diag);
+        assert_eq!(a.inertia_off, b.inertia_off);
     }
 
     #[test]

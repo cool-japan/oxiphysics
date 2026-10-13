@@ -343,14 +343,15 @@ impl Metadynamics {
     /// Attempt to deposit a Gaussian hill at the current CV position.
     ///
     /// Deposits when `step % deposition_stride == 0`.
-    /// For well-tempered metadynamics, the effective height is scaled by:
-    ///   h_eff = height * exp(−V_bias(s) / (kB * (T + ΔT)))
+    /// For well-tempered metadynamics (Barducci, Bussi & Parrinello, PRL 100,
+    /// 020603 (2008)) the effective height is scaled by:
+    ///   h_eff = height * exp(−V_bias(s) / (kB * ΔT))
+    /// so that the bias converges to −ΔT/(T + ΔT) times the free energy.
     pub fn maybe_deposit(&mut self, cv_value: f64) {
         if self.deposition_stride > 0 && self.step.is_multiple_of(self.deposition_stride) {
             let h = if self.delta_t > 0.0 {
                 let v_bias = self.compute_bias(cv_value);
-                let biasfactor_temp = self.temperature + self.delta_t;
-                self.height * (-v_bias / (KB * biasfactor_temp)).exp()
+                self.height * (-v_bias / (KB * self.delta_t)).exp()
             } else {
                 self.height
             };
@@ -368,11 +369,23 @@ impl Metadynamics {
         self.hills.len()
     }
 
-    /// Estimate the free energy on a 1D grid of CV values.
+    /// Estimate the free energy on a 1D grid of CV values (up to an additive
+    /// constant).
     ///
-    /// Returns F(s) = −V_bias(s) (converged estimate in the well-tempered case).
+    /// Plain metadynamics (`delta_t == 0`) returns F(s) = −V_bias(s).  In the
+    /// well-tempered case the converged bias only compensates the fraction
+    /// ΔT/(T + ΔT) of the free energy, so
+    ///   F(s) = −(T + ΔT)/ΔT · V_bias(s).
     pub fn free_energy_estimate(&self, cv_grid: &[f64]) -> Vec<f64> {
-        cv_grid.iter().map(|&s| -self.compute_bias(s)).collect()
+        let scale = if self.delta_t > 0.0 {
+            (self.temperature + self.delta_t) / self.delta_t
+        } else {
+            1.0
+        };
+        cv_grid
+            .iter()
+            .map(|&s| -scale * self.compute_bias(s))
+            .collect()
     }
 }
 
@@ -442,6 +455,87 @@ impl UmbrellaSamplingWindow {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// WHAM solver (log space)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Convergence threshold on the largest change of any window free energy
+/// (in units of kT) between two WHAM sweeps.
+const WHAM_TOLERANCE: f64 = 1.0e-8;
+
+/// Upper bound on the number of WHAM sweeps.
+const WHAM_MAX_SWEEPS: usize = 200_000;
+
+/// One non-empty umbrella window as seen by the WHAM solver.
+struct WhamWindow {
+    /// `ln N_i`, the logarithm of the number of samples of the window.
+    ln_count: f64,
+    /// Bias energy over kT, `V_i(b)/kT`, at every bin centre.
+    bias_kt: Vec<f64>,
+}
+
+/// `ln Σ_i exp(x_i)` without overflow; `−∞` for an empty or all-`−∞` input.
+fn log_sum_exp<I>(values: I) -> f64
+where
+    I: Iterator<Item = f64> + Clone,
+{
+    let max = values.clone().fold(f64::NEG_INFINITY, f64::max);
+    if !max.is_finite() {
+        return max;
+    }
+    max + values.map(|v| (v - max).exp()).sum::<f64>().ln()
+}
+
+/// Unbiased log-density `ln P(b)` for window offsets `f` (`−∞` in empty bins).
+fn wham_log_density_for(bin_counts: &[f64], windows: &[WhamWindow], f: &[f64]) -> Vec<f64> {
+    bin_counts
+        .iter()
+        .enumerate()
+        .map(|(b, &count)| {
+            if count > 0.0 {
+                let denominator = log_sum_exp(
+                    windows
+                        .iter()
+                        .zip(f)
+                        .map(|(w, &fi)| w.ln_count + fi - w.bias_kt[b]),
+                );
+                count.ln() - denominator
+            } else {
+                f64::NEG_INFINITY
+            }
+        })
+        .collect()
+}
+
+/// Solve the WHAM equations self-consistently and return `ln P(b)` per bin.
+///
+/// `bin_counts[b]` is the total number of samples (all windows) in bin `b`.
+fn wham_log_density(bin_counts: &[f64], windows: &[WhamWindow]) -> Vec<f64> {
+    let mut f = vec![0.0_f64; windows.len()];
+    for _ in 0..WHAM_MAX_SWEEPS {
+        let ln_p = wham_log_density_for(bin_counts, windows, &f);
+        // f_i = −ln Σ_b P(b) exp(−V_i(b)/kT), gauge f_0 = 0.
+        let mut f_new: Vec<f64> = windows
+            .iter()
+            .map(|w| -log_sum_exp(ln_p.iter().zip(&w.bias_kt).map(|(&lp, &v)| lp - v)))
+            .collect();
+        let shift = f_new.first().copied().unwrap_or(0.0);
+        for x in &mut f_new {
+            *x -= shift;
+        }
+        let change = f_new
+            .iter()
+            .zip(&f)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f64, f64::max);
+        f = f_new;
+        if change < WHAM_TOLERANCE {
+            break;
+        }
+    }
+    wham_log_density_for(bin_counts, windows, &f)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // UmbrellaSampling — a collection of windows
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -487,41 +581,58 @@ impl UmbrellaSampling {
         self.windows.len()
     }
 
-    /// Simple WHAM-free PMF estimate using histogram + Boltzmann inversion.
+    /// Potential of mean force from all windows by the weighted histogram
+    /// analysis method (WHAM; Kumar, Rosenberg, Bouzida, Swendsen & Kollman,
+    /// J. Comput. Chem. 13, 1011 (1992)).
     ///
-    /// For each window, the biased probability density is estimated from the
-    /// histogram, then unbiased via:
+    /// The samples of all windows are histogrammed over `[min, max]` of the
+    /// data.  With `n_i(b)` the counts of window `i` in bin `b`, `N_i` its
+    /// number of samples and `V_i(b)` its bias at the bin centre, the unbiased
+    /// distribution `P(b)` and the dimensionless window free energies `f_i`
+    /// satisfy the coupled equations
     ///
-    ///   F(ξ_b) = −kT ln\[H_i(ξ_b)\] + V_bias_i(ξ_b)
+    /// ```text
+    ///   P(b) = Σ_i n_i(b) / Σ_j N_j exp(f_j − V_j(b)/kT)
+    ///   f_i  = −ln Σ_b P(b) exp(−V_i(b)/kT)
+    /// ```
     ///
-    /// For multiple windows, free energies are averaged in regions of overlap,
-    /// and the global minimum is shifted to zero.
+    /// which are iterated in log-sum-exp form until no `f_i` changes by more
+    /// than 1e-8 (the gauge is fixed by `f_0 = 0`; at most 200 000 sweeps).
+    /// The offsets `f_i` are what stitch the windows together: without them a
+    /// slope or barrier spanning several windows would collapse.
+    ///
+    /// The PMF is `−kT ln P(b)`, shifted so that its minimum is zero; bins
+    /// that no window sampled are `+∞`.
     ///
     /// # Arguments
     /// * `n_bins` – Number of bins for the combined histogram.
-    /// * `k_t`   – Thermal energy (kJ/mol).
+    /// * `k_t`   – Thermal energy (kJ/mol); must be positive and finite.
     ///
     /// # Returns
-    /// `(bin_centers, pmf_values)`.
+    /// `(bin_centers, pmf_values)`.  Both are empty if there are no finite
+    /// samples, `n_bins` is zero or `k_t` is not positive and finite.
     pub fn compute_pmf(&self, n_bins: usize, k_t: f64) -> (Vec<f64>, Vec<f64>) {
-        if self.windows.is_empty() || n_bins == 0 {
+        if n_bins == 0 || !(k_t > 0.0 && k_t.is_finite()) {
             return (vec![], vec![]);
         }
 
-        let all_samples: Vec<f64> = self
-            .windows
+        let finite_samples = |w: &UmbrellaSamplingWindow| -> Vec<f64> {
+            w.samples
+                .iter()
+                .copied()
+                .filter(|x| x.is_finite())
+                .collect()
+        };
+        let per_window: Vec<Vec<f64>> = self.windows.iter().map(finite_samples).collect();
+        let (xmin, xmax) = per_window
             .iter()
-            .flat_map(|w| w.samples.iter().cloned())
-            .collect();
-        if all_samples.is_empty() {
+            .flatten()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &x| {
+                (lo.min(x), hi.max(x))
+            });
+        if !xmin.is_finite() {
             return (vec![], vec![]);
         }
-
-        let xmin = all_samples.iter().cloned().fold(f64::INFINITY, f64::min);
-        let xmax = all_samples
-            .iter()
-            .cloned()
-            .fold(f64::NEG_INFINITY, f64::max);
         if (xmax - xmin).abs() < 1e-15 {
             return (vec![xmin], vec![0.0]);
         }
@@ -529,81 +640,46 @@ impl UmbrellaSampling {
         let bw = (xmax - xmin) / n_bins as f64;
         let bin_centers: Vec<f64> = (0..n_bins).map(|i| xmin + (i as f64 + 0.5) * bw).collect();
 
-        // For each bin, accumulate (unbiased_F, count) contributions from each window
-        let mut f_sum = vec![0.0f64; n_bins];
-        let mut f_count = vec![0u64; n_bins];
-
-        for window in &self.windows {
-            // Build per-window histogram
-            let n_win = window.samples.len();
-            if n_win == 0 {
+        // Histogram every non-empty window and record its bias at the bin centres.
+        let mut bin_counts = vec![0.0_f64; n_bins];
+        let mut active: Vec<WhamWindow> = Vec::new();
+        for (window, samples) in self.windows.iter().zip(&per_window) {
+            if samples.is_empty() {
                 continue;
             }
-            let mut hist = vec![0u64; n_bins];
-            for &xi in &window.samples {
-                let idx = ((xi - xmin) / bw) as usize;
-                let idx = idx.min(n_bins - 1);
-                hist[idx] += 1;
+            for &xi in samples {
+                let idx = (((xi - xmin) / bw) as usize).min(n_bins - 1);
+                bin_counts[idx] += 1.0;
             }
-            let max_count = *hist.iter().max().unwrap_or(&0);
-            if max_count == 0 {
-                continue;
-            }
-            // F_unbiased(ξ_b) = −kT ln[H_i(ξ_b)/N_i] + V_bias_i(ξ_b) + const
-            // The constant per window is the window free energy offset F_i.
-            // We set the reference so that the minimum F within each window = 0
-            // and accumulate.
-            let mut f_window = vec![f64::INFINITY; n_bins];
-            for (b, &cnt) in hist.iter().enumerate() {
-                if cnt > 0 {
-                    let p = cnt as f64 / n_win as f64;
-                    let xi_b = bin_centers[b];
-                    let v_bias = window.bias_potential(xi_b);
-                    // F_unbiased = −kT ln(p) + V_bias (up to a constant)
-                    f_window[b] = -k_t * p.ln() + v_bias;
-                }
-            }
-            // Subtract the minimum to put each window on the same scale
-            let f_min = f_window
-                .iter()
-                .cloned()
-                .filter(|f| f.is_finite())
-                .fold(f64::INFINITY, f64::min);
-            if f_min.is_infinite() {
-                continue;
-            }
-            for (b, f) in f_window.iter().enumerate() {
-                if f.is_finite() {
-                    f_sum[b] += f - f_min;
-                    f_count[b] += 1;
-                }
-            }
+            active.push(WhamWindow {
+                ln_count: (samples.len() as f64).ln(),
+                bias_kt: bin_centers
+                    .iter()
+                    .map(|&x| window.bias_potential(x) / k_t)
+                    .collect(),
+            });
         }
 
-        // Average contributions per bin
-        let pmf_raw: Vec<f64> = f_sum
+        let ln_density = wham_log_density(&bin_counts, &active);
+        let pmf_raw: Vec<f64> = ln_density
             .iter()
-            .zip(f_count.iter())
-            .map(|(&s, &c)| if c > 0 { s / c as f64 } else { f64::INFINITY })
+            .map(|&lp| {
+                if lp.is_finite() {
+                    -k_t * lp
+                } else {
+                    f64::INFINITY
+                }
+            })
             .collect();
 
-        // Shift global minimum to zero
+        // Shift the global minimum to zero.
         let global_min = pmf_raw
             .iter()
-            .cloned()
+            .copied()
             .filter(|f| f.is_finite())
             .fold(f64::INFINITY, f64::min);
         let pmf = if global_min.is_finite() {
-            pmf_raw
-                .iter()
-                .map(|&f| {
-                    if f.is_finite() {
-                        f - global_min
-                    } else {
-                        f64::INFINITY
-                    }
-                })
-                .collect()
+            pmf_raw.iter().map(|&f| f - global_min).collect()
         } else {
             pmf_raw
         };
@@ -707,9 +783,11 @@ impl AdaptiveBiasMetadynamics {
                 self.width_max
             };
 
+            // Well-tempered rule of Barducci, Bussi & Parrinello (2008):
+            // h = h0 exp(−V/(kB ΔT)).
             let h = if self.delta_t > 0.0 {
                 let v_bias = self.compute_bias(cv);
-                self.height * (-v_bias / (KB * (self.temperature + self.delta_t))).exp()
+                self.height * (-v_bias / (KB * self.delta_t)).exp()
             } else {
                 self.height
             };

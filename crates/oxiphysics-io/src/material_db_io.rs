@@ -571,35 +571,95 @@ impl JsonMaterialDb {
 }
 
 /// Escape special characters for JSON strings.
+///
+/// Quotes, backslashes and all control characters are escaped, so the result is
+/// valid JSON and [`extract_json_str`] decodes it back to `s`.
 fn escape_json(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{0008}' => out.push_str("\\b"),
+            '\u{000C}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Extract a string value from a flat JSON object for a given key.
+///
+/// The value is decoded as a JSON string, including the `\uXXXX` escapes and
+/// surrogate pairs. Returns `None` when the key is missing, its value is not a
+/// string, the string is unterminated, or it contains an invalid escape.
 fn extract_json_str(json: &str, key: &str) -> Option<String> {
     let pattern = format!("\"{}\":", key);
     let pos = json.find(&pattern)?;
-    let after = &json[pos + pattern.len()..];
-    // Skip whitespace and the opening quote
-    let after = after.trim_start();
-    if !after.starts_with('"') {
-        return None;
-    }
-    let inner = &after[1..];
-    // Find the closing quote (skip escaped quotes)
-    let mut end = 0usize;
-    let chars: Vec<char> = inner.chars().collect();
-    while end < chars.len() {
-        if chars[end] == '\\' {
-            end += 2;
-            continue;
+    let after = json[pos + pattern.len()..].trim_start();
+    let inner = after.strip_prefix('"')?;
+    decode_json_string_body(inner)
+}
+
+/// Decode the body of a JSON string; `body` starts right after the opening quote.
+///
+/// Consumes characters (never bytes), so multi-byte text is preserved. Returns the
+/// decoded text at the first unescaped quote, or `None` if the input ends first.
+fn decode_json_string_body(body: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = body.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => match chars.next()? {
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                '/' => out.push('/'),
+                'b' => out.push('\u{0008}'),
+                'f' => out.push('\u{000C}'),
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                'u' => out.push(decode_json_unicode_escape(&mut chars)?),
+                _ => return None,
+            },
+            other => out.push(other),
         }
-        if chars[end] == '"' {
-            break;
-        }
-        end += 1;
     }
-    Some(inner[..end].replace("\\\"", "\"").replace("\\\\", "\\"))
+    None
+}
+
+/// Decode the `XXXX` part of a `\uXXXX` escape, joining a UTF-16 surrogate pair
+/// (`\uD83D\uDE00`) into one character. A lone surrogate is invalid.
+fn decode_json_unicode_escape(chars: &mut std::str::Chars<'_>) -> Option<char> {
+    let first = read_hex4(chars)?;
+    match first {
+        0xD800..=0xDBFF => {
+            if chars.next()? != '\\' || chars.next()? != 'u' {
+                return None;
+            }
+            let second = read_hex4(chars)?;
+            if !(0xDC00..=0xDFFF).contains(&second) {
+                return None;
+            }
+            char::from_u32(0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00))
+        }
+        0xDC00..=0xDFFF => None,
+        _ => char::from_u32(first),
+    }
+}
+
+/// Read four hexadecimal digits as a UTF-16 code unit.
+fn read_hex4(chars: &mut std::str::Chars<'_>) -> Option<u32> {
+    let mut value = 0u32;
+    for _ in 0..4 {
+        value = value * 16 + chars.next()?.to_digit(16)?;
+    }
+    Some(value)
 }
 
 /// Extract a f64 value from a flat JSON object for a given key.
@@ -855,6 +915,85 @@ mod tests {
             assert!((v[0] - 1.0).abs() < 1e-4);
         } else {
             panic!("matrix property not found");
+        }
+    }
+
+    #[test]
+    fn test_json_roundtrip_non_ascii_strings() {
+        let mut r = MaterialRecord::new("Stål 鋼", "Métal>鉄鋼");
+        r.source = "Källa: 日本工業規格".to_string();
+        r.set_scalar("density", 7850.0);
+        let json = JsonMaterialDb::write_json_material(&r);
+        let parsed = JsonMaterialDb::parse_json_material(&json).expect("parse failed");
+        assert_eq!(parsed.name, "Stål 鋼");
+        assert_eq!(parsed.category, "Métal>鉄鋼");
+        assert_eq!(parsed.source, "Källa: 日本工業規格");
+        assert!((parsed.get_value("density").unwrap() - 7850.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_json_non_ascii_name_is_not_truncated_or_panicking() {
+        // One 3-byte character: the char count (1) is not a byte offset into the text.
+        let r = MaterialRecord::new("鋼", "Metal");
+        let parsed =
+            JsonMaterialDb::parse_json_material(&JsonMaterialDb::write_json_material(&r)).unwrap();
+        assert_eq!(parsed.name, "鋼");
+        // "Ståhl": 5 chars but 6 bytes; the old code cut it to "Ståh".
+        let r = MaterialRecord::new("Ståhl", "Metal");
+        let parsed =
+            JsonMaterialDb::parse_json_material(&JsonMaterialDb::write_json_material(&r)).unwrap();
+        assert_eq!(parsed.name, "Ståhl");
+    }
+
+    #[test]
+    fn test_json_roundtrip_escapes_and_control_characters() {
+        let name = "line1\nline2\t\"quoted\" back\\slash \u{1} \u{8}\u{c}\r end";
+        let r = MaterialRecord::new(name, "a/b");
+        let json = JsonMaterialDb::write_json_material(&r);
+        assert!(
+            !json.contains('\u{1}'),
+            "control characters must be escaped"
+        );
+        assert!(json.contains("\\u0001"));
+        let parsed = JsonMaterialDb::parse_json_material(&json).unwrap();
+        assert_eq!(parsed.name, name);
+        assert_eq!(parsed.category, "a/b");
+    }
+
+    #[test]
+    fn test_extract_json_str_unterminated_returns_none() {
+        assert_eq!(extract_json_str("{\"name\": \"abc\\", "name"), None);
+        assert_eq!(extract_json_str("{\"name\": \"abc", "name"), None);
+        assert_eq!(extract_json_str("{\"name\": \"", "name"), None);
+        assert_eq!(extract_json_str("{\"name\": \"鋼\\", "name"), None);
+        assert_eq!(extract_json_str("{\"name\":", "name"), None);
+        assert_eq!(extract_json_str("{\"name\": 5}", "name"), None);
+        assert_eq!(extract_json_str("{\"other\": \"x\"}", "name"), None);
+        // A truncated record is rejected rather than half-parsed.
+        assert!(JsonMaterialDb::parse_json_material("{\"name\": \"Ab\\").is_none());
+    }
+
+    #[test]
+    fn test_extract_json_str_decodes_escapes() {
+        let json = "{\"name\": \"a\\\"b\\\\c\\/d\\n\\t\\u00e5\\u9444\"}";
+        assert_eq!(extract_json_str(json, "name").unwrap(), "a\"b\\c/d\n\tå鑄");
+        // Surrogate pair for U+1F600.
+        let pair = "{\"name\": \"\\ud83d\\ude00!\"}";
+        assert_eq!(extract_json_str(pair, "name").unwrap(), "\u{1F600}!");
+    }
+
+    #[test]
+    fn test_extract_json_str_rejects_invalid_escapes() {
+        for bad in [
+            "{\"name\": \"\\q\"}",
+            "{\"name\": \"\\u12\"}",
+            "{\"name\": \"\\u12zz\"}",
+            "{\"name\": \"\\ud83d\"}",
+            "{\"name\": \"\\ud83dx\"}",
+            "{\"name\": \"\\ude00\"}",
+            "{\"name\": \"\\ud83d\\u0041\"}",
+        ] {
+            assert_eq!(extract_json_str(bad, "name"), None, "{bad}");
         }
     }
 

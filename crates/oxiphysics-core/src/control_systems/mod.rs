@@ -2,6 +2,7 @@
 
 pub mod complex_traits;
 pub mod functions;
+pub(crate) mod response;
 pub mod types;
 
 // Re-export all types

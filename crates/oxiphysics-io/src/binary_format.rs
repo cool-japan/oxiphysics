@@ -85,6 +85,17 @@ impl DatasetShape {
         self.dims.iter().product()
     }
 
+    /// Total number of elements, or `None` if the product of the dimensions
+    /// overflows `usize`.
+    ///
+    /// Use this instead of [`DatasetShape::total_elements`] for shapes that
+    /// come from untrusted input.
+    pub fn checked_total_elements(&self) -> Option<usize> {
+        self.dims
+            .iter()
+            .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
+    }
+
     /// Returns `true` if the shape represents a scalar (no dimensions).
     pub fn is_scalar(&self) -> bool {
         self.dims.is_empty()
@@ -200,28 +211,43 @@ impl Dataset {
         }
     }
 
+    /// Decodes the raw bytes as consecutive `N`-byte little-endian elements.
+    ///
+    /// Fails if the shape does not describe exactly the stored bytes, which
+    /// also covers shapes whose element count overflows `usize`.
+    fn decode_elements<const N: usize, T>(
+        &self,
+        type_name: &str,
+        decode: fn([u8; N]) -> T,
+    ) -> Result<Vec<T>, String> {
+        let mismatch = || {
+            format!(
+                "Data length mismatch: {} bytes for shape {:?} of {} elements",
+                self.data.len(),
+                self.shape.dims,
+                type_name
+            )
+        };
+        let expected = self
+            .shape
+            .checked_total_elements()
+            .and_then(|n| n.checked_mul(N));
+        if expected != Some(self.data.len()) {
+            return Err(mismatch());
+        }
+        self.data
+            .chunks_exact(N)
+            .map(|chunk| <[u8; N]>::try_from(chunk).map(decode))
+            .collect::<Result<Vec<T>, _>>()
+            .map_err(|_| mismatch())
+    }
+
     /// Decodes the raw bytes back into a `Vec`f64`.
     pub fn to_f64_vec(&self) -> Result<Vec<f64>, String> {
         if self.dtype != DataType::Float64 {
             return Err(format!("Expected Float64, got {:?}", self.dtype));
         }
-        let n = self.shape.total_elements();
-        if self.data.len() != n * 8 {
-            return Err(format!(
-                "Data length mismatch: {} bytes for {} f64 elements",
-                self.data.len(),
-                n
-            ));
-        }
-        Ok((0..n)
-            .map(|i| {
-                f64::from_le_bytes(
-                    self.data[i * 8..i * 8 + 8]
-                        .try_into()
-                        .expect("slice length must match"),
-                )
-            })
-            .collect())
+        self.decode_elements::<8, f64>("f64", f64::from_le_bytes)
     }
 
     /// Decodes the raw bytes back into a `Vec`f32`.
@@ -229,23 +255,7 @@ impl Dataset {
         if self.dtype != DataType::Float32 {
             return Err(format!("Expected Float32, got {:?}", self.dtype));
         }
-        let n = self.shape.total_elements();
-        if self.data.len() != n * 4 {
-            return Err(format!(
-                "Data length mismatch: {} bytes for {} f32 elements",
-                self.data.len(),
-                n
-            ));
-        }
-        Ok((0..n)
-            .map(|i| {
-                f32::from_le_bytes(
-                    self.data[i * 4..i * 4 + 4]
-                        .try_into()
-                        .expect("slice length must match"),
-                )
-            })
-            .collect())
+        self.decode_elements::<4, f32>("f32", f32::from_le_bytes)
     }
 
     /// Decodes the raw bytes back into a `Vec`i32`.
@@ -253,23 +263,7 @@ impl Dataset {
         if self.dtype != DataType::Int32 {
             return Err(format!("Expected Int32, got {:?}", self.dtype));
         }
-        let n = self.shape.total_elements();
-        if self.data.len() != n * 4 {
-            return Err(format!(
-                "Data length mismatch: {} bytes for {} i32 elements",
-                self.data.len(),
-                n
-            ));
-        }
-        Ok((0..n)
-            .map(|i| {
-                i32::from_le_bytes(
-                    self.data[i * 4..i * 4 + 4]
-                        .try_into()
-                        .expect("slice length must match"),
-                )
-            })
-            .collect())
+        self.decode_elements::<4, i32>("i32", i32::from_le_bytes)
     }
 
     /// Appends an attribute to this dataset.
@@ -384,7 +378,7 @@ impl OxiFile {
         }
         let mut pos = 8usize;
         let version = read_u32(data, &mut pos)?;
-        let root = deserialize_group(data, &mut pos)?;
+        let root = deserialize_group(data, &mut pos, 0)?;
         Ok(Self { version, root })
     }
 
@@ -434,45 +428,26 @@ pub fn write_string(buf: &mut Vec<u8>, s: &str) {
 
 /// Reads a `u32` in little-endian format, advancing `pos`.
 pub fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32, String> {
-    if *pos + 4 > data.len() {
-        return Err(format!("read_u32: unexpected end of data at pos {}", *pos));
-    }
-    let v = u32::from_le_bytes(
-        data[*pos..*pos + 4]
-            .try_into()
-            .expect("slice length must match"),
-    );
-    *pos += 4;
-    Ok(v)
+    Ok(u32::from_le_bytes(read_array::<4>(data, pos, "read_u32")?))
 }
 
 /// Reads a `u64` in little-endian format, advancing `pos`.
 pub fn read_u64(data: &[u8], pos: &mut usize) -> Result<u64, String> {
-    if *pos + 8 > data.len() {
-        return Err(format!("read_u64: unexpected end of data at pos {}", *pos));
-    }
-    let v = u64::from_le_bytes(
-        data[*pos..*pos + 8]
-            .try_into()
-            .expect("slice length must match"),
-    );
-    *pos += 8;
-    Ok(v)
+    Ok(u64::from_le_bytes(read_array::<8>(data, pos, "read_u64")?))
 }
 
 /// Reads a length-prefixed UTF-8 string, advancing `pos`.
 pub fn read_string(data: &[u8], pos: &mut usize) -> Result<String, String> {
     let len = read_u32(data, pos)? as usize;
-    if *pos + len > data.len() {
-        return Err(format!(
-            "read_string: string body out of bounds at pos {}",
-            *pos
-        ));
-    }
-    let s = std::str::from_utf8(&data[*pos..*pos + len])
+    let start = *pos;
+    let body = start
+        .checked_add(len)
+        .and_then(|end| data.get(start..end))
+        .ok_or_else(|| format!("read_string: string body out of bounds at pos {start}"))?;
+    let s = std::str::from_utf8(body)
         .map_err(|e| format!("Invalid UTF-8: {}", e))?
         .to_string();
-    *pos += len;
+    *pos = start + len;
     Ok(s)
 }
 
@@ -480,21 +455,42 @@ pub fn read_string(data: &[u8], pos: &mut usize) -> Result<String, String> {
 // Internal serialization helpers
 // ---------------------------------------------------------------------------
 
+/// Error text shared by all bounds-checked readers.
+fn eof_error(what: &str, pos: usize) -> String {
+    format!("{what}: unexpected end of data at pos {pos}")
+}
+
+/// Reads exactly `N` bytes at `*pos` and advances `*pos`.
+///
+/// The end offset is computed with checked arithmetic, so a corrupt length
+/// can never wrap around and defeat the bounds check.
+fn read_array<const N: usize>(data: &[u8], pos: &mut usize, what: &str) -> Result<[u8; N], String> {
+    let start = *pos;
+    let bytes = start
+        .checked_add(N)
+        .and_then(|end| data.get(start..end))
+        .ok_or_else(|| eof_error(what, start))?;
+    let array = <[u8; N]>::try_from(bytes).map_err(|_| eof_error(what, start))?;
+    *pos = start + N;
+    Ok(array)
+}
+
+/// Largest element count that can still be present in `data[pos..]` when every
+/// element occupies at least `min_item_bytes`.
+///
+/// Counts read from untrusted input must never be passed to
+/// `Vec::with_capacity` directly; clamping them with this bound keeps a tiny
+/// corrupt file from requesting gigabytes of memory.
+fn bounded_capacity(count: usize, data: &[u8], pos: usize, min_item_bytes: usize) -> usize {
+    count.min(data.len().saturating_sub(pos) / min_item_bytes.max(1))
+}
+
 fn write_i64(buf: &mut Vec<u8>, v: i64) {
     buf.extend_from_slice(&v.to_le_bytes());
 }
 
 fn read_i64(data: &[u8], pos: &mut usize) -> Result<i64, String> {
-    if *pos + 8 > data.len() {
-        return Err(format!("read_i64: unexpected end of data at pos {}", *pos));
-    }
-    let v = i64::from_le_bytes(
-        data[*pos..*pos + 8]
-            .try_into()
-            .expect("slice length must match"),
-    );
-    *pos += 8;
-    Ok(v)
+    Ok(i64::from_le_bytes(read_array::<8>(data, pos, "read_i64")?))
 }
 
 fn write_f64(buf: &mut Vec<u8>, v: f64) {
@@ -502,16 +498,7 @@ fn write_f64(buf: &mut Vec<u8>, v: f64) {
 }
 
 fn read_f64(data: &[u8], pos: &mut usize) -> Result<f64, String> {
-    if *pos + 8 > data.len() {
-        return Err(format!("read_f64: unexpected end of data at pos {}", *pos));
-    }
-    let v = f64::from_le_bytes(
-        data[*pos..*pos + 8]
-            .try_into()
-            .expect("slice length must match"),
-    );
-    *pos += 8;
-    Ok(v)
+    Ok(f64::from_le_bytes(read_array::<8>(data, pos, "read_f64")?))
 }
 
 // ---------------------------------------------------------------------------
@@ -546,28 +533,36 @@ fn serialize_attribute(buf: &mut Vec<u8>, attr: &Attribute) {
     }
 }
 
+/// Reads an element count stored as `u64` and converts it to `usize`.
+fn read_count_u64(data: &[u8], pos: &mut usize, what: &str) -> Result<usize, String> {
+    usize::try_from(read_u64(data, pos)?)
+        .map_err(|_| format!("{what}: count does not fit in usize"))
+}
+
+/// Smallest encoded attribute: name length prefix, type tag and an empty text.
+const MIN_ATTRIBUTE_BYTES: usize = 4 + 1 + 4;
+
 fn deserialize_attribute(data: &[u8], pos: &mut usize) -> Result<Attribute, String> {
     let name = read_string(data, pos)?;
-    if *pos >= data.len() {
-        return Err("deserialize_attribute: missing type tag".to_string());
-    }
-    let tag = data[*pos];
+    let tag = *data
+        .get(*pos)
+        .ok_or_else(|| "deserialize_attribute: missing type tag".to_string())?;
     *pos += 1;
     let value = match tag {
         0 => AttributeValue::Int(read_i64(data, pos)?),
         1 => AttributeValue::Float(read_f64(data, pos)?),
         2 => AttributeValue::Text(read_string(data, pos)?),
         3 => {
-            let n = read_u64(data, pos)? as usize;
-            let mut arr = Vec::with_capacity(n);
+            let n = read_count_u64(data, pos, "deserialize_attribute")?;
+            let mut arr = Vec::with_capacity(bounded_capacity(n, data, *pos, 8));
             for _ in 0..n {
                 arr.push(read_i64(data, pos)?);
             }
             AttributeValue::IntArray(arr)
         }
         4 => {
-            let n = read_u64(data, pos)? as usize;
-            let mut arr = Vec::with_capacity(n);
+            let n = read_count_u64(data, pos, "deserialize_attribute")?;
+            let mut arr = Vec::with_capacity(bounded_capacity(n, data, *pos, 8));
             for _ in 0..n {
                 arr.push(read_f64(data, pos)?);
             }
@@ -600,30 +595,45 @@ fn serialize_dataset(buf: &mut Vec<u8>, ds: &Dataset) {
     }
 }
 
+/// Smallest encoded dataset: name length, dtype tag, dimension count, data
+/// length and attribute count.
+const MIN_DATASET_BYTES: usize = 4 + 1 + 4 + 8 + 4;
+
 fn deserialize_dataset(data: &[u8], pos: &mut usize) -> Result<Dataset, String> {
     let name = read_string(data, pos)?;
-    if *pos >= data.len() {
-        return Err("deserialize_dataset: missing dtype tag".to_string());
-    }
-    let dtype = DataType::from_tag(data[*pos])?;
+    let tag = *data
+        .get(*pos)
+        .ok_or_else(|| "deserialize_dataset: missing dtype tag".to_string())?;
+    let dtype = DataType::from_tag(tag)?;
     *pos += 1;
     let ndims = read_u32(data, pos)? as usize;
-    let mut dims = Vec::with_capacity(ndims);
+    let mut dims = Vec::with_capacity(bounded_capacity(ndims, data, *pos, 8));
     for _ in 0..ndims {
-        dims.push(read_u64(data, pos)? as usize);
+        dims.push(read_count_u64(data, pos, "deserialize_dataset")?);
     }
     let shape = DatasetShape { dims };
-    let data_len = read_u64(data, pos)? as usize;
-    if *pos + data_len > data.len() {
+    let data_len = read_count_u64(data, pos, "deserialize_dataset")?;
+    let body_start = *pos;
+    let body = body_start
+        .checked_add(data_len)
+        .and_then(|end| data.get(body_start..end))
+        .ok_or_else(|| {
+            format!("deserialize_dataset: data body out of bounds at pos {body_start}")
+        })?;
+    let expected_len = shape
+        .checked_total_elements()
+        .and_then(|elements| elements.checked_mul(dtype.size_bytes()));
+    if expected_len != Some(data_len) {
         return Err(format!(
-            "deserialize_dataset: data body out of bounds at pos {}",
-            *pos
+            "deserialize_dataset: shape {:?} of {:?} elements does not match data length {}",
+            shape.dims, dtype, data_len
         ));
     }
-    let raw = data[*pos..*pos + data_len].to_vec();
-    *pos += data_len;
+    let raw = body.to_vec();
+    *pos = body_start + data_len;
     let n_attrs = read_u32(data, pos)? as usize;
-    let mut attributes = Vec::with_capacity(n_attrs);
+    let mut attributes =
+        Vec::with_capacity(bounded_capacity(n_attrs, data, *pos, MIN_ATTRIBUTE_BYTES));
     for _ in 0..n_attrs {
         attributes.push(deserialize_attribute(data, pos)?);
     }
@@ -659,22 +669,39 @@ fn serialize_group(buf: &mut Vec<u8>, group: &Group) {
     }
 }
 
-fn deserialize_group(data: &[u8], pos: &mut usize) -> Result<Group, String> {
+/// Maximum group nesting depth accepted by the decoder (the root group is at
+/// depth 0).  An empty nested group costs only 16 bytes, so without a bound a
+/// small corrupt file would overflow the stack through recursion.
+const MAX_GROUP_DEPTH: u32 = 64;
+
+/// Smallest encoded group: name length, attribute count, dataset count and
+/// subgroup count.
+const MIN_GROUP_BYTES: usize = 4 + 4 + 4 + 4;
+
+fn deserialize_group(data: &[u8], pos: &mut usize, depth: u32) -> Result<Group, String> {
+    if depth > MAX_GROUP_DEPTH {
+        return Err(format!(
+            "deserialize_group: group nesting too deep (limit {MAX_GROUP_DEPTH})"
+        ));
+    }
     let name = read_string(data, pos)?;
     let n_attrs = read_u32(data, pos)? as usize;
-    let mut attributes = Vec::with_capacity(n_attrs);
+    let mut attributes =
+        Vec::with_capacity(bounded_capacity(n_attrs, data, *pos, MIN_ATTRIBUTE_BYTES));
     for _ in 0..n_attrs {
         attributes.push(deserialize_attribute(data, pos)?);
     }
     let n_datasets = read_u32(data, pos)? as usize;
-    let mut datasets = Vec::with_capacity(n_datasets);
+    let mut datasets =
+        Vec::with_capacity(bounded_capacity(n_datasets, data, *pos, MIN_DATASET_BYTES));
     for _ in 0..n_datasets {
         datasets.push(deserialize_dataset(data, pos)?);
     }
     let n_subgroups = read_u32(data, pos)? as usize;
-    let mut subgroups = Vec::with_capacity(n_subgroups);
+    let mut subgroups =
+        Vec::with_capacity(bounded_capacity(n_subgroups, data, *pos, MIN_GROUP_BYTES));
     for _ in 0..n_subgroups {
-        subgroups.push(deserialize_group(data, pos)?);
+        subgroups.push(deserialize_group(data, pos, depth + 1)?);
     }
     Ok(Group {
         name,
@@ -732,13 +759,14 @@ impl SimulationCheckpoint {
 
     // Returns a mutable reference to the named direct subgroup, creating it if absent.
     fn get_or_create_group<'a>(root: &'a mut Group, name: &str) -> &'a mut Group {
-        if let Some(idx) = root.subgroups.iter().position(|g| g.name == name) {
-            return &mut root.subgroups[idx];
-        }
-        root.subgroups.push(Group::new(name));
-        root.subgroups
-            .last_mut()
-            .expect("collection should not be empty")
+        let idx = match root.subgroups.iter().position(|g| g.name == name) {
+            Some(idx) => idx,
+            None => {
+                root.subgroups.push(Group::new(name));
+                root.subgroups.len() - 1
+            }
+        };
+        &mut root.subgroups[idx]
     }
 }
 
@@ -864,24 +892,17 @@ impl BinaryMesh {
         let n_verts = read_u32(data, &mut pos)? as usize;
         let n_tris = read_u32(data, &mut pos)? as usize;
 
-        let mut vertices = Vec::with_capacity(n_verts);
+        let mut vertices = Vec::with_capacity(bounded_capacity(n_verts, data, pos, 24));
         for _ in 0..n_verts {
             let mut xyz = [0.0_f64; 3];
             for component in xyz.iter_mut() {
-                if pos + 8 > data.len() {
-                    return Err("BinaryMesh: vertex data truncated".to_string());
-                }
-                *component = f64::from_le_bytes(
-                    data[pos..pos + 8]
-                        .try_into()
-                        .expect("slice length must match"),
-                );
-                pos += 8;
+                *component = read_f64(data, &mut pos)
+                    .map_err(|_| "BinaryMesh: vertex data truncated".to_string())?;
             }
             vertices.push(xyz);
         }
 
-        let mut triangles = Vec::with_capacity(n_tris);
+        let mut triangles = Vec::with_capacity(bounded_capacity(n_tris, data, pos, 12));
         for _ in 0..n_tris {
             let i0 = read_u32(data, &mut pos)?;
             let i1 = read_u32(data, &mut pos)?;
@@ -1005,41 +1026,27 @@ impl BinaryParticleData {
         let n = read_u32(data, &mut pos)? as usize;
         let nf = read_u32(data, &mut pos)? as usize;
 
-        let mut field_names = Vec::with_capacity(nf);
+        let mut field_names = Vec::with_capacity(bounded_capacity(nf, data, pos, 4));
         for _ in 0..nf {
             field_names.push(read_string(data, &mut pos)?);
         }
 
-        let mut positions = Vec::with_capacity(n);
+        let mut positions = Vec::with_capacity(bounded_capacity(n, data, pos, 24));
         for _ in 0..n {
             let mut xyz = [0.0_f64; 3];
             for component in xyz.iter_mut() {
-                if pos + 8 > data.len() {
-                    return Err("BinaryParticleData: positions truncated".to_string());
-                }
-                *component = f64::from_le_bytes(
-                    data[pos..pos + 8]
-                        .try_into()
-                        .expect("slice length must match"),
-                );
-                pos += 8;
+                *component = read_f64(data, &mut pos)
+                    .map_err(|_| "BinaryParticleData: positions truncated".to_string())?;
             }
             positions.push(xyz);
         }
 
-        let mut scalar_fields = Vec::with_capacity(nf);
+        let mut scalar_fields = Vec::with_capacity(bounded_capacity(nf, data, pos, 8));
         for _ in 0..nf {
-            let mut field = Vec::with_capacity(n);
+            let mut field = Vec::with_capacity(bounded_capacity(n, data, pos, 8));
             for _ in 0..n {
-                if pos + 8 > data.len() {
-                    return Err("BinaryParticleData: scalar field truncated".to_string());
-                }
-                let v = f64::from_le_bytes(
-                    data[pos..pos + 8]
-                        .try_into()
-                        .expect("slice length must match"),
-                );
-                pos += 8;
+                let v = read_f64(data, &mut pos)
+                    .map_err(|_| "BinaryParticleData: scalar field truncated".to_string())?;
                 field.push(v);
             }
             scalar_fields.push(field);
@@ -1105,16 +1112,9 @@ pub fn rle_decompress_f64(data: &[u8]) -> Result<Vec<f64>, String> {
     let n_runs = read_u32(data, &mut pos)? as usize;
     let mut result = Vec::new();
     for _ in 0..n_runs {
-        if pos + 12 > data.len() {
-            return Err("rle_decompress_f64: truncated".to_string());
-        }
-        let val = f64::from_le_bytes(
-            data[pos..pos + 8]
-                .try_into()
-                .expect("slice length must match"),
-        );
-        pos += 8;
-        let count = read_u32(data, &mut pos)? as usize;
+        let truncated = |_: String| "rle_decompress_f64: truncated".to_string();
+        let val = read_f64(data, &mut pos).map_err(truncated)?;
+        let count = read_u32(data, &mut pos).map_err(truncated)? as usize;
         for _ in 0..count {
             result.push(val);
         }
@@ -1520,5 +1520,437 @@ mod tests {
         let ds = Dataset::from_f64_slice("d", &[1.0, 2.0], DatasetShape::new(vec![2]));
         assert!(ds.to_f32_vec().is_err());
         assert!(ds.to_i32_vec().is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Malformed-input hardening tests
+    // -----------------------------------------------------------------------
+
+    /// Magic bytes plus format version 1.
+    fn oxifile_header() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(MAGIC);
+        write_u32(&mut buf, 1);
+        buf
+    }
+
+    /// Header, root group name and the root attribute count.
+    fn root_prefix(attribute_count: u32) -> Vec<u8> {
+        let mut buf = oxifile_header();
+        write_string(&mut buf, "");
+        write_u32(&mut buf, attribute_count);
+        buf
+    }
+
+    /// A file whose single leaf group sits `depth` levels below the root.
+    ///
+    /// Every ancestor is an empty group with one child and encodes in 16 bytes:
+    /// name length, attribute count, dataset count and subgroup count.
+    fn nested_oxifile_bytes(depth: usize) -> Vec<u8> {
+        let mut buf = oxifile_header();
+        for subgroups in std::iter::repeat_n(1u32, depth).chain(std::iter::once(0)) {
+            write_string(&mut buf, "");
+            write_u32(&mut buf, 0); // attributes
+            write_u32(&mut buf, 0); // datasets
+            write_u32(&mut buf, subgroups);
+        }
+        buf
+    }
+
+    /// Root group announcing one dataset, encoded up to and including the data
+    /// length; the caller appends the data bytes and the trailing counts.
+    fn dataset_prefix(dtype_tag: u8, dims: &[u64], data_len: u64) -> Vec<u8> {
+        let mut buf = root_prefix(0);
+        write_u32(&mut buf, 1); // datasets
+        write_string(&mut buf, "d");
+        buf.push(dtype_tag);
+        write_u32(&mut buf, dims.len() as u32);
+        for &dim in dims {
+            write_u64(&mut buf, dim);
+        }
+        write_u64(&mut buf, data_len);
+        buf
+    }
+
+    /// A file exercising every record type, used by the corruption tests.
+    fn rich_oxifile() -> OxiFile {
+        let mut file = OxiFile::new();
+        file.root
+            .add_attribute(Attribute::new("step", AttributeValue::Int(3)));
+        file.root
+            .add_attribute(Attribute::new("dt", AttributeValue::Float(0.5)));
+        file.root.add_attribute(Attribute::new(
+            "label",
+            AttributeValue::Text("run".to_string()),
+        ));
+        file.root.add_attribute(Attribute::new(
+            "ints",
+            AttributeValue::IntArray(vec![1, -2, 3]),
+        ));
+        file.root.add_attribute(Attribute::new(
+            "floats",
+            AttributeValue::FloatArray(vec![0.25, 0.5]),
+        ));
+        let mut ds = Dataset::from_f64_slice("x", &[1.0, 2.0, 3.0], DatasetShape::new(vec![3]));
+        ds.add_attribute(Attribute::new("units", AttributeValue::Text("m".into())));
+        file.root.add_dataset(ds);
+        let mut inner = Group::new("inner");
+        inner.add_dataset(Dataset::from_i32_slice(
+            "idx",
+            &[1, 2, 3, 4],
+            DatasetShape::new(vec![2, 2]),
+        ));
+        inner.add_subgroup(Group::new("leaf"));
+        file.root.add_subgroup(inner);
+        file
+    }
+
+    #[test]
+    fn oxifile_deep_nesting_returns_err() {
+        // 100 000 nested groups cost only 1.6 MB; unbounded recursion would
+        // overflow the stack.
+        let err = OxiFile::read_from_bytes(&nested_oxifile_bytes(100_000))
+            .expect_err("deeply nested file must be rejected");
+        assert!(err.contains("nesting too deep"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn oxifile_nesting_limit_boundary() {
+        let limit = MAX_GROUP_DEPTH as usize;
+        let ok = OxiFile::read_from_bytes(&nested_oxifile_bytes(limit))
+            .expect("nesting at the limit must decode");
+        let mut depth = 0usize;
+        let mut group = &ok.root;
+        while let Some(child) = group.subgroups.first() {
+            depth += 1;
+            group = child;
+        }
+        assert_eq!(depth, limit);
+        assert!(OxiFile::read_from_bytes(&nested_oxifile_bytes(limit + 1)).is_err());
+    }
+
+    #[test]
+    fn oxifile_huge_data_len_returns_err() {
+        // A data length close to usize::MAX used to wrap `pos + data_len`
+        // past the bounds check and then panic on the slice.
+        for data_len in [u64::MAX, u64::MAX - 3, u64::MAX / 2, 1u64 << 40] {
+            let mut buf = dataset_prefix(1, &[1], data_len);
+            buf.extend_from_slice(&[0u8; 16]);
+            let err =
+                OxiFile::read_from_bytes(&buf).expect_err("oversized data length must be rejected");
+            assert!(
+                err.contains("out of bounds") || err.contains("does not fit"),
+                "data_len {data_len}: unexpected error {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn oxifile_shape_must_match_data_length() {
+        // Four f64 elements need 32 bytes, but only 8 are stored.
+        let mut buf = dataset_prefix(1, &[4], 8);
+        buf.extend_from_slice(&[0u8; 8]);
+        write_u32(&mut buf, 0); // dataset attributes
+        write_u32(&mut buf, 0); // root subgroups
+        let err = OxiFile::read_from_bytes(&buf).expect_err("shape/data mismatch");
+        assert!(err.contains("does not match"), "unexpected error: {err}");
+
+        // A dimension product that overflows usize is a mismatch, not a panic.
+        let mut buf = dataset_prefix(1, &[u64::MAX / 2, 8], 16);
+        buf.extend_from_slice(&[0u8; 16]);
+        write_u32(&mut buf, 0);
+        write_u32(&mut buf, 0);
+        assert!(OxiFile::read_from_bytes(&buf).is_err());
+
+        // The consistent encoding of a two-element dataset decodes.
+        let mut buf = dataset_prefix(1, &[2], 16);
+        buf.extend_from_slice(&[0u8; 16]);
+        write_u32(&mut buf, 0);
+        write_u32(&mut buf, 0);
+        let file = OxiFile::read_from_bytes(&buf).expect("consistent dataset");
+        assert_eq!(file.root.datasets[0].shape.dims, vec![2]);
+        assert_eq!(file.root.datasets[0].to_f64_vec().unwrap(), vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn oxifile_huge_counts_do_not_preallocate() {
+        let huge = u32::MAX;
+        // Root group announcing billions of attributes, datasets or subgroups.
+        let mut attrs = root_prefix(huge);
+        attrs.extend_from_slice(&[0u8; 8]);
+        assert!(OxiFile::read_from_bytes(&attrs).is_err());
+
+        let mut datasets = root_prefix(0);
+        write_u32(&mut datasets, huge);
+        datasets.extend_from_slice(&[0u8; 8]);
+        assert!(OxiFile::read_from_bytes(&datasets).is_err());
+
+        let mut subgroups = root_prefix(0);
+        write_u32(&mut subgroups, 0); // datasets
+        write_u32(&mut subgroups, huge);
+        subgroups.extend_from_slice(&[0u8; 8]);
+        assert!(OxiFile::read_from_bytes(&subgroups).is_err());
+
+        // Dataset announcing billions of dimensions.
+        let mut dims = root_prefix(0);
+        write_u32(&mut dims, 1);
+        write_string(&mut dims, "d");
+        dims.push(1);
+        write_u32(&mut dims, huge);
+        assert!(OxiFile::read_from_bytes(&dims).is_err());
+
+        // Attribute arrays announcing 2^64 - 1 elements.
+        for tag in [3u8, 4u8] {
+            let mut buf = root_prefix(1);
+            write_string(&mut buf, "a");
+            buf.push(tag);
+            write_u64(&mut buf, u64::MAX);
+            assert!(OxiFile::read_from_bytes(&buf).is_err());
+        }
+    }
+
+    #[test]
+    fn oxifile_truncated_at_every_offset_returns_err() {
+        let bytes = rich_oxifile().write_to_bytes();
+        let decoded = OxiFile::read_from_bytes(&bytes).expect("complete file decodes");
+        assert_eq!(decoded.root.attributes.len(), 5);
+        let inner = &decoded.root.subgroups[0];
+        assert_eq!(inner.datasets[0].to_i32_vec().unwrap(), vec![1, 2, 3, 4]);
+        assert_eq!(inner.subgroups[0].name, "leaf");
+        for len in 0..bytes.len() {
+            assert!(
+                OxiFile::read_from_bytes(&bytes[..len]).is_err(),
+                "prefix of {len} bytes must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn oxifile_corrupted_bytes_never_panic() {
+        fn assert_shapes_consistent(group: &Group) {
+            for ds in &group.datasets {
+                let expected = ds
+                    .shape
+                    .checked_total_elements()
+                    .and_then(|n| n.checked_mul(ds.dtype.size_bytes()));
+                assert_eq!(expected, Some(ds.data.len()), "dataset '{}'", ds.name);
+            }
+            for sub in &group.subgroups {
+                assert_shapes_consistent(sub);
+            }
+        }
+        let bytes = rich_oxifile().write_to_bytes();
+        let mut decoded_variants = 0usize;
+        let mut rejected_variants = 0usize;
+        for at in 0..bytes.len() {
+            for fill in [0x00u8, 0x01, 0x7F, 0xFF] {
+                let mut corrupt = bytes.clone();
+                corrupt[at] = fill;
+                match OxiFile::read_from_bytes(&corrupt) {
+                    Ok(file) => {
+                        decoded_variants += 1;
+                        assert_shapes_consistent(&file.root);
+                    }
+                    Err(_) => rejected_variants += 1,
+                }
+            }
+        }
+        // Payload corruption (e.g. a float byte) still decodes, structural
+        // corruption (counts, lengths, tags) is rejected.
+        assert!(decoded_variants > 0);
+        assert!(rejected_variants > 0);
+        // Damage to the magic number is never accepted.
+        for at in 0..MAGIC.len() {
+            let mut corrupt = bytes.clone();
+            corrupt[at] ^= 0xFF;
+            assert!(
+                OxiFile::read_from_bytes(&corrupt).is_err(),
+                "magic byte {at} corrupted but the file was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn read_helpers_reject_overflowing_offsets() {
+        let data = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        for start in [usize::MAX, usize::MAX - 3, data.len() + 1] {
+            let mut pos = start;
+            assert!(read_u32(&data, &mut pos).is_err());
+            assert!(read_u64(&data, &mut pos).is_err());
+            assert!(read_string(&data, &mut pos).is_err());
+            assert_eq!(pos, start, "failed reads must not advance the cursor");
+        }
+        // A string whose length prefix points far beyond the buffer.
+        let mut buf = Vec::new();
+        write_u32(&mut buf, u32::MAX);
+        let mut pos = 0usize;
+        let err = read_string(&buf, &mut pos).expect_err("oversized string");
+        assert!(err.contains("out of bounds"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn dataset_accessors_handle_overflowing_shapes() {
+        let overflowing = Dataset {
+            name: "bad".to_string(),
+            dtype: DataType::Float64,
+            shape: DatasetShape::new(vec![usize::MAX, 2]),
+            data: vec![0u8; 16],
+            attributes: Vec::new(),
+        };
+        assert_eq!(overflowing.shape.checked_total_elements(), None);
+        assert!(overflowing.to_f64_vec().is_err());
+        let overflowing_i32 = Dataset {
+            dtype: DataType::Int32,
+            shape: DatasetShape::new(vec![usize::MAX]),
+            ..overflowing
+        };
+        assert!(overflowing_i32.to_i32_vec().is_err());
+        let scalar = Dataset::from_f64_slice("s", &[2.5], DatasetShape::new(vec![]));
+        assert_eq!(scalar.shape.checked_total_elements(), Some(1));
+        assert_eq!(scalar.to_f64_vec().unwrap(), vec![2.5]);
+    }
+
+    #[test]
+    fn binary_mesh_and_particle_decoders_survive_huge_counts() {
+        let mut mesh = Vec::new();
+        write_u32(&mut mesh, u32::MAX);
+        write_u32(&mut mesh, u32::MAX);
+        let err = BinaryMesh::from_bytes(&mesh).expect_err("mesh counts exceed data");
+        assert!(err.contains("truncated"), "unexpected error: {err}");
+
+        let mut particles = Vec::new();
+        particles.extend_from_slice(PARTICLE_MAGIC);
+        write_u32(&mut particles, u32::MAX);
+        write_u32(&mut particles, 0);
+        let err = BinaryParticleData::from_bytes(&particles).expect_err("particle count");
+        assert!(err.contains("truncated"), "unexpected error: {err}");
+
+        let mut fields = Vec::new();
+        fields.extend_from_slice(PARTICLE_MAGIC);
+        write_u32(&mut fields, 0);
+        write_u32(&mut fields, u32::MAX);
+        assert!(BinaryParticleData::from_bytes(&fields).is_err());
+    }
+
+    #[test]
+    fn oxifile_crate_writers_produce_files_the_decoder_accepts() {
+        // Every writer of this module must emit a shape that matches its data,
+        // because the decoder rejects datasets whose shape and byte length
+        // disagree.
+        let mut file = SimulationCheckpoint::create();
+        let positions = [[0.5, 1.5, 2.5], [3.5, 4.5, 5.5], [-6.5, 7.5, -8.5]];
+        let velocities = [[-1.0, 0.0, 1.0], [2.0, 3.0, 4.0], [5.0, 6.0, 7.0]];
+        SimulationCheckpoint::add_positions(&mut file, "frame0", &positions);
+        SimulationCheckpoint::add_velocities(&mut file, "frame0", &velocities);
+        SimulationCheckpoint::add_scalar_field(&mut file, "frame0", "rho", &[1.0, 2.0, 3.0]);
+        SimulationCheckpoint::add_timestep_metadata(&mut file, 7, 0.07, 0.01);
+        // Containers without entries describe a consistent zero-element shape.
+        SimulationCheckpoint::add_positions(&mut file, "empty", &[]);
+        SimulationCheckpoint::add_scalar_field(&mut file, "empty", "rho", &[]);
+        // A scalar dataset has an empty shape and exactly one element.
+        file.root.add_dataset(Dataset::from_f64_slice(
+            "dt",
+            &[0.01],
+            DatasetShape::new(vec![]),
+        ));
+        file.root.add_dataset(Dataset::from_f32_slice(
+            "f32_matrix",
+            &[1.5, 2.5, 3.5, 4.5, 5.5, 6.5],
+            DatasetShape::new(vec![2, 3]),
+        ));
+        file.root.add_dataset(Dataset::from_i32_slice(
+            "i32_vector",
+            &[-1, 2, -3, 4],
+            DatasetShape::new(vec![4]),
+        ));
+        let mut mesh = BinaryMesh::new();
+        mesh.vertices = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 1.0, 0.0]];
+        mesh.triangles = vec![[0, 1, 2]];
+        file.add_binary_mesh("geometry", &mesh);
+
+        let bytes = file.write_to_bytes();
+        let loaded = OxiFile::read_from_bytes(&bytes)
+            .expect("the decoder must accept what the crate's own writers produce");
+        assert_eq!(loaded.write_to_bytes(), bytes, "re-encoding must be stable");
+
+        let frame = loaded.root.get_subgroup("frame0").expect("frame0");
+        let flat =
+            |vectors: &[[f64; 3]]| -> Vec<f64> { vectors.iter().flatten().copied().collect() };
+        let stored = |name: &str| -> Vec<f64> {
+            frame
+                .get_dataset(name)
+                .expect("dataset")
+                .to_f64_vec()
+                .expect("f64 dataset")
+        };
+        assert_eq!(stored("positions"), flat(&positions));
+        assert_eq!(stored("velocities"), flat(&velocities));
+        assert_eq!(stored("rho"), vec![1.0, 2.0, 3.0]);
+        let positions_ds = frame.get_dataset("positions").expect("positions");
+        assert_eq!(positions_ds.shape.dims, vec![3, 3]);
+
+        let empty = loaded.root.get_subgroup("empty").expect("empty group");
+        for name in ["positions", "rho"] {
+            let ds = empty.get_dataset(name).expect("empty dataset");
+            assert!(ds.to_f64_vec().expect("f64 dataset").is_empty());
+        }
+        let dt = loaded.root.get_dataset("dt").expect("dt");
+        assert!(dt.shape.is_scalar());
+        assert_eq!(dt.to_f64_vec().expect("f64 dataset"), vec![0.01]);
+        let matrix = loaded.root.get_dataset("f32_matrix").expect("matrix");
+        assert_eq!(matrix.shape.dims, vec![2, 3]);
+        assert_eq!(
+            matrix.to_f32_vec().expect("f32 dataset"),
+            vec![1.5, 2.5, 3.5, 4.5, 5.5, 6.5]
+        );
+        let vector = loaded.root.get_dataset("i32_vector").expect("vector");
+        assert_eq!(
+            vector.to_i32_vec().expect("i32 dataset"),
+            vec![-1, 2, -3, 4]
+        );
+
+        let restored = loaded.get_binary_mesh("geometry").expect("mesh");
+        assert_eq!(restored.vertices, mesh.vertices);
+        assert_eq!(restored.triangles, mesh.triangles);
+        let blob = loaded
+            .root
+            .get_subgroup("geometry")
+            .and_then(|group| group.get_dataset("mesh_binary"))
+            .expect("mesh blob");
+        assert_eq!(blob.dtype, DataType::UInt8);
+        assert_eq!(
+            blob.get_attribute("n_vertices").map(|a| a.value.clone()),
+            Some(AttributeValue::Int(3))
+        );
+        assert_eq!(
+            loaded.root.get_attribute("step").map(|a| a.value.clone()),
+            Some(AttributeValue::Int(7))
+        );
+    }
+
+    #[test]
+    fn oxifile_save_and_load_round_trip_through_a_file() {
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let whole = dir.join(format!("oxiphysics_oxifile_{pid}_whole.oxi"));
+        let cut = dir.join(format!("oxiphysics_oxifile_{pid}_cut.oxi"));
+        let original = rich_oxifile();
+        let bytes = original.write_to_bytes();
+
+        let saved = original.save(whole.to_str().expect("UTF-8 temp path"));
+        let loaded = OxiFile::load(whole.to_str().expect("UTF-8 temp path"));
+        std::fs::write(&cut, &bytes[..bytes.len() / 2]).expect("write truncated copy");
+        let truncated = OxiFile::load(cut.to_str().expect("UTF-8 temp path"));
+        std::fs::remove_file(&whole).ok();
+        std::fs::remove_file(&cut).ok();
+
+        saved.expect("save");
+        let loaded = loaded.expect("load");
+        assert_eq!(loaded.write_to_bytes(), bytes);
+        assert!(
+            truncated.is_err(),
+            "half of a file must not decode as a whole one"
+        );
+        assert!(OxiFile::load(whole.to_str().expect("UTF-8 temp path")).is_err());
     }
 }

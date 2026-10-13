@@ -5,6 +5,7 @@
 //!
 //! Uses raw f64 arrays (no nalgebra dependency).
 
+use super::corot_functions::{corot_cauchy_stress, corotational_strain, polar_decompose_r};
 use super::math_helpers::{det3x3, edge_matrix_raw, inv3x3, mul3x3, transpose3x3};
 
 // ---------------------------------------------------------------------------
@@ -18,19 +19,47 @@ pub struct SoftMaterial {
     pub youngs_modulus: f64,
     /// Poisson's ratio (0..0.5).
     pub poisson_ratio: f64,
-    /// Damping coefficient.
+    /// Kelvin-Voigt damping time \[s\].
+    ///
+    /// The viscous stress is `damping` times the elastic stress of the strain
+    /// *rate* (stiffness-proportional damping), so rigid motions are not damped.
     pub damping: f64,
 }
 
+impl SoftMaterial {
+    /// Lame parameters `(lambda, mu)` of the linear-elastic law of this material:
+    /// `lambda = E nu / ((1 + nu)(1 - 2 nu))`, `mu = E / (2 (1 + nu))`.
+    ///
+    /// The Poisson ratio is clamped to `[-0.99, 0.4999]` so that `lambda` stays
+    /// finite as the material approaches the incompressible limit `nu = 1/2`.
+    pub fn lame_parameters(&self) -> (f64, f64) {
+        let nu = self.poisson_ratio.clamp(-0.99, 0.4999);
+        let e = self.youngs_modulus;
+        (
+            e * nu / ((1.0 + nu) * (1.0 - 2.0 * nu)),
+            e / (2.0 * (1.0 + nu)),
+        )
+    }
+}
+
 /// A corotational tetrahedral element using raw f64 arrays.
+///
+/// With the deformation gradient `F = Ds Dm^-1` (current and rest edge matrices
+/// have the edge vectors as columns) and its polar decomposition `F = R S`, the
+/// element stores the corotational linear-elastic energy of the strain
+/// `eps = R^T F - I`.  It is force free in its rest shape and under every rigid
+/// motion, also for skewed rest geometries.
 #[derive(Debug, Clone)]
 pub struct CorotationalElementRaw {
     /// Indices of the four nodes of the tetrahedron.
     pub node_indices: [usize; 4],
     /// Rest volume of the element.
     pub rest_volume: f64,
-    /// Rest-shape edge matrix columns: `[e1, e2, e3]` where `ei = pi - p0`.
+    /// Rest-shape edge vectors `[e1, e2, e3]` with `ei = pi - p0`, one edge per
+    /// **row** (the rest edge matrix `Dm` holds them as columns).
     pub rest_shape: [[f64; 3]; 3],
+    /// Inverse `Dm^-1` of the rest edge matrix, stored at construction.
+    pub rest_inv: [[f64; 3]; 3],
     /// Material properties.
     pub material: SoftMaterial,
 }
@@ -42,103 +71,128 @@ impl CorotationalElementRaw {
         let p1 = positions[node_indices[1]];
         let p2 = positions[node_indices[2]];
         let p3 = positions[node_indices[3]];
-        let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
-        let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
-        let e3 = [p3[0] - p0[0], p3[1] - p0[1], p3[2] - p0[2]];
-        let det = e1[0] * (e2[1] * e3[2] - e2[2] * e3[1]) - e1[1] * (e2[0] * e3[2] - e2[2] * e3[0])
-            + e1[2] * (e2[0] * e3[1] - e2[1] * e3[0]);
-        let rest_volume = det.abs() / 6.0;
+        let dm = edge_matrix_raw(p0, p1, p2, p3);
         Self {
             node_indices,
-            rest_volume,
-            rest_shape: [e1, e2, e3],
+            rest_volume: det3x3(dm).abs() / 6.0,
+            rest_shape: transpose3x3(dm),
+            rest_inv: inv3x3(dm),
             material,
         }
     }
 
-    /// Compute a 3x3 rotation matrix from the deformation gradient via
-    /// iterative polar decomposition.
-    pub fn compute_rotation(current_positions: &[[f64; 3]], indices: &[usize; 4]) -> [[f64; 3]; 3] {
-        let p0 = current_positions[indices[0]];
-        let p1 = current_positions[indices[1]];
-        let p2 = current_positions[indices[2]];
-        let p3 = current_positions[indices[3]];
-
-        let ds = [
-            [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]],
-            [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]],
-            [p3[0] - p0[0], p3[1] - p0[1], p3[2] - p0[2]],
-        ];
-
-        // Start with ds as initial guess for R.
-        let mut r = ds;
-        for _ in 0..10 {
-            let det = r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
-                - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
-                + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
-            if det.abs() < 1e-30 {
-                return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-            }
-            let inv_det = 1.0 / det;
-            let inv = [
-                [
-                    (r[1][1] * r[2][2] - r[1][2] * r[2][1]) * inv_det,
-                    (r[0][2] * r[2][1] - r[0][1] * r[2][2]) * inv_det,
-                    (r[0][1] * r[1][2] - r[0][2] * r[1][1]) * inv_det,
-                ],
-                [
-                    (r[1][2] * r[2][0] - r[1][0] * r[2][2]) * inv_det,
-                    (r[0][0] * r[2][2] - r[0][2] * r[2][0]) * inv_det,
-                    (r[0][2] * r[1][0] - r[0][0] * r[1][2]) * inv_det,
-                ],
-                [
-                    (r[1][0] * r[2][1] - r[1][1] * r[2][0]) * inv_det,
-                    (r[0][1] * r[2][0] - r[0][0] * r[2][1]) * inv_det,
-                    (r[0][0] * r[1][1] - r[0][1] * r[1][0]) * inv_det,
-                ],
-            ];
-            // R = (R + inv^T) / 2
-            for i in 0..3 {
-                for j in 0..3 {
-                    r[i][j] = (r[i][j] + inv[j][i]) * 0.5;
-                }
-            }
-        }
-        r
+    /// Deformation gradient `F = Ds Dm^-1` for the given node positions.
+    pub fn deformation_gradient(&self, current_positions: &[[f64; 3]]) -> [[f64; 3]; 3] {
+        let [i0, i1, i2, i3] = self.node_indices;
+        let ds = edge_matrix_raw(
+            current_positions[i0],
+            current_positions[i1],
+            current_positions[i2],
+            current_positions[i3],
+        );
+        mul3x3(ds, self.rest_inv)
     }
 
-    /// Compute elastic forces on the four nodes.
-    pub fn compute_forces(&self, current_positions: &[[f64; 3]]) -> [[f64; 3]; 4] {
-        let r = Self::compute_rotation(current_positions, &self.node_indices);
-        // Simplified: force proportional to displacement from rest shape
-        let p0 = current_positions[self.node_indices[0]];
-        let mut forces = [[0.0; 3]; 4];
-        let stiffness = self.material.youngs_modulus * self.rest_volume;
+    /// Rotation `R` of the polar decomposition `F = R S` of the deformation
+    /// gradient `F = Ds Dm^-1`.
+    ///
+    /// The rotation is a property of `F`, not of the raw current edges: in a
+    /// skewed rest shape the raw edge matrix already differs from a rotation at
+    /// rest.
+    pub fn compute_rotation(&self, current_positions: &[[f64; 3]]) -> [[f64; 3]; 3] {
+        polar_decompose_r(self.deformation_gradient(current_positions))
+    }
 
-        for k in 1..4 {
-            let pk = current_positions[self.node_indices[k]];
-            let deformed = [pk[0] - p0[0], pk[1] - p0[1], pk[2] - p0[2]];
-            // Rotated rest edge
-            let rest_e = self.rest_shape[k - 1];
-            let rotated = [
-                r[0][0] * rest_e[0] + r[0][1] * rest_e[1] + r[0][2] * rest_e[2],
-                r[1][0] * rest_e[0] + r[1][1] * rest_e[1] + r[1][2] * rest_e[2],
-                r[2][0] * rest_e[0] + r[2][1] * rest_e[1] + r[2][2] * rest_e[2],
-            ];
-            let diff = [
-                deformed[0] - rotated[0],
-                deformed[1] - rotated[1],
-                deformed[2] - rotated[2],
-            ];
-            let f = [
-                -stiffness * diff[0],
-                -stiffness * diff[1],
-                -stiffness * diff[2],
-            ];
-            forces[k] = f;
-            forces[0][0] -= f[0];
-            forces[0][1] -= f[1];
-            forces[0][2] -= f[2];
+    /// Nodal forces `f_k` of the first Piola-Kirchhoff stress `P = R sigma`,
+    /// `sigma = lambda tr(eps) I + 2 mu eps`, `eps = R^T F - I`.
+    ///
+    /// `H = -V0 P Dm^-T` holds the forces of nodes 1..3 as its columns and the
+    /// force of node 0 balances them: `f_0 = -(f_1 + f_2 + f_3)`.
+    pub fn compute_forces(&self, current_positions: &[[f64; 3]]) -> [[f64; 3]; 4] {
+        let f = self.deformation_gradient(current_positions);
+        let r = polar_decompose_r(f);
+        let strain = corotational_strain(r, f);
+        let (lambda, mu) = self.material.lame_parameters();
+        let sigma = corot_cauchy_stress(strain, lambda, mu);
+        self.nodal_forces_from_stress(mul3x3(r, sigma), -self.rest_volume)
+    }
+
+    /// Viscous (Kelvin-Voigt) forces `-V0 R (damping C : eps_dot) Dm^-T`, where
+    /// `C` is the elastic law and `eps_dot` the strain rate of the corotated
+    /// element for the nodal `velocities`.
+    ///
+    /// The strain rate is `S_dot` of the polar decomposition `F = R S`,
+    /// `S_dot = R^T F_dot - [w]x S`, with the rotation rate `w` solving
+    /// `(tr(S) I - S) w = 2 axial(skew(R^T F_dot))`, so a rigid motion carries
+    /// no strain rate at any deformation.  The forces are zero for
+    /// `material.damping == 0`.
+    pub fn damping_forces(
+        &self,
+        current_positions: &[[f64; 3]],
+        velocities: &[[f64; 3]],
+    ) -> [[f64; 3]; 4] {
+        let eta = self.material.damping;
+        if eta == 0.0 || self.rest_volume == 0.0 {
+            return [[0.0; 3]; 4];
+        }
+        let f = self.deformation_gradient(current_positions);
+        let r = polar_decompose_r(f);
+        let rt = transpose3x3(r);
+        let s = mul3x3(rt, f);
+        let [i0, i1, i2, i3] = self.node_indices;
+        let dv = edge_matrix_raw(
+            velocities[i0],
+            velocities[i1],
+            velocities[i2],
+            velocities[i3],
+        );
+        let a = mul3x3(rt, mul3x3(dv, self.rest_inv));
+        let axial = [
+            0.5 * (a[2][1] - a[1][2]),
+            0.5 * (a[0][2] - a[2][0]),
+            0.5 * (a[1][0] - a[0][1]),
+        ];
+        let trace_s = s[0][0] + s[1][1] + s[2][2];
+        let mut m = [[0.0_f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                m[i][j] = -s[i][j];
+            }
+            m[i][i] += trace_s;
+        }
+        let w = if det3x3(m).abs() > 1e-12 {
+            let m_inv = inv3x3(m);
+            let mut w = [0.0_f64; 3];
+            for i in 0..3 {
+                w[i] = 2.0
+                    * (m_inv[i][0] * axial[0] + m_inv[i][1] * axial[1] + m_inv[i][2] * axial[2]);
+            }
+            w
+        } else {
+            [0.0; 3]
+        };
+        let w_cross = [[0.0, -w[2], w[1]], [w[2], 0.0, -w[0]], [-w[1], w[0], 0.0]];
+        let ws = mul3x3(w_cross, s);
+        let mut strain_rate = [[0.0_f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                strain_rate[i][j] = 0.5 * ((a[i][j] - ws[i][j]) + (a[j][i] - ws[j][i]));
+            }
+        }
+        let (lambda, mu) = self.material.lame_parameters();
+        let sigma_rate = corot_cauchy_stress(strain_rate, lambda, mu);
+        self.nodal_forces_from_stress(mul3x3(r, sigma_rate), -self.rest_volume * eta)
+    }
+
+    /// Nodal forces `scale * P Dm^-T` (columns for nodes 1..3, balancing node 0).
+    fn nodal_forces_from_stress(&self, piola: [[f64; 3]; 3], scale: f64) -> [[f64; 3]; 4] {
+        let h = mul3x3(piola, transpose3x3(self.rest_inv));
+        let mut forces = [[0.0_f64; 3]; 4];
+        for i in 0..3 {
+            forces[1][i] = scale * h[i][0];
+            forces[2][i] = scale * h[i][1];
+            forces[3][i] = scale * h[i][2];
+            forces[0][i] = -(forces[1][i] + forces[2][i] + forces[3][i]);
         }
         forces
     }
@@ -181,13 +235,14 @@ impl FemSoftBodyRaw {
             }
         }
 
-        // Element forces
+        // Element forces: elastic restoring forces plus Kelvin-Voigt damping.
         for elem in &self.elements {
             let f = elem.compute_forces(&self.nodes);
-            for (k, f_k) in f.iter().enumerate() {
+            let f_damp = elem.damping_forces(&self.nodes, &self.velocities);
+            for (k, (f_k, fd_k)) in f.iter().zip(f_damp.iter()).enumerate() {
                 let idx = elem.node_indices[k];
-                for (fd, fkd) in forces[idx].iter_mut().zip(f_k.iter()) {
-                    *fd += fkd;
+                for (fd, (fkd, fdd)) in forces[idx].iter_mut().zip(f_k.iter().zip(fd_k.iter())) {
+                    *fd += fkd + fdd;
                 }
             }
         }

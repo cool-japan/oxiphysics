@@ -7,6 +7,7 @@
 //! PSD estimation (Welch/Bartlett), FIR/IIR filter design (Butterworth/Chebyshev/elliptic),
 //! convolution, correlation, Hilbert transform, spectrogram, and wavelet transforms.
 
+use crate::error::PhysicsError;
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -279,22 +280,73 @@ pub enum WindowType {
     Nuttall,
 }
 
+/// Shape parameter that [`WindowType::generate`] uses for [`WindowType::Kaiser`]
+/// (about 60 dB of side-lobe attenuation).  Call [`kaiser_window`] directly for
+/// another shape parameter.
+pub const DEFAULT_KAISER_BETA: f64 = 8.6;
+
+impl WindowType {
+    /// Generate the window coefficients of length `n`.
+    ///
+    /// Every variant is honoured; [`WindowType::Kaiser`] uses
+    /// [`DEFAULT_KAISER_BETA`].  Lengths 0 and 1 give an empty window and the
+    /// single sample `1.0` respectively.
+    pub fn generate(&self, n: usize) -> Vec<f64> {
+        match self {
+            WindowType::Rectangular => vec![1.0; n],
+            WindowType::Hann => hann_window(n),
+            WindowType::Hamming => hamming_window(n),
+            WindowType::Blackman => blackman_window(n),
+            WindowType::BlackmanHarris => blackman_harris_window(n),
+            WindowType::FlatTop => flat_top_window(n),
+            WindowType::Bartlett => bartlett_window(n),
+            WindowType::Kaiser => kaiser_window(n, DEFAULT_KAISER_BETA),
+            WindowType::Nuttall => nuttall_window(n),
+        }
+    }
+}
+
+/// Windows of length 0 are empty and windows of length 1 are the single sample
+/// `1.0` (the symmetric formulas divide by `n - 1`).
+fn degenerate_window(n: usize) -> Option<Vec<f64>> {
+    match n {
+        0 => Some(Vec::new()),
+        1 => Some(vec![1.0]),
+        _ => None,
+    }
+}
+
 /// Compute the Hann window of length `n`.
+///
+/// `n = 0` gives an empty window and `n = 1` the single sample `1.0`.
 pub fn hann_window(n: usize) -> Vec<f64> {
+    if let Some(window) = degenerate_window(n) {
+        return window;
+    }
     (0..n)
         .map(|i| 0.5 * (1.0 - (2.0 * PI * i as f64 / (n - 1) as f64).cos()))
         .collect()
 }
 
 /// Compute the Hamming window of length `n`.
+///
+/// `n = 0` gives an empty window and `n = 1` the single sample `1.0`.
 pub fn hamming_window(n: usize) -> Vec<f64> {
+    if let Some(window) = degenerate_window(n) {
+        return window;
+    }
     (0..n)
         .map(|i| 0.54 - 0.46 * (2.0 * PI * i as f64 / (n - 1) as f64).cos())
         .collect()
 }
 
 /// Compute the Blackman window of length `n`.
+///
+/// `n = 0` gives an empty window and `n = 1` the single sample `1.0`.
 pub fn blackman_window(n: usize) -> Vec<f64> {
+    if let Some(window) = degenerate_window(n) {
+        return window;
+    }
     (0..n)
         .map(|i| {
             let t = 2.0 * PI * i as f64 / (n - 1) as f64;
@@ -304,7 +356,12 @@ pub fn blackman_window(n: usize) -> Vec<f64> {
 }
 
 /// Compute the Blackman-Harris window of length `n`.
+///
+/// `n = 0` gives an empty window and `n = 1` the single sample `1.0`.
 pub fn blackman_harris_window(n: usize) -> Vec<f64> {
+    if let Some(window) = degenerate_window(n) {
+        return window;
+    }
     let a0 = 0.35875;
     let a1 = 0.48829;
     let a2 = 0.14128;
@@ -318,7 +375,12 @@ pub fn blackman_harris_window(n: usize) -> Vec<f64> {
 }
 
 /// Compute the Nuttall window of length `n`.
+///
+/// `n = 0` gives an empty window and `n = 1` the single sample `1.0`.
 pub fn nuttall_window(n: usize) -> Vec<f64> {
+    if let Some(window) = degenerate_window(n) {
+        return window;
+    }
     let a0 = 0.3635819;
     let a1 = 0.4891775;
     let a2 = 0.1365995;
@@ -332,7 +394,12 @@ pub fn nuttall_window(n: usize) -> Vec<f64> {
 }
 
 /// Compute the Bartlett (triangular) window of length `n`.
+///
+/// `n = 0` gives an empty window and `n = 1` the single sample `1.0`.
 pub fn bartlett_window(n: usize) -> Vec<f64> {
+    if let Some(window) = degenerate_window(n) {
+        return window;
+    }
     let m = (n - 1) as f64;
     (0..n)
         .map(|i| {
@@ -343,7 +410,12 @@ pub fn bartlett_window(n: usize) -> Vec<f64> {
 }
 
 /// Compute the flat-top window of length `n`.
+///
+/// `n = 0` gives an empty window and `n = 1` the single sample `1.0`.
 pub fn flat_top_window(n: usize) -> Vec<f64> {
+    if let Some(window) = degenerate_window(n) {
+        return window;
+    }
     let a0 = 0.21557895;
     let a1 = 0.41663158;
     let a2 = 0.277263158;
@@ -375,7 +447,12 @@ pub fn bessel_i0(x: f64) -> f64 {
 }
 
 /// Compute the Kaiser window of length `n` with shape parameter `beta`.
+///
+/// `n = 0` gives an empty window and `n = 1` the single sample `1.0`.
 pub fn kaiser_window(n: usize, beta: f64) -> Vec<f64> {
+    if let Some(window) = degenerate_window(n) {
+        return window;
+    }
     let i0_beta = bessel_i0(beta);
     let m = (n - 1) as f64;
     (0..n)
@@ -435,23 +512,64 @@ pub struct PsdResult {
 /// Welch's method for PSD estimation.
 ///
 /// Splits the signal into overlapping segments, windows each, computes the
-/// periodogram, and averages.
+/// periodogram, and averages.  Segments of `segment_len` samples start every
+/// `segment_len - overlap` samples; only complete segments are used.  Every
+/// [`WindowType`] is honoured (see [`WindowType::generate`]).
+///
+/// # Errors
+/// Returns [`PhysicsError::InvalidInput`] if
+/// * `fs` is not positive and finite,
+/// * `segment_len` is zero,
+/// * `overlap >= segment_len` (the hop would be zero or negative),
+/// * the signal is shorter than one segment (this includes an empty signal), or
+/// * the window has no power for this `segment_len` (for example a Hann window
+///   of length 2).
 pub fn welch_psd(
     signal: &[f64],
     fs: f64,
     segment_len: usize,
     overlap: usize,
     window_type: WindowType,
-) -> PsdResult {
+) -> Result<PsdResult, PhysicsError> {
+    if !(fs.is_finite() && fs > 0.0) {
+        return Err(PhysicsError::InvalidInput {
+            field: "fs".to_string(),
+            reason: format!("sample rate must be positive and finite, got {fs}"),
+        });
+    }
+    if segment_len == 0 {
+        return Err(PhysicsError::InvalidInput {
+            field: "segment_len".to_string(),
+            reason: "segment length must be at least 1".to_string(),
+        });
+    }
+    if overlap >= segment_len {
+        return Err(PhysicsError::InvalidInput {
+            field: "overlap".to_string(),
+            reason: format!("overlap {overlap} must be smaller than segment_len {segment_len}"),
+        });
+    }
+    if signal.len() < segment_len {
+        return Err(PhysicsError::InvalidInput {
+            field: "signal".to_string(),
+            reason: format!(
+                "signal of {} samples is shorter than one segment of {segment_len} samples",
+                signal.len()
+            ),
+        });
+    }
     let step = segment_len - overlap;
-    let window = match window_type {
-        WindowType::Hann => hann_window(segment_len),
-        WindowType::Hamming => hamming_window(segment_len),
-        WindowType::Blackman => blackman_window(segment_len),
-        WindowType::Bartlett => bartlett_window(segment_len),
-        _ => hann_window(segment_len),
-    };
+    let window = window_type.generate(segment_len);
     let win_power: f64 = window.iter().map(|w| w * w).sum::<f64>();
+    // Windows such as Hann or Blackman of length 2 vanish identically (up to rounding).
+    if !win_power.is_finite() || win_power < 1e-20 * segment_len as f64 {
+        return Err(PhysicsError::InvalidInput {
+            field: "window_type".to_string(),
+            reason: format!(
+                "{window_type:?} window of length {segment_len} has no usable power ({win_power})"
+            ),
+        });
+    }
 
     let n_fft = segment_len.next_power_of_two();
     let n_bins = n_fft / 2 + 1;
@@ -473,27 +591,41 @@ pub fn welch_psd(
         seg_count += 1;
         start += step;
     }
-    // Average over segments
-    if seg_count > 0 {
-        let inv = 1.0 / seg_count as f64;
-        for p in psd_acc.iter_mut() {
-            *p *= inv;
-        }
+    // Average over segments (at least one complete segment exists here).
+    let inv = 1.0 / seg_count as f64;
+    for p in psd_acc.iter_mut() {
+        *p *= inv;
     }
     let freqs = rfft_frequencies(n_fft, fs);
-    PsdResult {
+    Ok(PsdResult {
         freqs,
         psd: psd_acc,
-    }
+    })
 }
 
-/// Bartlett's method for PSD estimation (non-overlapping segments).
-pub fn bartlett_psd(signal: &[f64], fs: f64, segment_len: usize) -> PsdResult {
+/// Bartlett's method for PSD estimation (non-overlapping segments, rectangular window).
+///
+/// # Errors
+/// Returns [`PhysicsError::InvalidInput`] under the conditions of [`welch_psd`]
+/// (`overlap` is always 0 here).
+pub fn bartlett_psd(
+    signal: &[f64],
+    fs: f64,
+    segment_len: usize,
+) -> Result<PsdResult, PhysicsError> {
     welch_psd(signal, fs, segment_len, 0, WindowType::Rectangular)
 }
 
-/// Simple periodogram PSD estimate.
-pub fn periodogram_psd(signal: &[f64], fs: f64, window_type: WindowType) -> PsdResult {
+/// Simple periodogram PSD estimate (a single segment spanning the whole signal).
+///
+/// # Errors
+/// Returns [`PhysicsError::InvalidInput`] under the conditions of [`welch_psd`];
+/// in particular an empty signal is rejected.
+pub fn periodogram_psd(
+    signal: &[f64],
+    fs: f64,
+    window_type: WindowType,
+) -> Result<PsdResult, PhysicsError> {
     welch_psd(signal, fs, signal.len(), 0, window_type)
 }
 
@@ -936,21 +1068,18 @@ pub fn spectrogram(
     hop: usize,
     window_type: WindowType,
 ) -> Spectrogram {
-    let window = match window_type {
-        WindowType::Hann => hann_window(window_len),
-        WindowType::Hamming => hamming_window(window_len),
-        WindowType::Blackman => blackman_window(window_len),
-        _ => hann_window(window_len),
-    };
+    let window = window_type.generate(window_len);
     let n_fft = window_len.next_power_of_two();
     let n_bins = n_fft / 2 + 1;
 
     let mut times = Vec::new();
     let mut magnitudes = Vec::new();
     let mut phases = Vec::new();
+    // A zero hop or an empty window would never advance: no frames.
+    let hop = if window_len == 0 { 0 } else { hop };
 
     let mut start = 0;
-    while start + window_len <= signal.len() {
+    while hop > 0 && start + window_len <= signal.len() {
         times.push((start + window_len / 2) as f64 / fs);
         let mut buf: Vec<f64> = signal[start..start + window_len]
             .iter()
@@ -1387,17 +1516,13 @@ pub fn stft(
     hop: usize,
     window_type: WindowType,
 ) -> Vec<Vec<Complex64>> {
-    let window = match window_type {
-        WindowType::Hann => hann_window(window_len),
-        WindowType::Hamming => hamming_window(window_len),
-        WindowType::Blackman => blackman_window(window_len),
-        _ => hann_window(window_len),
-    };
+    let window = window_type.generate(window_len);
     let n_fft = window_len.next_power_of_two();
     let n_bins = n_fft / 2 + 1;
     let mut frames = Vec::new();
     let mut start = 0;
-    while start + window_len <= signal.len() {
+    // A zero hop or an empty window would never advance: no frames.
+    while hop > 0 && window_len > 0 && start + window_len <= signal.len() {
         let mut buf: Vec<f64> = signal[start..start + window_len]
             .iter()
             .zip(window.iter())
@@ -1418,11 +1543,7 @@ pub fn istft(
     hop: usize,
     window_type: WindowType,
 ) -> Vec<f64> {
-    let window = match window_type {
-        WindowType::Hann => hann_window(window_len),
-        WindowType::Hamming => hamming_window(window_len),
-        _ => hann_window(window_len),
-    };
+    let window = window_type.generate(window_len);
     let n_fft = window_len.next_power_of_two();
     let signal_len = hop * frames.len() + window_len;
     let mut out = vec![0.0f64; signal_len];
@@ -1450,468 +1571,5 @@ pub fn istft(
     out
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const EPS: f64 = 1e-9;
-
-    fn approx_eq(a: f64, b: f64, tol: f64) -> bool {
-        (a - b).abs() < tol
-    }
-
-    // --- Complex64 ---
-
-    #[test]
-    fn test_complex_basic_ops() {
-        let a = Complex64::new(3.0, 4.0);
-        let b = Complex64::new(1.0, -2.0);
-        let sum = a + b;
-        assert_eq!(sum.re, 4.0);
-        assert_eq!(sum.im, 2.0);
-        let prod = a * b;
-        // (3+4i)(1-2i) = 3 - 6i + 4i + 8 = 11 - 2i
-        assert!(approx_eq(prod.re, 11.0, EPS));
-        assert!(approx_eq(prod.im, -2.0, EPS));
-    }
-
-    #[test]
-    fn test_complex_abs_and_arg() {
-        let c = Complex64::new(3.0, 4.0);
-        assert!(approx_eq(c.abs(), 5.0, EPS));
-    }
-
-    #[test]
-    fn test_complex_conj() {
-        let c = Complex64::new(1.0, -2.0);
-        let cc = c.conj();
-        assert_eq!(cc.re, 1.0);
-        assert_eq!(cc.im, 2.0);
-    }
-
-    #[test]
-    fn test_complex_exp_i() {
-        let c = Complex64::exp_i(0.0);
-        assert!(approx_eq(c.re, 1.0, EPS));
-        assert!(approx_eq(c.im, 0.0, EPS));
-        let c90 = Complex64::exp_i(PI / 2.0);
-        assert!(approx_eq(c90.re, 0.0, 1e-14));
-        assert!(approx_eq(c90.im, 1.0, 1e-14));
-    }
-
-    // --- FFT ---
-
-    #[test]
-    fn test_fft_dc() {
-        // DC signal: all ones -> FFT has only X[0] = N, rest 0
-        let signal = vec![1.0f64; 8];
-        let spec = fft(&signal);
-        assert!(approx_eq(spec[0].re, 8.0, 1e-10));
-        assert!(approx_eq(spec[0].im, 0.0, 1e-10));
-        for s in spec.iter().skip(1) {
-            assert!(approx_eq(s.re, 0.0, 1e-10));
-            assert!(approx_eq(s.im, 0.0, 1e-10));
-        }
-    }
-
-    #[test]
-    fn test_fft_single_tone() {
-        // cos(2π*k*n/N) -> peaks at bin k and N-k
-        let n = 16usize;
-        let k = 2usize;
-        let signal: Vec<f64> = (0..n)
-            .map(|i| (2.0 * PI * k as f64 * i as f64 / n as f64).cos())
-            .collect();
-        let spec = fft(&signal);
-        // Bin k should have magnitude ≈ N/2
-        assert!(approx_eq(spec[k].abs(), n as f64 / 2.0, 1e-8));
-    }
-
-    #[test]
-    fn test_fft_ifft_roundtrip() {
-        let signal = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
-        let spec = fft(&signal);
-        let recovered = ifft_real(&spec);
-        for (a, b) in signal.iter().zip(recovered.iter()) {
-            assert!(approx_eq(*a, *b, 1e-10));
-        }
-    }
-
-    #[test]
-    fn test_fft_parseval() {
-        // Parseval's theorem: sum |x[n]|^2 = (1/N) * sum |X[k]|^2
-        let signal = vec![1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 0.5, -0.5];
-        let n = signal.len() as f64;
-        let time_energy: f64 = signal.iter().map(|x| x * x).sum();
-        let spec = fft(&signal);
-        let freq_energy: f64 = spec.iter().map(|c| c.norm_sq()).sum::<f64>() / n;
-        assert!(approx_eq(time_energy, freq_energy, 1e-8));
-    }
-
-    // --- Windows ---
-
-    #[test]
-    fn test_hann_window_endpoints() {
-        let w = hann_window(8);
-        assert!(approx_eq(w[0], 0.0, 1e-10));
-    }
-
-    #[test]
-    fn test_hamming_window_range() {
-        let w = hamming_window(64);
-        for v in &w {
-            assert!(*v >= 0.0 && *v <= 1.0);
-        }
-    }
-
-    #[test]
-    fn test_blackman_window_endpoints() {
-        let w = blackman_window(16);
-        assert!(w[0].abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_kaiser_window_unity_center() {
-        let w = kaiser_window(9, 4.0);
-        // Center should be 1.0
-        assert!(approx_eq(w[4], 1.0, 1e-10));
-    }
-
-    #[test]
-    fn test_bessel_i0() {
-        // I0(0) = 1
-        assert!(approx_eq(bessel_i0(0.0), 1.0, EPS));
-        // I0(1) ≈ 1.26606
-        assert!(approx_eq(bessel_i0(1.0), 1.2660658, 1e-6));
-    }
-
-    // --- Convolution ---
-
-    #[test]
-    fn test_convolve_identity() {
-        let x = vec![1.0, 2.0, 3.0];
-        let h = vec![1.0, 0.0, 0.0];
-        let y = convolve(&x, &h);
-        assert!(approx_eq(y[0], 1.0, 1e-10));
-        assert!(approx_eq(y[1], 2.0, 1e-10));
-        assert!(approx_eq(y[2], 3.0, 1e-10));
-    }
-
-    #[test]
-    fn test_convolve_box() {
-        // Convolve [1,1,1] with [1,1] -> [1,2,2,1]
-        let x = vec![1.0, 1.0, 1.0];
-        let h = vec![1.0, 1.0];
-        let y = convolve(&x, &h);
-        assert!(approx_eq(y[0], 1.0, 1e-10));
-        assert!(approx_eq(y[1], 2.0, 1e-10));
-        assert!(approx_eq(y[2], 2.0, 1e-10));
-        assert!(approx_eq(y[3], 1.0, 1e-10));
-    }
-
-    #[test]
-    fn test_auto_correlate_peak() {
-        let signal = vec![1.0, 0.0, -1.0, 0.0, 1.0, 0.0, -1.0, 0.0];
-        let ac = auto_correlate(&signal);
-        // Peak should be at lag = signal.len() - 1
-        let mid = signal.len() - 1;
-        let peak_idx = ac
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .map(|(i, _)| i)
-            .unwrap();
-        assert_eq!(peak_idx, mid);
-    }
-
-    // --- FIR filter ---
-
-    #[test]
-    fn test_fir_lowpass_dc_gain() {
-        let fir = FirFilter::lowpass(31, 0.5);
-        // DC gain should be ≈ 1.0
-        let dc_gain: f64 = fir.coeffs.iter().sum();
-        assert!(approx_eq(dc_gain, 1.0, 0.05));
-    }
-
-    #[test]
-    fn test_fir_highpass_dc_reject() {
-        let fir = FirFilter::highpass(31, 0.5);
-        let dc_gain: f64 = fir.coeffs.iter().sum();
-        assert!(dc_gain.abs() < 0.1);
-    }
-
-    #[test]
-    fn test_fir_apply_length() {
-        let fir = FirFilter::lowpass(15, 0.3);
-        let x = vec![1.0; 64];
-        let y = fir.apply(&x);
-        assert_eq!(y.len(), 64 + 15 - 1);
-    }
-
-    // --- Biquad IIR ---
-
-    #[test]
-    fn test_biquad_passthrough() {
-        // Unity gain: b=[1,0,0], a=[0,0]
-        let mut bq = Biquad::new([1.0, 0.0, 0.0], [0.0, 0.0]);
-        let x = vec![1.0, 2.0, 3.0, 4.0];
-        let y = bq.process(&x);
-        assert!(approx_eq(y[0], 1.0, EPS));
-        assert!(approx_eq(y[1], 2.0, EPS));
-    }
-
-    #[test]
-    fn test_biquad_reset() {
-        let mut bq = Biquad::new([0.5, 0.5, 0.0], [0.0, 0.0]);
-        let _ = bq.process(&[1.0, 1.0, 1.0]);
-        bq.reset();
-        let y = bq.process(&[1.0]);
-        assert!(approx_eq(y[0], 0.5, EPS));
-    }
-
-    // --- Hilbert transform ---
-
-    #[test]
-    fn test_hilbert_of_cos_is_sin() {
-        let n = 256;
-        let fs = 256.0f64;
-        let f = 10.0f64;
-        let cos_sig: Vec<f64> = (0..n)
-            .map(|i| (2.0 * PI * f * i as f64 / fs).cos())
-            .collect();
-        let sin_sig: Vec<f64> = (0..n)
-            .map(|i| (2.0 * PI * f * i as f64 / fs).sin())
-            .collect();
-        let ht = hilbert_transform(&cos_sig);
-        // Compare middle section to avoid edge effects
-        for i in 16..n - 16 {
-            assert!(approx_eq(ht[i], sin_sig[i], 0.02));
-        }
-    }
-
-    #[test]
-    fn test_instantaneous_amplitude() {
-        let n = 256;
-        let fs = 256.0f64;
-        let f = 10.0f64;
-        let amp = 3.0f64;
-        let sig: Vec<f64> = (0..n)
-            .map(|i| amp * (2.0 * PI * f * i as f64 / fs).cos())
-            .collect();
-        let env = instantaneous_amplitude(&sig);
-        // Middle section should be ≈ amp
-        for (_, &e) in env.iter().enumerate().take(n - 16).skip(16) {
-            assert!(approx_eq(e, amp, 0.1));
-        }
-    }
-
-    // --- Haar DWT ---
-
-    #[test]
-    fn test_haar_decompose_reconstruct() {
-        let signal = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
-        let (approx, detail) = haar_decompose(&signal);
-        let recon = haar_reconstruct(&approx, &detail);
-        for (a, b) in signal.iter().zip(recon.iter()) {
-            assert!(approx_eq(*a, *b, 1e-10));
-        }
-    }
-
-    #[test]
-    fn test_haar_dwt_energy_preservation() {
-        let signal: Vec<f64> = (0..8).map(|i| i as f64 + 1.0).collect();
-        let coeffs = haar_dwt(&signal, 3);
-        let orig_energy: f64 = signal.iter().map(|x| x * x).sum();
-        let coeff_energy: f64 = coeffs.iter().map(|x| x * x).sum();
-        assert!(approx_eq(orig_energy, coeff_energy, 1e-8));
-    }
-
-    // --- Spectrogram ---
-
-    #[test]
-    fn test_spectrogram_shape() {
-        let n = 256;
-        let fs = 1000.0f64;
-        let signal: Vec<f64> = (0..n)
-            .map(|i| (2.0 * PI * 100.0 * i as f64 / fs).sin())
-            .collect();
-        let sg = spectrogram(&signal, fs, 32, 16, WindowType::Hann);
-        assert!(!sg.times.is_empty());
-        assert!(!sg.freqs.is_empty());
-        for frame in &sg.magnitude {
-            assert_eq!(frame.len(), sg.freqs.len());
-        }
-    }
-
-    // --- PSD ---
-
-    #[test]
-    fn test_welch_psd_bins_count() {
-        let signal: Vec<f64> = (0..512).map(|i| (i as f64 * 0.1).sin()).collect();
-        let result = welch_psd(&signal, 1000.0, 128, 64, WindowType::Hann);
-        assert!(!result.psd.is_empty());
-        assert_eq!(result.freqs.len(), result.psd.len());
-    }
-
-    #[test]
-    fn test_periodogram_length() {
-        let signal = vec![0.0f64; 64];
-        let psd = periodogram_psd(&signal, 100.0, WindowType::Hamming);
-        assert!(!psd.psd.is_empty());
-    }
-
-    // --- Resampling ---
-
-    #[test]
-    fn test_resample_linear_length() {
-        let signal = vec![0.0, 1.0, 2.0, 3.0];
-        let out = resample_linear(&signal, 8);
-        assert_eq!(out.len(), 8);
-    }
-
-    #[test]
-    fn test_upsample_downsample() {
-        let signal = vec![1.0, 2.0, 3.0, 4.0];
-        let up = upsample(&signal, 2);
-        assert_eq!(up.len(), 8);
-        assert_eq!(up[0], 1.0);
-        assert_eq!(up[2], 2.0);
-        let dn = downsample(&up, 2);
-        assert_eq!(dn, signal);
-    }
-
-    // --- Utilities ---
-
-    #[test]
-    fn test_rms() {
-        let signal = vec![1.0, -1.0, 1.0, -1.0];
-        assert!(approx_eq(rms(&signal), 1.0, EPS));
-    }
-
-    #[test]
-    fn test_signal_energy() {
-        let signal = vec![3.0, 4.0];
-        assert!(approx_eq(signal_energy(&signal), 25.0, EPS));
-    }
-
-    #[test]
-    fn test_normalize_energy() {
-        let signal = vec![3.0, 4.0];
-        let normed = normalize_energy(&signal);
-        assert!(approx_eq(signal_energy(&normed), 1.0, 1e-10));
-    }
-
-    #[test]
-    fn test_find_peaks() {
-        let signal = vec![0.0, 1.0, 0.5, 2.0, 0.0, 1.5, 0.0];
-        let peaks = find_peaks(&signal);
-        assert!(peaks.contains(&1));
-        assert!(peaks.contains(&3));
-        assert!(peaks.contains(&5));
-    }
-
-    #[test]
-    fn test_moving_average() {
-        let signal = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let ma = moving_average(&signal, 3);
-        assert_eq!(ma.len(), signal.len());
-        assert!(approx_eq(ma[4], 4.0, EPS));
-    }
-
-    #[test]
-    fn test_snr_db() {
-        let snr = snr_db(100.0, 1.0);
-        assert!(approx_eq(snr, 20.0, 1e-6));
-    }
-
-    #[test]
-    fn test_generate_sine() {
-        let sine = generate_sine(100.0, 1000.0, 100, 1.0, 0.0);
-        assert_eq!(sine.len(), 100);
-        // First sample should be ≈ 0
-        assert!(sine[0].abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_zero_pad() {
-        let sig = vec![1.0, 2.0, 3.0];
-        let padded = zero_pad(&sig, 8);
-        assert_eq!(padded.len(), 8);
-        assert_eq!(padded[3], 0.0);
-    }
-
-    #[test]
-    fn test_fft_frequencies() {
-        let freqs = fft_frequencies(8, 8.0);
-        assert_eq!(freqs.len(), 8);
-        assert!(approx_eq(freqs[1], 1.0, EPS));
-        assert!(approx_eq(freqs[4], 4.0, EPS));
-    }
-
-    #[test]
-    fn test_rfft_frequencies() {
-        let freqs = rfft_frequencies(8, 8.0);
-        assert_eq!(freqs.len(), 5); // 0..=4
-        assert!(approx_eq(freqs[4], 4.0, EPS));
-    }
-
-    #[test]
-    fn test_real_cepstrum_length() {
-        let signal: Vec<f64> = (0..16).map(|i| (i as f64).sin()).collect();
-        let cep = real_cepstrum(&signal);
-        assert_eq!(cep.len(), 16);
-    }
-
-    #[test]
-    fn test_bartlett_window_peak() {
-        let w = bartlett_window(9);
-        // Peak at center index 4
-        assert!(approx_eq(w[4], 1.0, 1e-10));
-    }
-
-    #[test]
-    fn test_blackman_harris_range() {
-        let w = blackman_harris_window(64);
-        for &v in &w {
-            assert!((-0.01..=1.01).contains(&v));
-        }
-    }
-
-    #[test]
-    fn test_db2_decompose_reconstruct() {
-        let signal = vec![1.0, 0.0, -1.0, 0.0, 1.0, 0.0, -1.0, 0.0];
-        let (approx, detail) = db2_decompose(&signal);
-        assert!(!approx.is_empty());
-        assert!(!detail.is_empty());
-        let recon = db2_reconstruct(&approx, &detail);
-        assert!(!recon.is_empty());
-    }
-
-    #[test]
-    fn test_stft_istft_roundtrip_shape() {
-        let n = 128;
-        let signal: Vec<f64> = (0..n).map(|i| (i as f64 * 0.1).sin()).collect();
-        let frames = stft(&signal, 32, 16, WindowType::Hann);
-        assert!(!frames.is_empty());
-        for frame in &frames {
-            assert_eq!(frame.len(), 17); // 32/2 + 1
-        }
-    }
-
-    #[test]
-    fn test_butterworth_lowpass_creates_filter() {
-        let filt = butterworth_lowpass(4, 0.5);
-        assert_eq!(filt.sections.len(), 2);
-    }
-
-    #[test]
-    fn test_chebyshev1_lowpass_creates_filter() {
-        let filt = chebyshev1_lowpass(4, 0.4, 1.0);
-        assert!(!filt.sections.is_empty());
-    }
-}
+mod tests;

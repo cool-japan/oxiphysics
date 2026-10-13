@@ -28,8 +28,9 @@ async function main() {
   if (!rope) { document.getElementById('status').textContent = 'Rope init failed'; return; }
   rope.pin_head(ANCHOR_X, ANCHOR_Y, 0.0);
 
-  // Damping slider — wired directly to Rust via set_damping().
-  createSlider(ui, 'Damping', 0.90, 1.0, rope.get_damping(), v => rope.set_damping(v));
+  // Damping slider — wired directly to Rust via set_damping(). The value is
+  // the fraction of velocity removed per step (0 = none, 1 = fully damped).
+  createSlider(ui, 'Damping', 0.0, 0.1, rope.get_damping(), v => rope.set_damping(v));
 
   // Mouse drag state
   let mouse = null;

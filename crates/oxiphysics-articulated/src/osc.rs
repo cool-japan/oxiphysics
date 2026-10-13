@@ -6,7 +6,10 @@
 //! Reference: Khatib 1987 "A unified approach for motion and force control of robot
 //! manipulators: The operational space formulation."
 
-use crate::{crba::compute_mass_matrix_crba, model::ArticulatedModel};
+use crate::{crba::compute_mass_matrix_crba, error::ArticulatedError, model::ArticulatedModel};
+
+/// Relative pivot tolerance used to declare `J·M⁻¹·Jᵀ` singular.
+const SINGULAR_REL_TOL: f64 = 1e-12;
 
 /// Compute the operational-space (task-space) inertia matrix.
 ///
@@ -14,32 +17,94 @@ use crate::{crba::compute_mass_matrix_crba, model::ArticulatedModel};
 /// Jacobian `J ∈ ℝ^{6×n}`, returns Λ = (J · M⁻¹ · Jᵀ)⁻¹ ∈ ℝ^{6×6}.
 ///
 /// `jacobian` is a `6×n` matrix represented as a slice of 6 rows, each row being
-/// a `Vec<f64>` of length `model.total_dof()`.
+/// a `Vec<f64>` of length `model.total_dof()`. `q` has length
+/// `model.total_nq()`.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `jacobian` does not have exactly 6 rows, or if any row does not have
-/// length `model.total_dof()`.
+/// - [`ArticulatedError::DimensionMismatch`] if `q`, the number of Jacobian
+///   rows (must be 6), or any row length (must be `model.total_dof()`) is wrong.
+/// - [`ArticulatedError::NotPositiveDefinite`] if `M(q)` is not SPD.
+/// - [`ArticulatedError::SingularTaskInertia`] if `J·M⁻¹·Jᵀ` is singular —
+///   always the case for robots with fewer than 6 DoF or at a kinematic
+///   singularity. Use [`compute_lambda_damped`] to obtain a regularised Λ.
 pub fn compute_lambda(
-    model: &mut ArticulatedModel,
+    model: &ArticulatedModel,
     q: &[f64],
     jacobian: &[Vec<f64>],
-) -> [[f64; 6]; 6] {
+) -> Result<[[f64; 6]; 6], ArticulatedError> {
+    let a = task_inertia_inverse(model, q, jacobian)?;
+    invert_6x6(a).ok_or(ArticulatedError::SingularTaskInertia)
+}
+
+/// Damped operational-space inertia `Λ_λ = (J · M⁻¹ · Jᵀ + λ²·I)⁻¹`.
+///
+/// The Tikhonov term `λ²·I` keeps the inverse well defined for rank-deficient
+/// tasks (fewer than 6 DoF, kinematic singularities); `λ = 0` reduces to
+/// [`compute_lambda`]. Arguments are as for [`compute_lambda`].
+///
+/// # Errors
+///
+/// - [`ArticulatedError::InvalidParameter`] if `damping` is negative or not finite.
+/// - Otherwise the same errors as [`compute_lambda`]
+///   ([`ArticulatedError::SingularTaskInertia`] can only occur for `λ = 0` or
+///   a `λ` negligible against the scale of `J·M⁻¹·Jᵀ`).
+pub fn compute_lambda_damped(
+    model: &ArticulatedModel,
+    q: &[f64],
+    jacobian: &[Vec<f64>],
+    damping: f64,
+) -> Result<[[f64; 6]; 6], ArticulatedError> {
+    if !damping.is_finite() || damping < 0.0 {
+        return Err(ArticulatedError::InvalidParameter {
+            what: "damping",
+            value: damping,
+        });
+    }
+    let mut a = task_inertia_inverse(model, q, jacobian)?;
+    let lambda2 = damping * damping;
+    for (i, a_row) in a.iter_mut().enumerate() {
+        a_row[i] += lambda2;
+    }
+    invert_6x6(a).ok_or(ArticulatedError::SingularTaskInertia)
+}
+
+/// Validate inputs and form `A = J · M⁻¹ · Jᵀ` (6×6).
+fn task_inertia_inverse(
+    model: &ArticulatedModel,
+    q: &[f64],
+    jacobian: &[Vec<f64>],
+) -> Result<[[f64; 6]; 6], ArticulatedError> {
     let n = model.total_dof();
-    assert_eq!(jacobian.len(), 6, "Jacobian must have 6 rows");
+    if q.len() != model.total_nq() {
+        return Err(ArticulatedError::DimensionMismatch {
+            what: "q",
+            expected: model.total_nq(),
+            got: q.len(),
+        });
+    }
+    if jacobian.len() != 6 {
+        return Err(ArticulatedError::DimensionMismatch {
+            what: "jacobian rows",
+            expected: 6,
+            got: jacobian.len(),
+        });
+    }
     for row in jacobian {
-        assert_eq!(
-            row.len(),
-            n,
-            "Each Jacobian row must have length total_dof()={n}"
-        );
+        if row.len() != n {
+            return Err(ArticulatedError::DimensionMismatch {
+                what: "jacobian row length",
+                expected: n,
+                got: row.len(),
+            });
+        }
     }
 
     // Step 1: mass matrix M (n×n)
     let m = compute_mass_matrix_crba(model, q);
 
     // Step 2: Cholesky factorize M = L · L^T
-    let l = cholesky_lower(&m).expect("mass matrix must be positive-definite");
+    let l = cholesky_lower(&m)?;
 
     // Step 3: M^{-1} · J^T — solve L · L^T · x = j_col for each column of J^T
     // j_col is the k-th column of J^T = the k-th row of J
@@ -61,16 +126,14 @@ pub fn compute_lambda(
                 .sum();
         }
     }
-
-    // Step 5: invert A (6×6) via Gauss-Jordan with partial pivoting
-    invert_6x6(a).expect("operational-space inertia matrix must be invertible")
+    Ok(a)
 }
 
 /// Dense lower-triangular Cholesky factorization: A = L · L^T.
 ///
-/// Returns `None` if `A` is not positive-definite (diagonal entry ≤ 0 after
-/// subtraction). `A` must be symmetric positive-definite.
-fn cholesky_lower(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
+/// Returns [`ArticulatedError::NotPositiveDefinite`] if `A` is not
+/// positive-definite (diagonal entry ≤ 0 after subtraction).
+fn cholesky_lower(a: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, ArticulatedError> {
     let n = a.len();
     let mut l = vec![vec![0.0f64; n]; n];
     // Double-indexed loops (i, j, k) access two or three different Vecs simultaneously;
@@ -82,8 +145,8 @@ fn cholesky_lower(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
                 sum -= l_ik * l_jk;
             }
             if i == j {
-                if sum <= 0.0 {
-                    return None;
+                if sum <= 0.0 || !sum.is_finite() {
+                    return Err(ArticulatedError::NotPositiveDefinite { index: i });
                 }
                 l[i][j] = sum.sqrt();
             } else {
@@ -91,7 +154,7 @@ fn cholesky_lower(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
             }
         }
     }
-    Some(l)
+    Ok(l)
 }
 
 /// Solve L · L^T · x = b using forward/backward substitution.
@@ -121,7 +184,19 @@ fn cholesky_solve(l: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
 }
 
 /// Invert a 6×6 matrix via Gauss-Jordan elimination with partial pivoting.
+///
+/// Returns `None` when a pivot falls below `SINGULAR_REL_TOL · max|a_ij|`
+/// (numerically singular relative to the matrix scale), or for a zero /
+/// non-finite matrix.
 fn invert_6x6(a: [[f64; 6]; 6]) -> Option<[[f64; 6]; 6]> {
+    let scale = a
+        .iter()
+        .flat_map(|row| row.iter())
+        .fold(0.0f64, |acc, v| acc.max(v.abs()));
+    if !scale.is_finite() || scale == 0.0 {
+        return None;
+    }
+    let pivot_tol = SINGULAR_REL_TOL * scale;
     let mut aug = [[0.0f64; 12]; 6];
     // Build augmented matrix [A | I]
     // Inner loops access fixed-size arrays by two indices simultaneously.
@@ -146,8 +221,8 @@ fn invert_6x6(a: [[f64; 6]; 6]) -> Option<[[f64; 6]; 6]> {
                 max_row = row;
             }
         }
-        if max_val < 1e-15 {
-            return None; // singular
+        if max_val <= pivot_tol {
+            return None; // singular relative to the matrix scale
         }
         aug.swap(col, max_row);
 

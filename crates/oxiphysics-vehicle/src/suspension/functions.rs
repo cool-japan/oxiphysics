@@ -535,6 +535,12 @@ mod tests {
         let (xs, xu) = qc.static_equilibrium(9.81);
         assert!(xs > 0.0, "sprung mass should compress spring");
         assert!(xu > 0.0, "unsprung mass should compress tyre");
+        // The suspension spring carries only the sprung mass, the tyre carries
+        // sprung + unsprung mass.
+        assert!((xs - 350.0 * 9.81 / 22_000.0).abs() < 1e-12, "xs = {xs}");
+        assert!((xu - 395.0 * 9.81 / 200_000.0).abs() < 1e-12, "xu = {xu}");
+        assert!((qc.ks * xs - qc.ms * 9.81).abs() < 1e-9);
+        assert!((qc.kt * xu - (qc.ms + qc.mu) * 9.81).abs() < 1e-9);
     }
     #[test]
     fn test_quarter_car_ride_frequency_plausible() {
@@ -585,6 +591,118 @@ mod tests {
         assert!(
             (state.xs - xs_before).abs() > 1e-6,
             "bump should displace sprung mass"
+        );
+        // The road height is integrated from the road velocity: 0.5 m/s * 0.25 s.
+        assert!((state.zr - 0.125).abs() < 1e-12, "zr = {}", state.zr);
+    }
+    fn quarter_car_energy(qc: &QuarterCarModel, s: &QuarterCarState) -> f64 {
+        0.5 * qc.ms * s.vs * s.vs
+            + 0.5 * qc.mu * s.vu * s.vu
+            + 0.5 * qc.ks * (s.xu - s.xs).powi(2)
+            + 0.5 * qc.kt * (s.xu - s.zr).powi(2)
+    }
+    #[test]
+    fn test_quarter_car_free_response_decays_on_flat_road() {
+        // Regression: the unsprung mass used to receive +f_susp, which turned the
+        // damper into negative damping and made the free response diverge.
+        let qc = QuarterCarModel::new(350.0, 45.0, 22_000.0, 200_000.0, 2_500.0);
+        let mut state = QuarterCarState::at_equilibrium(&qc, 9.81);
+        state.xs = 0.05;
+        let e0 = quarter_car_energy(&qc, &state);
+        let mut peak_xs = state.xs.abs();
+        let mut peak_energy = e0;
+        for _ in 0..5000 {
+            qc.step(&mut state, 0.001, 0.0);
+            peak_xs = peak_xs.max(state.xs.abs());
+            peak_energy = peak_energy.max(quarter_car_energy(&qc, &state));
+        }
+        assert!(peak_xs <= 0.05 + 1e-9, "amplitude grew to {peak_xs}");
+        assert!(
+            peak_energy <= 1.01 * e0,
+            "energy must not grow: {peak_energy} vs {e0}"
+        );
+        assert!(state.xs.abs() < 1e-3, "xs did not decay: {}", state.xs);
+        assert!(state.xu.abs() < 1e-3, "xu did not decay: {}", state.xu);
+        assert!(
+            quarter_car_energy(&qc, &state) < 1e-6 * e0,
+            "residual energy {}",
+            quarter_car_energy(&qc, &state)
+        );
+        assert_eq!(state.zr, 0.0, "a flat road must stay at zr = 0");
+    }
+    #[test]
+    fn test_quarter_car_follows_road_ramp_and_settles() {
+        let qc = QuarterCarModel::new(350.0, 45.0, 22_000.0, 200_000.0, 2_500.0);
+        let mut state = QuarterCarState::at_equilibrium(&qc, 9.81);
+        // Ramp the road up to 0.05 m at 0.5 m/s, then hold it there.
+        for _ in 0..100 {
+            qc.step(&mut state, 0.001, 0.5);
+        }
+        assert!((state.zr - 0.05).abs() < 1e-12, "zr = {}", state.zr);
+        for _ in 0..5000 {
+            qc.step(&mut state, 0.001, 0.0);
+        }
+        assert!(
+            (state.xs - state.zr).abs() < 1e-3,
+            "body must settle on the raised road: xs = {}, zr = {}",
+            state.xs,
+            state.zr
+        );
+        assert!(
+            (state.xu - state.zr).abs() < 1e-3,
+            "wheel must settle on the raised road: xu = {}, zr = {}",
+            state.xu,
+            state.zr
+        );
+        assert!(state.vs.abs() < 1e-3 && state.vu.abs() < 1e-3);
+    }
+    #[test]
+    fn test_quarter_car_suspension_force_reaction_signs() {
+        // Compressed suspension (wheel above body, xu > xs) with the tyre
+        // unloaded (zr = xu): the spring pushes the body up and the wheel down.
+        let qc = QuarterCarModel::new(350.0, 45.0, 22_000.0, 200_000.0, 0.0);
+        let mut state = QuarterCarState::at_equilibrium(&qc, 9.81);
+        state.xu = 0.01;
+        state.zr = 0.01;
+        qc.step(&mut state, 1e-3, 0.0);
+        assert!(state.vs > 0.0, "body must be pushed up: vs = {}", state.vs);
+        assert!(
+            state.vu < 0.0,
+            "wheel must be pushed down: vu = {}",
+            state.vu
+        );
+        // Newton's third law on the suspension element: equal and opposite impulses.
+        assert!((qc.ms * state.vs + qc.mu * state.vu).abs() < 1e-9);
+    }
+    #[test]
+    fn test_quarter_car_road_response_is_step_size_independent() {
+        // Regression: the road term used to be `kt * v * dt / dt` (N/s added to N),
+        // which does not converge when the step is refined.
+        let qc = QuarterCarModel::new(350.0, 45.0, 22_000.0, 200_000.0, 2_500.0);
+        let run = |dt: f64| -> QuarterCarState {
+            let mut state = QuarterCarState::at_equilibrium(&qc, 9.81);
+            for _ in 0..(0.1 / dt).round() as usize {
+                qc.step(&mut state, dt, 0.5);
+            }
+            for _ in 0..(1.0 / dt).round() as usize {
+                qc.step(&mut state, dt, 0.0);
+            }
+            state
+        };
+        let coarse = run(0.002);
+        let fine = run(0.0005);
+        assert!((coarse.zr - fine.zr).abs() < 1e-12);
+        assert!(
+            (coarse.xs - fine.xs).abs() < 5e-4,
+            "xs: {} vs {}",
+            coarse.xs,
+            fine.xs
+        );
+        assert!(
+            (coarse.xu - fine.xu).abs() < 5e-4,
+            "xu: {} vs {}",
+            coarse.xu,
+            fine.xu
         );
     }
     #[test]
@@ -919,6 +1037,387 @@ mod suspension_extended_tests {
         let dw = default_dw();
         let camber = dw.camber_at_travel(0.0);
         assert!(camber.is_finite(), "camber should be finite, got {camber}");
+        // The static camber is the inclination of the upright (lower to upper
+        // ball joint): 0.1 m inboard over 0.4 m of height.
+        let expected = (-0.1_f64).atan2(0.4).to_degrees();
+        assert!((camber - expected).abs() < 1e-12, "camber = {camber}");
+        assert!((camber + 14.036243467926).abs() < 1e-9);
+    }
+    /// Right-hand suspension with unequal, non-parallel arms.  The upper arm
+    /// line `z = 0.2 + 0.4 (y - 0.2)` and the lower arm line
+    /// `z = 0.2 - 0.1 (y - 0.2)` meet at the instant centre (y, z) = (0.2, 0.2) m;
+    /// the wheel centre is 0.25 m above the ground plane `z = 0`.
+    fn sla_dw() -> DoubleWishboneKinematic {
+        DoubleWishboneKinematic::new(
+            [0.0, 0.30, 0.24],
+            [0.0, 0.65, 0.38],
+            [0.0, 0.40, 0.18],
+            [0.0, 0.70, 0.15],
+            [0.0, 0.66, 0.25],
+            0.35,
+            25_000.0,
+            1_800.0,
+        )
+    }
+    /// The same front-view geometry with fore-aft offsets between the pivots
+    /// and the ball joints.
+    fn swept_dw() -> DoubleWishboneKinematic {
+        DoubleWishboneKinematic::new(
+            [-0.10, 0.30, 0.24],
+            [0.02, 0.65, 0.38],
+            [0.15, 0.40, 0.18],
+            [0.05, 0.70, 0.15],
+            [0.04, 0.66, 0.25],
+            0.35,
+            25_000.0,
+            1_800.0,
+        )
+    }
+    /// Parallelogram linkage: equal parallel arms rising outboard by
+    /// `angle_deg`, and an upright as long as the body link between the pivots.
+    fn parallelogram_dw(angle_deg: f64) -> DoubleWishboneKinematic {
+        let (sin_a, cos_a) = angle_deg.to_radians().sin_cos();
+        let arm = 0.40;
+        let upper_inboard = [0.0, 0.30, 0.45];
+        let lower_inboard = [0.0, 0.30, 0.10];
+        DoubleWishboneKinematic::new(
+            upper_inboard,
+            [
+                0.0,
+                upper_inboard[1] + arm * cos_a,
+                upper_inboard[2] + arm * sin_a,
+            ],
+            lower_inboard,
+            [
+                0.0,
+                lower_inboard[1] + arm * cos_a,
+                lower_inboard[2] + arm * sin_a,
+            ],
+            [0.0, 0.70, 0.25],
+            0.35,
+            25_000.0,
+            1_800.0,
+        )
+    }
+    /// Left-hand (mirrored in `y`) copy of a geometry.
+    fn mirrored_dw(dw: &DoubleWishboneKinematic) -> DoubleWishboneKinematic {
+        let flip = |p: [f64; 3]| [p[0], -p[1], p[2]];
+        DoubleWishboneKinematic::new(
+            flip(dw.upper_inboard),
+            flip(dw.upper_outboard),
+            flip(dw.lower_inboard),
+            flip(dw.lower_outboard),
+            flip(dw.spindle),
+            dw.spring_free_length,
+            dw.spring_k,
+            dw.damper_c,
+        )
+    }
+    fn distance3(p: [f64; 3], q: [f64; 3]) -> f64 {
+        ((q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2) + (q[2] - p[2]).powi(2)).sqrt()
+    }
+    #[test]
+    fn test_dw_pose_at_zero_travel_is_the_design_position_exactly() {
+        for dw in [default_dw(), sla_dw(), swept_dw()] {
+            let pose = dw.pose_at_travel(0.0).expect("the design position exists");
+            assert_eq!(pose.upper_outboard, dw.upper_outboard);
+            assert_eq!(pose.lower_outboard, dw.lower_outboard);
+            assert_eq!(pose.camber_deg, dw.camber_at_travel(0.0));
+        }
+        let sla = sla_dw().pose_at_travel(0.0).expect("design position");
+        assert!((sla.camber_deg + 12.264773727892).abs() < 1e-9);
+    }
+    #[test]
+    fn test_dw_pose_keeps_every_link_length_over_a_travel_sweep() {
+        for dw in [default_dw(), sla_dw(), swept_dw()] {
+            let upper = dw.upper_arm_length();
+            let lower = dw.lower_arm_length();
+            let upright = distance3(dw.lower_outboard, dw.upper_outboard);
+            for i in -20..=20 {
+                let dz = f64::from(i) * 0.004;
+                let pose = dw.pose_at_travel(dz).expect("travel within reach");
+                let closure = |what: &str, got: f64, want: f64| {
+                    assert!(
+                        (got - want).abs() < 1e-12,
+                        "{what} length {got} != {want} at travel {dz}"
+                    );
+                };
+                closure(
+                    "upper arm",
+                    distance3(dw.upper_inboard, pose.upper_outboard),
+                    upper,
+                );
+                closure(
+                    "lower arm",
+                    distance3(dw.lower_inboard, pose.lower_outboard),
+                    lower,
+                );
+                closure(
+                    "upright",
+                    distance3(pose.lower_outboard, pose.upper_outboard),
+                    upright,
+                );
+                assert!((pose.lower_outboard[2] - (dw.lower_outboard[2] + dz)).abs() < 1e-14);
+                assert_eq!(pose.upper_outboard[0], dw.upper_outboard[0]);
+                assert_eq!(pose.lower_outboard[0], dw.lower_outboard[0]);
+            }
+        }
+    }
+    #[test]
+    fn test_dw_camber_matches_independent_newton_reference() {
+        // Reference values from an independent solution of the same four-bar
+        // (lower-arm angle parameterisation + Newton iteration on the upper arm).
+        let sla = [
+            (0.03, -15.622561589109),
+            (-0.03, -8.730904102188),
+            (0.06, -18.849237947483),
+            (-0.06, -4.966882845790),
+        ];
+        for (dz, expected) in sla {
+            let got = sla_dw().camber_at_travel(dz);
+            assert!(
+                (got - expected).abs() < 1e-8,
+                "sla {dz}: {got} vs {expected}"
+            );
+        }
+        let default = [
+            (0.05, -14.067762240442),
+            (-0.05, -14.068912865354),
+            (0.1, -14.161389057595),
+            (-0.1, -14.170809271959),
+            // Large travels, tracked by continuation from the design position.
+            (0.5, -17.921043444608),
+            (-0.5, -21.707100429958),
+        ];
+        for (dz, expected) in default {
+            let got = default_dw().camber_at_travel(dz);
+            assert!(
+                (got - expected).abs() < 1e-8,
+                "default {dz}: {got} vs {expected}"
+            );
+        }
+    }
+    #[test]
+    fn test_dw_camber_gain_matches_instant_centre_theory() {
+        // The upright rotates about the instant centre, so the camber changes by
+        // -1 / (y_lower - y_ic) radians per metre of lower-ball-joint travel.
+        let dw = sla_dw();
+        let centre = dw.instant_centre().expect("the arms converge");
+        assert!((centre[0] - 0.2).abs() < 1e-12 && (centre[1] - 0.2).abs() < 1e-12);
+        let theory = -(1.0 / (dw.lower_outboard[1] - centre[0])).to_degrees() / 1000.0;
+        let gain = dw.camber_gain();
+        assert!(
+            gain < 0.0,
+            "inboard instant centre: negative gain, got {gain}"
+        );
+        assert!(
+            (gain - theory).abs() < 1e-5 * theory.abs(),
+            "gain = {gain}, theory = {theory}"
+        );
+        // The old implementation cancelled the travel and returned exactly 0.
+        assert!(gain.abs() > 0.1);
+    }
+    #[test]
+    fn test_dw_camber_falls_monotonically_into_bump_for_inboard_instant_centre() {
+        let dw = sla_dw();
+        let mut previous = dw.camber_at_travel(-0.06);
+        for i in -11..=12 {
+            let camber = dw.camber_at_travel(f64::from(i) * 0.005);
+            assert!(camber < previous, "camber must fall with bump travel");
+            previous = camber;
+        }
+    }
+    #[test]
+    fn test_dw_parallel_arm_default_has_no_first_order_gain_but_curves() {
+        // Horizontal parallel arms: the instant centre is at infinity and the
+        // upright translates at first order, so the gain at the design position
+        // vanishes.  The shorter upper arm still tucks the top in at second
+        // order, in bump and in droop alike.
+        let dw = default_dw();
+        assert!(dw.camber_gain().abs() < 1e-6, "gain = {}", dw.camber_gain());
+        let base = dw.camber_at_travel(0.0);
+        assert!(dw.camber_at_travel(0.05) < base - 0.03);
+        assert!(dw.camber_at_travel(-0.05) < base - 0.03);
+    }
+    #[test]
+    fn test_dw_equal_parallel_arms_keep_constant_camber() {
+        for angle in [0.0, 10.0, -7.5] {
+            let dw = parallelogram_dw(angle);
+            assert!(dw.camber_at_travel(0.0).abs() < 1e-12);
+            for i in -25..=25 {
+                let dz = f64::from(i) * 0.002;
+                let camber = dw.camber_at_travel(dz);
+                assert!(
+                    camber.abs() < 1e-9,
+                    "parallelogram ({angle} deg) camber {camber} at travel {dz}"
+                );
+            }
+            assert!(dw.camber_gain().abs() < 1e-9);
+        }
+    }
+    #[test]
+    fn test_dw_fore_aft_offsets_do_not_change_the_front_view_motion() {
+        let planar = sla_dw();
+        let swept = swept_dw();
+        for i in -10..=10 {
+            let dz = f64::from(i) * 0.006;
+            let a = planar.camber_at_travel(dz);
+            let b = swept.camber_at_travel(dz);
+            assert!((a - b).abs() < 1e-12, "{a} vs {b} at travel {dz}");
+        }
+        assert!((planar.roll_centre_height() - swept.roll_centre_height()).abs() < 1e-12);
+    }
+    #[test]
+    fn test_dw_mirrored_geometry_gives_the_same_camber_and_roll_centre() {
+        let right = sla_dw();
+        let left = mirrored_dw(&right);
+        for i in -8..=8 {
+            let dz = f64::from(i) * 0.005;
+            let a = right.camber_at_travel(dz);
+            let b = left.camber_at_travel(dz);
+            assert!((a - b).abs() < 1e-10, "{a} vs {b} at travel {dz}");
+        }
+        assert!((right.camber_gain() - left.camber_gain()).abs() < 1e-10);
+        assert!((right.roll_centre_height() - left.roll_centre_height()).abs() < 1e-12);
+        let ic_right = right.instant_centre().expect("arms converge");
+        let ic_left = left.instant_centre().expect("arms converge");
+        assert!((ic_right[0] + ic_left[0]).abs() < 1e-12);
+        assert!((ic_right[1] - ic_left[1]).abs() < 1e-12);
+    }
+    #[test]
+    fn test_dw_roll_centre_follows_the_instant_centre_geometry() {
+        // Contact patch (0.66, 0), instant centre (0.2, 0.2): the line between
+        // them crosses the centre plane y = 0 at 0.66 * 0.2 / (0.66 - 0.2).
+        let dw = sla_dw();
+        assert!((dw.instant_centre_height() - 0.2).abs() < 1e-12);
+        let expected: f64 = 0.66 * 0.2 / (0.66 - 0.2);
+        assert!((expected - 0.286957).abs() < 1e-6);
+        assert!((dw.roll_centre_height() - expected).abs() < 1e-12);
+        // The roll centre differs from the instant centre height.
+        assert!((dw.roll_centre_height() - dw.instant_centre_height()).abs() > 0.08);
+    }
+    #[test]
+    fn test_dw_roll_centre_with_parallel_arms_follows_the_arm_direction() {
+        let flat = default_dw();
+        assert!(flat.instant_centre().is_none());
+        assert_eq!(flat.instant_centre_height(), 0.0);
+        assert_eq!(flat.roll_centre_height(), 0.0);
+        // Arms rising outboard at 10 degrees: the roll centre is below ground.
+        let rising = parallelogram_dw(10.0);
+        let below = rising.roll_centre_height();
+        assert!((below + 0.70 * 10.0_f64.to_radians().tan()).abs() < 1e-12);
+        assert!(below < -0.12);
+        // Arms falling outboard: above ground, by the mirror-image amount.
+        let falling = parallelogram_dw(-10.0);
+        assert!((falling.roll_centre_height() + below).abs() < 1e-12);
+    }
+    #[test]
+    fn test_dw_roll_centre_is_continuous_towards_parallel_arms() {
+        // Tilt the lower arm of the parallelogram by a millionth of a radian: the
+        // instant centre moves to ~10^5 m but the roll centre barely changes.
+        let parallel = parallelogram_dw(10.0);
+        let tilt = 1.0e-6;
+        let almost = DoubleWishboneKinematic::new(
+            parallel.upper_inboard,
+            parallel.upper_outboard,
+            parallel.lower_inboard,
+            [
+                0.0,
+                parallel.lower_outboard[1],
+                parallel.lower_outboard[2] + 0.4 * tilt,
+            ],
+            parallel.spindle,
+            parallel.spring_free_length,
+            parallel.spring_k,
+            parallel.damper_c,
+        );
+        assert!(almost.instant_centre().is_some());
+        assert!(
+            (almost.roll_centre_height() - parallel.roll_centre_height()).abs() < 1e-5,
+            "{} vs {}",
+            almost.roll_centre_height(),
+            parallel.roll_centre_height()
+        );
+    }
+    #[test]
+    fn test_dw_roll_centre_is_undefined_for_a_vertical_force_line() {
+        // Instant centre vertically above the contact patch: the line never
+        // crosses the centre plane.
+        let mut above = sla_dw();
+        above.spindle = [0.0, 0.2, 0.25];
+        assert!(above.roll_centre_height().is_nan());
+        // Vertical parallel arms.
+        let vertical = DoubleWishboneKinematic::new(
+            [0.0, 0.3, 0.45],
+            [0.0, 0.3, 0.9],
+            [0.0, 0.3, 0.1],
+            [0.0, 0.3, 0.5],
+            [0.0, 0.7, 0.25],
+            0.35,
+            25_000.0,
+            1_800.0,
+        );
+        assert!(vertical.roll_centre_height().is_nan());
+    }
+    #[test]
+    fn test_dw_unreachable_travel_is_reported_not_invented() {
+        let dw = default_dw();
+        // The 0.8 m lower arm cannot lift its ball joint by 0.9 m.
+        assert!(dw.pose_at_travel(0.9).is_none());
+        assert!(dw.camber_at_travel(0.9).is_nan());
+        // Upper arm + upright (1.11 m) cannot reach the lower joint any more.
+        assert!(dw.pose_at_travel(-0.6).is_none());
+        assert!(dw.camber_at_travel(-0.6).is_nan());
+        assert!(dw.pose_at_travel(f64::NAN).is_none());
+        assert!(dw.pose_at_travel(f64::INFINITY).is_none());
+        assert!(dw.camber_at_travel(f64::NEG_INFINITY).is_nan());
+        // Just inside the reachable range.
+        assert!(dw.camber_at_travel(-0.5).is_finite());
+        assert!(dw.camber_at_travel(0.0).is_finite());
+    }
+    #[test]
+    fn test_dw_dead_centre_design_position_still_assembles() {
+        // Upper arm and upright fully stretched along one line at the design
+        // position: both assembly modes coincide there.
+        let dw = DoubleWishboneKinematic::new(
+            [0.0, 0.0, 0.4],
+            [0.0, 0.5, 0.4],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.9, 0.4],
+            [0.0, 0.8, 0.2],
+            0.35,
+            25_000.0,
+            1_800.0,
+        );
+        let upright = distance3(dw.lower_outboard, dw.upper_outboard);
+        let upper = dw.upper_arm_length();
+        for dz in [0.01, 0.03] {
+            let pose = dw
+                .pose_at_travel(dz)
+                .expect("shortening the span is reachable");
+            assert!((distance3(dw.upper_inboard, pose.upper_outboard) - upper).abs() < 1e-9);
+            assert!((distance3(pose.lower_outboard, pose.upper_outboard) - upright).abs() < 1e-9);
+            assert!(pose.camber_deg.is_finite());
+        }
+    }
+    #[test]
+    fn test_dw_instant_centre_of_converging_arms() {
+        // Upper arm line z = 0.5 y, lower arm line z = 0.2 - 0.25 y: they meet at
+        // y = 0.2 / 0.75 = 4/15, z = 2/15.
+        let dw = DoubleWishboneKinematic::new(
+            [0.0, 0.0, 0.0],
+            [0.0, 0.7, 0.35],
+            [0.0, 0.0, 0.2],
+            [0.0, 0.8, 0.0],
+            [0.0, 0.75, 0.2],
+            0.35,
+            25_000.0,
+            1_800.0,
+        );
+        let centre = dw.instant_centre().expect("arms converge");
+        assert!((centre[0] - 4.0 / 15.0).abs() < 1e-12, "y = {}", centre[0]);
+        assert!((centre[1] - 2.0 / 15.0).abs() < 1e-12, "z = {}", centre[1]);
+        assert!((dw.instant_centre_height() - 2.0 / 15.0).abs() < 1e-12);
     }
     #[test]
     fn test_arb_nonlinear_zero_roll() {

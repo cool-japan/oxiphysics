@@ -6,7 +6,13 @@
 //! This module provides solid-topology optimization solvers for structural
 //! compliance minimization under volume constraints, with density filtering,
 //! sensitivity filtering, and Heaviside projection.
+//!
+//! The module contains no finite-element solver. [`TopOptSolver::run_mock`]
+//! and [`LevelSetTopOpt::run_mock`] drive the optimisers with an artificial
+//! response for testing, while [`MultiLoadTopOpt::run`] takes the structural
+//! response from a caller-supplied closure that performs the real FE solve.
 
+use crate::error::{PhysicsError, PhysicsResult};
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -155,7 +161,20 @@ impl SiMP {
     ///
     /// `dc/dρ_e = -p * ρ_e^(p-1) * (E_solid - E_void) * u_e^T * K_e_unit * u_e`
     pub fn compliance_sensitivity(&self, element_strain_energy: &[f64]) -> Vec<f64> {
-        self.density
+        self.compliance_sensitivity_at(&self.density, element_strain_energy)
+    }
+
+    /// Computes element-wise compliance sensitivity at an arbitrary density field.
+    ///
+    /// Same formula as [`SiMP::compliance_sensitivity`], evaluated at `density`
+    /// instead of the stored field: `element_strain_energy[e]` is
+    /// `u_e^T K_e_unit u_e` for the displacements obtained with `density`.
+    pub fn compliance_sensitivity_at(
+        &self,
+        density: &[f64],
+        element_strain_energy: &[f64],
+    ) -> Vec<f64> {
+        density
             .iter()
             .zip(element_strain_energy.iter())
             .map(|(&rho, &se)| {
@@ -365,36 +384,22 @@ impl TopOptSolver {
 
     /// Performs one OC density update step.
     ///
-    /// Returns the new density vector and the Lagrange multiplier used.
+    /// Returns the new density vector and the Lagrange multiplier used. The
+    /// multiplier is found by bisection on a logarithmic scale, so the update
+    /// meets `volume_target` whatever the magnitude of the sensitivities.
     pub fn oc_update(
         &self,
         density: &[f64],
         sensitivity: &[f64],
         volume_target: f64,
     ) -> (Vec<f64>, f64) {
-        let n = density.len();
-        // Bisection for Lagrange multiplier
-        let mut lo = 0.0f64;
-        let mut hi = 1e9f64;
-        let mut new_density = vec![0.0f64; n];
-        for _ in 0..50 {
-            let lmid = 0.5 * (lo + hi);
-            for e in 0..n {
-                let be = (-sensitivity[e] / lmid).max(0.0);
-                let candidate = density[e] * be.powf(self.damping);
-                let lower = (density[e] - self.move_limit).max(0.0);
-                let upper = (density[e] + self.move_limit).min(1.0);
-                new_density[e] = candidate.clamp(lower, upper);
-            }
-            let vol: f64 = new_density.iter().sum::<f64>() / n as f64;
-            if vol > volume_target {
-                lo = lmid;
-            } else {
-                hi = lmid;
-            }
-        }
-        let lmid = 0.5 * (lo + hi);
-        (new_density, lmid)
+        oc_density_update(
+            density,
+            sensitivity,
+            volume_target,
+            self.move_limit,
+            self.damping,
+        )
     }
 
     /// Computes compliance given stiffness field and element strain energies.
@@ -460,7 +465,11 @@ impl TopOptSolver {
 /// Load case for multi-load topology optimization.
 #[derive(Debug, Clone)]
 pub struct LoadCase {
-    /// Load vector (element-level load proxy values).
+    /// Description of the load, for example a nodal force vector.
+    ///
+    /// The optimiser never interprets it: it is handed unchanged to the
+    /// finite-element closure given to [`MultiLoadTopOpt::run`] and
+    /// [`MultiLoadTopOpt::evaluate`].
     pub loads: Vec<f64>,
     /// Weight for this load case in the weighted compliance objective.
     pub weight: f64,
@@ -475,7 +484,18 @@ impl LoadCase {
 
 /// Multi-load case topology optimization.
 ///
-/// Minimizes a weighted combination of compliances across multiple load cases.
+/// Minimizes the weighted sum of the compliances of several load cases,
+/// `c(ρ) = Σ_k w_k c_k(ρ)`, subject to a volume constraint, with SIMP material
+/// interpolation, sensitivity filtering and an optimality-criteria update.
+///
+/// This crate has no finite-element solver, so the structural response is
+/// supplied by the caller as a closure `fea(density, load_case)` that solves
+/// the equilibrium problem for the given density field and load case and
+/// returns `(compliance, element_strain_energy)`. The latter holds
+/// `u_e^T K_e_unit u_e` for every element, the strain energy of the element
+/// with unit Young's modulus, from which the sensitivity
+/// `dc_k/dρ_e = -p ρ_e^(p-1) (E_solid - E_void) u_e^T K_e_unit u_e`
+/// follows (see [`SiMP::compliance_sensitivity_at`]).
 #[derive(Debug, Clone)]
 pub struct MultiLoadTopOpt {
     /// SIMP model.
@@ -492,6 +512,14 @@ pub struct MultiLoadTopOpt {
     pub compliance_history: Vec<f64>,
 }
 
+/// Shorthand for an [`PhysicsError::InvalidInput`].
+fn invalid_input(field: impl Into<String>, reason: impl Into<String>) -> PhysicsError {
+    PhysicsError::InvalidInput {
+        field: field.into(),
+        reason: reason.into(),
+    }
+}
+
 impl MultiLoadTopOpt {
     /// Creates a new `MultiLoadTopOpt`.
     pub fn new(simp: SiMP, filter: FilteringMethods, load_cases: Vec<LoadCase>) -> Self {
@@ -505,7 +533,16 @@ impl MultiLoadTopOpt {
         }
     }
 
-    /// Computes weighted compliance given current density field.
+    /// Load-proxy value `Σ_k w_k Σ_e E(ρ_e) f_e² / n`; **not** a compliance.
+    ///
+    /// The proxy multiplies the squared load by the stiffness, whereas the
+    /// compliance `f^T K(ρ)^-1 f` falls as the structure gets stiffer, so
+    /// minimising the proxy removes stiffness. It solves no finite-element
+    /// problem and is kept only for API compatibility.
+    #[deprecated(
+        since = "0.1.3",
+        note = "not a compliance: grows with stiffness and solves no FE problem; use `MultiLoadTopOpt::evaluate`"
+    )]
     pub fn weighted_compliance(&self, density: &[f64]) -> f64 {
         let n = density.len();
         self.load_cases
@@ -521,7 +558,16 @@ impl MultiLoadTopOpt {
             .sum()
     }
 
-    /// Computes aggregated sensitivity for all load cases.
+    /// Compliance-sensitivity formula evaluated with the proxy "strain energy"
+    /// `E(ρ_e) f_e² / n`.
+    ///
+    /// That quantity is not the strain energy of any structure, and the result
+    /// is neither the gradient of [`MultiLoadTopOpt::weighted_compliance`] nor
+    /// of a compliance. Kept only for API compatibility.
+    #[deprecated(
+        since = "0.1.3",
+        note = "sensitivity of a load proxy, not of the compliance; use `MultiLoadTopOpt::evaluate`"
+    )]
     pub fn aggregated_sensitivity(&self, density: &[f64]) -> Vec<f64> {
         let n = density.len();
         let mut agg = vec![0.0f64; n];
@@ -539,40 +585,123 @@ impl MultiLoadTopOpt {
         agg
     }
 
-    /// Runs the multi-load topology optimization.
-    pub fn run(&mut self, max_iter: usize, tol: f64) -> Vec<f64> {
+    /// Evaluates the weighted compliance and its sensitivity at `density`.
+    ///
+    /// `fea(density, load_case)` must return the compliance of the load case
+    /// and the per-element strain energies `u_e^T K_e_unit u_e` (see the type
+    /// documentation). Returns `(Σ_k w_k c_k, Σ_k w_k dc_k/dρ)`; the
+    /// sensitivity is unfiltered.
+    ///
+    /// # Errors
+    ///
+    /// [`PhysicsError::InvalidInput`] if `density` does not have one entry per
+    /// grid element, there is no load case, a weight is negative or not
+    /// finite, or the closure returns a compliance or strain energies that
+    /// are not finite or have the wrong length. Errors returned by the
+    /// closure are propagated unchanged.
+    pub fn evaluate<F>(&self, density: &[f64], mut fea: F) -> PhysicsResult<(f64, Vec<f64>)>
+    where
+        F: FnMut(&[f64], &LoadCase) -> PhysicsResult<(f64, Vec<f64>)>,
+    {
         let n = self.simp.grid.n_elem();
+        if density.len() != n {
+            return Err(invalid_input(
+                "density",
+                format!(
+                    "expected one entry per element ({n}), got {}",
+                    density.len()
+                ),
+            ));
+        }
+        if self.load_cases.is_empty() {
+            return Err(invalid_input(
+                "load_cases",
+                "at least one load case is required",
+            ));
+        }
+        let mut compliance = 0.0;
+        let mut sensitivity = vec![0.0; n];
+        for (k, load_case) in self.load_cases.iter().enumerate() {
+            if !load_case.weight.is_finite() || load_case.weight < 0.0 {
+                return Err(invalid_input(
+                    format!("load_cases[{k}].weight"),
+                    format!("must be finite and non-negative, got {}", load_case.weight),
+                ));
+            }
+            let (case_compliance, strain_energy) = fea(density, load_case)?;
+            if strain_energy.len() != n {
+                return Err(invalid_input(
+                    "strain_energy",
+                    format!(
+                        "load case {k}: expected one entry per element ({n}), got {}",
+                        strain_energy.len()
+                    ),
+                ));
+            }
+            if !case_compliance.is_finite() || strain_energy.iter().any(|v| !v.is_finite()) {
+                return Err(invalid_input(
+                    "fea",
+                    format!("load case {k}: compliance and strain energies must be finite"),
+                ));
+            }
+            compliance += load_case.weight * case_compliance;
+            let case_sensitivity = self.simp.compliance_sensitivity_at(density, &strain_energy);
+            for (total, d) in sensitivity.iter_mut().zip(case_sensitivity.iter()) {
+                *total += load_case.weight * d;
+            }
+        }
+        Ok((compliance, sensitivity))
+    }
+
+    /// Runs the multi-load topology optimization.
+    ///
+    /// Every iteration evaluates all load cases with `fea` (see
+    /// [`MultiLoadTopOpt::evaluate`]), filters the aggregated sensitivity and
+    /// applies an optimality-criteria update that meets the volume fraction of
+    /// the SIMP model. The weighted compliance of each iteration is appended
+    /// to [`MultiLoadTopOpt::compliance_history`]. The loop stops after
+    /// `max_iter` iterations or once the largest density change drops below
+    /// `tol`; the final density is stored in `self.simp.density` and returned.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`MultiLoadTopOpt::evaluate`] reports, plus
+    /// [`PhysicsError::InvalidInput`] if the stored density or the filter do
+    /// not match the grid. On error `self.simp.density` is left unchanged.
+    pub fn run<F>(&mut self, max_iter: usize, tol: f64, mut fea: F) -> PhysicsResult<Vec<f64>>
+    where
+        F: FnMut(&[f64], &LoadCase) -> PhysicsResult<(f64, Vec<f64>)>,
+    {
+        let n = self.simp.grid.n_elem();
+        if self.simp.density.len() != n {
+            return Err(invalid_input(
+                "simp.density",
+                format!(
+                    "expected one entry per element ({n}), got {}",
+                    self.simp.density.len()
+                ),
+            ));
+        }
+        if self.filter.grid.n_elem() != n {
+            return Err(invalid_input(
+                "filter",
+                format!(
+                    "filter grid has {} elements but the SIMP grid has {n}",
+                    self.filter.grid.n_elem()
+                ),
+            ));
+        }
         let vf = self.simp.volume_fraction;
         let mut density = self.simp.density.clone();
         self.compliance_history.clear();
 
         for _iter in 0..max_iter {
-            let c = self.weighted_compliance(&density);
-            self.compliance_history.push(c);
+            let (compliance, raw_sens) = self.evaluate(&density, &mut fea)?;
+            self.compliance_history.push(compliance);
 
-            let raw_sens = self.aggregated_sensitivity(&density);
             let filtered_sens = self.filter.sensitivity_filter(&density, &raw_sens);
-
-            // Simple OC bisection
-            let mut lo = 0.0f64;
-            let mut hi = 1e9f64;
-            let mut new_density = vec![0.0f64; n];
-            for _ in 0..50 {
-                let lmid = 0.5 * (lo + hi);
-                for e in 0..n {
-                    let be = (-filtered_sens[e] / lmid).max(0.0);
-                    let candidate = density[e] * be.powf(self.damping);
-                    let lower = (density[e] - self.move_limit).max(0.0);
-                    let upper = (density[e] + self.move_limit).min(1.0);
-                    new_density[e] = candidate.clamp(lower, upper);
-                }
-                let vol: f64 = new_density.iter().sum::<f64>() / n as f64;
-                if vol > vf {
-                    lo = lmid;
-                } else {
-                    hi = lmid;
-                }
-            }
+            let (new_density, _multiplier) =
+                oc_density_update(&density, &filtered_sens, vf, self.move_limit, self.damping);
 
             let change: f64 = density
                 .iter()
@@ -586,7 +715,7 @@ impl MultiLoadTopOpt {
         }
 
         self.simp.density = density.clone();
-        density
+        Ok(density)
     }
 }
 
@@ -921,34 +1050,66 @@ impl ManufacturingFilters {
             .collect()
     }
 
-    /// Applies casting direction filter (demold constraint).
+    /// Applies the casting (demoulding) constraint.
     ///
-    /// Ensures no undercuts in the specified build direction by enforcing
-    /// that density is monotonically non-decreasing from the parting line.
+    /// A cast part must be removable from its mould by a single pull along
+    /// one direction, which rules out undercuts: whenever an element has
+    /// material farther out along the pull direction, every element between
+    /// it and the parting surface must hold material too. The pull direction
+    /// follows the `build_direction` convention (`0` = +y, `1` = -y,
+    /// `2` = +x, anything else = -x), with the parting surface on the
+    /// opposite side: row 0 for +y, the last row for -y, column 0 for +x and
+    /// the last column for -x.
+    ///
+    /// Each grid line parallel to the pull direction is swept from its free
+    /// end towards the parting surface keeping the running maximum density.
+    /// The result is therefore monotone along the pull axis, never lower than
+    /// the input (so it only adds material), stays within the range of the
+    /// input densities, and is idempotent.
+    ///
+    /// `density` must hold `grid.n_elem()` entries; any other length is
+    /// returned unchanged.
     pub fn casting_filter(&self, density: &[f64]) -> Vec<f64> {
         let nx = self.grid.nx;
         let ny = self.grid.ny;
         let mut result = density.to_vec();
+        if nx == 0 || ny == 0 || density.len() != nx * ny {
+            return result;
+        }
         match self.build_direction {
             0 => {
-                // Sweep from bottom (row=0) upward
-                for row in 1..ny {
+                for row in (0..ny - 1).rev() {
                     for col in 0..nx {
-                        let below = result[(row - 1) * nx + col];
-                        let cur = result[row * nx + col];
-                        // If below is solid and current is void: enforce continuity
-                        result[row * nx + col] = cur.max(below * 0.0); // allow void above solid
-                        // Enforce: if above is solid, below must also be solid
-                        let _ = (below, cur);
+                        let farther = result[(row + 1) * nx + col];
+                        let cell = &mut result[row * nx + col];
+                        *cell = cell.max(farther);
+                    }
+                }
+            }
+            1 => {
+                for row in 0..ny - 1 {
+                    for col in 0..nx {
+                        let farther = result[row * nx + col];
+                        let cell = &mut result[(row + 1) * nx + col];
+                        *cell = cell.max(farther);
+                    }
+                }
+            }
+            2 => {
+                for row in 0..ny {
+                    for col in (1..nx).rev() {
+                        let farther = result[row * nx + col];
+                        let cell = &mut result[row * nx + col - 1];
+                        *cell = cell.max(farther);
                     }
                 }
             }
             _ => {
-                // Generic: project from base
-                for col in 1..nx {
-                    for row in 0..ny {
-                        let prev = result[row * nx + col - 1];
-                        result[row * nx + col] = result[row * nx + col].max(prev * 0.0);
+                for row in 0..ny {
+                    for col in 0..nx - 1 {
+                        let farther = result[row * nx + col];
+                        let cell = &mut result[row * nx + col + 1];
+                        *cell = cell.max(farther);
                     }
                 }
             }
@@ -1057,6 +1218,77 @@ impl ManufacturingFilters {
             })
             .collect()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Optimality-criteria update
+// ---------------------------------------------------------------------------
+
+/// One optimality-criteria (OC) density update under a volume constraint.
+///
+/// For a trial multiplier `λ > 0` every element becomes
+/// `ρ_e (max(-dc_e, 0) / λ)^η`, limited to `[ρ_e - m, ρ_e + m] ∩ [0, 1]` for
+/// the move limit `m` and the damping exponent `η`. The mean density falls
+/// monotonically as `λ` grows, so the multiplier that meets `volume_target` is
+/// found by bisection. The search runs on `ln λ` between bounds derived from
+/// the largest sensitivity, which makes it independent of the unit system: a
+/// fixed linear bracket such as `[0, 1e9]` cannot resolve multipliers of the
+/// order of `1e-6` and below.
+///
+/// Returns the updated densities and the multiplier. If no element has a
+/// negative sensitivity (nothing asks for material) every density drops to its
+/// lower move bound and the multiplier is `0`.
+fn oc_density_update(
+    density: &[f64],
+    sensitivity: &[f64],
+    volume_target: f64,
+    move_limit: f64,
+    damping: f64,
+) -> (Vec<f64>, f64) {
+    let n = density.len();
+    if n == 0 {
+        return (Vec::new(), 0.0);
+    }
+    let move_limit = move_limit.max(0.0);
+    let gain: Vec<f64> = (0..n)
+        .map(|e| (-sensitivity.get(e).copied().unwrap_or(0.0)).max(0.0))
+        .collect();
+    let bounds: Vec<(f64, f64)> = density
+        .iter()
+        .map(|&rho| ((rho - move_limit).max(0.0), (rho + move_limit).min(1.0)))
+        .collect();
+    let densities_for = |lambda: f64| -> Vec<f64> {
+        density
+            .iter()
+            .zip(gain.iter())
+            .zip(bounds.iter())
+            .map(|((&rho, &g), &(lower, upper))| {
+                (rho * (g / lambda).powf(damping)).max(lower).min(upper)
+            })
+            .collect()
+    };
+
+    let gain_max = gain.iter().copied().fold(0.0_f64, f64::max);
+    if !gain_max.is_finite() || gain_max <= 0.0 {
+        return (bounds.iter().map(|&(lower, _)| lower).collect(), 0.0);
+    }
+    let ln_gain_max = gain_max.ln();
+    let mut ln_lo = ln_gain_max - 60.0 * std::f64::consts::LN_10;
+    let mut ln_hi = ln_gain_max + 30.0 * std::f64::consts::LN_10;
+    for _ in 0..200 {
+        let mid = 0.5 * (ln_lo + ln_hi);
+        if mid <= ln_lo || mid >= ln_hi {
+            break;
+        }
+        let volume = densities_for(mid.exp()).iter().sum::<f64>() / n as f64;
+        if volume > volume_target {
+            ln_lo = mid;
+        } else {
+            ln_hi = mid;
+        }
+    }
+    let lambda = (0.5 * (ln_lo + ln_hi)).exp();
+    (densities_for(lambda), lambda)
 }
 
 // ---------------------------------------------------------------------------
@@ -1357,60 +1589,6 @@ mod tests {
         assert!((solver.damping - 0.3).abs() < 1e-10);
     }
 
-    // --- MultiLoadTopOpt ---
-
-    #[test]
-    fn test_multiload_weighted_compliance() {
-        let grid = GridSize::new(4, 4);
-        let simp = SiMP::new(grid, 0.5, 3.0, 1.5, MaterialParams::default());
-        let filter = FilteringMethods::new(1.5, grid);
-        let lc1 = LoadCase::new(vec![1.0; 16], 0.5);
-        let lc2 = LoadCase::new(vec![0.5; 16], 0.5);
-        let solver = MultiLoadTopOpt::new(simp, filter, vec![lc1, lc2]);
-        let density = vec![0.5; 16];
-        let c = solver.weighted_compliance(&density);
-        assert!(c > 0.0);
-    }
-
-    #[test]
-    fn test_multiload_aggregated_sensitivity_len() {
-        let grid = GridSize::new(4, 4);
-        let simp = SiMP::new(grid, 0.5, 3.0, 1.5, MaterialParams::default());
-        let filter = FilteringMethods::new(1.5, grid);
-        let lc = LoadCase::new(vec![1.0; 16], 1.0);
-        let solver = MultiLoadTopOpt::new(simp, filter, vec![lc]);
-        let density = vec![0.5; 16];
-        let sens = solver.aggregated_sensitivity(&density);
-        assert_eq!(sens.len(), 16);
-    }
-
-    #[test]
-    fn test_multiload_run() {
-        let grid = GridSize::new(4, 4);
-        let simp = SiMP::new(grid, 0.5, 3.0, 1.5, MaterialParams::default());
-        let filter = FilteringMethods::new(1.5, grid);
-        let lc = LoadCase::new(vec![1.0; 16], 1.0);
-        let mut solver = MultiLoadTopOpt::new(simp, filter, vec![lc]);
-        let result = solver.run(5, 1e-3);
-        assert_eq!(result.len(), 16);
-    }
-
-    #[test]
-    fn test_multiload_equal_weight_symmetry() {
-        let grid = GridSize::new(2, 2);
-        let simp = SiMP::new(grid, 0.5, 3.0, 1.5, MaterialParams::default());
-        let filter = FilteringMethods::new(1.5, grid);
-        let lc1 = LoadCase::new(vec![1.0; 4], 0.5);
-        let lc2 = LoadCase::new(vec![1.0; 4], 0.5);
-        let solver = MultiLoadTopOpt::new(simp.clone(), filter.clone(), vec![lc1, lc2]);
-        let lc_single = LoadCase::new(vec![1.0; 4], 1.0);
-        let solver2 = MultiLoadTopOpt::new(simp, filter, vec![lc_single]);
-        let d = vec![0.5; 4];
-        let c1 = solver.weighted_compliance(&d);
-        let c2 = solver2.weighted_compliance(&d);
-        assert!((c1 - c2).abs() < 1e-10);
-    }
-
     // --- LevelSetTopOpt ---
 
     #[test]
@@ -1616,3 +1794,6 @@ mod tests {
         assert!(is_connected(&density, grid, 0.5)); // vacuously true
     }
 }
+
+#[cfg(test)]
+mod multiload_casting_tests;

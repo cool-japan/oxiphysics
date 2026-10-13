@@ -88,9 +88,9 @@ impl AbaBody {
 ///
 /// # Arguments
 /// - `model`: Articulated-body model (kinematic tree, topological order).
-/// - `q`: Joint positions; length must equal `model.total_dof()`.
-/// - `q_dot`: Joint velocities; same length as `q`.
-/// - `tau`: Applied joint torques; same length as `q`.
+/// - `q`: Joint configuration; length must equal `model.total_nq()`.
+/// - `q_dot`: Joint velocities; length must equal `model.total_dof()`.
+/// - `tau`: Applied joint torques; length must equal `model.total_dof()`.
 ///
 /// # Returns
 /// Joint accelerations `q̈` (length = `model.total_dof()`).
@@ -98,10 +98,10 @@ pub fn aba(model: &ArticulatedModel, q: &[f64], q_dot: &[f64], tau: &[f64]) -> V
     let n = model.num_bodies();
     assert_eq!(
         q.len(),
-        model.total_dof(),
+        model.total_nq(),
         "q length mismatch: got {}, expected {}",
         q.len(),
-        model.total_dof()
+        model.total_nq()
     );
     assert_eq!(q_dot.len(), model.total_dof(), "q_dot length mismatch");
     assert_eq!(tau.len(), model.total_dof(), "tau length mismatch");
@@ -119,7 +119,7 @@ pub fn aba(model: &ArticulatedModel, q: &[f64], q_dot: &[f64], tau: &[f64]) -> V
         let body = &model.bodies[i];
         let joint = &model.joints[i];
         let qi = model.q_slice(q, i);
-        let q_dot_i = model.q_slice(q_dot, i);
+        let q_dot_i = model.v_slice(q_dot, i);
 
         let x_j = joint.transform(qi);
         let x_t = &body.parent_transform;
@@ -161,7 +161,7 @@ pub fn aba(model: &ArticulatedModel, q: &[f64], q_dot: &[f64], tau: &[f64]) -> V
     for i in (0..n).rev() {
         let body = &model.bodies[i];
         let joint = &model.joints[i];
-        let tau_i = model.q_slice(tau, i);
+        let tau_i = model.v_slice(tau, i);
         let qi = model.q_slice(q, i);
         let s = joint.motion_subspace_at(qi);
         let dof = joint.dof();
@@ -203,9 +203,9 @@ pub fn aba(model: &ArticulatedModel, q: &[f64], q_dot: &[f64], tau: &[f64]) -> V
                 }
 
                 // Transform I_A_hat to parent frame and add.
-                // x_full is the parent→child motion transform (X_pc).
-                // Formula: I_parent = X_pc^T * I_hat * X_pc.
-                // transform_to_parent takes X_pc and computes X^T * I * X.
+                // x_full is the pose of body i in its parent; with the motion
+                // transform X = (i)X_(parent) built from it,
+                // I_parent = Xᵀ · I_hat · X (computed by transform_to_parent).
                 let i_a_parent = i_a_hat.transform_to_parent(&wb[i].x_full);
                 wb[pid].i_a = wb[pid].i_a.add(&i_a_parent);
 
@@ -256,7 +256,7 @@ pub fn aba(model: &ArticulatedModel, q: &[f64], q_dot: &[f64], tau: &[f64]) -> V
         let a_parent = if let Some(pid) = body.parent_id {
             wb[pid].a
         } else {
-            a_gravity // gravity as fictitious parent acceleration
+            a_gravity // a_0 = [0; −g_vec]: fictitious base acceleration
         };
         let a_parent_in_child = wb[i].x_full.apply_velocity(&a_parent);
         let a_hat = a_parent_in_child + wb[i].c;

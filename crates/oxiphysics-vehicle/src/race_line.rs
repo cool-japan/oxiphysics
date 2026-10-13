@@ -142,6 +142,28 @@ impl VehicleDynamics {
         (v + a * dt).max(0.0)
     }
 
+    /// Speed after covering `distance` metres at full engine force against the
+    /// quadratic aerodynamic drag, starting from `v0` (m/s).
+    ///
+    /// This is the exact solution in the distance domain: from
+    /// `m v dv/ds = F - c v²` the squared speed obeys
+    /// `d(v²)/ds = 2 (F - c v²) / m`, hence
+    /// `v² = F/c + (v0² - F/c) exp(-2 c s / m)` for `c > 0` and
+    /// `v² = v0² + 2 F s / m` without drag.  Unlike a single explicit Euler step
+    /// per segment it does not overshoot the terminal velocity on long segments.
+    pub fn exit_speed_after(&self, v0: f64, distance: f64) -> f64 {
+        let v0_sq = v0 * v0;
+        let s = distance.max(0.0);
+        let v_sq = if self.aero_drag_coeff > 0.0 {
+            let v_terminal_sq = self.max_engine_force / self.aero_drag_coeff;
+            v_terminal_sq
+                + (v0_sq - v_terminal_sq) * (-2.0 * self.aero_drag_coeff * s / self.mass).exp()
+        } else {
+            v0_sq + 2.0 * self.max_engine_force * s / self.mass
+        };
+        v_sq.max(0.0).sqrt()
+    }
+
     /// Distance required to brake from `v` down to `v_target` (m).
     ///
     /// Uses kinematics with maximum deceleration from `max_brake_force`.
@@ -211,13 +233,15 @@ impl LapSimulator {
             .map(|s| self.segment_max_speed(s))
             .collect();
 
-        // Forward pass – limited by engine/acceleration.
+        // Forward pass – limited by engine/acceleration.  A segment is covered at
+        // full engine force against the drag; the exit speed is the exact
+        // distance-domain solution rather than one explicit Euler step over the
+        // whole segment, which overshoots the terminal velocity on long segments.
         let mut speeds = vec![0.0f64; n];
-        speeds[0] = speed_limits[0].min(10.0); // standing start
+        speeds[0] = speed_limits[0].min(STANDING_START_SPEED);
         for i in 1..n {
-            let len = self.track.segments[i - 1].length().max(1.0);
-            let dt = len / speeds[i - 1].max(1.0);
-            let accel_v = self.vehicle.acceleration_limited_speed(speeds[i - 1], dt);
+            let len = self.track.segments[i - 1].length();
+            let accel_v = self.vehicle.exit_speed_after(speeds[i - 1], len);
             speeds[i] = accel_v.min(speed_limits[i]);
         }
 
@@ -516,44 +540,174 @@ pub struct BrakingPoint {
     pub target_speed: f64,
 }
 
+/// Speed the car starts the track with (m/s), as in [`LapSimulator::simulate`].
+const STANDING_START_SPEED: f64 = 10.0;
+
+/// Highest speed the car may hold anywhere inside a segment (m/s).
+///
+/// Corners are limited by lateral grip, straights by the terminal velocity
+/// (unbounded without aerodynamic drag).
+fn segment_speed_limit(vehicle: &VehicleDynamics, seg: &TrackSegment) -> f64 {
+    match seg {
+        TrackSegment::Straight { .. } => {
+            if vehicle.aero_drag_coeff > 0.0 {
+                (vehicle.max_engine_force / vehicle.aero_drag_coeff).sqrt()
+            } else {
+                f64::INFINITY
+            }
+        }
+        TrackSegment::Corner { radius, .. } => vehicle.max_speed_in_corner(*radius),
+    }
+}
+
+/// Distance before the end of a segment at which braking has to start so that
+/// the car leaves the segment at exactly `v_end` (m).
+///
+/// The car enters the segment at `v_entry`, accelerates flat out (never
+/// exceeding the segment speed limit `cap`) and then brakes at the maximum
+/// deceleration.  The result is the intersection of the full-throttle speed
+/// profile with the braking curve ending in `v_end`, clamped to the segment
+/// length (`len`) when braking has to start even before the segment.
+fn braking_onset_before_end(
+    vehicle: &VehicleDynamics,
+    v_entry: f64,
+    len: f64,
+    cap: f64,
+    v_end: f64,
+) -> f64 {
+    let a_brake = vehicle.max_brake_force / vehicle.mass;
+    let end_sq = v_end * v_end;
+    let cap_sq = cap * cap;
+    // Squared speed of the full-throttle branch minus that of the braking
+    // branch when braking starts `onset` metres before the end of the segment;
+    // strictly decreasing in `onset`.
+    let excess = |onset: f64| -> f64 {
+        let accel_sq = vehicle.exit_speed_after(v_entry, len - onset).powi(2);
+        accel_sq.min(cap_sq) - (end_sq + 2.0 * a_brake * onset)
+    };
+    if excess(0.0) <= 0.0 {
+        return 0.0;
+    }
+    if excess(len) >= 0.0 {
+        return len;
+    }
+    let (mut lo, mut hi) = (0.0_f64, len);
+    for _ in 0..100 {
+        let mid = 0.5 * (lo + hi);
+        if excess(mid) > 0.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+        if hi - lo < 1e-12 * len.max(1.0) {
+            break;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
 /// Calculate braking points for all corners on the track.
+///
+/// The speed profile is built on the segment boundaries with the usual
+/// forward/backward construction:
+///
+/// 1. A backward pass finds the highest speed at every segment entry from
+///    which all downstream speed limits can still be met by braking at the
+///    maximum deceleration (`max_brake_force / mass`).
+/// 2. A forward pass accelerates flat out through each segment with the exact
+///    drag-limited solution ([`VehicleDynamics::exit_speed_after`]) and caps
+///    the result with the pass-1 limit.
+/// 3. For every corner whose unbraked approach speed exceeds the speed it can
+///    be entered at, the braking zone is the intersection of the full-throttle
+///    profile with the braking curve ending at the corner entry.  It is
+///    reported as the distance before the corner entry where braking starts
+///    and the speed at that point.  When the car is already braking at the
+///    start of the preceding segment, the zone continues backwards through
+///    that segment (and further, if needed).
+///
+/// The car starts the track at 10 m/s.  Corners the car cannot reach faster
+/// than their entry speed (including a corner at the very start) get a zero
+/// braking distance.
 pub fn compute_braking_points(track: &Track, vehicle: &VehicleDynamics) -> Vec<BrakingPoint> {
     let n = track.segments.len();
     if n == 0 {
         return Vec::new();
     }
 
-    // Forward pass: compute achievable speed at each segment entry.
-    let mut entry_speeds = vec![10.0_f64]; // standing start
-    for i in 1..n {
-        let seg_len = track.segments[i - 1].length().max(1.0);
-        let dt = seg_len / entry_speeds[i - 1].max(1.0);
-        let accel_v = vehicle.acceleration_limited_speed(entry_speeds[i - 1], dt);
-        let limit = match &track.segments[i] {
-            TrackSegment::Straight { .. } => {
-                (vehicle.max_engine_force / vehicle.aero_drag_coeff).sqrt()
-            }
-            TrackSegment::Corner { radius, .. } => vehicle.max_speed_in_corner(*radius),
+    let lengths: Vec<f64> = track.segments.iter().map(|s| s.length().max(0.0)).collect();
+    let limits: Vec<f64> = track
+        .segments
+        .iter()
+        .map(|s| segment_speed_limit(vehicle, s))
+        .collect();
+    let a_brake = vehicle.max_brake_force / vehicle.mass;
+
+    // Backward pass: the speed at a segment boundary is also the exit speed of
+    // the previous segment, so it is bounded by both limits.
+    let mut max_entry = vec![0.0_f64; n];
+    for i in (0..n).rev() {
+        let cap = if i == 0 {
+            limits[0]
+        } else {
+            limits[i].min(limits[i - 1])
         };
-        entry_speeds.push(accel_v.min(limit));
+        max_entry[i] = if i + 1 < n {
+            cap.min((max_entry[i + 1].powi(2) + 2.0 * a_brake * lengths[i]).sqrt())
+        } else {
+            cap
+        };
+    }
+
+    // Forward pass: `free_entry[i]` is the speed at the entry of segment `i`
+    // when the car accelerates flat out through segment `i - 1` and does not
+    // brake for it; `entry[i]` is the speed it is actually allowed to carry.
+    let mut entry = vec![0.0_f64; n];
+    let mut free_entry = vec![0.0_f64; n];
+    entry[0] = max_entry[0].min(STANDING_START_SPEED);
+    free_entry[0] = entry[0];
+    for i in 1..n {
+        free_entry[i] = vehicle
+            .exit_speed_after(entry[i - 1], lengths[i - 1])
+            .min(limits[i - 1]);
+        entry[i] = free_entry[i].min(max_entry[i]);
     }
 
     let mut braking_points = Vec::new();
-
-    for (i, entry_speed) in entry_speeds.iter().enumerate() {
-        if let TrackSegment::Corner { radius, .. } = &track.segments[i] {
-            let target = vehicle.max_speed_in_corner(*radius);
-            // Look backward through preceding straights
-            let approach_speed = if i > 0 { *entry_speed } else { 10.0 };
-            let bd = vehicle.braking_distance(approach_speed, target);
-
-            braking_points.push(BrakingPoint {
-                corner_index: i,
-                braking_distance: bd,
-                speed_at_braking: approach_speed,
-                target_speed: target,
-            });
+    for (i, seg) in track.segments.iter().enumerate() {
+        if !matches!(seg, TrackSegment::Corner { .. }) {
+            continue;
         }
+        let target = limits[i];
+        let (braking_distance, speed_at_braking) = if i == 0 {
+            (0.0, entry[0])
+        } else if free_entry[i] <= target {
+            (0.0, free_entry[i])
+        } else {
+            // Walk the braking zone backwards until braking starts inside a
+            // segment (or at the very start of the track).
+            let mut distance = 0.0_f64;
+            let mut end_speed = entry[i];
+            let mut j = i - 1;
+            loop {
+                let onset =
+                    braking_onset_before_end(vehicle, entry[j], lengths[j], limits[j], end_speed);
+                distance += onset;
+                let onset_speed = (end_speed * end_speed + 2.0 * a_brake * onset).sqrt();
+                let braking_before_segment = onset >= lengths[j] - 1e-9 * lengths[j].max(1.0)
+                    && entry[j] < free_entry[j] - 1e-9;
+                if j == 0 || !braking_before_segment {
+                    break (distance, onset_speed);
+                }
+                end_speed = entry[j];
+                j -= 1;
+            }
+        };
+        braking_points.push(BrakingPoint {
+            corner_index: i,
+            braking_distance,
+            speed_at_braking,
+            target_speed: target,
+        });
     }
 
     braking_points
@@ -997,6 +1151,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn lap_sim_short_straight_does_not_reach_the_corner_limit() {
+        // R 1000 m allows 210 m/s, far above anything a formula car reaches after
+        // 50 m from a 10 m/s start; the old single Euler step per segment claimed
+        // 63 m/s there, the real full-throttle speed is about 33 m/s.
+        let mut t = Track::new();
+        t.add_straight(50.0);
+        t.add_corner(1000.0, 10.0, true);
+        let v = VehicleDynamics::formula_car();
+        let reachable = v.exit_speed_after(10.0, 50.0);
+        assert!((reachable - 33.26).abs() < 0.05, "{reachable}");
+        let r = LapSimulator::new(t, v).simulate();
+        assert!((r.max_speed - reachable).abs() < 1e-9, "{}", r.max_speed);
+    }
+
+    #[test]
+    fn lap_sim_long_straights_stay_below_the_terminal_velocity() {
+        let mut t = Track::new();
+        t.add_straight(2000.0);
+        t.add_straight(2000.0);
+        t.add_straight(2000.0);
+        let v = VehicleDynamics::formula_car();
+        let terminal = (v.max_engine_force / v.aero_drag_coeff).sqrt();
+        let r = LapSimulator::new(t, v).simulate();
+        assert!(r.max_speed <= terminal && r.max_speed > 0.99 * terminal);
+    }
+
     // --- RaceLineOptimizer ---
 
     #[test]
@@ -1215,9 +1396,144 @@ mod tests {
         let v = VehicleDynamics::formula_car();
         let bp = compute_braking_points(&t, &v);
         assert_eq!(bp.len(), 1);
-        assert!(bp[0].braking_distance >= 0.0);
+        // A formula car reaches ~80 m/s on 500 m and must shed ~33 m/s before
+        // an R50 corner (47 m/s): that takes a real braking zone.
+        assert!(bp[0].braking_distance > 50.0, "{}", bp[0].braking_distance);
+        assert!(bp[0].braking_distance < 500.0);
         assert!(bp[0].target_speed > 0.0);
-        assert!(bp[0].speed_at_braking >= 0.0);
+        assert!(bp[0].speed_at_braking > bp[0].target_speed);
+    }
+
+    /// Fine RK4 integration of `dv/ds = (F - c v²) / (m v)`, independent of
+    /// the closed-form solution used by the library.
+    fn full_throttle_speed_numeric(v: &VehicleDynamics, v0: f64, distance: f64) -> f64 {
+        let slope = |s: f64| (v.max_engine_force - v.aero_drag_coeff * s * s) / (v.mass * s);
+        let steps = 20_000;
+        let h = distance / steps as f64;
+        let mut speed = v0;
+        for _ in 0..steps {
+            let k1 = slope(speed);
+            let k2 = slope(speed + 0.5 * h * k1);
+            let k3 = slope(speed + 0.5 * h * k2);
+            let k4 = slope(speed + h * k3);
+            speed += h / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
+        }
+        speed
+    }
+
+    #[test]
+    fn exit_speed_after_matches_numerical_integration() {
+        for (vehicle, v0, distance) in [
+            (VehicleDynamics::formula_car(), 10.0, 500.0),
+            (VehicleDynamics::formula_car(), 60.0, 120.0),
+            (VehicleDynamics::sports_car(), 15.0, 1000.0),
+            // above the terminal velocity the car slows down towards it
+            (VehicleDynamics::formula_car(), 120.0, 400.0),
+        ] {
+            let exact = vehicle.exit_speed_after(v0, distance);
+            let numeric = full_throttle_speed_numeric(&vehicle, v0, distance);
+            assert!(
+                (exact - numeric).abs() < 1e-7 * numeric,
+                "closed form {exact} vs numeric {numeric}"
+            );
+        }
+    }
+
+    #[test]
+    fn exit_speed_after_without_drag_is_constant_acceleration() {
+        let mut vehicle = VehicleDynamics::formula_car();
+        vehicle.aero_drag_coeff = 0.0;
+        let v = vehicle.exit_speed_after(10.0, 200.0);
+        let expected = (100.0 + 2.0 * vehicle.max_engine_force * 200.0 / vehicle.mass).sqrt();
+        assert!((v - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn exit_speed_after_never_exceeds_terminal_velocity() {
+        let vehicle = VehicleDynamics::formula_car();
+        let terminal = (vehicle.max_engine_force / vehicle.aero_drag_coeff).sqrt();
+        let v = vehicle.exit_speed_after(10.0, 1.0e6);
+        assert!(v <= terminal && (terminal - v) < 1e-9, "{v} vs {terminal}");
+        // The old single Euler step per 500 m segment gave ~545 m/s from 10 m/s.
+        assert!(vehicle.exit_speed_after(10.0, 500.0) < terminal);
+        assert_eq!(vehicle.exit_speed_after(33.0, 0.0), 33.0);
+    }
+
+    #[test]
+    fn braking_point_follows_the_full_throttle_profile() {
+        let mut t = Track::new();
+        t.add_straight(500.0);
+        t.add_corner(50.0, 90.0, true);
+        let v = VehicleDynamics::formula_car();
+        let bp = &compute_braking_points(&t, &v)[0];
+        let a_brake = v.max_brake_force / v.mass;
+        // Braking from the reported speed over the reported distance ends at
+        // exactly the corner speed ...
+        let v_after_braking =
+            (bp.speed_at_braking.powi(2) - 2.0 * a_brake * bp.braking_distance).sqrt();
+        assert!(
+            (v_after_braking - bp.target_speed).abs() < 1e-9,
+            "{v_after_braking} vs {}",
+            bp.target_speed
+        );
+        // ... and the car really is at that speed when braking starts: full
+        // throttle from the 10 m/s start for the remaining straight.
+        let v_at_brake_marker = full_throttle_speed_numeric(&v, 10.0, 500.0 - bp.braking_distance);
+        assert!(
+            (v_at_brake_marker - bp.speed_at_braking).abs() < 1e-6 * bp.speed_at_braking,
+            "{v_at_brake_marker} vs {}",
+            bp.speed_at_braking
+        );
+        // About 81 m, not the 94 m needed to brake from the unbraked 79 m/s.
+        assert!(
+            (bp.braking_distance - 81.14).abs() < 0.05,
+            "{}",
+            bp.braking_distance
+        );
+    }
+
+    #[test]
+    fn braking_distance_is_zero_when_corner_is_reached_slowly() {
+        let mut t = Track::new();
+        t.add_straight(20.0);
+        t.add_corner(500.0, 30.0, false); // 148 m/s corner, far above reachable speed
+        let v = VehicleDynamics::formula_car();
+        let bp = &compute_braking_points(&t, &v)[0];
+        assert_eq!(bp.braking_distance, 0.0);
+        assert!(bp.speed_at_braking < bp.target_speed);
+    }
+
+    #[test]
+    fn corner_at_the_start_of_the_track_needs_no_braking_zone() {
+        let mut t = Track::new();
+        t.add_corner(50.0, 90.0, true);
+        let v = VehicleDynamics::formula_car();
+        let bp = &compute_braking_points(&t, &v)[0];
+        assert_eq!(bp.braking_distance, 0.0);
+        assert!((bp.speed_at_braking - 10.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn braking_zone_continues_through_a_preceding_corner() {
+        let mut t = Track::new();
+        t.add_straight(1000.0);
+        t.add_corner(100.0, 45.0, true);
+        t.add_corner(20.0, 90.0, true);
+        let v = VehicleDynamics::formula_car();
+        let bp = compute_braking_points(&t, &v);
+        assert_eq!(bp.len(), 2);
+        let first_corner_len = t.segments[1].length();
+        // The hairpin cannot be reached with the speed of the R100 corner:
+        // braking starts on the straight and lasts through the whole R100 arc,
+        // so both corners report the same brake marker.
+        assert!(bp[1].braking_distance > first_corner_len);
+        assert!(
+            (bp[1].braking_distance - (bp[0].braking_distance + first_corner_len)).abs() < 1e-6,
+            "{} vs {} + {first_corner_len}",
+            bp[1].braking_distance,
+            bp[0].braking_distance
+        );
+        assert!((bp[1].speed_at_braking - bp[0].speed_at_braking).abs() < 1e-6);
     }
 
     #[test]

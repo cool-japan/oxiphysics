@@ -229,44 +229,61 @@ impl SliceImage {
 
 /// Convert a scalar field to a colormap image.
 ///
-/// `values` has length `nu * nv`; the result is a `SliceImage` with
-/// `width = nu` and `height = nv`.  Values are normalized to [0, 1] before
-/// being passed to `colormap_fn`.
+/// `values` holds the `nu * nv` samples of a slice in row-major order (u
+/// varies fastest), as produced by [`sample_scalar_field_on_slice`] for a
+/// [`SliceGrid`] with `nu` × `nv` points.  The result is a [`SliceImage`] with
+/// `width = nu` and `height = nv` whose pixel `(x, y)` shows `values[y * nu + x]`.
+/// Values are normalized to `[0, 1]` by the minimum and maximum of `values`
+/// (a constant field maps to `0.5`) before being passed to `colormap_fn`.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidParameter`](crate::error::Error::InvalidParameter)
+/// when `values.len()` differs from `nu * nv` (or `nu * nv` overflows).
 pub fn scalar_to_colormap_slice(
     values: &[f64],
+    nu: usize,
+    nv: usize,
     colormap_fn: impl Fn(f64) -> [f32; 4],
-) -> SliceImage {
-    if values.is_empty() {
-        return SliceImage::new(0, 0);
+) -> crate::error::Result<SliceImage> {
+    let expected = nu.checked_mul(nv).ok_or_else(|| {
+        crate::error::Error::invalid_parameter(
+            "nu, nv",
+            format!("grid size {nu} x {nv} overflows usize"),
+        )
+    })?;
+    if values.len() != expected {
+        return Err(crate::error::Error::invalid_parameter(
+            "values",
+            format!(
+                "expected nu * nv = {nu} * {nv} = {expected} samples, got {}",
+                values.len()
+            ),
+        ));
     }
+
     let min_v = values.iter().cloned().fold(f64::INFINITY, f64::min);
     let max_v = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let range = max_v - min_v;
 
-    // We need a square-ish layout; caller supplies flat values → make width = sqrt
-    let n = values.len();
-    let width = (n as f64).sqrt().ceil() as usize;
-    let height = n.div_ceil(width);
-
-    let mut img = SliceImage::new(width, height);
-    for (k, &v) in values.iter().enumerate() {
+    // Pixel (x, y) lives at y * width + x, the same row-major, u-fastest order
+    // as `values`, so the samples map onto the pixels one to one.
+    let mut img = SliceImage::new(nu, nv);
+    for (pixel, &v) in img.pixels.iter_mut().zip(values.iter()) {
         let t = if range < 1e-30 {
             0.5
         } else {
             ((v - min_v) / range).clamp(0.0, 1.0)
         };
         let c = colormap_fn(t);
-        let rgba = [
+        *pixel = [
             (c[0].clamp(0.0, 1.0) * 255.0) as u8,
             (c[1].clamp(0.0, 1.0) * 255.0) as u8,
             (c[2].clamp(0.0, 1.0) * 255.0) as u8,
             (c[3].clamp(0.0, 1.0) * 255.0) as u8,
         ];
-        let x = k % width;
-        let y = k / width;
-        img.set_pixel(x, y, rgba);
     }
-    img
+    Ok(img)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -614,26 +631,96 @@ mod tests {
 
     #[test]
     fn test_scalar_to_colormap_empty() {
-        let img = scalar_to_colormap_slice(&[], |_t| [0.5, 0.5, 0.5, 1.0]);
+        let img = scalar_to_colormap_slice(&[], 0, 0, |_t| [0.5, 0.5, 0.5, 1.0]).unwrap();
         assert_eq!(img.pixel_count(), 0);
     }
 
     #[test]
     fn test_scalar_to_colormap_pixel_count() {
         let vals: Vec<f64> = (0..16).map(|i| i as f64).collect();
-        let img = scalar_to_colormap_slice(&vals, |t| [t as f32, 0.0, 0.0, 1.0]);
-        assert_eq!(img.pixel_count(), img.width * img.height);
-        assert!(img.pixel_count() >= vals.len());
+        let img = scalar_to_colormap_slice(&vals, 4, 4, |t| [t as f32, 0.0, 0.0, 1.0]).unwrap();
+        assert_eq!((img.width, img.height), (4, 4));
+        assert_eq!(img.pixel_count(), vals.len());
     }
 
     #[test]
     fn test_scalar_to_colormap_alpha_preserved() {
         let vals = [0.0, 0.5, 1.0];
-        let img = scalar_to_colormap_slice(&vals, |_t| [0.5, 0.5, 0.5, 0.8]);
+        let img = scalar_to_colormap_slice(&vals, 3, 1, |_t| [0.5, 0.5, 0.5, 0.8]).unwrap();
         // All pixels should have A ≈ 204 (0.8 * 255)
-        for p in &img.pixels[..vals.len().min(img.pixels.len())] {
+        assert_eq!(img.pixels.len(), vals.len());
+        for p in &img.pixels {
             assert_eq!(p[3], 204);
         }
+    }
+
+    #[test]
+    fn test_scalar_to_colormap_uses_the_requested_layout() {
+        // A 4 x 2 ramp 0..8, u fastest: the image must be 4 wide and 2 tall,
+        // not the sqrt-shaped square the old code reshaped everything into.
+        let vals: Vec<f64> = (0..8).map(|i| i as f64).collect();
+        let img = scalar_to_colormap_slice(&vals, 4, 2, |t| [t as f32, 0.0, 0.0, 1.0]).unwrap();
+        assert_eq!((img.width, img.height), (4, 2));
+        for y in 0..2 {
+            for x in 0..4 {
+                let k = y * 4 + x;
+                let expected = ((k as f64 / 7.0) as f32 * 255.0) as u8;
+                assert_eq!(img.get_pixel(x, y)[0], expected, "pixel ({x}, {y})");
+            }
+        }
+        // Brightest pixel of row 0 is its last column.
+        let row0: Vec<u8> = (0..4).map(|x| img.get_pixel(x, 0)[0]).collect();
+        assert_eq!(row0.iter().max(), Some(&row0[3]));
+        assert!(
+            row0.windows(2).all(|w| w[0] < w[1]),
+            "row 0 not increasing: {row0:?}"
+        );
+        // Row 1 continues the ramp.
+        assert_eq!(img.get_pixel(3, 1)[0], 255);
+    }
+
+    #[test]
+    fn test_scalar_to_colormap_non_square_slice_round_trips_sampling() {
+        // 100 x 10 slice sampled from a field that depends on u only: every
+        // image row must be the same horizontal ramp.
+        let grid = SliceGrid::new(SlicePlane::xy_plane(0.0), 100, 10, 0.5, 0.5);
+        let vals = sample_scalar_field_on_slice(&grid, |p| p[0]);
+        let img = scalar_to_colormap_slice(&vals, grid.nu, grid.nv, |t| [t as f32, 0.0, 0.0, 1.0])
+            .unwrap();
+        assert_eq!((img.width, img.height), (100, 10));
+        for y in 0..10 {
+            assert_eq!(img.get_pixel(0, y)[0], 0);
+            assert_eq!(img.get_pixel(99, y)[0], 255);
+            assert_eq!(img.get_pixel(50, y)[0], img.get_pixel(50, 0)[0]);
+        }
+        assert_eq!(img.get_pixel(50, 3)[0], 128);
+    }
+
+    #[test]
+    fn test_scalar_to_colormap_constant_field_maps_to_midpoint() {
+        let vals = [2.0; 6];
+        let img =
+            scalar_to_colormap_slice(&vals, 3, 2, |t| [t as f32, t as f32, t as f32, 1.0]).unwrap();
+        assert!(img.pixels.iter().all(|p| *p == [127, 127, 127, 255]));
+    }
+
+    #[test]
+    fn test_scalar_to_colormap_rejects_mismatched_dimensions() {
+        use crate::error::Error;
+        let cmap = |_t: f64| [0.0_f32, 0.0, 0.0, 1.0];
+        let err = scalar_to_colormap_slice(&[1.0; 5], 2, 2, cmap).unwrap_err();
+        assert!(matches!(err, Error::InvalidParameter { .. }), "{err:?}");
+        assert!(err.to_string().contains("expected nu * nv"), "{err}");
+        // Too few samples, samples for a zero-sized grid, and overflow.
+        assert!(scalar_to_colormap_slice(&[1.0; 3], 2, 2, cmap).is_err());
+        assert!(scalar_to_colormap_slice(&[1.0; 3], 0, 3, cmap).is_err());
+        assert!(matches!(
+            scalar_to_colormap_slice(&[1.0], usize::MAX, 2, cmap),
+            Err(Error::InvalidParameter { .. })
+        ));
+        // A zero-sized grid with no samples is a valid empty image.
+        let empty = scalar_to_colormap_slice(&[], 0, 5, cmap).unwrap();
+        assert_eq!((empty.width, empty.height, empty.pixel_count()), (0, 5, 0));
     }
 
     // ── contour_lines_2d ──────────────────────────────────────────────────────

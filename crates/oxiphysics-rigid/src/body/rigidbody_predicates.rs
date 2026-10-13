@@ -49,6 +49,14 @@ impl RigidBody {
         }
     }
     /// Integrate forces -> velocity (semi-implicit Euler, first half).
+    ///
+    /// Gravity and the accumulated force/torque are integrated first, then the
+    /// velocities are damped with the implicit-Euler factor
+    /// `1 / (1 + dt * rate)` (Box2D convention), where `rate` is
+    /// [`RigidBody::linear_damping`] / [`RigidBody::angular_damping`] in 1/s.
+    /// This discretises `dv/dt = -rate * v`, is unconditionally stable, and
+    /// decays the velocity by (nearly) the same amount per second whatever the
+    /// step size; a body with the default damping of zero is not damped at all.
     pub fn integrate_forces(&mut self, dt: Real, gravity: &Vec3) {
         if !self.is_dynamic() || self.state == BodyState::Sleeping {
             return;
@@ -56,8 +64,8 @@ impl RigidBody {
         self.velocity += *gravity * self.gravity_scale * dt;
         self.velocity += self.force_accumulator * self.inverse_mass * dt;
         self.angular_velocity += self.world_inverse_inertia * self.torque_accumulator * dt;
-        self.velocity *= (1.0 - self.linear_damping).max(0.0);
-        self.angular_velocity *= (1.0 - self.angular_damping).max(0.0);
+        self.velocity *= damping_factor(dt, self.linear_damping);
+        self.angular_velocity *= damping_factor(dt, self.angular_damping);
         self.force_accumulator = Vec3::zeros();
         self.torque_accumulator = Vec3::zeros();
     }
@@ -92,4 +100,11 @@ impl RigidBody {
             self.angular_velocity += self.world_inverse_inertia * impulse;
         }
     }
+}
+
+/// Implicit-Euler damping factor `1 / (1 + dt * rate)` for a damping `rate` in
+/// 1/s. Negative rates (which would inject energy) and negative time steps are
+/// treated as zero, so the factor always lies in `(0, 1]`.
+fn damping_factor(dt: Real, rate: Real) -> Real {
+    1.0 / (1.0 + dt.max(0.0) * rate.max(0.0))
 }

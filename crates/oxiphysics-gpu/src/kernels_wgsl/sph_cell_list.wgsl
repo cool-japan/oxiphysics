@@ -42,8 +42,13 @@ fn cell_hash(ix: i32, iy: i32, iz: i32, num_cells: u32) -> u32 {
 }
 
 @compute @workgroup_size(64)
-fn sph_cell_list(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
+fn sph_cell_list(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    // A dispatch wider than one dimension allows is folded into y (see
+    // `dispatch_count_for`): linearise the invocation index.
+    let i = gid.x + gid.y * nwg.x * 64u;
     if (i >= params.n) { return; }
 
     let px = positions[i * 3u];

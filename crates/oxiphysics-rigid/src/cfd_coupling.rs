@@ -698,7 +698,6 @@ impl VortexInducedVibration {
         let m = self.mass_per_length;
         let wn = self.natural_frequency;
         let zeta = self.damping_ratio;
-        let ws = self.shedding_frequency;
 
         // Vortex lift per unit length: F_viv = ½ ρ U² D Cl with Cl = q/2
         let cl = self.wake_variable / 2.0_f64;
@@ -709,15 +708,17 @@ impl VortexInducedVibration {
             * self.diameter
             * cl;
 
-        // Structural EOM: ÿ = (F_morison + F_viv − 2ζωₙẏ − ωₙ²y) / m
-        let y_ddot = if m > 1e-30_f64 {
-            (morison + f_viv
-                - 2.0_f64 * zeta * wn * self.disp_velocity
-                - wn * wn * self.displacement)
-                / m
+        // Structural EOM: ÿ + 2ζωₙẏ + ωₙ²y = (F_morison + F_viv) / m.
+        // The damping and stiffness terms are already accelerations (ωₙ is the
+        // natural frequency of the structure), so only the force is divided by
+        // the mass per unit length.
+        let force_accel = if m > 1e-30_f64 {
+            (morison + f_viv) / m
         } else {
             0.0_f64
         };
+        let y_ddot =
+            force_accel - 2.0_f64 * zeta * wn * self.disp_velocity - wn * wn * self.displacement;
 
         // Wake oscillator
         let q_ddot = self.wake_oscillator_accel(self.wake_variable, self.wake_rate, y_ddot);
@@ -729,8 +730,6 @@ impl VortexInducedVibration {
         self.time += dt;
         self.shedding_frequency =
             2.0_f64 * PI * 0.21_f64 * self.flow_velocity / self.diameter.max(1e-15_f64);
-
-        let _ = ws; // suppress unused-variable warning
 
         (self.displacement, self.wake_variable)
     }
@@ -747,22 +746,123 @@ impl VortexInducedVibration {
 // MooringLine
 // ---------------------------------------------------------------------------
 
-/// Catenary mooring line statics and simplified dynamics.
+/// `sinh(u)/u − 1`, evaluated without cancellation for small `u`.
+fn sinhc_minus_one(u: f64) -> f64 {
+    if u.abs() < 0.5 {
+        let u2 = u * u;
+        // u²/3! + u⁴/5! + u⁶/7! + … in nested (Horner) form.
+        u2 / 6.0
+            * (1.0
+                + u2 / 20.0
+                    * (1.0
+                        + u2 / 42.0 * (1.0 + u2 / 72.0 * (1.0 + u2 / 110.0 * (1.0 + u2 / 156.0)))))
+    } else {
+        u.sinh() / u - 1.0
+    }
+}
+
+/// `ln(sinh(u)/u)` for `u > 0`; finite for every positive `u` (no overflow of
+/// `sinh` for large arguments).
+fn ln_sinhc(u: f64) -> f64 {
+    if u < 0.5 {
+        sinhc_minus_one(u).ln_1p()
+    } else {
+        u - std::f64::consts::LN_2 - u.ln() + (-(-2.0_f64 * u).exp_m1()).ln()
+    }
+}
+
+/// `d/du ln(sinh(u)/u) = coth(u) − 1/u`.
+fn ln_sinhc_derivative(u: f64) -> f64 {
+    if u < 1.0e-2 {
+        u / 3.0 - u * u * u / 45.0
+    } else {
+        1.0 / u.tanh() - 1.0 / u
+    }
+}
+
+/// `u − tanh(u)`, evaluated without cancellation for small `u`.
+fn u_minus_tanh(u: f64) -> f64 {
+    if u.abs() < 0.1 {
+        let u2 = u * u;
+        // u³/3 − 2u⁵/15 + 17u⁷/315 − 62u⁹/2835 + 1382u¹¹/155925 − 21844u¹³/6081075
+        u * u2
+            * (1.0 / 3.0
+                + u2 * (-2.0 / 15.0
+                    + u2 * (17.0 / 315.0
+                        + u2 * (-62.0 / 2835.0
+                            + u2 * (1382.0 / 155_925.0 + u2 * (-21_844.0 / 6_081_075.0))))))
+    } else {
+        u - u.tanh()
+    }
+}
+
+/// Solve `sinh(u)/u = 1 + excess_ratio` for the positive root `u`.
 ///
-/// Implements the analytical catenary equations for a mooring line
-/// under its own weight in a horizontal-vertical plane.
+/// `ln(sinh(u)/u)` is increasing and convex in `u`, and `sinh(u)/u ≥ 1 + u²/6`
+/// puts `sqrt(6·excess_ratio)` on or to the right of the root, from where
+/// Newton's method converges monotonically.  The iteration keeps a bracket and
+/// falls back to bisection, so it cannot leave the admissible interval.
 ///
-/// The catenary solution:
-/// z(x) = a (cosh(x/a) − 1),  a = T_h / (w)
+/// Returns `None` for a non-positive or non-finite `excess_ratio`, or if the
+/// iteration does not converge.
+fn solve_sinhc(excess_ratio: f64) -> Option<f64> {
+    if !excess_ratio.is_finite() || excess_ratio <= 0.0 {
+        return None;
+    }
+    let target = excess_ratio.ln_1p();
+    let mut lo = 0.0_f64;
+    let mut hi = (6.0_f64 * excess_ratio).sqrt();
+    let mut u = hi;
+    for _ in 0..200 {
+        let residual = ln_sinhc(u) - target;
+        if residual > 0.0 {
+            hi = u;
+        } else if residual < 0.0 {
+            lo = u;
+        } else {
+            return Some(u);
+        }
+        let newton = u - residual / ln_sinhc_derivative(u);
+        let next = if newton > lo && newton < hi {
+            newton
+        } else {
+            0.5_f64 * (lo + hi)
+        };
+        if (next - u).abs() <= 1.0e-14 * next {
+            return Some(next);
+        }
+        u = next;
+    }
+    None
+}
+
+/// Catenary mooring line statics (inextensible line, fully suspended).
 ///
-/// where T_h is the horizontal tension and w is the line weight per unit length.
+/// Implements the analytical catenary for a line that hangs freely between an
+/// anchor and a fairlead under its own submerged weight.  The line lies in the
+/// vertical plane through anchor and fairlead: the horizontal span `h` is
+/// measured in the x–z plane and the vertical rise `v` along y.
+///
+/// With the horizontal coordinate `x` measured from the anchor and the vertex
+/// (lowest point) of the curve at `x = x₀`, the profile is
+///
+/// z(x) = a (cosh((x − x₀)/a) − cosh(x₀/a)),  a = T_h / w
+///
+/// where `T_h` is the horizontal tension (constant along the line) and `w` the
+/// submerged weight per unit length.  Requiring the curve to reach the
+/// fairlead with arc length `L` yields
+///
+/// 2a·sinh(h / 2a) = sqrt(L² − v²),  x₀ = h/2 − a·atanh(v / L),
+///
+/// which has a solution only for a slack line, `L > sqrt(h² + v²)`.  The axial
+/// stiffness is not used: the static solution is that of an inextensible line.
 #[derive(Debug, Clone)]
 pub struct MooringLine {
     /// Total unstretched length of the mooring line \[m\].
     pub unstretched_length: f64,
     /// Submerged weight per unit length \[N/m\].
     pub weight_per_length: f64,
-    /// Axial stiffness EA \[N\].
+    /// Axial stiffness EA \[N\] (not used by the inextensible static solution).
     pub axial_stiffness: f64,
     /// Anchor position \[m\].
     pub anchor: [f64; 3],
@@ -772,6 +872,11 @@ pub struct MooringLine {
     pub horizontal_tension: f64,
     /// Vertical tension at fairlead \[N\].
     pub vertical_tension: f64,
+    /// Horizontal distance `x₀` from the anchor to the vertex (lowest point) of
+    /// the catenary \[m\].  It is set by [`MooringLine::solve_static`]; it is
+    /// negative when the line rises monotonically from the anchor and larger
+    /// than the span when it falls monotonically towards the fairlead.
+    pub vertex_offset: f64,
     /// Number of line segments for discretisation.
     pub n_segments: usize,
 }
@@ -794,6 +899,7 @@ impl MooringLine {
             fairlead,
             horizontal_tension: 0.0_f64,
             vertical_tension: 0.0_f64,
+            vertex_offset: 0.0_f64,
             n_segments,
         }
     }
@@ -818,54 +924,82 @@ impl MooringLine {
         self.horizontal_tension / self.weight_per_length
     }
 
-    /// Solve for horizontal tension using catenary equations (Newton iteration).
+    /// Solve the static catenary for the given anchor, fairlead and line length.
     ///
-    /// Returns the converged horizontal tension T_h \[N\].
-    pub fn solve_static(&mut self) -> f64 {
+    /// Finds the catenary parameter `a` from `2a·sinh(h / 2a) = sqrt(L² − v²)`,
+    /// then stores the horizontal tension `T_h = w·a`, the vertex position
+    /// `x₀ = h/2 − a·atanh(v / L)` and the vertical tension at the fairlead
+    /// `T_v = T_h·sinh((h − x₀)/a) = (w/2)(L + v·coth(h / 2a))`.
+    ///
+    /// Returns the horizontal tension `T_h` \[N\].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::General`](crate::error::Error::General) when no
+    /// suspended catenary exists: a non-positive weight or length, a fairlead
+    /// directly above or below the anchor (zero horizontal span), or a line
+    /// that is not longer than the anchor–fairlead distance
+    /// `sqrt(h² + v²)` (a taut line would need the axial stiffness).  On error
+    /// the stored tensions and vertex position are left untouched.
+    pub fn solve_static(&mut self) -> crate::error::Result<f64> {
+        use crate::error::Error;
+
         let h = self.horizontal_span();
         let v = self.vertical_rise();
         let l = self.unstretched_length;
         let w = self.weight_per_length;
 
-        if w < 1e-30_f64 || l < 1e-12_f64 {
-            self.horizontal_tension = 0.0_f64;
-            self.vertical_tension = 0.0_f64;
-            return 0.0_f64;
+        if !w.is_finite() || w <= 0.0 {
+            return Err(Error::general(format!(
+                "mooring line needs a positive finite submerged weight per length, got {w}"
+            )));
+        }
+        if !l.is_finite() || l <= 0.0 {
+            return Err(Error::general(format!(
+                "mooring line needs a positive finite length, got {l}"
+            )));
+        }
+        if !h.is_finite() || !v.is_finite() {
+            return Err(Error::general(
+                "mooring line anchor and fairlead positions must be finite",
+            ));
+        }
+        if h <= 0.0 {
+            return Err(Error::general(
+                "fairlead lies directly above or below the anchor: \
+                 the suspended catenary has no horizontal span",
+            ));
+        }
+        let chord = h.hypot(v);
+        if l <= chord {
+            return Err(Error::general(format!(
+                "mooring line of length {l} m is taut: it must be longer than the \
+                 anchor-fairlead distance {chord} m for a suspended catenary"
+            )));
         }
 
-        // Initial guess: T_h = w * h / 2
-        let mut t_h = (w * h / 2.0_f64).max(1.0_f64);
+        // excess = L² − h² − v² > 0;  sqrt(L² − v²) = sqrt(h² + excess).
+        let excess = (l - chord) * (l + chord);
+        let chord_h = (h * h + excess).sqrt();
+        let ratio_excess = excess / (h * (chord_h + h));
+        let u = solve_sinhc(ratio_excess).ok_or_else(|| {
+            Error::general("catenary equation 2a*sinh(h/2a) = sqrt(L^2 - v^2) has no finite root")
+        })?;
 
-        for _ in 0..50 {
-            let a = t_h / w;
-            // Catenary arc length: L = a * (sinh(h_end/a) - sinh(h_start/a))
-            // Simplified: assume anchor at x=0, fairlead at x=h with height v
-            // Using: L² = (l_arc)², h_end satisfying cosh relation
-            // Residual: f(T_h) = sqrt(L² - v²) - 2a sinh(sqrt(L²-v²)/(2a)) = h
-            let l_sq = l * l;
-            let v_sq = v * v;
-            if l_sq <= v_sq {
-                break;
-            }
-            let lh = (l_sq - v_sq).sqrt();
-            let f = 2.0_f64 * a * (lh / (2.0_f64 * a)).sinh() - h;
-            let df = 2.0_f64 * (lh / (2.0_f64 * a)).sinh() - (lh / (2.0_f64 * a)).cosh() * lh / a;
-            if df.abs() < 1e-15_f64 {
-                break;
-            }
-            t_h -= f / df;
-            t_h = t_h.max(1e-6_f64);
+        let a = h / (2.0_f64 * u);
+        let t_h = w * a;
+        let vertex = 0.5_f64 * h - a * (v / l).atanh();
+        let t_v = 0.5_f64 * w * (l + v / u.tanh());
+        if !(t_h.is_finite() && t_v.is_finite() && vertex.is_finite()) {
+            return Err(Error::general(
+                "catenary solution overflowed: line length and span are incompatible",
+            ));
         }
 
         self.horizontal_tension = t_h;
-        // Vertical tension: T_v = w * L (simplified catenary)
-        let lh = if l * l > v * v {
-            (l * l - v * v).sqrt()
-        } else {
-            0.0_f64
-        };
-        self.vertical_tension = w * lh;
-        t_h
+        self.vertical_tension = t_v;
+        self.vertex_offset = vertex;
+        Ok(t_h)
     }
 
     /// Total tension at the fairlead.
@@ -875,36 +1009,67 @@ impl MooringLine {
             .sqrt()
     }
 
-    /// Catenary profile: z coordinate at horizontal position x from anchor.
+    /// Catenary profile: height above the anchor at horizontal distance `x`
+    /// from the anchor, `a (cosh((x − x₀)/a) − cosh(x₀/a))`.
+    ///
+    /// The vertex position `x₀` is [`MooringLine::vertex_offset`] (zero until
+    /// [`MooringLine::solve_static`] has been called).
     pub fn profile_z(&self, x: f64) -> f64 {
         let a = self.catenary_parameter();
         if a.is_infinite() || a < 1e-15_f64 {
             return 0.0_f64;
         }
-        a * ((x / a).cosh() - 1.0_f64)
+        let x0 = self.vertex_offset;
+        a * (((x - x0) / a).cosh() - (x0 / a).cosh())
     }
 
     /// Discretise the mooring line into segment endpoint positions.
+    ///
+    /// The points run from the anchor to the fairlead along the vertical plane
+    /// through both (horizontal direction in the x–z plane, height along y).
     pub fn discretised_positions(&self) -> Vec<[f64; 3]> {
-        let n = self.n_segments;
+        let n = self.n_segments.max(1);
         let h = self.horizontal_span();
+        let (dir_x, dir_z) = if h > 1e-12_f64 {
+            (
+                (self.fairlead[0] - self.anchor[0]) / h,
+                (self.fairlead[2] - self.anchor[2]) / h,
+            )
+        } else {
+            (1.0_f64, 0.0_f64)
+        };
         let mut pts = Vec::with_capacity(n + 1);
         for i in 0..=n {
             let t = i as f64 / n as f64;
             let x = t * h;
             let z = self.profile_z(x);
-            pts.push([self.anchor[0] + x, self.anchor[1] + z, self.anchor[2]]);
+            pts.push([
+                self.anchor[0] + dir_x * x,
+                self.anchor[1] + z,
+                self.anchor[2] + dir_z * x,
+            ]);
         }
         pts
     }
 
-    /// Effective stiffness at fairlead (dT/dh), linearised.
+    /// Horizontal stiffness of the line at the fairlead, `dT_h/dh` \[N/m\], at
+    /// fixed line length and fairlead height.
+    ///
+    /// Differentiating `2a·sinh(h/2a) = sqrt(L² − v²)` and `T_h = w·a` gives
+    /// `K = w / (2 (u − tanh u))` with `u = h / 2a`.  Returns zero while no
+    /// catenary has been solved (`T_h = 0`) or the span vanishes.
     pub fn linearised_stiffness(&self) -> f64 {
         let h = self.horizontal_span();
-        if h < 1e-12_f64 {
+        let a = self.catenary_parameter();
+        if h < 1e-12_f64 || !a.is_finite() || a < 1e-15_f64 {
             return 0.0_f64;
         }
-        self.horizontal_tension / h
+        let u = h / (2.0_f64 * a);
+        let denominator = 2.0_f64 * u_minus_tanh(u);
+        if denominator <= 0.0 {
+            return 0.0_f64;
+        }
+        self.weight_per_length / denominator
     }
 }
 
@@ -1627,7 +1792,9 @@ mod tests {
             [150.0_f64, 100.0_f64, 0.0_f64],
             10,
         );
-        let t_h = ml.solve_static();
+        let t_h = ml
+            .solve_static()
+            .expect("slack line has a catenary solution");
         assert!(t_h > 0.0_f64, "t_h={t_h}");
     }
 

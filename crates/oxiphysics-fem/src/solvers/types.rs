@@ -197,32 +197,50 @@ impl GaussSeidel {
             omega,
         }
     }
-    /// Solve the dense row-major system `A x = b` of size `n`.
+    /// One Gauss-Seidel (SOR when `omega != 1`) sweep over the dense row-major
+    /// system `A x = b`, updating `x` in place.
+    ///
+    /// Rows with a vanishing diagonal are skipped.  Returns the largest
+    /// absolute change of any unknown during the sweep.
+    fn sweep(&self, a: &[f64], b: &[f64], n: usize, x: &mut [f64]) -> f64 {
+        let mut max_change = 0.0_f64;
+        for i in 0..n {
+            let mut sigma = 0.0;
+            for j in 0..n {
+                if j != i {
+                    sigma += a[i * n + j] * x[j];
+                }
+            }
+            let diag = a[i * n + i];
+            if diag.abs() < 1e-60 {
+                continue;
+            }
+            let x_new = (1.0 - self.omega) * x[i] + self.omega * (b[i] - sigma) / diag;
+            max_change = max_change.max((x_new - x[i]).abs());
+            x[i] = x_new;
+        }
+        max_change
+    }
+    /// Run up to `max_iter` sweeps on `A x = b` **starting from the given `x`**
+    /// and leave the smoothed iterate in `x`.
+    ///
+    /// The sweeps stop early once the largest change in a sweep drops below
+    /// `tol`.  This is the entry point to use as a multigrid smoother, where
+    /// the current iterate must be improved rather than restarted from zero.
+    pub fn smooth_in_place(&self, a: &[f64], b: &[f64], n: usize, x: &mut [f64]) {
+        for _ in 0..self.max_iter {
+            if self.sweep(a, b, n, x) < self.tol {
+                break;
+            }
+        }
+    }
+    /// Solve the dense row-major system `A x = b` of size `n` from a zero
+    /// initial guess.
     ///
     /// Returns the solution vector.
     pub fn solve(&self, a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
         let mut x = vec![0.0; n];
-        for _ in 0..self.max_iter {
-            let mut max_change = 0.0_f64;
-            for i in 0..n {
-                let mut sigma = 0.0;
-                for j in 0..n {
-                    if j != i {
-                        sigma += a[i * n + j] * x[j];
-                    }
-                }
-                let diag = a[i * n + i];
-                if diag.abs() < 1e-60 {
-                    continue;
-                }
-                let x_new = (1.0 - self.omega) * x[i] + self.omega * (b[i] - sigma) / diag;
-                max_change = max_change.max((x_new - x[i]).abs());
-                x[i] = x_new;
-            }
-            if max_change < self.tol {
-                break;
-            }
-        }
+        self.smooth_in_place(a, b, n, &mut x);
         x
     }
     /// Solve and return `(solution, stats)`.
@@ -232,23 +250,7 @@ impl GaussSeidel {
         let mut converged = false;
         for _it in 0..self.max_iter {
             iters += 1;
-            let mut max_change = 0.0_f64;
-            for i in 0..n {
-                let mut sigma = 0.0;
-                for j in 0..n {
-                    if j != i {
-                        sigma += a[i * n + j] * x[j];
-                    }
-                }
-                let diag = a[i * n + i];
-                if diag.abs() < 1e-60 {
-                    continue;
-                }
-                let x_new = (1.0 - self.omega) * x[i] + self.omega * (b[i] - sigma) / diag;
-                max_change = max_change.max((x_new - x[i]).abs());
-                x[i] = x_new;
-            }
-            if max_change < self.tol {
+            if self.sweep(a, b, n, &mut x) < self.tol {
                 converged = true;
                 break;
             }

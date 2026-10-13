@@ -4,32 +4,72 @@
 //! Advanced MD types: Parrinello-Rahman barostat, MSD calculator,
 //! running RDF, and adaptive timestep methods.
 
+use std::f64::consts::PI;
+
 use super::core_sim::MdSim;
+use super::tracking::{KJ_MOL_PER_ANG3_TO_BAR, normalise_rdf};
 
-// ---------------------------------------------------------------------------
-// ParrinelloRahmanBarostat — NPT barostat with flexible cell
-// ---------------------------------------------------------------------------
-
-/// Parrinello-Rahman barostat state for NPT simulations.
+/// Smallest ratio `L_new / L_old` that one barostat step may give a box edge.
 ///
-/// Tracks the box metric tensor and its time derivative to allow
-/// full cell fluctuations during constant-pressure MD.
+/// Only a blown-up configuration can reach it; the bound keeps the box positive.
+const MIN_EDGE_SCALE: f64 = 0.5;
+
+// ---------------------------------------------------------------------------
+// ParrinelloRahmanBarostat — extended-Lagrangian NPT barostat
+// ---------------------------------------------------------------------------
+
+/// Parrinello-Rahman barostat for an orthorhombic box with isotropic pressure
+/// coupling.
+///
+/// The box edges `L_a` (a = x, y, z) are dynamical variables with their own
+/// inertia `W`.  With scaled coordinates `x_ia = L_a s_ia` the extended
+/// Lagrangian is
+///
+/// ```text
+/// ℒ = Σ_i ½ m_i L_a² ṡ_ia² − U(x) + ½ W Σ_a L̇_a² − P₀ V
+/// ```
+///
+/// and its equations of motion are
+///
+/// ```text
+/// W L̈_a   = (V / L_a) (P − P₀)                 (box)
+/// ẋ_ia    = v_ia + (L̇_a / L_a) x_ia            (affine drift of the coordinates)
+/// v̇_ia    = F_ia / m_i − (L̇_a / L_a) v_ia      (peculiar velocities)
+/// ```
+///
+/// where `P` is the instantaneous pressure `(2·KE + W_vir) / (3V)` obtained from
+/// the pair virial supplied by the force routine.  The box velocity
+/// `L̇_a` ([`ParrinelloRahmanBarostat::box_velocity`]) is **persistent state**: it
+/// is accumulated over successive steps, so the box oscillates around the
+/// equilibrium volume (damped by the thermostatted particles) instead of
+/// relaxing monotonically as under Berendsen scaling.  Dilating the box scales
+/// the peculiar velocities with `1/L_a`, so an expanding box cools the system.
+///
+/// The barostat mass follows the GROMACS convention
+/// `W = 3 τ_p² L_max / (4π² β)`, see [`ParrinelloRahmanBarostat::mass`]: for a
+/// system whose isothermal compressibility is `β` the volume oscillates with the
+/// period `τ_p`.
+///
+/// Only the scalar pressure is available from the scalar virial, so all three
+/// edges are driven by the same pressure (GROMACS `pcoupltype = isotropic`); a
+/// cubic box stays cubic.
 ///
 /// Reference: Parrinello & Rahman, J. Appl. Phys. 52, 7182 (1981).
 #[derive(Debug, Clone)]
 pub struct ParrinelloRahmanBarostat {
     /// Target pressure (bar).
     pub target_pressure: f64,
-    /// Coupling time constant (ps).
+    /// Period of the box oscillation for a system of compressibility
+    /// [`ParrinelloRahmanBarostat::compressibility`] (ps).
     pub tau_p: f64,
-    /// Isothermal compressibility (bar^-1).
+    /// Isothermal compressibility of the system (bar⁻¹); sets the barostat mass.
     pub compressibility: f64,
-    /// Box matrix velocity \[Lx_dot, Ly_dot, Lz_dot\] (Å ps^-1).
+    /// Box-edge velocities \[Lx_dot, Ly_dot, Lz_dot\] (Å ps⁻¹).
     pub box_velocity: [f64; 3],
 }
 
 impl ParrinelloRahmanBarostat {
-    /// Create a new Parrinello-Rahman barostat.
+    /// Create a new Parrinello-Rahman barostat with the box at rest.
     pub fn new(target_pressure: f64, tau_p: f64, compressibility: f64) -> Self {
         assert!(tau_p > 0.0, "tau_p must be positive");
         assert!(compressibility > 0.0, "compressibility must be positive");
@@ -41,39 +81,78 @@ impl ParrinelloRahmanBarostat {
         }
     }
 
-    /// Compute the box scaling factors per axis for an orthorhombic box.
+    /// Inertia `W` of the box variables (amu, i.e. kJ mol⁻¹ ps² Å⁻²).
     ///
-    /// Uses the Berendsen-like isotropic approximation scaled per-dimension:
     /// ```text
-    /// mu_a = cbrt(1 - beta*dt/tau_p * (P_target - P))
+    /// W = 3 τ_p² L_max / (4π² β)
     /// ```
-    pub fn scale_factors(&self, p_current: f64, dt: f64) -> [f64; 3] {
-        let arg = 1.0 - self.compressibility * dt / self.tau_p * (self.target_pressure - p_current);
-        let mu = arg.max(0.01_f64).cbrt();
-        [mu, mu, mu]
+    ///
+    /// with the compressibility `β` converted to (kJ mol⁻¹ Å⁻³)⁻¹ and `L_max` the
+    /// longest box edge.  Linearising `W L̈ = (V / L)(P − P₀)` for a system of
+    /// bulk modulus `1/β`, a volume change `δV / V = 3 δL / L` produces
+    /// `δP = −3 δL / (β L)`, hence the angular frequency `ω² = 3 L / (β W)` for a
+    /// cubic box and the period `2π/ω = τ_p`.
+    pub fn mass(&self, box_lengths: &[f64; 3]) -> f64 {
+        let longest_edge = box_lengths.iter().copied().fold(0.0_f64, f64::max);
+        let compressibility = self.compressibility * KJ_MOL_PER_ANG3_TO_BAR;
+        3.0 * self.tau_p * self.tau_p * longest_edge / (4.0 * PI * PI * compressibility)
     }
 
-    /// Apply the barostat to an `MdSim`, rescaling positions and box.
+    /// Acceleration `L̈_a = V (P − P₀) / (W L_a)` of each box edge (Å ps⁻²) at the
+    /// instantaneous pressure `p_current` (bar).
     ///
-    /// `virial` is the total scalar virial (kJ mol^-1) from the force computation.
+    /// Positive when the system is above the target pressure.  Returns zeros if the
+    /// barostat mass is not positive and finite.
+    pub fn box_acceleration(&self, p_current: f64, box_lengths: &[f64; 3]) -> [f64; 3] {
+        let volume = box_lengths[0] * box_lengths[1] * box_lengths[2];
+        let mass = self.mass(box_lengths);
+        if !(mass.is_finite() && mass > 0.0) {
+            return [0.0; 3];
+        }
+        // Pressure excess in kJ mol⁻¹ Å⁻³; V · ΔP is the energy that drives the box.
+        let drive = volume * (p_current - self.target_pressure) / KJ_MOL_PER_ANG3_TO_BAR;
+        [
+            drive / (mass * box_lengths[0]),
+            drive / (mass * box_lengths[1]),
+            drive / (mass * box_lengths[2]),
+        ]
+    }
+
+    /// Advance the box by one time step `dt` (ps) at the instantaneous pressure
+    /// `p_current` (bar).
+    ///
+    /// The box velocities are kicked with the box acceleration, each edge is
+    /// advanced with the new velocity (symplectic Euler), the particle
+    /// coordinates are dilated affinely with the edge, and the peculiar
+    /// velocities are divided by the same factor (`v ∝ 1/L`).
+    pub fn advance(&mut self, sim: &mut MdSim, p_current: f64, dt: f64) {
+        let acceleration = self.box_acceleration(p_current, &sim.config.box_lengths);
+        for axis in 0..3 {
+            self.box_velocity[axis] += dt * acceleration[axis];
+            let edge = sim.config.box_lengths[axis];
+            if !(edge.is_finite() && edge > 0.0) {
+                continue;
+            }
+            let new_edge = (edge + dt * self.box_velocity[axis]).max(MIN_EDGE_SCALE * edge);
+            let scale = new_edge / edge;
+            for pos in sim.state.positions.iter_mut() {
+                pos[axis] *= scale;
+            }
+            for vel in sim.state.velocities.iter_mut() {
+                vel[axis] /= scale;
+            }
+            sim.config.box_lengths[axis] = new_edge;
+        }
+    }
+
+    /// Apply the barostat to an `MdSim` for one step of length `dt` (ps).
+    ///
+    /// `virial` is the scalar pair virial `W = Σ_{i<j} r_ij · F_ij` (kJ mol⁻¹) of the
+    /// current configuration; the pressure follows from it, the current kinetic
+    /// energy and the current box volume (see [`MdSim::compute_pressure`]).
     pub fn apply(&mut self, sim: &mut MdSim, virial: f64, dt: f64) {
         let p_current = sim.compute_pressure(virial);
-        let scale = self.scale_factors(p_current, dt);
-        for pos in sim.state.positions.iter_mut() {
-            for (p, &s) in pos.iter_mut().zip(scale.iter()) {
-                *p *= s;
-            }
-        }
-        for ((bl, &s), bv) in sim
-            .config
-            .box_lengths
-            .iter_mut()
-            .zip(scale.iter())
-            .zip(self.box_velocity.iter_mut())
-        {
-            *bl *= s;
-            *bv = (s - 1.0) * *bl / dt;
-        }
+        self.advance(sim, p_current, dt);
     }
 }
 
@@ -241,27 +320,18 @@ impl RdfRunning {
 
     /// Normalise and return g(r) values.
     ///
-    /// Divides pair counts by the expected number of pairs in each shell
-    /// for an ideal gas at the same density.
+    /// The histogram counts unique pairs `i < j`, so each bin is divided by the
+    /// number of unique pairs an ideal gas would place in the shell,
+    /// `N (N − 1) / 2 · v_shell / V` per frame; an uncorrelated gas gives
+    /// g(r) = 1.  Meaningful for `r_max ≤ L/2` (minimum-image convention).
     pub fn gofr(&self) -> Vec<f64> {
-        if self.n_frames == 0 || self.n_atoms < 2 {
-            return vec![0.0; self.n_bins];
-        }
-        let rho = self.n_atoms as f64 / self.box_volume;
-        let n_pairs = (self.n_atoms * (self.n_atoms - 1)) as f64 / 2.0;
-        let frames = self.n_frames as f64;
-        (0..self.n_bins)
-            .map(|b| {
-                let r_lo = b as f64 * self.dr;
-                let r_hi = r_lo + self.dr;
-                let shell_vol = 4.0 / 3.0 * std::f64::consts::PI * (r_hi.powi(3) - r_lo.powi(3));
-                let n_ideal = rho * shell_vol * n_pairs;
-                if n_ideal < 1e-20 {
-                    return 0.0;
-                }
-                self.histogram[b] as f64 / (frames * n_ideal)
-            })
-            .collect()
+        normalise_rdf(
+            &self.histogram,
+            self.n_frames,
+            self.n_atoms,
+            self.box_volume,
+            self.dr,
+        )
     }
 
     /// Bin centers (Å) corresponding to each g(r) value.
@@ -281,24 +351,36 @@ impl MdSim {
     ///
     /// Returns `(ke, pe, T, box_x)` records at every `record_every` steps.
     ///
-    /// The Parrinello-Rahman equations of motion are integrated using
-    /// a predictor–corrector step for the box degrees of freedom.
+    /// `forces_fn(positions, box_lengths) -> (forces, virial)` returns the forces
+    /// and the scalar pair virial `W = Σ_{i<j} r_ij · F_ij` (kJ mol⁻¹,
+    /// minimum-image separations) of the same configuration; a non-interacting gas
+    /// returns `0.0`.  The box equation of motion `W L̈ = (V / L)(P − P₀)` is driven
+    /// by the pressure `P = (2·KE + W) / (3V)` of the configuration at the start of
+    /// the step; the persistent box velocity is stored in `pr`.  Within a step the
+    /// particles advance with velocity Verlet, the box and coordinates are then
+    /// dilated by the barostat before the new forces are evaluated, and the
+    /// Berendsen thermostat (coupling time `tau_t`) acts last.
     pub fn run_npt_parrinello_rahman(
         &mut self,
-        forces_fn: impl Fn(&[[f64; 3]], &[f64; 3]) -> Vec<[f64; 3]>,
+        forces_fn: impl Fn(&[[f64; 3]], &[f64; 3]) -> (Vec<[f64; 3]>, f64),
         pr: &mut ParrinelloRahmanBarostat,
         tau_t: f64,
         record_every: u64,
     ) -> Vec<(f64, f64, f64, f64)> {
-        self.state.forces = forces_fn(&self.state.positions, &self.config.box_lengths);
+        let (initial_forces, mut virial) =
+            forces_fn(&self.state.positions, &self.config.box_lengths);
+        self.state.forces = initial_forces;
 
         let mut records = Vec::new();
         let n_steps = self.config.n_steps;
 
         for s in 0..n_steps {
-            self.velocity_verlet_step(&forces_fn);
+            let dt = self.config.dt;
+            let pressure = self.compute_pressure(virial);
+            virial = self.velocity_verlet_step_with(&forces_fn, |sim| {
+                pr.advance(sim, pressure, dt);
+            });
             self.apply_berendsen_thermostat(self.config.temperature, tau_t);
-            pr.apply(self, 0.0, self.config.dt);
 
             let ke = self.compute_kinetic_energy();
             self.state.kinetic_energy = ke;

@@ -330,15 +330,27 @@ impl PhaseChangeLbm {
     }
 
     /// Apply bounce-back on the left wall (x = 0) as the cold mould.
+    ///
+    /// Every fluid population of a wall cell is replaced by its opposite
+    /// (`f_q <- f_opp(q)`), so the populations that streamed into the wall
+    /// leave it reversed, and the thermal populations are reset to the
+    /// equilibrium at the mould temperature (Dirichlet condition).
     pub fn apply_mould_wall(&mut self) {
         let nx = self.params.nx;
         let ny = self.params.ny;
         let t_wall = self.params.t_wall;
+        if nx == 0 {
+            return;
+        }
         for y in 0..ny {
             let i = y * nx; // x = 0
-            // Bounce-back fluid
-            for (q, &oq) in OPP.iter().enumerate() {
-                self.f.swap(i * NQ + q, i * NQ + oq);
+            // Bounce-back fluid: copy the cell first so that each pair is
+            // exchanged exactly once (swapping every q against OPP[q] would
+            // undo every exchange and leave the cell unchanged).
+            let mut incoming = [0.0f64; NQ];
+            incoming.copy_from_slice(&self.f[i * NQ..i * NQ + NQ]);
+            for (f_iq, &oq) in self.f[i * NQ..i * NQ + NQ].iter_mut().zip(OPP.iter()) {
+                *f_iq = incoming[oq];
             }
             // Dirichlet temperature = T_wall
             let geq = feq(t_wall, 0.0, 0.0);
@@ -1612,5 +1624,110 @@ mod tests {
                 "At zero velocity feq[q] = w[q]*rho"
             );
         }
+    }
+
+    // ── Mould-wall bounce-back ───────────────────────────────────────────────
+
+    /// Isothermal melt well above `t_melt`: no phase change can occur, so any
+    /// change of the flow is caused by the mould wall alone.
+    fn isothermal_melt_params(nx: usize, ny: usize) -> SolidificationLbmParams {
+        SolidificationLbmParams::new(nx, ny, 1.0, 0.9, 0.5, 1.0, 1.5, 1.5)
+    }
+
+    #[test]
+    fn test_mould_wall_reverses_every_population_pair() {
+        let mut solver = PhaseChangeLbm::new(default_params());
+        let nx = solver.params.nx;
+        let y = 3;
+        let cell = y * nx;
+        // Distinct value in every direction so that any missed or doubled
+        // exchange is visible.
+        let before: Vec<f64> = (0..NQ).map(|q| 0.1 + 0.05 * q as f64).collect();
+        solver.f[cell * NQ..cell * NQ + NQ].copy_from_slice(&before);
+        // A neighbouring cell that must stay untouched.
+        let neighbour = cell + 1;
+        let neighbour_before: Vec<f64> = solver.f[neighbour * NQ..neighbour * NQ + NQ].to_vec();
+
+        solver.apply_mould_wall();
+
+        for q in 0..NQ {
+            assert_eq!(
+                solver.f[cell * NQ + q],
+                before[OPP[q]],
+                "direction {q} must hold the former population of direction {}",
+                OPP[q]
+            );
+        }
+        // Concrete pairs spelled out: east <-> west, north-east <-> south-west.
+        assert_eq!(solver.f[cell * NQ + 1], before[3]);
+        assert_eq!(solver.f[cell * NQ + 3], before[1]);
+        assert_eq!(solver.f[cell * NQ + 5], before[7]);
+        assert_eq!(solver.f[cell * NQ + 7], before[5]);
+        // The rest population is its own opposite.
+        assert_eq!(solver.f[cell * NQ], before[0]);
+        let sum_before: f64 = before.iter().sum();
+        let sum_after: f64 = solver.f[cell * NQ..cell * NQ + NQ].iter().sum();
+        assert!(
+            (sum_before - sum_after).abs() < 1e-14,
+            "bounce-back must conserve the cell mass: {sum_before} vs {sum_after}"
+        );
+        assert_eq!(
+            &solver.f[neighbour * NQ..neighbour * NQ + NQ],
+            neighbour_before.as_slice(),
+            "cells away from the wall must not be modified"
+        );
+    }
+
+    #[test]
+    fn test_mould_wall_reverses_momentum_and_sets_wall_temperature() {
+        let mut solver = PhaseChangeLbm::new(default_params());
+        let nx = solver.params.nx;
+        let t_wall = solver.params.t_wall;
+        let cell = 2 * nx;
+        let feq_moving = feq(1.0, 0.04, -0.02);
+        solver.f[cell * NQ..cell * NQ + NQ].copy_from_slice(&feq_moving);
+
+        solver.apply_mould_wall();
+
+        let (mut mx, mut my) = (0.0, 0.0);
+        for q in 0..NQ {
+            mx += solver.f[cell * NQ + q] * CX[q];
+            my += solver.f[cell * NQ + q] * CY[q];
+        }
+        assert!((mx + 0.04).abs() < 1e-14, "x-momentum reversed, got {mx}");
+        assert!((my - 0.02).abs() < 1e-14, "y-momentum reversed, got {my}");
+        let temperature: f64 = solver.g[cell * NQ..cell * NQ + NQ].iter().sum();
+        assert!(
+            (temperature - t_wall).abs() < 1e-14,
+            "thermal populations must sum to the wall temperature, got {temperature}"
+        );
+    }
+
+    #[test]
+    fn test_mould_wall_blocks_streamwise_flow() {
+        // A uniform stream along +x in a periodic strip with one wall column.
+        // With a working bounce-back wall the stream is stopped (the fluid
+        // oscillates and is damped by viscosity); with an identity "wall" the
+        // periodic strip keeps its momentum forever.
+        let nx = 16;
+        let ny = 4;
+        let u0 = 0.05;
+        let mut solver = PhaseChangeLbm::new(isothermal_melt_params(nx, ny));
+        let f0 = feq(1.0, u0, 0.0);
+        for cell in 0..nx * ny {
+            solver.f[cell * NQ..cell * NQ + NQ].copy_from_slice(&f0);
+        }
+        solver.update_macroscopic();
+        let mean_ux = |s: &PhaseChangeLbm| s.ux.iter().sum::<f64>() / (nx * ny) as f64;
+        assert!((mean_ux(&solver) - u0).abs() < 1e-12);
+
+        solver.run(300);
+
+        let remaining = mean_ux(&solver).abs();
+        assert!(
+            remaining < 0.1 * u0,
+            "mould wall must stop the stream: mean ux {remaining} vs initial {u0}"
+        );
+        assert!(solver.rho.iter().all(|&r| r.is_finite() && r > 0.5));
     }
 }

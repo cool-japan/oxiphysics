@@ -99,14 +99,36 @@ impl JointLimitSet {
     /// Iterates over all bodies and DOFs, computing the penalty torque/force
     /// for each active limit and adding it to `tau`.
     ///
-    /// `q`, `qd`, and `tau` must all have length `model.total_dof()`.
+    /// `q` has length `model.total_nq()`; `qd` and `tau` have length
+    /// `model.total_dof()`.
+    ///
+    /// The limited coordinate of DOF `k` of a joint is its `k`-th tangent
+    /// coordinate relative to the joint's neutral configuration,
+    /// `(q_i ⊖ neutral)_k` (see [`crate::joint::Joint::difference`]). For
+    /// Euclidean joints (revolute, prismatic, helical, universal) this is
+    /// exactly `q[q_start + k]`; for quaternion joints (spherical,
+    /// free-floating) it is the corresponding component of the body-frame
+    /// rotation vector (or SE(3) twist) from the neutral pose.
     pub fn apply(&self, model: &ArticulatedModel, q: &[f64], qd: &[f64], tau: &mut [f64]) {
         for body in 0..model.num_bodies() {
+            let joint = &model.joints[body];
+            let n_dof = model.dof_count(body);
+            if n_dof == 0 || self.limits[body].iter().all(Option::is_none) {
+                continue;
+            }
+            let q_i = model.q_slice(q, body);
+            let coords: Vec<f64> = if joint.nq() == n_dof {
+                q_i.to_vec()
+            } else {
+                let mut v = vec![0.0; n_dof];
+                joint.difference(&joint.neutral(), q_i, &mut v);
+                v
+            };
             let start = model.dof_start(body);
-            for dof in 0..model.dof_count(body) {
+            for (dof, coord) in coords.iter().enumerate() {
                 if let Some(ref lim) = self.limits[body][dof] {
                     let idx = start + dof;
-                    tau[idx] += lim.penalty(q[idx], qd[idx]);
+                    tau[idx] += lim.penalty(*coord, qd[idx]);
                 }
             }
         }

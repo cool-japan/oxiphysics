@@ -1020,22 +1020,17 @@ impl SphParticleSet {
     }
     /// Compute per-particle smoothed density from the SPH kernel.
     ///
-    /// Uses the cubic spline kernel W(r, h).
+    /// Uses the cubic spline kernel W(r, h) with support radius `2h`:
+    /// `ρᵢ = Σⱼ mⱼ W(|xᵢ − xⱼ|, h)` (the particle itself included).
+    ///
+    /// The neighbours are found with a spatial hash, so the cost is `O(N)` for
+    /// a bounded neighbour count.  When several sums are needed for the same
+    /// configuration, build the lists once with
+    /// [`support_neighbor_lists`](Self::support_neighbor_lists) and call
+    /// [`compute_sph_densities_with_neighbors`](Self::compute_sph_densities_with_neighbors).
     pub fn compute_sph_densities(&mut self, h: f64) {
-        let n = self.len();
-        for i in 0..n {
-            let pi = self.positions[i];
-            let mut density = 0.0;
-            for j in 0..n {
-                let pj = self.positions[j];
-                let dx = pi[0] - pj[0];
-                let dy = pi[1] - pj[1];
-                let dz = pi[2] - pj[2];
-                let r = (dx * dx + dy * dy + dz * dz).sqrt();
-                density += self.masses[j] * cubic_spline_kernel(r, h);
-            }
-            self.densities[i] = density;
-        }
+        let neighbors = self.support_neighbor_lists(h);
+        self.compute_sph_densities_with_neighbors(h, &neighbors);
     }
 }
 impl SphParticleSet {
@@ -1289,92 +1284,33 @@ impl SphParticleSet {
     /// formulation:
     ///   `a_press_i += -Σ_j m_j (P_i/ρ_i² + P_j/ρ_j²) ∇W_ij`
     ///
-    /// Accumulates into `self.accelerations` (does *not* clear first).
+    /// Every fluid particle `i` sums over all of its neighbours `j` within `2h`
+    /// exactly once (boundary neighbours included, boundary particles receive no
+    /// acceleration), so momentum is conserved for fluid–fluid pairs.
+    ///
+    /// Accumulates into `self.accelerations` (does *not* clear first).  The
+    /// neighbour lists are built internally; see
+    /// [`accumulate_pressure_acceleration_with_neighbors`](Self::accumulate_pressure_acceleration_with_neighbors)
+    /// to reuse lists across several sums.
     pub fn accumulate_pressure_acceleration(&mut self, h: f64) {
-        let n = self.len();
-        for i in 0..n {
-            if self.is_boundary[i] {
-                continue;
-            }
-            let pi = self.positions[i];
-            let rho_i = self.densities[i].max(1e-20);
-            let p_i = self.pressures[i];
-            let m_i = self.masses[i];
-            for j in 0..n {
-                if j == i {
-                    continue;
-                }
-                let pj = self.positions[j];
-                let dx = pi[0] - pj[0];
-                let dy = pi[1] - pj[1];
-                let dz = pi[2] - pj[2];
-                let r2 = dx * dx + dy * dy + dz * dz;
-                let r = r2.sqrt();
-                if r < 1e-14 || r > 2.0 * h {
-                    continue;
-                }
-                let rho_j = self.densities[j].max(1e-20);
-                let p_j = self.pressures[j];
-                let m_j = self.masses[j];
-                let dw = cubic_spline_gradient(r, h);
-                let factor = -m_j * (p_i / (rho_i * rho_i) + p_j / (rho_j * rho_j)) * dw;
-                let inv_r = 1.0 / r;
-                self.accelerations[i][0] += factor * dx * inv_r;
-                self.accelerations[i][1] += factor * dy * inv_r;
-                self.accelerations[i][2] += factor * dz * inv_r;
-                if !self.is_boundary[j] {
-                    let factor_j = m_i * (p_i / (rho_i * rho_i) + p_j / (rho_j * rho_j)) * dw;
-                    self.accelerations[j][0] += factor_j * dx * inv_r;
-                    self.accelerations[j][1] += factor_j * dy * inv_r;
-                    self.accelerations[j][2] += factor_j * dz * inv_r;
-                }
-            }
-        }
+        let neighbors = self.support_neighbor_lists(h);
+        self.accumulate_pressure_acceleration_with_neighbors(h, &neighbors);
     }
     /// Morris et al. (1997) viscosity acceleration.
     ///
-    /// `a_visc_i += Σ_j m_j * 4 * μ / ((ρ_i + ρ_j) * r²) * (v_ij · r_ij) * ∇W_ij`
+    /// `a_visc_i += Σ_j m_j * 2 μ / (ρ_i ρ_j) * (dW/dr)/r * (v_i − v_j)`
     ///
-    /// `mu` is the dynamic viscosity \[Pa·s\].  Accumulates into accelerations.
+    /// `mu` is the **dynamic** viscosity \[Pa·s\]; for a uniform density `ρ₀` the
+    /// effective kinematic viscosity is `ν = μ / ρ₀` (so `mu = 1e-3` Pa·s with
+    /// `ρ₀ = 1000` kg/m³ corresponds to `ν = 1e-6` m²/s).  Accumulates into
+    /// accelerations; the neighbour lists are built internally (see
+    /// [`accumulate_morris_viscosity_with_neighbors`](Self::accumulate_morris_viscosity_with_neighbors)).
     pub fn accumulate_morris_viscosity(&mut self, h: f64, mu: f64) {
         if mu.abs() < 1e-30 {
             return;
         }
-        let n = self.len();
-        for i in 0..n {
-            if self.is_boundary[i] {
-                continue;
-            }
-            let pi = self.positions[i];
-            let vi = self.velocities[i];
-            let rho_i = self.densities[i].max(1e-20);
-            for j in 0..n {
-                if j == i {
-                    continue;
-                }
-                let pj = self.positions[j];
-                let vj = self.velocities[j];
-                let dx = pi[0] - pj[0];
-                let dy = pi[1] - pj[1];
-                let dz = pi[2] - pj[2];
-                let r2 = dx * dx + dy * dy + dz * dz;
-                let r = r2.sqrt();
-                if r < 1e-14 || r > 2.0 * h {
-                    continue;
-                }
-                let rho_j = self.densities[j].max(1e-20);
-                let m_j = self.masses[j];
-                let dw = cubic_spline_gradient(r, h);
-                let dvx = vi[0] - vj[0];
-                let dvy = vi[1] - vj[1];
-                let dvz = vi[2] - vj[2];
-                let coeff = 4.0 * mu / (rho_i + rho_j) * dw / r;
-                let factor = m_j * coeff;
-                self.accelerations[i][0] += factor * dvx;
-                self.accelerations[i][1] += factor * dvy;
-                self.accelerations[i][2] += factor * dvz;
-            }
-        }
+        let neighbors = self.support_neighbor_lists(h);
+        self.accumulate_morris_viscosity_with_neighbors(h, mu, &neighbors);
     }
     /// WCSPH pressure update: `P_i = B * ((ρ_i / ρ₀)^γ - 1)`.
     ///

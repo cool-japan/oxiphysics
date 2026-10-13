@@ -130,6 +130,12 @@ pub fn par_sphere_sphere(
     })
 }
 /// Test sphere-box (AABB) contact. Returns `Some(ParContact)` if penetrating.
+///
+/// The normal points from the box towards the sphere and `point` is the point
+/// of the box surface the sphere penetrates through. When the sphere centre lies
+/// inside the box the sphere leaves through the face with the smallest
+/// penetration `pen`: the normal is that face's outward normal, `point` is the
+/// projection of the centre onto the face, and `depth` is `radius + pen`.
 pub fn par_sphere_box(
     a_idx: u32,
     b_idx: u32,
@@ -153,18 +159,36 @@ pub fn par_sphere_box(
         return None;
     }
     let dist = dist_sq.sqrt();
-    let depth = sphere.radius - dist;
-    let normal = if dist < 1e-14 {
-        [0.0, 1.0, 0.0]
+    let (normal, point, depth) = if dist < 1e-14 {
+        // Centre inside the box: exit through the nearest face.
+        let offset = sub3(sphere.center, bx.center);
+        let pen = [
+            bx.half_extents[0] - offset[0].abs(),
+            bx.half_extents[1] - offset[1].abs(),
+            bx.half_extents[2] - offset[2].abs(),
+        ];
+        let axis = if pen[0] <= pen[1] && pen[0] <= pen[2] {
+            0
+        } else if pen[1] <= pen[2] {
+            1
+        } else {
+            2
+        };
+        let sign = if offset[axis] >= 0.0 { 1.0 } else { -1.0 };
+        let mut normal = [0.0_f64; 3];
+        normal[axis] = sign;
+        let mut face_point = sphere.center;
+        face_point[axis] = bx.center[axis] + sign * bx.half_extents[axis];
+        (normal, face_point, sphere.radius + pen[axis])
     } else {
-        normalize3(delta)
+        (normalize3(delta), closest, sphere.radius - dist)
     };
     Some(ParContact {
         body_a: a_idx,
         body_b: b_idx,
         normal,
         depth,
-        point: closest,
+        point,
     })
 }
 /// Test box-box (AABB) contact using SAT on the three coordinate axes.
@@ -479,8 +503,128 @@ mod tests {
             tree.insert(ParAabb::new([off, 0.0, 0.0], [off + 1.0, 1.0, 1.0]), i);
         }
         let q = ParAabb::new([0.5, 0.0, 0.0], [1.5, 1.0, 1.0]);
-        let res = tree.query(&q);
-        assert!(res.len() >= 2);
+        let mut res = tree.query(&q);
+        res.sort_unstable();
+        assert_eq!(res, vec![0, 1], "query must hit exactly boxes 0 and 1");
+    }
+    /// Walk the whole tree, assert its structural invariants and return the leaf
+    /// handles in the order found.
+    ///
+    /// Every internal AABB must be exactly the union of its children, heights must
+    /// be `1 + max(child heights)`, sibling heights may differ by at most one
+    /// (AVL balance) and every leaf must be reachable from the root.
+    fn check_tree_invariants(tree: &ParallelAabbTree) -> Vec<u32> {
+        let inner = tree.inner.read().unwrap_or_else(|e| e.into_inner());
+        let mut handles = Vec::new();
+        if inner.root == u32::MAX {
+            return handles;
+        }
+        let mut stack = vec![inner.root];
+        while let Some(idx) = stack.pop() {
+            let node = &inner.nodes[idx as usize];
+            if node.is_leaf() {
+                assert_eq!(node.height, 0, "leaf {idx} must have height 0");
+                handles.push(node.handle);
+                continue;
+            }
+            let l = &inner.nodes[node.left as usize];
+            let r = &inner.nodes[node.right as usize];
+            assert_eq!(
+                node.aabb,
+                l.aabb.merge(&r.aabb),
+                "internal node {idx} must enclose exactly its children"
+            );
+            assert_eq!(node.height, 1 + l.height.max(r.height), "height of {idx}");
+            assert!(
+                (l.height - r.height).abs() <= 1,
+                "node {idx} is unbalanced: {} vs {}",
+                l.height,
+                r.height
+            );
+            stack.push(node.left);
+            stack.push(node.right);
+        }
+        handles
+    }
+    #[test]
+    fn test_parallel_tree_every_leaf_reachable_after_many_inserts() {
+        let tree = ParallelAabbTree::new();
+        let n = 100u32;
+        // Disjoint unit boxes along x with a 1.0 gap (touching boxes would count
+        // as overlapping).
+        for i in 0..n {
+            let x = 2.0 * f64::from(i);
+            tree.insert(ParAabb::new([x, 0.0, 0.0], [x + 1.0, 1.0, 1.0]), i);
+        }
+        for i in 0..n {
+            let x = 2.0 * f64::from(i);
+            let hits = tree.query(&ParAabb::new([x, 0.0, 0.0], [x + 1.0, 1.0, 1.0]));
+            assert_eq!(hits, vec![i], "box {i} must be the only hit for its AABB");
+        }
+        let mut all = tree.query(&ParAabb::new([-1.0; 3], [1000.0; 3]));
+        all.sort_unstable();
+        assert_eq!(all, (0..n).collect::<Vec<_>>(), "query must see all leaves");
+        let mut leaves = check_tree_invariants(&tree);
+        leaves.sort_unstable();
+        assert_eq!(leaves, (0..n).collect::<Vec<_>>());
+        // 100 leaves + 99 internal nodes.
+        assert_eq!(tree.node_count(), 199);
+    }
+    #[test]
+    fn test_parallel_tree_balanced_for_sorted_insertion_order() {
+        // Monotonic insertion is the worst case for an unbalanced tree.
+        let tree = ParallelAabbTree::new();
+        let n = 256u32;
+        for i in 0..n {
+            let x = 2.0 * f64::from(i);
+            tree.insert(ParAabb::new([x, 0.0, 0.0], [x + 1.0, 1.0, 1.0]), i);
+        }
+        let inner = tree.inner.read().unwrap_or_else(|e| e.into_inner());
+        let root_height = inner.nodes[inner.root as usize].height;
+        // An AVL tree on 256 leaves has height at most 1.44 * log2(257) ~ 11.5.
+        assert!(root_height <= 12, "tree degenerated: height {root_height}");
+    }
+    #[test]
+    fn test_parallel_tree_matches_brute_force_on_random_boxes() {
+        // Deterministic LCG; no external RNG needed.
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as f64 / (1u64 << 31) as f64
+        };
+        let tree = ParallelAabbTree::new();
+        let mut boxes: Vec<ParAabb> = Vec::new();
+        for i in 0..300u32 {
+            let center = [next() * 50.0, next() * 50.0, next() * 50.0];
+            let half = [0.2 + next(), 0.2 + next(), 0.2 + next()];
+            let b = ParAabb::from_center_half_extents(center, half);
+            tree.insert(b, i);
+            boxes.push(b);
+            if i % 17 == 0 {
+                let leaves = check_tree_invariants(&tree);
+                assert_eq!(leaves.len(), boxes.len(), "leaf count after insert {i}");
+            }
+        }
+        let mut leaves = check_tree_invariants(&tree);
+        leaves.sort_unstable();
+        assert_eq!(leaves, (0..300u32).collect::<Vec<_>>());
+        for _ in 0..200 {
+            let center = [next() * 50.0, next() * 50.0, next() * 50.0];
+            let half = [next() * 6.0, next() * 6.0, next() * 6.0];
+            let q = ParAabb::from_center_half_extents(center, half);
+            let mut expected: Vec<u32> = boxes
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| b.overlaps(&q))
+                .map(|(i, _)| i as u32)
+                .collect();
+            expected.sort_unstable();
+            let mut got = tree.query(&q);
+            got.sort_unstable();
+            assert_eq!(got, expected, "query {q:?}");
+        }
     }
     #[test]
     fn test_work_stealing_no_pairs() {
@@ -551,6 +695,60 @@ mod tests {
         };
         let c = par_sphere_box(0, 1, &s, &b).unwrap();
         assert!(c.depth > 0.0);
+    }
+    #[test]
+    fn test_sphere_box_centre_inside_uses_nearest_face() {
+        // Box [-1, 1]^3 centred at the origin; the sphere centre is 0.1 below the
+        // +y face, so the nearest exit is +y and the full radius must clear it.
+        let s = ParSphere {
+            center: [0.2, 0.9, -0.3],
+            radius: 0.3,
+        };
+        let b = ParBox {
+            center: [0.0, 0.0, 0.0],
+            half_extents: [1.0, 1.0, 1.0],
+        };
+        let c = par_sphere_box(0, 1, &s, &b).expect("sphere centre inside the box collides");
+        assert_eq!(c.normal, [0.0, 1.0, 0.0]);
+        assert!((c.depth - 0.4).abs() < 1e-12, "depth={}", c.depth);
+        assert!((c.point[0] - 0.2).abs() < 1e-12);
+        assert!((c.point[1] - 1.0).abs() < 1e-12, "point={:?}", c.point);
+        assert!((c.point[2] + 0.3).abs() < 1e-12);
+    }
+    #[test]
+    fn test_sphere_box_centre_inside_negative_side_and_offset_box() {
+        // Box centred at (10, 0, 0): the sphere centre is nearest to the -z face.
+        let s = ParSphere {
+            center: [10.1, 0.2, -0.85],
+            radius: 0.2,
+        };
+        let b = ParBox {
+            center: [10.0, 0.0, 0.0],
+            half_extents: [1.0, 1.0, 1.0],
+        };
+        let c = par_sphere_box(3, 4, &s, &b).expect("contact");
+        assert_eq!(c.normal, [0.0, 0.0, -1.0]);
+        assert!((c.depth - 0.35).abs() < 1e-12, "depth={}", c.depth);
+        assert!((c.point[2] + 1.0).abs() < 1e-12, "point={:?}", c.point);
+        assert_eq!((c.body_a, c.body_b), (3, 4));
+        // The sphere surface point facing the box lies `depth` below `point`
+        // along the normal: centre - normal * radius.
+        let facing = [
+            s.center[0] - c.normal[0] * s.radius,
+            s.center[1] - c.normal[1] * s.radius,
+            s.center[2] - c.normal[2] * s.radius,
+        ];
+        let gap = [
+            c.point[0] - facing[0],
+            c.point[1] - facing[1],
+            c.point[2] - facing[2],
+        ];
+        assert!(
+            gap.iter()
+                .zip(c.normal.iter())
+                .all(|(g, n)| (g - n * c.depth).abs() < 1e-12),
+            "gap {gap:?} must equal normal * depth"
+        );
     }
     #[test]
     fn test_sphere_box_separated() {

@@ -485,6 +485,9 @@ pub struct WheelState {
     /// Cumulative rotation angle of the wheel (visual only).
     pub rotation_angle: Real,
     /// Angular velocity of the wheel about its axle (rad/s).
+    ///
+    /// Signed: positive when the wheel rolls forward, negative when it rolls
+    /// backwards (reverse gear, rolling back).
     pub spin_velocity: Real,
     /// Lateral slip angle in radians.
     pub slip_angle: Real,

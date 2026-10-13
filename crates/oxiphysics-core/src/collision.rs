@@ -470,9 +470,59 @@ impl Bvh {
 // GJK – Gilbert-Johnson-Keerthi distance algorithm
 // ---------------------------------------------------------------------------
 
+/// Maximum number of GJK iterations before the best bound found so far is
+/// reported.
+const GJK_MAX_ITER: usize = 256;
+
+/// Relative accuracy of the reported distance: the iteration stops once
+/// `|v|² − v·w ≤ GJK_REL_TOL · |v|²`.  The plane through `w` orthogonal to `v`
+/// then separates the shapes, which certifies
+/// `(1 − GJK_REL_TOL)·|v| ≤ d ≤ |v|` for the true distance `d`.
+const GJK_REL_TOL: Real = 1e-12;
+
+/// Distance (scaled by `max(1, simplex extent)`) below which the closest simplex
+/// point is treated as the origin, i.e. the shapes intersect.
+const GJK_INTERSECT_EPS: Real = 1e-10;
+
+/// Squared-sine / normalised-volume threshold below which a simplex face is
+/// considered affinely dependent and is skipped by the closest-point search.
+const GJK_DEGENERACY: Real = 1e-14;
+
+/// Relative improvement in squared distance a higher-dimensional simplex face
+/// must achieve to displace a lower-dimensional one (prefers minimal supports);
+/// a few units of round-off.
+const GJK_TIE_TOL: Real = 4.0 * Real::EPSILON;
+
+/// A vertex of the GJK simplex: the Minkowski-difference point `w = a − b`
+/// together with the support points `a` (on shape A) and `b` (on shape B) that
+/// produced it.
+///
+/// Keeping the witnesses lets the closest points on the two shapes be recovered
+/// from the barycentric coordinates of the closest simplex point.
+#[derive(Debug, Clone, Copy)]
+struct GjkVertex {
+    /// Point of the Minkowski difference `A ⊖ B`.
+    w: [Real; 3],
+    /// Support point on shape A.
+    a: [Real; 3],
+    /// Support point on shape B.
+    b: [Real; 3],
+}
+
+/// Support vertex of `A ⊖ B` in direction `dir`, with its witness points.
+fn gjk_vertex(a: &dyn ConvexShape, b: &dyn ConvexShape, dir: [Real; 3]) -> GjkVertex {
+    let pa = a.support(dir);
+    let pb = b.support(v3_neg(dir));
+    GjkVertex {
+        w: v3_sub(pa, pb),
+        a: pa,
+        b: pb,
+    }
+}
+
 /// Minkowski difference support function for two convex shapes.
 fn gjk_support(a: &dyn ConvexShape, b: &dyn ConvexShape, dir: [Real; 3]) -> [Real; 3] {
-    v3_sub(a.support(dir), b.support(v3_neg(dir)))
+    gjk_vertex(a, b, dir).w
 }
 
 /// Result of a GJK query.
@@ -480,236 +530,303 @@ fn gjk_support(a: &dyn ConvexShape, b: &dyn ConvexShape, dir: [Real; 3]) -> [Rea
 pub struct GjkResult {
     /// Whether the shapes intersect (minimum distance is 0).
     pub intersecting: bool,
-    /// Closest distance between the shapes (0 if intersecting).
+    /// Minimum distance between the shapes, accurate to a relative `1e-12`
+    /// (0 if intersecting).
     pub distance: Real,
-    /// Closest point on shape A (only valid when not intersecting).
+    /// Closest point on shape A (only valid when not intersecting; zero
+    /// otherwise).  `|closest_a − closest_b|` equals `distance`.
     pub closest_a: [Real; 3],
-    /// Closest point on shape B (only valid when not intersecting).
+    /// Closest point on shape B (only valid when not intersecting; zero
+    /// otherwise).
     pub closest_b: [Real; 3],
 }
 
-/// Run the GJK algorithm to determine if two convex shapes intersect and,
-/// if not, compute their minimum distance.
+/// Closest point of a GJK simplex to the origin and the sub-simplex that
+/// supports it.
+#[derive(Debug, Clone, Copy)]
+struct GjkClosest {
+    /// Closest point `Σ λ_i w_i`.
+    point: [Real; 3],
+    /// Squared length of `point`.
+    dist_sq: Real,
+    /// Bit `i` is set when simplex vertex `i` supports the closest point.
+    mask: u8,
+    /// Barycentric weights aligned with the simplex vertex order (zero for
+    /// vertices outside `mask`).
+    lambda: [Real; 4],
+}
+
+/// Barycentric coordinates of the point of `aff(p)` nearest the origin, provided
+/// it lies in the closed simplex spanned by the 1–4 points `p`.
 ///
-/// Returns `GjkResult` with the intersection flag and minimum distance.
+/// For four points the "nearest point" is the origin itself, so the result is
+/// `Some` exactly when the tetrahedron contains the origin.  Returns `None` for
+/// affinely dependent points (coincident, collinear, coplanar) and when the
+/// nearest affine point falls outside the simplex.  The triangle and tetrahedron
+/// cases use cross/triple products of the vertex vectors rather than Gram-matrix
+/// normal equations, which would square the condition number.
+fn gjk_subset_weights(p: &[[Real; 3]]) -> Option<[Real; 4]> {
+    let mut lambda = [0.0; 4];
+    match *p {
+        [_] => {
+            lambda[0] = 1.0;
+            Some(lambda)
+        }
+        [p0, p1] => {
+            let e = v3_sub(p1, p0);
+            let ee = v3_dot(e, e);
+            if ee <= 0.0 {
+                return None;
+            }
+            let t = -v3_dot(p0, e) / ee;
+            if !(0.0..=1.0).contains(&t) {
+                return None;
+            }
+            lambda[0] = 1.0 - t;
+            lambda[1] = t;
+            Some(lambda)
+        }
+        [p0, p1, p2] => {
+            let e1 = v3_sub(p1, p0);
+            let e2 = v3_sub(p2, p0);
+            let n = v3_cross(e1, e2);
+            let nn = v3_dot(n, n);
+            if nn <= GJK_DEGENERACY * v3_len_sq(e1) * v3_len_sq(e2) {
+                return None;
+            }
+            // q − p0 = μ1 e1 + μ2 e2 for the projection q of the origin onto the
+            // plane; crossing with e2 / e1 and dotting with n isolates μ1 / μ2.
+            let mu1 = -v3_dot(v3_cross(p0, e2), n) / nn;
+            let mu2 = v3_dot(v3_cross(p0, e1), n) / nn;
+            let l0 = 1.0 - mu1 - mu2;
+            if !(l0 >= 0.0 && mu1 >= 0.0 && mu2 >= 0.0) {
+                return None;
+            }
+            lambda[0] = l0;
+            lambda[1] = mu1;
+            lambda[2] = mu2;
+            Some(lambda)
+        }
+        [p0, p1, p2, p3] => {
+            let e1 = v3_sub(p1, p0);
+            let e2 = v3_sub(p2, p0);
+            let e3 = v3_sub(p3, p0);
+            let c23 = v3_cross(e2, e3);
+            let d = v3_dot(e1, c23);
+            if d * d <= GJK_DEGENERACY * v3_len_sq(e1) * v3_len_sq(e2) * v3_len_sq(e3) {
+                return None;
+            }
+            // Cramer's rule for p0 + Σ μ_i e_i = 0.
+            let neg_p0 = v3_neg(p0);
+            let mu1 = v3_dot(neg_p0, c23) / d;
+            let mu2 = v3_dot(e1, v3_cross(neg_p0, e3)) / d;
+            let mu3 = v3_dot(e1, v3_cross(e2, neg_p0)) / d;
+            let l0 = 1.0 - mu1 - mu2 - mu3;
+            if !(l0 >= 0.0 && mu1 >= 0.0 && mu2 >= 0.0 && mu3 >= 0.0) {
+                return None;
+            }
+            lambda = [l0, mu1, mu2, mu3];
+            Some(lambda)
+        }
+        _ => None,
+    }
+}
+
+/// Closest point to the origin of the convex hull of `simplex` (1–4 vertices),
+/// together with the minimal sub-simplex supporting it.
+///
+/// Johnson's distance sub-algorithm in enumerative form: the closest point of a
+/// convex hull lies in the relative interior of exactly one face spanned by
+/// affinely independent vertices, so the face whose nearest affine point has
+/// non-negative barycentric coordinates and minimal norm is the answer.  Faces
+/// are visited by increasing dimension and a larger face must be closer by more
+/// than rounding noise to displace a smaller one, so unused vertices are
+/// dropped.  Returns `None` only for an empty simplex.
+fn gjk_closest_to_origin(simplex: &[GjkVertex]) -> Option<GjkClosest> {
+    let n = simplex.len().min(4);
+    let mut best: Option<GjkClosest> = None;
+    for size in 1..=n {
+        for mask in 1u8..(1u8 << n) {
+            if mask.count_ones() as usize != size {
+                continue;
+            }
+            let mut pts = [[0.0; 3]; 4];
+            let mut idx = [0usize; 4];
+            let mut k = 0;
+            for (i, vertex) in simplex.iter().take(n).enumerate() {
+                if mask & (1 << i) != 0 {
+                    pts[k] = vertex.w;
+                    idx[k] = i;
+                    k += 1;
+                }
+            }
+            let Some(weights) = gjk_subset_weights(&pts[..k]) else {
+                continue;
+            };
+            let point = if k == 4 {
+                [0.0; 3]
+            } else {
+                pts.iter()
+                    .zip(weights.iter())
+                    .take(k)
+                    .fold([0.0; 3], |acc, (p, &w)| v3_add(acc, v3_scale(*p, w)))
+            };
+            let dist_sq = v3_len_sq(point);
+            if best.is_none_or(|b| dist_sq < b.dist_sq * (1.0 - GJK_TIE_TOL)) {
+                let mut lambda = [0.0; 4];
+                for (&i, &w) in idx.iter().zip(weights.iter()).take(k) {
+                    lambda[i] = w;
+                }
+                best = Some(GjkClosest {
+                    point,
+                    dist_sq,
+                    mask,
+                    lambda,
+                });
+            }
+        }
+    }
+    best
+}
+
+/// Result of [`gjk_simplex`] for intersecting shapes; `terminal` is the
+/// simplex whose hull contains the origin.
+fn gjk_intersecting(terminal: Vec<[Real; 3]>) -> (GjkResult, Option<Vec<[Real; 3]>>) {
+    (
+        GjkResult {
+            intersecting: true,
+            distance: 0.0,
+            closest_a: [0.0; 3],
+            closest_b: [0.0; 3],
+        },
+        Some(terminal),
+    )
+}
+
+/// Run the GJK algorithm to determine if two convex shapes intersect and,
+/// if not, compute their minimum distance and the closest points.
+///
+/// This is the distance variant of GJK (van den Bergen, 2003): every iteration
+/// computes the point `v` of the current simplex closest to the origin of the
+/// Minkowski difference `A ⊖ B`, queries the support vertex `w` in direction
+/// `−v` and stops once `w` can no longer pull the simplex closer, i.e.
+/// `|v|² − v·w ≤ 1e-12 · |v|²`.  Then `|v|` is the distance to a relative
+/// accuracy of about `1e-12`, and the closest points are the same convex
+/// combination of the support points of `A` and `B` that produced the simplex.
+///
+/// For polytopes the closest points are exact up to rounding.  For smooth
+/// shapes (spheres, capsules) the distance is accurate to `1e-12` relative, but
+/// a witness point moves with the square root of the distance error (the
+/// surface is quadratic around the closest point), so the closest points are
+/// accurate to roughly `1e-6`–`1e-5` of the shape size.  When the shapes
+/// intersect (or the gap is below `1e-10`) `distance` is `0` and the closest
+/// points are zero.  If the iteration budget is exhausted the best upper bound
+/// found (an actual pair of points on the two shapes) is returned.
 pub fn gjk(a: &dyn ConvexShape, b: &dyn ConvexShape) -> GjkResult {
     gjk_simplex(a, b).0
 }
 
 /// GJK core that also returns the terminating simplex when the shapes overlap.
 ///
-/// On intersection the second element is the enclosing tetrahedron (the simplex
-/// that contained the origin), which EPA uses to seed a polytope that genuinely
-/// encloses the origin.  When the shapes are separated it is `None`.
+/// On intersection the second element holds the 1 to 4 vertices (points of the
+/// Minkowski difference `A ⊖ B`) of the simplex whose hull contains the origin.
+/// It is an enclosing tetrahedron whenever GJK found one; when the origin sat on
+/// a lower-dimensional face (typical for symmetric configurations, e.g. a sphere
+/// centred on a box axis) it is that minimal face, which
+/// [`epa_complete_simplex`] grows into a tetrahedron for EPA.  It is `None` for
+/// separated shapes.
 fn gjk_simplex(a: &dyn ConvexShape, b: &dyn ConvexShape) -> (GjkResult, Option<Vec<[Real; 3]>>) {
-    const MAX_ITER: usize = 64;
-    const EPS: Real = 1e-10;
+    let first = gjk_vertex(a, b, [1.0, 0.0, 0.0]);
+    let mut simplex: Vec<GjkVertex> = vec![first];
+    let mut weights: Vec<Real> = vec![1.0];
+    let mut v = first.w;
+    let mut v_sq = v3_len_sq(v);
+    let mut last_w: Option<[Real; 3]> = None;
 
-    let mut simplex: Vec<[Real; 3]> = Vec::with_capacity(4);
-    let mut dir = [1.0, 0.0, 0.0_f64];
-
-    let first = gjk_support(a, b, dir);
-    simplex.push(first);
-    dir = v3_neg(first);
-
-    // Best separation lower bound found so far, together with the witness
-    // direction that produced it.  `v3_dot(support, dir_unit)` is a valid lower
-    // bound on the true minimum distance along that direction, so the largest
-    // such value seen is our best honest distance estimate if the algorithm
-    // never converges.
-    let mut best_dist = Real::MAX; // distance of the closest simplex feature
-    let mut best_dir = dir; // direction toward the origin from that feature
-
-    for _ in 0..MAX_ITER {
-        let len_sq = v3_len_sq(dir);
-        if len_sq < EPS {
-            // Direction degenerate — the closest simplex feature is the origin,
-            // i.e. the Minkowski difference contains the origin: intersection.
-            let s = (simplex.len() == 4).then(|| simplex.clone());
-            return (
-                GjkResult {
-                    intersecting: true,
-                    distance: 0.0,
-                    closest_a: [0.0; 3],
-                    closest_b: [0.0; 3],
-                },
-                s,
-            );
+    for _ in 0..GJK_MAX_ITER {
+        let v_len = v_sq.sqrt();
+        let extent = simplex.iter().map(|p| v3_len(p.w)).fold(1.0_f64, Real::max);
+        if v_len <= GJK_INTERSECT_EPS * extent {
+            return gjk_intersecting(simplex.iter().map(|p| p.w).collect());
         }
 
-        // Track the closest-feature distance: |dir| is the distance from the
-        // origin to the closest point on the current simplex (do_simplex sets
-        // `dir` to the origin-ward vector from that closest feature).
-        let cur_dist = len_sq.sqrt();
-        if cur_dist < best_dist {
-            best_dist = cur_dist;
-            best_dir = dir;
+        // Support vertex in the direction of the origin as seen from `v`.
+        let w = gjk_vertex(a, b, v3_neg(v));
+        let w_len = v3_len(w.w);
+        let gap = v_sq - v3_dot(v, w.w);
+        let noise = 8.0 * Real::EPSILON * v_len * v_len.max(w_len);
+        if gap <= GJK_REL_TOL * v_sq + noise {
+            break;
+        }
+        // In exact arithmetic `w` cannot be a vertex that is already known while
+        // the gap is positive; seeing it again means rounding noise has stalled
+        // the iteration, so the current bound is final.
+        if last_w == Some(w.w) || simplex.iter().any(|p| p.w == w.w) {
+            break;
+        }
+        last_w = Some(w.w);
+
+        simplex.push(w);
+        let Some(next) = gjk_closest_to_origin(&simplex) else {
+            simplex.pop();
+            break;
+        };
+        let extent = extent.max(w_len);
+        if next.dist_sq.sqrt() <= GJK_INTERSECT_EPS * extent {
+            // The origin lies on or inside the hull of the pre-reduction
+            // simplex.  A genuine enclosing tetrahedron is handed over as is;
+            // otherwise the minimal face that contains the origin is.
+            let full: Vec<[Real; 3]> = simplex.iter().map(|p| p.w).collect();
+            let terminal = if epa_simplex_is_valid(&full) && epa_origin_in_tetra(&full) {
+                full
+            } else {
+                simplex
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, _)| next.mask & (1 << i) != 0)
+                    .map(|(_, p)| p.w)
+                    .collect()
+            };
+            return gjk_intersecting(terminal);
+        }
+        if next.dist_sq > v_sq {
+            // The hull only grew, so this can happen only through round-off.
+            simplex.pop();
+            break;
         }
 
-        let support = gjk_support(a, b, dir);
-
-        // If the new support does not pass the origin, shapes do not intersect.
-        if v3_dot(support, dir) < 0.0 {
-            let dist = cur_dist;
-            return (
-                GjkResult {
-                    intersecting: false,
-                    distance: dist,
-                    closest_a: a.support(dir),
-                    closest_b: b.support(v3_neg(dir)),
-                },
-                None,
-            );
+        // Reduce to the sub-simplex supporting the new closest point.
+        let mut reduced: Vec<GjkVertex> = Vec::with_capacity(4);
+        let mut reduced_weights: Vec<Real> = Vec::with_capacity(4);
+        for (i, vertex) in simplex.iter().enumerate() {
+            if next.mask & (1 << i) != 0 {
+                reduced.push(*vertex);
+                reduced_weights.push(next.lambda[i]);
+            }
         }
-
-        simplex.push(support);
-
-        if gjk_do_simplex(&mut simplex, &mut dir) {
-            // Origin enclosed: `simplex` holds the terminating tetrahedron.
-            let s = (simplex.len() == 4).then(|| simplex.clone());
-            return (
-                GjkResult {
-                    intersecting: true,
-                    distance: 0.0,
-                    closest_a: [0.0; 3],
-                    closest_b: [0.0; 3],
-                },
-                s,
-            );
-        }
+        simplex = reduced;
+        weights = reduced_weights;
+        v = next.point;
+        v_sq = next.dist_sq;
     }
 
-    // Non-convergence fallback (slow / near-degenerate geometry): report the
-    // best estimate actually computed rather than a fabricated constant.  If the
-    // closest simplex feature is essentially at the origin we honestly call it an
-    // intersection; otherwise we report the best measured separation and witness
-    // support points instead of pretending `intersecting = true` with zeros.
-    if best_dist <= EPS.sqrt() {
-        let s = (simplex.len() == 4).then(|| simplex.clone());
-        (
-            GjkResult {
-                intersecting: true,
-                distance: 0.0,
-                closest_a: [0.0; 3],
-                closest_b: [0.0; 3],
-            },
-            s,
-        )
-    } else {
-        (
-            GjkResult {
-                intersecting: false,
-                distance: best_dist,
-                closest_a: a.support(best_dir),
-                closest_b: b.support(v3_neg(best_dir)),
-            },
-            None,
-        )
+    // Separated (or iteration budget exhausted): recover the witnesses.
+    let mut closest_a = [0.0; 3];
+    let mut closest_b = [0.0; 3];
+    for (vertex, &weight) in simplex.iter().zip(weights.iter()) {
+        closest_a = v3_add(closest_a, v3_scale(vertex.a, weight));
+        closest_b = v3_add(closest_b, v3_scale(vertex.b, weight));
     }
-}
-
-/// Update the GJK simplex and direction; returns `true` if the origin is inside.
-fn gjk_do_simplex(simplex: &mut Vec<[Real; 3]>, dir: &mut [Real; 3]) -> bool {
-    match simplex.len() {
-        2 => gjk_line_case(simplex, dir),
-        3 => gjk_triangle_case(simplex, dir),
-        4 => gjk_tetrahedron_case(simplex, dir),
-        _ => false,
-    }
-}
-
-fn gjk_line_case(simplex: &mut Vec<[Real; 3]>, dir: &mut [Real; 3]) -> bool {
-    let b = simplex[0];
-    let a = simplex[1];
-    let ab = v3_sub(b, a);
-    let ao = v3_neg(a);
-    if v3_dot(ab, ao) > 0.0 {
-        // Origin is between A and B.
-        *dir = v3_sub(v3_scale(ab, v3_dot(ab, ao) / v3_dot(ab, ab)), ao);
-    } else {
-        simplex.clear();
-        simplex.push(a);
-        *dir = ao;
-    }
-    false
-}
-
-fn gjk_triangle_case(simplex: &mut Vec<[Real; 3]>, dir: &mut [Real; 3]) -> bool {
-    let c = simplex[0];
-    let b = simplex[1];
-    let a = simplex[2];
-    let ab = v3_sub(b, a);
-    let ac = v3_sub(c, a);
-    let ao = v3_neg(a);
-    let abc = v3_cross(ab, ac);
-
-    // Check if origin is outside edge AC.
-    if v3_dot(v3_cross(abc, ac), ao) > 0.0 {
-        if v3_dot(ac, ao) > 0.0 {
-            simplex.clear();
-            simplex.push(c);
-            simplex.push(a);
-            *dir = v3_sub(v3_scale(ac, v3_dot(ac, ao) / v3_dot(ac, ac)), ao);
-        } else {
-            simplex.clear();
-            simplex.push(b);
-            simplex.push(a);
-            return gjk_line_case(simplex, dir);
-        }
-    } else if v3_dot(v3_cross(ab, abc), ao) > 0.0 {
-        simplex.clear();
-        simplex.push(b);
-        simplex.push(a);
-        return gjk_line_case(simplex, dir);
-    } else {
-        // Origin is above or below the triangle.
-        if v3_dot(abc, ao) > 0.0 {
-            *dir = abc;
-        } else {
-            simplex.swap(0, 1); // flip winding
-            *dir = v3_neg(abc);
-        }
-    }
-    false
-}
-
-fn gjk_tetrahedron_case(simplex: &mut Vec<[Real; 3]>, dir: &mut [Real; 3]) -> bool {
-    let d = simplex[0];
-    let c = simplex[1];
-    let b = simplex[2];
-    let a = simplex[3];
-    let ab = v3_sub(b, a);
-    let ac = v3_sub(c, a);
-    let ad = v3_sub(d, a);
-    let ao = v3_neg(a);
-
-    let abc = v3_cross(ab, ac);
-    let acd = v3_cross(ac, ad);
-    let adb = v3_cross(ad, ab);
-
-    if v3_dot(abc, ao) > 0.0 {
-        simplex.clear();
-        simplex.push(c);
-        simplex.push(b);
-        simplex.push(a);
-        return gjk_triangle_case(simplex, dir);
-    }
-    if v3_dot(acd, ao) > 0.0 {
-        simplex.clear();
-        simplex.push(d);
-        simplex.push(c);
-        simplex.push(a);
-        return gjk_triangle_case(simplex, dir);
-    }
-    if v3_dot(adb, ao) > 0.0 {
-        simplex.clear();
-        simplex.push(b);
-        simplex.push(d);
-        simplex.push(a);
-        return gjk_triangle_case(simplex, dir);
-    }
-    // Origin is inside the tetrahedron.
-    true
+    let distance = v3_len(v3_sub(closest_a, closest_b));
+    (
+        GjkResult {
+            intersecting: false,
+            distance,
+            closest_a,
+            closest_b,
+        },
+        None,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1089,7 +1206,7 @@ fn epa_simplex_is_valid(s: &[[Real; 3]]) -> bool {
 /// collision normal is that face's outward normal.
 pub fn epa(a: &dyn ConvexShape, b: &dyn ConvexShape) -> Option<EpaResult> {
     // First confirm intersection with GJK and recover its terminating simplex.
-    let (gjk_r, gjk_simplex) = gjk_simplex(a, b);
+    let (gjk_r, terminal) = gjk_simplex(a, b);
     if !gjk_r.intersecting {
         return None;
     }
@@ -1098,11 +1215,13 @@ pub fn epa(a: &dyn ConvexShape, b: &dyn ConvexShape) -> Option<EpaResult> {
     const EPS: Real = 1e-8;
 
     // ── Seed the polytope with a tetrahedron that encloses the origin ────────
-    // The GJK terminating simplex genuinely contains the origin; prefer it.
-    // If it is unavailable or degenerate, fall back to an explicit construction.
-    let mut polytope: Vec<[Real; 3]> = match gjk_simplex {
-        Some(s) if epa_simplex_is_valid(&s) && epa_origin_in_tetra(&s) => s,
-        _ => epa_seed_tetrahedron(a, b)?,
+    // The GJK terminating simplex genuinely contains the origin; prefer it,
+    // grown to a tetrahedron when GJK stopped on a lower-dimensional face.  If
+    // that fails (flat Minkowski difference), fall back to an explicit
+    // construction.
+    let mut polytope: Vec<[Real; 3]> = match terminal.and_then(|s| epa_complete_simplex(a, b, &s)) {
+        Some(tetra) => tetra,
+        None => epa_seed_tetrahedron(a, b)?,
     };
 
     // Seed faces with globally consistent outward (CCW) winding: each face is
@@ -1216,6 +1335,91 @@ fn epa_add_horizon_edge(horizon: &mut Vec<(usize, usize)>, p: usize, q: usize) {
     } else {
         horizon.push((p, q));
     }
+}
+
+/// Direction orthogonal to the affine hull of the 1–3 points `pts`: the way to
+/// extend the hull by one dimension.
+fn epa_expansion_direction(pts: &[[Real; 3]]) -> [Real; 3] {
+    match *pts {
+        [p0, p1] => {
+            let edge = v3_sub(p1, p0);
+            // Cross with the axis least aligned with the edge (well conditioned).
+            let axis = if edge[0].abs() <= edge[1].abs() && edge[0].abs() <= edge[2].abs() {
+                [1.0, 0.0, 0.0]
+            } else if edge[1].abs() <= edge[2].abs() {
+                [0.0, 1.0, 0.0]
+            } else {
+                [0.0, 0.0, 1.0]
+            };
+            v3_normalize(v3_cross(edge, axis))
+        }
+        [p0, p1, p2] => v3_normalize(v3_cross(v3_sub(p1, p0), v3_sub(p2, p0))),
+        _ => [1.0, 0.0, 0.0],
+    }
+}
+
+/// Distance of the point `q` from the affine hull of the 1–3 points `pts`.
+fn epa_hull_distance(pts: &[[Real; 3]], q: [Real; 3]) -> Real {
+    match *pts {
+        [p0, p1] => {
+            let edge = v3_sub(p1, p0);
+            let len = v3_len(edge);
+            if len > 0.0 {
+                v3_len(v3_cross(v3_sub(q, p0), edge)) / len
+            } else {
+                v3_len(v3_sub(q, p0))
+            }
+        }
+        [p0, p1, p2] => {
+            let normal = v3_normalize(v3_cross(v3_sub(p1, p0), v3_sub(p2, p0)));
+            v3_dot(normal, v3_sub(q, p0)).abs()
+        }
+        [p0] => v3_len(v3_sub(q, p0)),
+        _ => 0.0,
+    }
+}
+
+/// Complete the terminating GJK simplex `simplex` (1 to 4 points of `A ⊖ B`
+/// whose hull contains the origin) to a non-degenerate tetrahedron of `A ⊖ B`
+/// that contains the origin: the seed EPA expands from.
+///
+/// A valid enclosing tetrahedron is returned unchanged.  Otherwise the simplex
+/// is a lower-dimensional face that holds the origin (the usual outcome for
+/// symmetric configurations) and is grown one dimension at a time: the support
+/// points in both senses of the direction orthogonal to its affine hull are
+/// queried and the one reaching farther is added.  The origin stays in the hull
+/// of the original face, hence inside (possibly on the boundary of) the result.
+/// Returns `None` when the Minkowski difference is flat in a required direction
+/// or the result is degenerate.
+fn epa_complete_simplex(
+    a: &dyn ConvexShape,
+    b: &dyn ConvexShape,
+    simplex: &[[Real; 3]],
+) -> Option<Vec<[Real; 3]>> {
+    const MIN_REACH: Real = 1e-12;
+    if simplex.is_empty() || simplex.len() > 4 {
+        return None;
+    }
+    let mut pts = simplex.to_vec();
+    while pts.len() < 4 {
+        let dir = epa_expansion_direction(&pts);
+        let plus = gjk_support(a, b, dir);
+        let minus = gjk_support(a, b, v3_neg(dir));
+        let (reach_plus, reach_minus) = (
+            epa_hull_distance(&pts, plus),
+            epa_hull_distance(&pts, minus),
+        );
+        let (best, reach) = if reach_plus >= reach_minus {
+            (plus, reach_plus)
+        } else {
+            (minus, reach_minus)
+        };
+        if reach <= MIN_REACH {
+            return None;
+        }
+        pts.push(best);
+    }
+    (epa_simplex_is_valid(&pts) && epa_origin_in_tetra(&pts)).then_some(pts)
 }
 
 /// Construct a non-degenerate seed tetrahedron of the Minkowski difference

@@ -1,5 +1,8 @@
 //! Auto-generated module structure
 
+mod elasticity;
+#[cfg(test)]
+mod elasticity_tests;
 pub mod functions;
 pub mod types;
 

@@ -376,7 +376,8 @@ pub struct WolfParams {
     pub alpha: f64,
     /// Cutoff radius (Å).
     pub r_cut: f64,
-    /// Conversion factor for charge-charge to kJ/mol·Å.
+    /// Coulomb constant `e² N_A / (4π ε₀)` in kJ·Å/(mol·e²), converting charge products
+    /// divided by distances in Å to kJ/mol.
     pub coulomb_conv: f64,
 }
 impl WolfParams {
@@ -385,7 +386,7 @@ impl WolfParams {
         Self {
             alpha,
             r_cut,
-            coulomb_conv: 138.935_485,
+            coulomb_conv: crate::electrostatics::COULOMB_K,
         }
     }
     /// Default parameters for ionic liquids.

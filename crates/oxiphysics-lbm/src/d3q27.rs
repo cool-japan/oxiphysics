@@ -14,10 +14,13 @@
 //!
 //! # Features
 //! - BGK collision operator
-//! - MRT collision operator with full moment transformation
+//! - MRT collision operator with full moment transformation (orthogonal 27x27 moment basis,
+//!   exact inverse, see [`mrt_moment_matrix`])
 //! - Periodic streaming (pull scheme)
 //! - Macroscopic field extraction
 //! - Force incorporation (Guo forcing)
+
+use std::sync::OnceLock;
 
 use crate::lattice::{CS2, D3Q27_OPPOSITES, D3Q27_VELOCITIES, D3Q27_WEIGHTS};
 
@@ -37,83 +40,143 @@ pub const OPPOSITES: [usize; Q] = D3Q27_OPPOSITES;
 // Moment transformation matrix for MRT D3Q27
 // ---------------------------------------------------------------------------
 
-/// Compute the D3Q27 moment transformation matrix M.
-///
-/// The moments are constructed from polynomial basis functions of
-/// the discrete velocities. For D3Q27, we use the standard ordering:
-///   m0  = rho (density)
-///   m1  = e   (energy)
-///   m2  = epsilon (energy square)
-///   m3  = jx  (x-momentum)
-///   m4  = qx  (x energy flux)
-///   m5  = jy  (y-momentum)
-///   m6  = qy  (y energy flux)
-///   m7  = jz  (z-momentum)
-///   m8  = qz  (z energy flux)
-///   m9..m26 = higher-order moments (stress tensor, etc.)
-///
-/// Returns a 27x27 matrix stored in row-major order.
-pub fn mrt_moment_matrix() -> [f64; Q * Q] {
-    let mut m = [0.0_f64; Q * Q];
+/// Moment basis of the D3Q27 MRT operator: the matrix `M` and its exact inverse.
+struct MrtBasis {
+    /// Moment matrix, row-major: `m = M f`.
+    m: [f64; Q * Q],
+    /// Exact inverse, row-major: `f = M^{-1} m`.
+    m_inv: [f64; Q * Q],
+}
 
+/// Row `k` of the moment basis, evaluated at the lattice velocity `(cx, cy, cz)`.
+///
+/// The basis is built from the one-dimensional polynomials `1`, `c` and
+/// `p2(c) = 3 c^2 - 1` on the nodes `{-1, 0, 1}`, which are orthogonal under the
+/// one-dimensional weights `(1/6, 2/3, 1/6)`. With `X = p2(cx)`, `Y = p2(cy)` and `Z = p2(cz)`
+/// the 27 rows are the tensor products `p_a(cx) p_b(cy) p_c(cz)`, combined into the symmetry
+/// adapted hydrodynamic modes:
+///
+/// | row | moment |
+/// |-----|--------|
+/// | 0 | density `1` |
+/// | 1 | energy (trace of the second moment) `X + Y + Z = 3 (c^2 - 1)` |
+/// | 2 | energy square `XY + YZ + ZX` |
+/// | 3, 5, 7 | momentum `cx`, `cy`, `cz` |
+/// | 4, 6, 8 | energy flux `cx (Y + Z)`, `cy (Z + X)`, `cz (X + Y)` |
+/// | 9, 10 | normal-stress differences `X - Y`, `X + Y - 2 Z` |
+/// | 11, 12, 13 | shear stress `cx cy`, `cy cz`, `cx cz` |
+/// | 14, 15, 16 | `cx (Y - Z)`, `cy (Z - X)`, `cz (X - Y)` |
+/// | 17 | `cx cy cz` |
+/// | 18, 19 | `XY - YZ`, `XY + YZ - 2 ZX` |
+/// | 20, 21, 22 | `X cy cz`, `cx Y cz`, `cx cy Z` |
+/// | 23, 24, 25 | `XY cz`, `X cy Z`, `cx YZ` |
+/// | 26 | `XYZ` |
+///
+/// Rows that share a polynomial multi-index class are combined with mutually orthogonal
+/// coefficient vectors, so all 27 rows are orthogonal under the 3-D lattice weights.
+fn mrt_basis_polynomial(k: usize, cx: f64, cy: f64, cz: f64) -> f64 {
+    let x = 3.0 * cx * cx - 1.0;
+    let y = 3.0 * cy * cy - 1.0;
+    let z = 3.0 * cz * cz - 1.0;
+    match k {
+        0 => 1.0,
+        1 => x + y + z,
+        2 => x * y + y * z + z * x,
+        3 => cx,
+        4 => cx * (y + z),
+        5 => cy,
+        6 => cy * (z + x),
+        7 => cz,
+        8 => cz * (x + y),
+        9 => x - y,
+        10 => x + y - 2.0 * z,
+        11 => cx * cy,
+        12 => cy * cz,
+        13 => cx * cz,
+        14 => cx * (y - z),
+        15 => cy * (z - x),
+        16 => cz * (x - y),
+        17 => cx * cy * cz,
+        18 => x * y - y * z,
+        19 => x * y + y * z - 2.0 * z * x,
+        20 => x * cy * cz,
+        21 => cx * y * cz,
+        22 => cx * cy * z,
+        23 => x * y * cz,
+        24 => x * cy * z,
+        25 => cx * y * z,
+        _ => x * y * z,
+    }
+}
+
+/// Build the moment matrix and its exact inverse.
+///
+/// The rows of `M` are mutually orthogonal under the lattice weights, `M W M^T = diag(norm)`,
+/// hence `M^{-1} = W M^T diag(norm)^{-1}` exactly (every row is non-zero, so every norm is
+/// positive).
+fn build_mrt_basis() -> MrtBasis {
+    let mut m = [0.0_f64; Q * Q];
     for (i, velocity) in VELOCITIES.iter().enumerate() {
         let cx = velocity[0] as f64;
         let cy = velocity[1] as f64;
         let cz = velocity[2] as f64;
-        let c2 = cx * cx + cy * cy + cz * cz;
-
-        // Row 0: rho = 1 for all directions
-        m[i] = 1.0;
-        // Row 1: e = c^2 - 1
-        m[Q + i] = c2 - 1.0;
-        // Row 2: epsilon = (c^2 - 1)^2 - 1 (simplification)
-        m[2 * Q + i] = 0.5 * (3.0 * c2 * c2 - 7.0 * c2 + 2.0);
-        // Row 3: jx = cx
-        m[3 * Q + i] = cx;
-        // Row 4: qx = (c^2 - 2) * cx (modified energy flux)
-        m[4 * Q + i] = (c2 - 2.0) * cx;
-        // Row 5: jy = cy
-        m[5 * Q + i] = cy;
-        // Row 6: qy = (c^2 - 2) * cy
-        m[6 * Q + i] = (c2 - 2.0) * cy;
-        // Row 7: jz = cz
-        m[7 * Q + i] = cz;
-        // Row 8: qz = (c^2 - 2) * cz
-        m[8 * Q + i] = (c2 - 2.0) * cz;
-        // Row 9: pxx = cx^2 - cy^2 (normal stress difference)
-        m[9 * Q + i] = cx * cx - cy * cy;
-        // Row 10: 3*pww = cx^2 + cy^2 - 2*cz^2
-        m[10 * Q + i] = cx * cx + cy * cy - 2.0 * cz * cz;
-        // Row 11: pxy = cx * cy
-        m[11 * Q + i] = cx * cy;
-        // Row 12: pyz = cy * cz
-        m[12 * Q + i] = cy * cz;
-        // Row 13: pxz = cx * cz
-        m[13 * Q + i] = cx * cz;
-        // Row 14: mx = cx * (cy^2 - cz^2)
-        m[14 * Q + i] = cx * (cy * cy - cz * cz);
-        // Row 15: my = cy * (cz^2 - cx^2)
-        m[15 * Q + i] = cy * (cz * cz - cx * cx);
-        // Row 16: mz = cz * (cx^2 - cy^2)
-        m[16 * Q + i] = cz * (cx * cx - cy * cy);
-        // Rows 17-26: higher order moments (using simple polynomial combos)
-        m[17 * Q + i] = cx * cy * cz;
-        m[18 * Q + i] = cx * cx * cy;
-        m[19 * Q + i] = cx * cx * cz;
-        m[20 * Q + i] = cy * cy * cx;
-        m[21 * Q + i] = cy * cy * cz;
-        m[22 * Q + i] = cz * cz * cx;
-        m[23 * Q + i] = cz * cz * cy;
-        m[24 * Q + i] = cx * cx * cy * cy;
-        m[25 * Q + i] = cy * cy * cz * cz;
-        m[26 * Q + i] = cx * cx * cz * cz;
+        for k in 0..Q {
+            m[k * Q + i] = mrt_basis_polynomial(k, cx, cy, cz);
+        }
     }
-    m
+    let mut m_inv = [0.0_f64; Q * Q];
+    for k in 0..Q {
+        let norm: f64 = (0..Q)
+            .map(|j| WEIGHTS[j] * m[k * Q + j] * m[k * Q + j])
+            .sum();
+        for i in 0..Q {
+            m_inv[i * Q + k] = WEIGHTS[i] * m[k * Q + i] / norm;
+        }
+    }
+    MrtBasis { m, m_inv }
 }
 
-/// Compute M * f for a single cell (27-vector).
+/// The shared moment basis, built once on first use.
+fn mrt_basis() -> &'static MrtBasis {
+    static BASIS: OnceLock<MrtBasis> = OnceLock::new();
+    BASIS.get_or_init(build_mrt_basis)
+}
+
+/// The D3Q27 moment transformation matrix `M` (27x27, row-major, `m = M f`).
 ///
-/// Transforms the distribution function to moment space.
+/// The 27 moments are an orthogonal (under the lattice weights) basis of polynomials in the
+/// lattice velocity built from the tensor products of `1`, `c` and `3 c^2 - 1`; the order is
+/// the usual MRT order `rho, e, eps, jx, qx, jy, qy, jz, qz, ...` (see [`MrtRelaxationRates`]
+/// for the role of each row):
+///
+/// | row | moment |
+/// |-----|--------|
+/// | 0 | density |
+/// | 1 | energy (trace of the second moment) |
+/// | 2 | energy square |
+/// | 3, 5, 7 | momentum `jx`, `jy`, `jz` |
+/// | 4, 6, 8 | energy flux `qx`, `qy`, `qz` |
+/// | 9, 10 | normal-stress differences |
+/// | 11, 12, 13 | shear stress `pxy`, `pyz`, `pxz` |
+/// | 14 .. 26 | third- to sixth-order (ghost) moments |
+///
+/// The matrix is invertible and its exact inverse is [`mrt_inverse_moment_matrix`].
+pub fn mrt_moment_matrix() -> [f64; Q * Q] {
+    mrt_basis().m
+}
+
+/// The exact inverse `M^{-1}` of [`mrt_moment_matrix`] (27x27, row-major, `f = M^{-1} m`).
+///
+/// Because the rows of `M` are orthogonal under the lattice weights `w`, the inverse is
+/// `M^{-1}_{ik} = w_i M_{ki} / sum_j w_j M_{kj}^2`.
+pub fn mrt_inverse_moment_matrix() -> [f64; Q * Q] {
+    mrt_basis().m_inv
+}
+
+/// Compute `M f` for a single cell (27-vector).
+///
+/// Transforms the distribution function to moment space with the row-major matrix `m`
+/// (normally [`mrt_moment_matrix`]).
 pub fn transform_to_moments(m: &[f64; Q * Q], f: &[f64; Q]) -> [f64; Q] {
     let mut moments = [0.0_f64; Q];
     for (row, moment) in moments.iter_mut().enumerate() {
@@ -126,34 +189,18 @@ pub fn transform_to_moments(m: &[f64; Q * Q], f: &[f64; Q]) -> [f64; Q] {
     moments
 }
 
-/// Compute M^{-1} * m for a single cell, using the pseudo-inverse approach.
+/// Compute `M^{-1} m` for a single cell, i.e. transform moments back to populations.
 ///
-/// Since M is not orthogonal for D3Q27 with the polynomial basis,
-/// we use M^T * diag(w) as the left inverse: f_i = sum_j w_i * M_ji * m_j.
-/// This is exact when M is constructed from the orthogonal polynomial basis
-/// weighted by the lattice weights.
-pub fn transform_from_moments(m: &[f64; Q * Q], moments: &[f64; Q]) -> [f64; Q] {
-    // We compute M^T * moments and then scale by weights.
-    // For the standard Gram-Schmidt basis, the inverse is:
-    //   f_i = sum_j M_ji * m_j / norm_j
-    // where norm_j = sum_i M_ji^2 * w_i.
-
-    // Compute norms for each moment row.
-    let mut norms = [0.0_f64; Q];
-    for (row, norm) in norms.iter_mut().enumerate() {
-        let mut n = 0.0;
-        for (col, &weight_col) in WEIGHTS.iter().enumerate() {
-            let val = m[row * Q + col];
-            n += val * val * weight_col;
-        }
-        *norm = if n.abs() > 1e-30 { n } else { 1.0 };
-    }
-
+/// `m_inv` is the row-major exact inverse of the moment matrix, normally
+/// [`mrt_inverse_moment_matrix`]; this is a plain matrix-vector product and an exact inverse
+/// transform: `transform_from_moments(&inv, &transform_to_moments(&m, &f)) == f` up to
+/// round-off.
+pub fn transform_from_moments(m_inv: &[f64; Q * Q], moments: &[f64; Q]) -> [f64; Q] {
     let mut f = [0.0_f64; Q];
-    for (i, fi) in f.iter_mut().enumerate() {
+    for (row, fi) in f.iter_mut().enumerate() {
         let mut s = 0.0;
-        for (j, &moment_j) in moments.iter().enumerate() {
-            s += m[j * Q + i] * moment_j * WEIGHTS[i] / norms[j];
+        for (col, &moment) in moments.iter().enumerate() {
+            s += m_inv[row * Q + col] * moment;
         }
         *fi = s;
     }
@@ -525,51 +572,46 @@ impl D3Q27Lattice {
 
 /// Relaxation parameters for a D3Q27 MRT collision.
 ///
-/// Each of the 27 moment modes relaxes at its own rate.
-/// The structure follows the standard ordering:
-/// - Mode 0 (density): not relaxed (conserved)
-/// - Modes 3, 5, 7 (momentum): not relaxed (conserved)
-/// - Mode 1 (energy): s_e
-/// - Mode 9-13 (stress tensor): s_nu (viscous)
-/// - Others: s_q (ghost / energy flux)
+/// Each of the 27 moments of [`mrt_moment_matrix`] relaxes at its own rate:
+/// - Mode 0 (density) and modes 3, 5, 7 (momentum): conserved, never relaxed
+/// - Mode 1 (energy, the trace of the second moment): `s_bulk`, the bulk-viscosity rate
+/// - Mode 2 (energy square): `s_e`
+/// - Modes 9-13 (normal-stress differences and shear stress): `s_nu`, the shear-viscosity rate
+/// - Modes 4, 6, 8 (energy flux) and 14-26 (ghost moments): `s_q`
 pub struct MrtRelaxationRates {
     /// 27 diagonal relaxation rates.
     pub s: [f64; Q],
 }
 
+/// Indices of the conserved moments (density and the three momentum components).
+const MRT_CONSERVED_MODES: [usize; 4] = [0, 3, 5, 7];
+
 impl MrtRelaxationRates {
     /// Create relaxation rates for given kinematic viscosity `nu` and bulk viscosity `xi`.
     ///
-    /// Standard mapping: `s_nu = 1 / (0.5 + 3*nu)`, `s_e = 1.64`, ghost modes = 1.54.
+    /// Standard mapping: `s_nu = 1 / (0.5 + 3*nu)` for the shear modes,
+    /// `s_bulk = 1 / (0.5 + 9*xi/2)` for the energy (trace) mode, `s_e = 1.64` for the energy
+    /// square and `s_q = 1.54` for the energy-flux and ghost modes. `xi = 0` gives the
+    /// marginal rate `s_bulk = 2`; a BGK-equivalent bulk viscosity is `xi = 2*nu/3`, for which
+    /// `s_bulk == s_nu`.
     pub fn for_viscosity(nu: f64, xi: f64) -> Self {
         let s_nu = 1.0 / (0.5 + 3.0 * nu);
         let s_bulk = 1.0 / (0.5 + 9.0 * xi / 2.0);
         let s_e = 1.64_f64;
         let s_q = 1.54_f64;
-        let _ = s_bulk; // will use s_e for energy-like modes
 
-        let mut s = [1.0_f64; Q];
+        let mut s = [s_q; Q];
         // Conserved: density (0), momentum (3, 5, 7)
         s[0] = 0.0; // density (conserved)
         s[3] = 0.0; // jx (conserved)
         s[5] = 0.0; // jy (conserved)
         s[7] = 0.0; // jz (conserved)
-        // Energy and epsilon
-        s[1] = s_e;
+        // Energy (trace) carries the bulk viscosity; energy square relaxes with s_e
+        s[1] = s_bulk;
         s[2] = s_e;
         // Stress tensor (viscous modes)
-        s[9] = s_nu;
-        s[10] = s_nu;
-        s[11] = s_nu;
-        s[12] = s_nu;
-        s[13] = s_nu;
-        // Energy flux modes
-        s[4] = s_q;
-        s[6] = s_q;
-        s[8] = s_q;
-        // Higher-order modes
-        for s_i in &mut s[14..Q] {
-            *s_i = s_q;
+        for s_i in &mut s[9..=13] {
+            *s_i = s_nu;
         }
         Self { s }
     }
@@ -585,40 +627,46 @@ impl MrtRelaxationRates {
     }
 }
 
-/// Perform one full MRT collision step using the moment matrix.
+/// Perform one full MRT collision step for one cell using the 27x27 moment matrix.
 ///
-/// This implements the MRT collision using the SRT-equivalent correction
-/// approach to guarantee density conservation, while applying per-mode
-/// relaxation for higher-order moments.
+/// The cell is mapped to moment space with the exact orthogonal basis [`mrt_moment_matrix`],
+/// every moment is relaxed towards its equilibrium with its own rate and the result is mapped
+/// back with the exact inverse [`mrt_inverse_moment_matrix`]:
 ///
-/// The algorithm:
-/// 1. Compute feq.
-/// 2. For each discrete velocity i:
-///    `f_i_new = feq_i + (1 - s_eff) * (f_i - feq_i)`
-///    where `s_eff` is derived from the dominant stress-mode rates.
+/// `m = M f`, `m* = m - S (m - m_eq)`, `f* = M^{-1} m*`, with `m_eq = M feq(rho, u)`.
 ///
-/// Note: Full matrix-space MRT requires an exactly invertible M; the
-/// polynomial basis used here is not perfectly invertible via the
-/// weighted pseudo-inverse, so we use an equivalent BGK-like formulation
-/// with per-velocity weights derived from the mode decomposition.
-/// For a rigorous full MRT, an orthogonalized basis (Gram-Schmidt) is needed.
+/// Since `m - m_eq = M (f - feq)`, the relaxation acts on the non-equilibrium part only.
+/// `rho` and `(ux, uy, uz)` must be the density and velocity of `f`. The conserved moments
+/// (density and momentum) are never relaxed, so mass and momentum are conserved to round-off.
+/// A uniform rate `s_k = omega` reproduces BGK collision with `tau = 1 / omega`.
 pub fn collide_mrt_full(
     f: &mut [f64; Q],
     rho: f64,
     ux: f64,
     uy: f64,
     uz: f64,
-    _m_matrix: &[f64; Q * Q],
     rates: &MrtRelaxationRates,
 ) {
+    let basis = mrt_basis();
     let feq = D3Q27Lattice::equilibrium(rho, ux, uy, uz);
 
-    // Use the stress relaxation rate as the effective omega (s[9] is the viscous rate)
-    let omega_eff = rates.s[9];
+    let mut f_neq = [0.0_f64; Q];
+    for (neq, (&fi, &feq_i)) in f_neq.iter_mut().zip(f.iter().zip(feq.iter())) {
+        *neq = fi - feq_i;
+    }
+    let mut delta_m = transform_to_moments(&basis.m, &f_neq);
 
-    // BGK-equivalent collapse: f_i -> feq_i + (1 - omega) * (f_i - feq_i)
-    for (i, fi) in f.iter_mut().enumerate() {
-        *fi = feq[i] + (1.0 - omega_eff) * (*fi - feq[i]);
+    let mut s = rates.s;
+    for &mode in &MRT_CONSERVED_MODES {
+        s[mode] = 0.0;
+    }
+    for (dm, &s_k) in delta_m.iter_mut().zip(s.iter()) {
+        *dm *= s_k;
+    }
+
+    let delta_f = transform_from_moments(&basis.m_inv, &delta_m);
+    for (fi, &df) in f.iter_mut().zip(delta_f.iter()) {
+        *fi -= df;
     }
 }
 
@@ -899,12 +947,9 @@ pub fn non_equilibrium_stress_tensor(
 
 /// Apply full MRT collision to all cells in the lattice.
 ///
-/// Uses the pre-computed moment matrix and the supplied relaxation rates.
-pub fn collide_all_mrt_full(
-    lat: &mut D3Q27Lattice,
-    m_matrix: &[f64; Q * Q],
-    rates: &MrtRelaxationRates,
-) {
+/// Uses the shared moment basis (see [`mrt_moment_matrix`]) and the supplied relaxation rates;
+/// the density and velocity of every cell are computed from its populations.
+pub fn collide_all_mrt_full(lat: &mut D3Q27Lattice, rates: &MrtRelaxationRates) {
     for cell in lat.f.iter_mut() {
         // Compute macroscopic
         let mut rho = 0.0_f64;
@@ -923,9 +968,12 @@ pub fn collide_all_mrt_full(
         } else {
             (0.0, 0.0, 0.0)
         };
-        collide_mrt_full(cell, rho, ux, uy, uz, m_matrix, rates);
+        collide_mrt_full(cell, rho, ux, uy, uz, rates);
     }
 }
+
+#[cfg(test)]
+mod mrt_tests;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1431,7 +1479,6 @@ mod tests {
 
     #[test]
     fn test_collide_mrt_full_conserves_density() {
-        let m = mrt_moment_matrix();
         let rates = MrtRelaxationRates::for_viscosity(1.0 / 6.0, 0.0);
         let rho = 1.2;
         let ux = 0.03;
@@ -1442,7 +1489,7 @@ mod tests {
         f[1] += 0.01;
         f[2] -= 0.01;
         let rho_before: f64 = f.iter().sum();
-        collide_mrt_full(&mut f, rho, ux, uy, uz, &m, &rates);
+        collide_mrt_full(&mut f, rho, ux, uy, uz, &rates);
         let rho_after: f64 = f.iter().sum();
         assert!(
             (rho_before - rho_after).abs() < 1e-12,
@@ -1452,14 +1499,13 @@ mod tests {
 
     #[test]
     fn test_collide_all_mrt_full_density_conservation() {
-        let m = mrt_moment_matrix();
         let rates = MrtRelaxationRates::for_viscosity(1.0 / 6.0, 0.0);
         let mut lat = D3Q27Lattice::new(3, 3, 3, 1.0);
         let k = lat.idx(1, 1, 1);
         lat.f[k][0] += 0.2;
         lat.f[k][1] -= 0.1;
         let rho_before = lat.density_conservation();
-        collide_all_mrt_full(&mut lat, &m, &rates);
+        collide_all_mrt_full(&mut lat, &rates);
         lat.stream_periodic();
         let rho_after = lat.density_conservation();
         assert!(

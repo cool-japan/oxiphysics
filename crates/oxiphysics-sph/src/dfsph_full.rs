@@ -7,10 +7,15 @@
 //!   1. Divergence-free velocity correction (incompressibility of velocities)
 //!   2. Density error correction (constant density enforcement)
 //!
-//! This module is self-contained and operates on `[f64; 3]` arrays, making it
-//! easy to embed or test independently of the rest of the engine.
+//! This module operates on plain `[f64; 3]` arrays, making it easy to embed or
+//! test independently of the rest of the engine. Neighbour lists come from the
+//! array-based [`SpatialHash3D`] via [`find_neighbors`], whose cost grows
+//! linearly with the particle count at a fixed number of neighbours per
+//! particle.
 
 use std::f64::consts::PI;
+
+use crate::neighbor::SpatialHash3D;
 
 // ---------------------------------------------------------------------------
 // Cubic spline kernel (internal, 3-D, support radius 2h)
@@ -473,7 +478,7 @@ pub struct DfsphSimulation {
 impl DfsphSimulation {
     /// Create a new simulation from a DFSPH state.
     pub fn new(state: DfsphState, gravity: [f64; 3], viscosity: f64) -> Self {
-        let neighbors = find_neighbors_brute(&state.positions, state.h);
+        let neighbors = find_neighbors(&state.positions, state.h);
         Self {
             state,
             neighbors,
@@ -506,7 +511,7 @@ impl DfsphSimulation {
                 .density_solve(&self.neighbors, self.max_density_iter, self.density_eps);
 
         self.state.integrate_positions();
-        self.neighbors = find_neighbors_brute(&self.state.positions, self.state.h);
+        self.neighbors = find_neighbors(&self.state.positions, self.state.h);
 
         self.time += self.state.dt;
         self.step_count += 1;
@@ -754,7 +759,7 @@ impl DfsphFactorTable {
         h: f64,
         rho0: f64,
     ) -> Self {
-        let neighbors = find_neighbors_brute(positions, h);
+        let neighbors = find_neighbors(positions, h);
         let alphas: Vec<f64> = positions
             .iter()
             .zip(densities.iter())
@@ -1070,10 +1075,34 @@ pub fn sph_pressure_accel_plain(
     accels
 }
 
-/// Simple O(n²) brute-force neighbor search for testing.
+/// Neighbour lists within the kernel support radius `2h` (cubic spline
+/// kernel), found with a uniform-grid spatial hash in expected `O(n · k)` time
+/// for `n` particles with `k` neighbours each.
 ///
-/// Finds all particles within distance `2h` (the kernel support radius for
-/// the cubic spline kernel used here).
+/// `neighbors[i]` holds, in ascending order, every particle `j != i` whose
+/// distance to particle `i` is at most `2h`; particle `i` itself is not listed
+/// (the density sum adds the self contribution separately). A non-positive or
+/// NaN `h` has an empty support, so every list is empty. Particles with
+/// non-finite coordinates never have neighbours.
+///
+/// The result equals [`find_neighbors_brute`] except for pairs lying exactly
+/// `2h` apart, which this search keeps (the hash test is inclusive) and the
+/// brute-force reference drops. The cubic spline kernel and its gradient are
+/// both zero at `2h`, so no kernel sum depends on those pairs.
+pub fn find_neighbors(positions: &[[f64; 3]], h: f64) -> Vec<Vec<usize>> {
+    let support = 2.0 * h;
+    if support.is_nan() || support <= 0.0 {
+        return vec![Vec::new(); positions.len()];
+    }
+    SpatialHash3D::all_neighbors(positions, support)
+}
+
+/// Simple `O(n²)` brute-force neighbour search, the reference oracle for
+/// [`find_neighbors`].
+///
+/// Finds all particles strictly closer than `2h` (the kernel support radius
+/// for the cubic spline kernel used here). Use [`find_neighbors`] for
+/// simulations; this routine only suits tests and very small systems.
 pub fn find_neighbors_brute(positions: &[[f64; 3]], h: f64) -> Vec<Vec<usize>> {
     let n = positions.len();
     let support = 2.0 * h;
@@ -1824,3 +1853,6 @@ mod tests {
         assert!(mag.abs() < 1e-10, "Zero velocities → zero vorticity: {mag}");
     }
 }
+
+#[cfg(test)]
+mod neighbor_search_tests;

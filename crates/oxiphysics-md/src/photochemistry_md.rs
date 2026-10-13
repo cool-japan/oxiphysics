@@ -15,7 +15,11 @@
 //! - [`AbsorptionSpectrum`]: absorption computed from oscillator strengths with Gaussian broadening
 //! - [`EmissionSpectrum`]: fluorescence and phosphorescence spectrum
 
+use crate::error::MdError;
 use std::f64::consts::PI;
+
+/// Reduced Planck constant ħ in eV·fs (CODATA 2018: 6.582 119 569 × 10⁻¹⁶ eV·s).
+pub const HBAR_EV_FS: f64 = 0.658_211_956_9;
 
 // ---------------------------------------------------------------------------
 // ExcitedState
@@ -121,21 +125,52 @@ impl FranckCondonFactor {
 
 /// Tully's fewest-switches surface hopping (FSSH) state.
 ///
-/// Propagates electronic populations and determines hopping probabilities
-/// according to the Tully FSSH algorithm.
+/// Carries the complex electronic amplitudes `c_k`, propagates them with
+/// [`SurfaceHoppingMd::propagate_electronic`] and determines hopping
+/// probabilities according to the Tully FSSH algorithm.
+///
+/// The amplitudes obey the time-dependent Schrödinger equation in the
+/// (adiabatic) basis,
+///
+/// ```text
+/// dc_k/dt = −(i/ħ) Σ_l H_kl c_l − Σ_l σ_kl c_l ,   σ_kl = d_kl · v ,
+/// ```
+///
+/// with the real symmetric Hamiltonian `H` (eV; diagonal = adiabatic
+/// energies) and the real antisymmetric scalar non-adiabatic coupling `σ`
+/// (fs⁻¹).  The density matrix `ρ_kl = c_k c_l*` is rebuilt from the
+/// amplitudes after every propagation.
+///
+/// Per nuclear step the caller supplies the current energies and couplings
+/// ([`set_hamiltonian`](SurfaceHoppingMd::set_hamiltonian),
+/// [`set_nac_velocity`](SurfaceHoppingMd::set_nac_velocity)), draws a random
+/// number `r ∈ [0, 1)`, calls [`attempt_hop`](SurfaceHoppingMd::attempt_hop)
+/// with the hop probabilities of the *current* `ρ`, rescales the nuclear
+/// velocities by the returned factor, and then advances the electrons with
+/// [`propagate_electronic`](SurfaceHoppingMd::propagate_electronic).
 #[derive(Debug, Clone)]
 pub struct SurfaceHoppingMd {
     /// Number of electronic states.
     pub n_states: usize,
     /// Current active (adiabatic) state index.
     pub current_state: usize,
-    /// Electronic density matrix elements ρ_{kl} = c_k * c_l* (real part stored as 2D flat vec).
+    /// Real parts of the electronic amplitudes `c_k`.
+    pub amp_real: Vec<f64>,
+    /// Imaginary parts of the electronic amplitudes `c_k`.
+    pub amp_imag: Vec<f64>,
+    /// Electronic density matrix elements ρ_{kl} = c_k * c_l^* (real part, row-major n × n).
+    ///
+    /// Derived from the amplitudes; rebuilt by `propagate_electronic` and `set_amplitudes`.
     pub rho_real: Vec<f64>,
-    /// Imaginary part of density matrix.
+    /// Imaginary part of the density matrix.
     pub rho_imag: Vec<f64>,
-    /// Non-adiabatic coupling vectors d_{kl} · v̇ (scalar projection, n_states × n_states).
+    /// Non-adiabatic coupling vectors d_{kl} · v̇ (scalar projection, n_states × n_states, fs⁻¹).
+    ///
+    /// Real and antisymmetric (`σ_lk = −σ_kl`); `set_nac_velocity` keeps it so.
     pub nac_velocity: Vec<f64>,
     /// Hamiltonian matrix H_{kl} in eV (diagonal = adiabatic energies, off-diagonal = couplings).
+    ///
+    /// Real and symmetric; `set_hamiltonian` keeps it so.
     pub hamiltonian: Vec<f64>,
     /// Time step in femtoseconds.
     pub dt_fs: f64,
@@ -143,37 +178,213 @@ pub struct SurfaceHoppingMd {
 
 impl SurfaceHoppingMd {
     /// Create a new `SurfaceHoppingMd` starting on `initial_state`.
-    pub fn new(n_states: usize, initial_state: usize, dt_fs: f64) -> Self {
+    ///
+    /// The electrons start in the pure adiabatic state `initial_state`
+    /// (`c_k = δ_{k,initial_state}`).
+    ///
+    /// # Errors
+    /// Returns an error if `n_states` is zero, if `initial_state >= n_states`,
+    /// or if `dt_fs` is negative or not finite.
+    pub fn new(n_states: usize, initial_state: usize, dt_fs: f64) -> Result<Self, MdError> {
+        if n_states == 0 {
+            return Err(MdError::General(
+                "surface hopping needs at least one electronic state".to_string(),
+            ));
+        }
+        if initial_state >= n_states {
+            return Err(MdError::General(format!(
+                "initial state {initial_state} is out of range for {n_states} electronic states"
+            )));
+        }
+        if !dt_fs.is_finite() || dt_fs < 0.0 {
+            return Err(MdError::General(format!(
+                "surface hopping time step must be finite and non-negative, got {dt_fs} fs"
+            )));
+        }
         let n2 = n_states * n_states;
-        let mut rho_real = vec![0.0_f64; n2];
-        let rho_imag = vec![0.0_f64; n2];
-        // Pure state: ρ_{kk} = 1 for current state
-        rho_real[initial_state * n_states + initial_state] = 1.0;
-        Self {
+        let mut amp_real = vec![0.0_f64; n_states];
+        // Pure state: c_k = δ_{k,initial}
+        amp_real[initial_state] = 1.0;
+        let mut state = Self {
             n_states,
             current_state: initial_state,
-            rho_real,
-            rho_imag,
+            amp_real,
+            amp_imag: vec![0.0_f64; n_states],
+            rho_real: vec![0.0_f64; n2],
+            rho_imag: vec![0.0_f64; n2],
             nac_velocity: vec![0.0_f64; n2],
             hamiltonian: vec![0.0_f64; n2],
             dt_fs,
-        }
+        };
+        state.rebuild_density_matrix();
+        Ok(state)
     }
 
-    /// Set the non-adiabatic coupling velocity projection d_{kl} · v̇.
+    /// Set the non-adiabatic coupling velocity projection d_{kl} · v̇ (fs⁻¹).
+    ///
+    /// Stores `σ_kl = value` and `σ_lk = −value` (the coupling is antisymmetric).
+    ///
+    /// # Panics
+    /// Panics if `k` or `l` is not smaller than `n_states`.
     pub fn set_nac_velocity(&mut self, k: usize, l: usize, value: f64) {
         self.nac_velocity[k * self.n_states + l] = value;
         self.nac_velocity[l * self.n_states + k] = -value;
     }
 
-    /// Set Hamiltonian element H_{kl}.
+    /// Set Hamiltonian element H_{kl} (eV).
+    ///
+    /// The electronic Hamiltonian is real symmetric, so both `H_kl` and `H_lk`
+    /// are set to `value`.
+    ///
+    /// # Panics
+    /// Panics if `k` or `l` is not smaller than `n_states`.
     pub fn set_hamiltonian(&mut self, k: usize, l: usize, value: f64) {
         self.hamiltonian[k * self.n_states + l] = value;
+        self.hamiltonian[l * self.n_states + k] = value;
+    }
+
+    /// Replace the electronic amplitudes (for example to start from a coherent superposition).
+    ///
+    /// `real` and `imag` hold `Re c_k` and `Im c_k`; the density matrix is
+    /// rebuilt.  The amplitudes are not renormalised: a physical wavefunction
+    /// has `Σ|c_k|² = 1`.
+    ///
+    /// # Errors
+    /// Returns an error if either slice does not have `n_states` entries or
+    /// contains a non-finite value.
+    pub fn set_amplitudes(&mut self, real: &[f64], imag: &[f64]) -> Result<(), MdError> {
+        if real.len() != self.n_states || imag.len() != self.n_states {
+            return Err(MdError::General(format!(
+                "expected {} amplitudes, got {} real and {} imaginary parts",
+                self.n_states,
+                real.len(),
+                imag.len()
+            )));
+        }
+        if real.iter().chain(imag).any(|x| !x.is_finite()) {
+            return Err(MdError::General(
+                "electronic amplitudes must be finite".to_string(),
+            ));
+        }
+        self.amp_real.copy_from_slice(real);
+        self.amp_imag.copy_from_slice(imag);
+        self.rebuild_density_matrix();
+        Ok(())
+    }
+
+    /// Complex electronic amplitude `c_k` as `(Re, Im)`.
+    ///
+    /// # Panics
+    /// Panics if `k >= n_states`.
+    pub fn amplitude(&self, k: usize) -> (f64, f64) {
+        (self.amp_real[k], self.amp_imag[k])
+    }
+
+    /// Rebuild `ρ_kl = c_k c_l*` from the amplitudes.
+    fn rebuild_density_matrix(&mut self) {
+        let n = self.n_states;
+        for k in 0..n {
+            for l in 0..n {
+                let (ar, ai) = (self.amp_real[k], self.amp_imag[k]);
+                let (br, bi) = (self.amp_real[l], self.amp_imag[l]);
+                self.rho_real[k * n + l] = ar * br + ai * bi;
+                self.rho_imag[k * n + l] = ai * br - ar * bi;
+            }
+        }
+    }
+
+    /// Time derivative `(da/dt, db/dt)` of the real/imaginary amplitude parts.
+    ///
+    /// With `c = a + i b` and the reference energy `shift` (eV) removed from the
+    /// diagonal of `H`: `da/dt = −σ a + (H'/ħ) b` and `db/dt = −σ b − (H'/ħ) a`.
+    fn amplitude_derivative(&self, a: &[f64], b: &[f64], shift: f64) -> (Vec<f64>, Vec<f64>) {
+        let n = self.n_states;
+        let mut da = vec![0.0_f64; n];
+        let mut db = vec![0.0_f64; n];
+        for k in 0..n {
+            let mut sum_a = 0.0;
+            let mut sum_b = 0.0;
+            for l in 0..n {
+                let sigma = self.nac_velocity[k * n + l];
+                let h_kl = self.hamiltonian[k * n + l] - if k == l { shift } else { 0.0 };
+                let h_over_hbar = h_kl / HBAR_EV_FS;
+                sum_a += -sigma * a[l] + h_over_hbar * b[l];
+                sum_b += -sigma * b[l] - h_over_hbar * a[l];
+            }
+            da[k] = sum_a;
+            db[k] = sum_b;
+        }
+        (da, db)
+    }
+
+    /// Advance the electronic amplitudes over one nuclear step `dt_fs`.
+    ///
+    /// Integrates `dc_k/dt = −(i/ħ) Σ_l H_kl c_l − Σ_l σ_kl c_l` with
+    /// `n_sub` classical fourth-order Runge-Kutta sub-steps of length
+    /// `dt_fs / n_sub` (`n_sub = 0` is treated as 1), holding `H` and `σ`
+    /// fixed at their current values, and rebuilds `ρ = c c†`.
+    ///
+    /// The population-weighted mean energy `Ē = Σ_k ρ_kk H_kk / Σ_k ρ_kk` is
+    /// subtracted from the diagonal of `H` for the integration.  That divides
+    /// the global phase `exp(−i Ē t / ħ)` out of every amplitude, which leaves
+    /// every `ρ_kl` (and so every population, coherence and hopping
+    /// probability) unchanged but keeps the Runge-Kutta sub-steps small
+    /// compared with the electronic oscillation periods, so the individual
+    /// amplitudes are defined up to a global phase.  Choose `n_sub` so that
+    /// `|H_kk − Ē| dt_fs / (ħ n_sub) ≪ 1`; the integrator is not exactly
+    /// unitary, so monitor [`total_population`](Self::total_population) for
+    /// large energy gaps.
+    pub fn propagate_electronic(&mut self, n_sub: usize) {
+        let n = self.n_states;
+        let n_sub = n_sub.max(1);
+        let h = self.dt_fs / n_sub as f64;
+        let total: f64 = (0..n).map(|k| self.population(k)).sum();
+        let shift = if total > 0.0 {
+            (0..n)
+                .map(|k| self.population(k) * self.hamiltonian[k * n + k])
+                .sum::<f64>()
+                / total
+        } else {
+            0.0
+        };
+        let mut a = self.amp_real.clone();
+        let mut b = self.amp_imag.clone();
+        for _ in 0..n_sub {
+            let (k1a, k1b) = self.amplitude_derivative(&a, &b, shift);
+            let (a2, b2) = Self::shifted(&a, &b, &k1a, &k1b, 0.5 * h);
+            let (k2a, k2b) = self.amplitude_derivative(&a2, &b2, shift);
+            let (a3, b3) = Self::shifted(&a, &b, &k2a, &k2b, 0.5 * h);
+            let (k3a, k3b) = self.amplitude_derivative(&a3, &b3, shift);
+            let (a4, b4) = Self::shifted(&a, &b, &k3a, &k3b, h);
+            let (k4a, k4b) = self.amplitude_derivative(&a4, &b4, shift);
+            for k in 0..n {
+                a[k] += h / 6.0 * (k1a[k] + 2.0 * k2a[k] + 2.0 * k3a[k] + k4a[k]);
+                b[k] += h / 6.0 * (k1b[k] + 2.0 * k2b[k] + 2.0 * k3b[k] + k4b[k]);
+            }
+        }
+        self.amp_real = a;
+        self.amp_imag = b;
+        self.rebuild_density_matrix();
+    }
+
+    /// `(a + step * da, b + step * db)`.
+    fn shifted(a: &[f64], b: &[f64], da: &[f64], db: &[f64], step: f64) -> (Vec<f64>, Vec<f64>) {
+        (
+            a.iter().zip(da).map(|(x, d)| x + step * d).collect(),
+            b.iter().zip(db).map(|(x, d)| x + step * d).collect(),
+        )
     }
 
     /// Compute hopping probability g_{k→l} from current state `k` to state `l`.
     ///
-    /// g_{kl} = max(0, -2 Re(ρ_{kl} d_{kl}·v̇) dt / ρ_{kk})
+    /// ```text
+    /// g_{kl} = max(0, [2 Re(ρ_{kl}) σ_{kl} + (2/ħ) H_{kl} Im(ρ_{kl})] dt / ρ_{kk})
+    /// ```
+    ///
+    /// i.e. `dt` times the rate at which the coupling to state `l` depletes the
+    /// population of `k` (`−ρ̇_kk|_l`), normalised by `ρ_kk` and clamped to
+    /// `[0, 1]`.  In the adiabatic basis `H_kl = 0` for `k ≠ l` and only the
+    /// non-adiabatic coupling term `σ_kl = d_kl · v` remains.
     pub fn hopping_probability(&self, l: usize) -> f64 {
         let k = self.current_state;
         if k == l {
@@ -185,9 +396,11 @@ impl SurfaceHoppingMd {
             return 0.0;
         }
         let rho_kl_real = self.rho_real[k * n + l];
-        let d_kl = self.nac_velocity[k * n + l];
-        let numerator = -2.0 * rho_kl_real * d_kl * self.dt_fs;
-        (numerator / rho_kk).clamp(0.0, 1.0)
+        let rho_kl_imag = self.rho_imag[k * n + l];
+        let sigma_kl = self.nac_velocity[k * n + l];
+        let h_kl = self.hamiltonian[k * n + l];
+        let flux = 2.0 * rho_kl_real * sigma_kl + 2.0 * h_kl * rho_kl_imag / HBAR_EV_FS;
+        (flux * self.dt_fs / rho_kk).clamp(0.0, 1.0)
     }
 
     /// Total hopping probability away from current state (sum over all other states).
@@ -212,8 +425,12 @@ impl SurfaceHoppingMd {
 
     /// Velocity rescaling factor after a hop from state `from` to state `to`.
     ///
-    /// Conserves total energy: kinetic energy is adjusted along the NAC direction.
-    /// Returns `None` if the hop is classically forbidden (insufficient kinetic energy).
+    /// Conserves total energy: multiplying every nuclear velocity by the
+    /// returned factor changes the kinetic energy to `kinetic_energy −
+    /// (energy_to − energy_from)`.
+    /// Returns `None` if the hop is classically forbidden (insufficient kinetic
+    /// energy), or if the kinetic energy is zero and would have to *increase*:
+    /// a uniform rescaling cannot create motion from rest.
     pub fn velocity_rescale_factor(
         &self,
         kinetic_energy: f64,
@@ -222,16 +439,37 @@ impl SurfaceHoppingMd {
     ) -> Option<f64> {
         let delta_e = energy_to - energy_from;
         let new_ke = kinetic_energy - delta_e;
-        if new_ke < 0.0 {
-            None // frustrated hop
-        } else {
+        if new_ke.is_nan() || new_ke < 0.0 {
+            return None; // frustrated hop
+        }
+        if kinetic_energy > 0.0 {
             Some((new_ke / kinetic_energy).sqrt())
+        } else if new_ke == 0.0 {
+            Some(1.0) // at rest and isoenergetic: nothing to rescale
+        } else {
+            None
         }
     }
 
     /// Perform a stochastic surface hop if random number `r` < hopping probability.
-    /// Returns the new state index.
-    pub fn attempt_hop(&mut self, r: f64, kinetic_energy: f64, energies: &[f64]) -> usize {
+    ///
+    /// The target state is the one whose cumulative-probability interval
+    /// contains `r` (Tully's fewest-switches rule).  A hop is accepted only if
+    /// the nuclei can supply the energy difference (`energies` are the
+    /// adiabatic energies of all states, `kinetic_energy` the nuclear kinetic
+    /// energy, same units).
+    ///
+    /// Returns `Some((new_state, velocity_scale))` after an accepted hop —
+    /// the caller must multiply the nuclear velocities by `velocity_scale` to
+    /// conserve the total energy — and `None` if no hop occurred (`r` above
+    /// the total probability, a frustrated hop, or fewer than `n_states`
+    /// energies supplied); `current_state` is then unchanged.
+    pub fn attempt_hop(
+        &mut self,
+        r: f64,
+        kinetic_energy: f64,
+        energies: &[f64],
+    ) -> Option<(usize, f64)> {
         let n = self.n_states;
         let k = self.current_state;
         let mut cumulative = 0.0;
@@ -239,21 +477,16 @@ impl SurfaceHoppingMd {
             if l == k {
                 continue;
             }
-            let prob = self.hopping_probability(l);
-            cumulative += prob;
+            cumulative += self.hopping_probability(l);
             if r < cumulative {
-                let e_k = energies[k];
-                let e_l = energies[l];
-                if self
-                    .velocity_rescale_factor(kinetic_energy, e_k, e_l)
-                    .is_some()
-                {
-                    self.current_state = l;
-                }
-                break;
+                let energy_from = *energies.get(k)?;
+                let energy_to = *energies.get(l)?;
+                let scale = self.velocity_rescale_factor(kinetic_energy, energy_from, energy_to)?;
+                self.current_state = l;
+                return Some((l, scale));
             }
         }
-        self.current_state
+        None
     }
 }
 
@@ -814,7 +1047,7 @@ mod tests {
 
     #[test]
     fn test_shmd_initial_population() {
-        let shmd = SurfaceHoppingMd::new(3, 1, 0.5);
+        let shmd = SurfaceHoppingMd::new(3, 1, 0.5).unwrap();
         assert!((shmd.population(1) - 1.0).abs() < 1e-12);
         assert!(shmd.population(0).abs() < 1e-12);
         assert!(shmd.population(2).abs() < 1e-12);
@@ -822,13 +1055,13 @@ mod tests {
 
     #[test]
     fn test_shmd_total_population_one() {
-        let shmd = SurfaceHoppingMd::new(3, 0, 0.5);
+        let shmd = SurfaceHoppingMd::new(3, 0, 0.5).unwrap();
         assert!((shmd.total_population() - 1.0).abs() < 1e-12);
     }
 
     #[test]
     fn test_shmd_hopping_probability_zero_coupling() {
-        let shmd = SurfaceHoppingMd::new(2, 0, 0.5);
+        let shmd = SurfaceHoppingMd::new(2, 0, 0.5).unwrap();
         // No coupling set → hopping probability = 0
         let p = shmd.hopping_probability(1);
         assert!(p.abs() < 1e-12, "p = {:.6}", p);
@@ -836,23 +1069,23 @@ mod tests {
 
     #[test]
     fn test_shmd_hopping_probability_bounds() {
-        let mut shmd = SurfaceHoppingMd::new(2, 0, 0.5);
+        let mut shmd = SurfaceHoppingMd::new(2, 0, 0.5).unwrap();
         shmd.set_nac_velocity(0, 1, 0.1);
-        // Set some off-diagonal density matrix element
-        shmd.rho_real[1] = 0.3;
+        // A coherent superposition gives a non-zero off-diagonal density matrix element.
+        shmd.set_amplitudes(&[0.9, 0.3], &[0.0, 0.0]).unwrap();
         let p = shmd.hopping_probability(1);
         assert!((0.0..=1.0).contains(&p), "p = {:.6}", p);
     }
 
     #[test]
     fn test_shmd_hop_to_self_is_zero() {
-        let shmd = SurfaceHoppingMd::new(2, 0, 0.5);
+        let shmd = SurfaceHoppingMd::new(2, 0, 0.5).unwrap();
         assert_eq!(shmd.hopping_probability(0), 0.0);
     }
 
     #[test]
     fn test_shmd_velocity_rescale_downward_hop() {
-        let shmd = SurfaceHoppingMd::new(2, 1, 0.5);
+        let shmd = SurfaceHoppingMd::new(2, 1, 0.5).unwrap();
         // Hop downward: energy_to < energy_from → new_ke > kinetic_energy → Some(>1)
         let factor = shmd.velocity_rescale_factor(5.0, 3.0, 1.0);
         assert!(factor.is_some());
@@ -862,7 +1095,7 @@ mod tests {
 
     #[test]
     fn test_shmd_velocity_rescale_frustrated_hop() {
-        let shmd = SurfaceHoppingMd::new(2, 0, 0.5);
+        let shmd = SurfaceHoppingMd::new(2, 0, 0.5).unwrap();
         // Hop upward by more than kinetic energy → frustrated hop
         let factor = shmd.velocity_rescale_factor(1.0, 2.0, 10.0);
         assert!(factor.is_none());
@@ -870,7 +1103,7 @@ mod tests {
 
     #[test]
     fn test_shmd_velocity_rescale_energy_conservation() {
-        let shmd = SurfaceHoppingMd::new(2, 0, 0.5);
+        let shmd = SurfaceHoppingMd::new(2, 0, 0.5).unwrap();
         let ke = 3.0;
         let de = 1.0; // upward hop
         let factor = shmd.velocity_rescale_factor(ke, 0.0, de);
@@ -883,13 +1116,296 @@ mod tests {
 
     #[test]
     fn test_shmd_total_hopping_bounded() {
-        let mut shmd = SurfaceHoppingMd::new(3, 0, 0.5);
+        let mut shmd = SurfaceHoppingMd::new(3, 0, 0.5).unwrap();
         shmd.set_nac_velocity(0, 1, 0.2);
         shmd.set_nac_velocity(0, 2, 0.1);
-        shmd.rho_real[1] = 0.3;
-        shmd.rho_real[2] = 0.2;
+        shmd.set_amplitudes(&[0.8, 0.3, 0.2], &[0.0, 0.0, 0.0])
+            .unwrap();
         let total = shmd.total_hopping_probability();
         assert!((0.0..=1.0).contains(&total), "total = {:.6}", total);
+    }
+
+    // ---- FSSH electronic propagation and hopping tests ----
+
+    /// Two-state FSSH system: Hamiltonian elements in eV, NAC `sigma_01` in fs⁻¹.
+    fn two_state(h00: f64, h11: f64, h01: f64, sigma_01: f64, dt_fs: f64) -> SurfaceHoppingMd {
+        let mut shmd = SurfaceHoppingMd::new(2, 0, dt_fs).unwrap();
+        shmd.set_hamiltonian(0, 0, h00);
+        shmd.set_hamiltonian(1, 1, h11);
+        shmd.set_hamiltonian(0, 1, h01);
+        shmd.set_nac_velocity(0, 1, sigma_01);
+        shmd
+    }
+
+    #[test]
+    fn test_shmd_new_rejects_invalid_arguments() {
+        assert!(SurfaceHoppingMd::new(0, 0, 0.5).is_err());
+        assert!(SurfaceHoppingMd::new(2, 2, 0.5).is_err());
+        assert!(SurfaceHoppingMd::new(2, 5, 0.5).is_err());
+        assert!(SurfaceHoppingMd::new(2, 0, -0.5).is_err());
+        assert!(SurfaceHoppingMd::new(2, 0, f64::NAN).is_err());
+        assert!(SurfaceHoppingMd::new(2, 1, 0.5).is_ok());
+    }
+
+    #[test]
+    fn test_shmd_set_hamiltonian_and_nac_keep_their_symmetry() {
+        let mut shmd = SurfaceHoppingMd::new(3, 0, 0.5).unwrap();
+        shmd.set_hamiltonian(0, 2, 0.04);
+        assert_eq!(shmd.hamiltonian[2], 0.04);
+        assert_eq!(shmd.hamiltonian[2 * 3], 0.04);
+        shmd.set_nac_velocity(1, 2, 0.07);
+        assert_eq!(shmd.nac_velocity[3 + 2], 0.07);
+        assert_eq!(shmd.nac_velocity[2 * 3 + 1], -0.07);
+    }
+
+    #[test]
+    fn test_shmd_set_amplitudes_validates_and_rebuilds_the_density_matrix() {
+        let mut shmd = SurfaceHoppingMd::new(2, 0, 0.5).unwrap();
+        assert!(shmd.set_amplitudes(&[1.0], &[0.0, 0.0]).is_err());
+        assert!(shmd.set_amplitudes(&[1.0, f64::NAN], &[0.0, 0.0]).is_err());
+        // c = (0.6, 0.8 i): ρ_01 = c_0 c_1* = 0.6 * (-0.8 i) = -0.48 i
+        shmd.set_amplitudes(&[0.6, 0.0], &[0.0, 0.8]).unwrap();
+        assert!((shmd.population(0) - 0.36).abs() < 1e-15);
+        assert!((shmd.population(1) - 0.64).abs() < 1e-15);
+        assert!(shmd.rho_real[1].abs() < 1e-15);
+        assert!((shmd.rho_imag[1] + 0.48).abs() < 1e-15);
+        assert!(
+            (shmd.rho_imag[2] - 0.48).abs() < 1e-15,
+            "ρ must be Hermitian"
+        );
+        assert_eq!(shmd.amplitude(1), (0.0, 0.8));
+    }
+
+    #[test]
+    fn test_shmd_rabi_oscillation_matches_analytic_population() {
+        // Two degenerate states coupled by H_01 = 0.01 eV and no NAC:
+        // starting in state 0, P_1(t) = sin²(H_01 t / ħ).
+        let h01 = 0.01;
+        let mut shmd = two_state(0.0, 0.0, h01, 0.0, 0.5);
+        let omega = h01 / HBAR_EV_FS;
+        for step in 1..=200 {
+            shmd.propagate_electronic(4);
+            let t = step as f64 * 0.5;
+            let expected = (omega * t).sin().powi(2);
+            assert!(
+                (shmd.population(1) - expected).abs() < 1e-8,
+                "t = {t} fs: P_1 = {}, expected {expected}",
+                shmd.population(1)
+            );
+            assert!((shmd.total_population() - 1.0).abs() < 1e-9);
+        }
+        assert!(shmd.population(1) > 0.99, "population has transferred");
+    }
+
+    #[test]
+    fn test_shmd_detuned_rabi_oscillation_matches_analytic_population() {
+        // H = [[0, V], [V, Δ]]: P_1(t) = 4V²/(4V² + Δ²) sin²(½ sqrt(4V² + Δ²) t / ħ).
+        let (v, delta) = (0.05, 0.4);
+        let mut shmd = two_state(0.0, delta, v, 0.0, 0.5);
+        let gen_rabi = (4.0 * v * v + delta * delta).sqrt();
+        for step in 1..=200 {
+            shmd.propagate_electronic(16);
+            let t = step as f64 * 0.5;
+            let expected = 4.0 * v * v / (gen_rabi * gen_rabi)
+                * (0.5 * gen_rabi * t / HBAR_EV_FS).sin().powi(2);
+            assert!(
+                (shmd.population(1) - expected).abs() < 1e-7,
+                "t = {t} fs: P_1 = {}, expected {expected}",
+                shmd.population(1)
+            );
+        }
+    }
+
+    #[test]
+    fn test_shmd_nonadiabatic_coupling_rotates_the_amplitudes() {
+        // H = 0 and σ_01 = s: c_0 = cos(s t), c_1 = sin(s t), both real.
+        let s_nac = 0.03;
+        let mut shmd = two_state(0.0, 0.0, 0.0, s_nac, 0.5);
+        for _ in 0..100 {
+            shmd.propagate_electronic(2);
+        }
+        let t = 50.0;
+        let (c0r, c0i) = shmd.amplitude(0);
+        let (c1r, c1i) = shmd.amplitude(1);
+        assert!((c0r - (s_nac * t).cos()).abs() < 1e-9, "Re c0 = {c0r}");
+        assert!((c1r - (s_nac * t).sin()).abs() < 1e-9, "Re c1 = {c1r}");
+        assert!(c0i.abs() < 1e-12 && c1i.abs() < 1e-12);
+    }
+
+    /// Three coupled states with generic Hermitian `H` and antisymmetric `σ`.
+    fn three_state(dt_fs: f64) -> SurfaceHoppingMd {
+        let mut shmd = SurfaceHoppingMd::new(3, 0, dt_fs).unwrap();
+        shmd.set_hamiltonian(1, 1, 0.35);
+        shmd.set_hamiltonian(2, 2, 0.8);
+        shmd.set_hamiltonian(0, 1, 0.05);
+        shmd.set_hamiltonian(1, 2, -0.03);
+        shmd.set_hamiltonian(0, 2, 0.02);
+        shmd.set_nac_velocity(0, 1, 0.04);
+        shmd.set_nac_velocity(1, 2, -0.02);
+        shmd.set_nac_velocity(0, 2, 0.01);
+        shmd.set_amplitudes(&[0.6, 0.0, 0.0], &[0.0, 0.0, 0.8])
+            .unwrap();
+        shmd
+    }
+
+    #[test]
+    fn test_shmd_propagation_conserves_population_and_keeps_rho_pure_hermitian() {
+        let mut shmd = three_state(0.5);
+        for _ in 0..400 {
+            shmd.propagate_electronic(16);
+        }
+        assert!((shmd.total_population() - 1.0).abs() < 1e-6);
+        let n = 3;
+        for k in 0..n {
+            for l in 0..n {
+                assert!((shmd.rho_real[k * n + l] - shmd.rho_real[l * n + k]).abs() < 1e-14);
+                assert!((shmd.rho_imag[k * n + l] + shmd.rho_imag[l * n + k]).abs() < 1e-14);
+                // pure state: |ρ_kl|² = ρ_kk ρ_ll
+                let abs2 = shmd.rho_real[k * n + l].powi(2) + shmd.rho_imag[k * n + l].powi(2);
+                assert!((abs2 - shmd.population(k) * shmd.population(l)).abs() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn test_shmd_propagation_converges_with_fourth_order() {
+        let reference = {
+            let mut s = three_state(2.0);
+            s.propagate_electronic(512);
+            s
+        };
+        let error = |n_sub: usize| {
+            let mut s = three_state(2.0);
+            s.propagate_electronic(n_sub);
+            (0..3)
+                .map(|k| {
+                    (s.amp_real[k] - reference.amp_real[k])
+                        .abs()
+                        .max((s.amp_imag[k] - reference.amp_imag[k]).abs())
+                })
+                .fold(0.0_f64, f64::max)
+        };
+        let (e8, e16, e32) = (error(8), error(16), error(32));
+        assert!(e8 > 0.0 && e16 < e8 / 10.0, "e8 = {e8}, e16 = {e16}");
+        assert!(e32 < e16 / 10.0, "e16 = {e16}, e32 = {e32}");
+    }
+
+    #[test]
+    fn test_shmd_pure_state_acquires_hopping_probability_after_propagation() {
+        // Regression: the amplitudes were never propagated, so ρ_kl stayed 0 for a pure
+        // state and every hopping probability was exactly zero.
+        let mut shmd = two_state(0.0, 0.0, 0.0, 0.05, 0.5);
+        assert_eq!(shmd.total_hopping_probability(), 0.0);
+        shmd.propagate_electronic(4);
+        assert!(shmd.hopping_probability(1) > 0.0);
+        assert!(shmd.total_hopping_probability() <= 1.0);
+    }
+
+    #[test]
+    fn test_shmd_hopping_probability_equals_population_flux() {
+        // c = (cos σt, sin σt): the flux out of state 0 is -dρ_00/dt = 2σ cos(σt) sin(σt),
+        // so g_{0→1} = flux dt / ρ_00.
+        let (sigma, dt) = (0.03, 0.5);
+        let mut shmd = two_state(0.0, 0.0, 0.0, sigma, dt);
+        for _ in 0..40 {
+            shmd.propagate_electronic(2);
+        }
+        let t = 20.0;
+        let (cos_t, sin_t) = ((sigma * t).cos(), (sigma * t).sin());
+        let expected = 2.0 * sigma * cos_t * sin_t * dt / (cos_t * cos_t);
+        let g = shmd.hopping_probability(1);
+        assert!((g - expected).abs() < 1e-8, "g = {g}, expected {expected}");
+        // Population is flowing *into* state 1, so there is no flux back out of it.
+        shmd.current_state = 1;
+        assert_eq!(shmd.hopping_probability(0), 0.0);
+    }
+
+    #[test]
+    fn test_shmd_hopping_probability_includes_the_hamiltonian_coupling_term() {
+        // H_01 coupling only: c = (cos ωt, -i sin ωt), ρ_01 = i cos sin,
+        // g_{0→1} = (2/ħ) H_01 Im ρ_01 dt / ρ_00 = 2 ω tan(ωt) dt.
+        let (h01, dt) = (0.02, 0.5);
+        let omega = h01 / HBAR_EV_FS;
+        let mut shmd = two_state(0.0, 0.0, h01, 0.0, dt);
+        for _ in 0..30 {
+            shmd.propagate_electronic(4);
+        }
+        let t = 15.0;
+        let expected = 2.0 * omega * (omega * t).tan() * dt;
+        let g = shmd.hopping_probability(1);
+        assert!((g - expected).abs() < 1e-8, "g = {g}, expected {expected}");
+    }
+
+    #[test]
+    fn test_shmd_fewest_switches_reproduces_quantum_populations() {
+        // An ensemble of trajectories under a constant non-adiabatic coupling: the fraction
+        // on state 1 must follow the quantum population sin²(σ t) -- also after the flux
+        // reverses at σ t = π/2 (t ≈ 52 fs) and trajectories hop back.
+        use rand::{RngExt, SeedableRng};
+        let (sigma, dt, n_steps, n_traj) = (0.03, 0.25, 300, 3000);
+        let energies = [0.0, 0.0];
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1234);
+        let mut on_state_1 = 0_usize;
+        for _ in 0..n_traj {
+            let mut shmd = two_state(0.0, 0.0, 0.0, sigma, dt);
+            for _ in 0..n_steps {
+                let r: f64 = rng.random();
+                let _ = shmd.attempt_hop(r, 10.0, &energies);
+                shmd.propagate_electronic(2);
+            }
+            if shmd.current_state == 1 {
+                on_state_1 += 1;
+            }
+        }
+        let fraction = on_state_1 as f64 / n_traj as f64;
+        let quantum = (sigma * n_steps as f64 * dt).sin().powi(2);
+        assert!(
+            (fraction - quantum).abs() < 0.035,
+            "surface-hopping fraction {fraction} vs quantum population {quantum}"
+        );
+    }
+
+    #[test]
+    fn test_shmd_attempt_hop_rescales_velocity_and_rejects_frustrated_hops() {
+        // c = (0.8, 0.6), σ_01 = 0.2, dt = 1: g_{0→1} = 2 (0.48)(0.2) / 0.64 = 0.3.
+        let mut shmd = two_state(0.0, 0.0, 0.0, 0.2, 1.0);
+        shmd.set_amplitudes(&[0.8, 0.6], &[0.0, 0.0]).unwrap();
+        assert!((shmd.hopping_probability(1) - 0.3).abs() < 1e-12);
+        let energies = [0.0, 1.0];
+        // r above the hopping probability: no hop.
+        assert_eq!(shmd.attempt_hop(0.5, 5.0, &energies), None);
+        assert_eq!(shmd.current_state, 0);
+        // Frustrated hop: ΔE = 1 eV exceeds the 0.5 eV of kinetic energy.
+        assert_eq!(shmd.attempt_hop(0.1, 0.5, &energies), None);
+        assert_eq!(shmd.current_state, 0);
+        // Allowed hop: the velocities must be scaled by sqrt((4 - 1) / 4).
+        let (state, scale) = shmd.attempt_hop(0.1, 4.0, &energies).unwrap();
+        assert_eq!(state, 1);
+        assert!((scale - 0.75_f64.sqrt()).abs() < 1e-12);
+        assert_eq!(shmd.current_state, 1);
+        assert!(
+            (4.0 * scale * scale + 1.0 - 4.0).abs() < 1e-12,
+            "energy conservation"
+        );
+    }
+
+    #[test]
+    fn test_shmd_attempt_hop_without_enough_energies_does_nothing() {
+        let mut shmd = two_state(0.0, 0.0, 0.0, 0.2, 1.0);
+        shmd.set_amplitudes(&[0.8, 0.6], &[0.0, 0.0]).unwrap();
+        assert_eq!(shmd.attempt_hop(0.1, 4.0, &[0.0]), None);
+        assert_eq!(shmd.current_state, 0);
+    }
+
+    #[test]
+    fn test_shmd_velocity_rescale_factor_handles_zero_kinetic_energy() {
+        let shmd = SurfaceHoppingMd::new(2, 0, 0.5).unwrap();
+        // Nothing to rescale for an isoenergetic hop from rest ...
+        assert_eq!(shmd.velocity_rescale_factor(0.0, 1.0, 1.0), Some(1.0));
+        // ... but a uniform rescaling cannot create motion from rest, and an uphill hop is forbidden.
+        assert_eq!(shmd.velocity_rescale_factor(0.0, 2.0, 1.0), None);
+        assert_eq!(shmd.velocity_rescale_factor(0.0, 1.0, 2.0), None);
+        assert_eq!(shmd.velocity_rescale_factor(f64::NAN, 1.0, 2.0), None);
     }
 
     // ---- CasscfDynamics tests ----

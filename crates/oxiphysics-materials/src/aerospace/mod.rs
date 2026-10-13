@@ -1,5 +1,6 @@
 //! Auto-generated module structure
 
+mod clt_failure;
 pub mod functions;
 pub mod types;
 

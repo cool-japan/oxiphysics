@@ -76,79 +76,33 @@ impl PyVtkWriter {
     ///
     /// Produces a valid VTK legacy binary file with `UNSTRUCTURED_GRID` points.
     /// Point coordinates are written as big-endian `f32` values as required by
-    /// the VTK legacy binary format specification.
-    pub fn to_vtk_binary(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.extend_from_slice(b"# vtk DataFile Version 3.0\n");
-        buf.extend_from_slice(b"OxiPhysics data\n");
-        buf.extend_from_slice(b"BINARY\n");
-        buf.extend_from_slice(b"DATASET UNSTRUCTURED_GRID\n");
-
-        let n = self.positions.len();
-        buf.extend_from_slice(format!("POINTS {} float\n", n).as_bytes());
-        for pos in &self.positions {
-            buf.extend_from_slice(&(pos[0] as f32).to_be_bytes());
-            buf.extend_from_slice(&(pos[1] as f32).to_be_bytes());
-            buf.extend_from_slice(&(pos[2] as f32).to_be_bytes());
-        }
-
-        // Write degenerate CELLS and CELL_TYPES sections so the file is valid.
-        // Each point is a vertex cell (VTK type 1).
-        if n > 0 {
-            buf.extend_from_slice(format!("CELLS {} {}\n", n, n * 2).as_bytes());
-            for _ in 0..n {
-                buf.extend_from_slice(&1_i32.to_be_bytes()); // n_verts = 1
-                buf.extend_from_slice(&0_i32.to_be_bytes()); // point index placeholder (0)
-            }
-            buf.extend_from_slice(format!("CELL_TYPES {}\n", n).as_bytes());
-            for _ in 0..n {
-                buf.extend_from_slice(&1_i32.to_be_bytes()); // VTK_VERTEX = 1
-            }
-        }
-
-        // Named point scalar fields.
-        if !self.point_data.is_empty() {
-            let n_pts = self.positions.len();
-            buf.extend_from_slice(format!("POINT_DATA {}\n", n_pts).as_bytes());
-            for (name, data) in &self.point_data {
-                buf.extend_from_slice(
-                    format!("SCALARS {} float 1\nLOOKUP_TABLE default\n", name).as_bytes(),
-                );
-                for &v in data {
-                    buf.extend_from_slice(&(v as f32).to_be_bytes());
-                }
-            }
-        }
-
-        // Named cell scalar fields.
-        if !self.cell_data.is_empty() {
-            buf.extend_from_slice(format!("CELL_DATA {}\n", n).as_bytes());
-            for (name, data) in &self.cell_data {
-                buf.extend_from_slice(
-                    format!("SCALARS {} float 1\nLOOKUP_TABLE default\n", name).as_bytes(),
-                );
-                for &v in data {
-                    buf.extend_from_slice(&(v as f32).to_be_bytes());
-                }
-            }
-        }
-
-        buf
+    /// the VTK legacy binary format specification. Every point becomes a
+    /// `VTK_VERTEX` cell that references its own point (cell `k` -> point `k`),
+    /// so point data and cell data both carry one value per point. As in VTK's
+    /// own writer every binary block is followed by a newline.
+    ///
+    /// Raises `ValueError` when a point-data or cell-data array does not hold
+    /// exactly one value per point, when an array name is empty, or when there
+    /// are more points than 32-bit connectivity indices can address.
+    pub fn to_vtk_binary(&self) -> PyResult<Vec<u8>> {
+        Ok(self.encode_vtk_binary()?)
     }
 
     /// Write the binary VTK data to `path`.
+    ///
+    /// Raises `ValueError` (and writes nothing) when the attached arrays are
+    /// inconsistent with the number of points, see [`Self::to_vtk_binary`], and
+    /// `IOError` when the file cannot be written.
     pub fn write_to_file(&self, path: &str) -> PyResult<()> {
-        std::fs::write(path, self.to_vtk_binary())
-            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
+        let bytes = self.encode_vtk_binary()?;
+        std::fs::write(path, bytes).map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
     }
 
-    /// Returns the byte length that a binary VTK file would have (kept for
-    /// backward compatibility; prefer `to_vtk_binary().len()` for accuracy).
-    pub fn write_binary(&self) -> usize {
-        let base = self.filename.len() + 64;
-        let pd: usize = self.point_data.iter().map(|(_, v)| v.len() * 8).sum();
-        let cd: usize = self.cell_data.iter().map(|(_, v)| v.len() * 8).sum();
-        base + pd + cd
+    /// Byte length of the binary VTK file, that is `len(to_vtk_binary())`.
+    ///
+    /// Raises `ValueError` under the same conditions as [`Self::to_vtk_binary`].
+    pub fn write_binary(&self) -> PyResult<usize> {
+        Ok(self.encode_vtk_binary()?.len())
     }
 
     /// Number of point-data arrays attached.
@@ -159,6 +113,156 @@ impl PyVtkWriter {
     /// Number of cell-data arrays attached.
     pub fn n_cell_arrays(&self) -> usize {
         self.cell_data.len()
+    }
+}
+
+/// Reasons a [`PyVtkWriter`] refuses to serialise its contents.
+///
+/// Every variant surfaces in Python as a `ValueError`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum VtkWriteError {
+    /// A point-data or cell-data array does not hold one value per point.
+    #[error(
+        "{kind} array '{name}' has {got} values but the writer holds {expected} points; \
+         exactly one value per point is required"
+    )]
+    ArrayLengthMismatch {
+        /// Collection the array belongs to (`"point_data"` or `"cell_data"`).
+        kind: &'static str,
+        /// Name of the offending array.
+        name: String,
+        /// Number of points (and of vertex cells) in the writer.
+        expected: usize,
+        /// Number of values in the array.
+        got: usize,
+    },
+    /// An array name is empty, so it cannot be written as a legacy-format token.
+    #[error("{kind} array name must not be empty")]
+    EmptyArrayName {
+        /// Collection the array belongs to (`"point_data"` or `"cell_data"`).
+        kind: &'static str,
+    },
+    /// More points than the 32-bit connectivity indices of the legacy format can address.
+    #[error("{0} points exceed the 32-bit index range of the legacy VTK binary format")]
+    TooManyPoints(usize),
+}
+
+impl From<VtkWriteError> for PyErr {
+    fn from(err: VtkWriteError) -> PyErr {
+        pyo3::exceptions::PyValueError::new_err(err.to_string())
+    }
+}
+
+/// Encode an array name as a single token of the legacy VTK format.
+///
+/// The legacy format separates tokens by whitespace, so (like VTK's own
+/// writer) whitespace, control characters and `%` itself are percent-encoded;
+/// VTK's reader decodes them again.
+fn encode_vtk_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch == '%' || ch.is_whitespace() || ch.is_control() {
+            let mut utf8 = [0u8; 4];
+            for byte in ch.encode_utf8(&mut utf8).bytes() {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+impl PyVtkWriter {
+    /// Check the attached arrays against the point count and return that count.
+    fn validated_point_count(&self) -> Result<usize, VtkWriteError> {
+        let n = self.positions.len();
+        if i32::try_from(n).is_err() {
+            return Err(VtkWriteError::TooManyPoints(n));
+        }
+        for (kind, arrays) in [
+            ("point_data", &self.point_data),
+            ("cell_data", &self.cell_data),
+        ] {
+            for (name, data) in arrays {
+                if name.is_empty() {
+                    return Err(VtkWriteError::EmptyArrayName { kind });
+                }
+                if data.len() != n {
+                    return Err(VtkWriteError::ArrayLengthMismatch {
+                        kind,
+                        name: name.clone(),
+                        expected: n,
+                        got: data.len(),
+                    });
+                }
+            }
+        }
+        Ok(n)
+    }
+
+    /// Append `SCALARS` blocks (big-endian `f32`, newline terminated).
+    fn push_scalar_arrays(buf: &mut Vec<u8>, arrays: &[(String, Vec<f64>)]) {
+        for (name, data) in arrays {
+            buf.extend_from_slice(
+                format!(
+                    "SCALARS {} float 1\nLOOKUP_TABLE default\n",
+                    encode_vtk_name(name)
+                )
+                .as_bytes(),
+            );
+            for &value in data {
+                buf.extend_from_slice(&(value as f32).to_be_bytes());
+            }
+            buf.push(b'\n');
+        }
+    }
+
+    /// Build the legacy binary file; the Rust-level core of [`Self::to_vtk_binary`].
+    fn encode_vtk_binary(&self) -> Result<Vec<u8>, VtkWriteError> {
+        let n = self.validated_point_count()?;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"# vtk DataFile Version 3.0\n");
+        buf.extend_from_slice(b"OxiPhysics data\n");
+        buf.extend_from_slice(b"BINARY\n");
+        buf.extend_from_slice(b"DATASET UNSTRUCTURED_GRID\n");
+
+        buf.extend_from_slice(format!("POINTS {n} float\n").as_bytes());
+        for pos in &self.positions {
+            buf.extend_from_slice(&(pos[0] as f32).to_be_bytes());
+            buf.extend_from_slice(&(pos[1] as f32).to_be_bytes());
+            buf.extend_from_slice(&(pos[2] as f32).to_be_bytes());
+        }
+        buf.push(b'\n');
+
+        // Without points there are no cells and nothing to attach data to.
+        if n == 0 {
+            return Ok(buf);
+        }
+
+        // Each point is a vertex cell (VTK type 1) that references itself.
+        buf.extend_from_slice(format!("CELLS {} {}\n", n, 2 * n).as_bytes());
+        for index in 0..n {
+            let point_index = i32::try_from(index).map_err(|_| VtkWriteError::TooManyPoints(n))?;
+            buf.extend_from_slice(&1_i32.to_be_bytes()); // vertices in this cell
+            buf.extend_from_slice(&point_index.to_be_bytes());
+        }
+        buf.push(b'\n');
+        buf.extend_from_slice(format!("CELL_TYPES {n}\n").as_bytes());
+        for _ in 0..n {
+            buf.extend_from_slice(&1_i32.to_be_bytes()); // VTK_VERTEX = 1
+        }
+        buf.push(b'\n');
+
+        if !self.point_data.is_empty() {
+            buf.extend_from_slice(format!("POINT_DATA {n}\n").as_bytes());
+            Self::push_scalar_arrays(&mut buf, &self.point_data);
+        }
+        if !self.cell_data.is_empty() {
+            buf.extend_from_slice(format!("CELL_DATA {n}\n").as_bytes());
+            Self::push_scalar_arrays(&mut buf, &self.cell_data);
+        }
+        Ok(buf)
     }
 }
 
@@ -909,10 +1013,28 @@ mod tests {
     #[test]
     fn test_vtk_write_binary_size_grows() {
         let mut w = PyVtkWriter::new("test.vtk".to_string());
-        let s0 = w.write_binary();
+        for k in 0..100 {
+            w.add_position(f64::from(k), 0.0, 0.0);
+        }
+        let s0 = w.write_binary().expect("consistent writer");
         w.add_point_data("p".to_string(), vec![1.0; 100]);
-        let s1 = w.write_binary();
+        let s1 = w.write_binary().expect("consistent writer");
         assert!(s1 > s0);
+        // 100 f32 values plus the SCALARS header and the trailing newline.
+        let header = "POINT_DATA 100\nSCALARS p float 1\nLOOKUP_TABLE default\n".len();
+        assert_eq!(s1 - s0, header + 100 * 4 + 1);
+    }
+
+    #[test]
+    fn test_vtk_write_binary_equals_binary_length() {
+        let mut w = PyVtkWriter::new("test.vtk".to_string());
+        for k in 0..7 {
+            w.add_position(f64::from(k), 1.0, 2.0);
+        }
+        w.add_point_data("p".to_string(), vec![0.5; 7]);
+        w.add_cell_data("c".to_string(), vec![1.5; 7]);
+        let bytes = w.to_vtk_binary().expect("consistent writer");
+        assert_eq!(w.write_binary().expect("consistent writer"), bytes.len());
     }
 
     #[test]
@@ -1262,7 +1384,7 @@ mod tests {
     #[test]
     fn test_vtk_binary_header_starts_correctly() {
         let w = PyVtkWriter::new("test.vtk".to_string());
-        let bytes = w.to_vtk_binary();
+        let bytes = w.to_vtk_binary().expect("empty writer is consistent");
         let header = std::str::from_utf8(&bytes[..26]).expect("valid utf8 header");
         assert!(header.starts_with("# vtk DataFile"));
     }
@@ -1272,7 +1394,7 @@ mod tests {
         let mut w = PyVtkWriter::new("test.vtk".to_string());
         // Add a position so the binary section exists; combined size must exceed 100.
         w.add_position(1.0, 2.0, 3.0);
-        let bytes = w.to_vtk_binary();
+        let bytes = w.to_vtk_binary().expect("consistent writer");
         assert!(
             bytes.len() > 100,
             "expected > 100 bytes, got {}",
@@ -1285,7 +1407,7 @@ mod tests {
         let mut w = PyVtkWriter::new("test.vtk".to_string());
         let original = [1.5_f64, -2.25_f64, 0.125_f64];
         w.add_position(original[0], original[1], original[2]);
-        let bytes = w.to_vtk_binary();
+        let bytes = w.to_vtk_binary().expect("consistent writer");
 
         // The POINTS header ends with a newline; scan for the binary section
         // by locating "float\n" and reading the 12 bytes that follow.
@@ -1312,9 +1434,185 @@ mod tests {
         let path = tmp.to_str().expect("valid path");
         w.write_to_file(path).expect("write succeeds");
         let on_disk = std::fs::read(path).expect("file readable");
-        let expected = w.to_vtk_binary();
+        let expected = w.to_vtk_binary().expect("consistent writer");
         assert_eq!(on_disk, expected);
         let _ = std::fs::remove_file(path);
+    }
+
+    /// Offset just past the first occurrence of `header` in `bytes`.
+    fn after_header(bytes: &[u8], header: &str) -> usize {
+        bytes
+            .windows(header.len())
+            .position(|window| window == header.as_bytes())
+            .unwrap_or_else(|| panic!("header {header:?} not found"))
+            + header.len()
+    }
+
+    /// Decode `count` consecutive big-endian `i32` values starting at `start`.
+    fn read_be_i32(bytes: &[u8], start: usize, count: usize) -> Vec<i32> {
+        (0..count)
+            .map(|k| {
+                let at = start + 4 * k;
+                i32::from_be_bytes(bytes[at..at + 4].try_into().expect("4 bytes"))
+            })
+            .collect()
+    }
+
+    /// Decode `count` consecutive big-endian `f32` values starting at `start`.
+    fn read_be_f32(bytes: &[u8], start: usize, count: usize) -> Vec<f32> {
+        (0..count)
+            .map(|k| {
+                let at = start + 4 * k;
+                f32::from_be_bytes(bytes[at..at + 4].try_into().expect("4 bytes"))
+            })
+            .collect()
+    }
+
+    fn five_point_writer() -> PyVtkWriter {
+        let mut w = PyVtkWriter::new("five.vtk".to_string());
+        for k in 0..5 {
+            w.add_position(f64::from(k), 2.0 * f64::from(k), -1.0);
+        }
+        w
+    }
+
+    #[test]
+    fn test_vtk_binary_vertex_cell_k_references_point_k() {
+        let w = five_point_writer();
+        let bytes = w.to_vtk_binary().expect("consistent writer");
+        let cells = after_header(&bytes, "CELLS 5 10\n");
+        let connectivity = read_be_i32(&bytes, cells, 10);
+        for k in 0..5usize {
+            assert_eq!(connectivity[2 * k], 1, "cell {k} must have one vertex");
+            assert_eq!(
+                connectivity[2 * k + 1],
+                i32::try_from(k).expect("small index"),
+                "vertex cell {k} must reference point {k}"
+            );
+        }
+        // Cell types follow, one VTK_VERTEX (1) per cell.
+        let types = after_header(&bytes, "CELL_TYPES 5\n");
+        assert_eq!(read_be_i32(&bytes, types, 5), vec![1; 5]);
+    }
+
+    #[test]
+    fn test_vtk_binary_blocks_are_newline_terminated() {
+        let mut w = five_point_writer();
+        w.add_point_data("p".to_string(), vec![0.0; 5]);
+        let bytes = w.to_vtk_binary().expect("consistent writer");
+        // POINTS block: 5 * 3 floats, then '\n', then the CELLS header.
+        let points = after_header(&bytes, "POINTS 5 float\n");
+        assert_eq!(bytes[points + 5 * 12], b'\n');
+        assert!(bytes[points + 5 * 12 + 1..].starts_with(b"CELLS 5 10\n"));
+        // CELLS block (10 ints), '\n', CELL_TYPES header.
+        let cells = after_header(&bytes, "CELLS 5 10\n");
+        assert_eq!(bytes[cells + 40], b'\n');
+        assert!(bytes[cells + 41..].starts_with(b"CELL_TYPES 5\n"));
+        // The file ends with the newline that closes the last data block.
+        assert_eq!(bytes.last().copied(), Some(b'\n'));
+    }
+
+    #[test]
+    fn test_vtk_binary_point_and_cell_data_roundtrip() {
+        let mut w = five_point_writer();
+        w.add_point_data("pressure".to_string(), vec![1.0, 2.0, 3.0, 4.0, 5.5]);
+        w.add_cell_data("stress".to_string(), vec![-1.0, -2.0, -3.0, -4.0, -5.25]);
+        let bytes = w.to_vtk_binary().expect("consistent writer");
+
+        assert!(after_header(&bytes, "POINT_DATA 5\n") < after_header(&bytes, "CELL_DATA 5\n"));
+        let pressure = after_header(&bytes, "SCALARS pressure float 1\nLOOKUP_TABLE default\n");
+        assert_eq!(
+            read_be_f32(&bytes, pressure, 5),
+            vec![1.0, 2.0, 3.0, 4.0, 5.5]
+        );
+        let stress = after_header(&bytes, "SCALARS stress float 1\nLOOKUP_TABLE default\n");
+        assert_eq!(
+            read_be_f32(&bytes, stress, 5),
+            vec![-1.0, -2.0, -3.0, -4.0, -5.25]
+        );
+    }
+
+    #[test]
+    fn test_vtk_binary_rejects_point_data_length_mismatch() {
+        let mut w = five_point_writer();
+        w.add_point_data("short".to_string(), vec![0.0; 4]);
+        assert_eq!(
+            w.encode_vtk_binary(),
+            Err(VtkWriteError::ArrayLengthMismatch {
+                kind: "point_data",
+                name: "short".to_string(),
+                expected: 5,
+                got: 4,
+            })
+        );
+        assert!(w.to_vtk_binary().is_err());
+        assert!(w.write_binary().is_err());
+    }
+
+    #[test]
+    fn test_vtk_binary_rejects_cell_data_length_mismatch() {
+        let mut w = five_point_writer();
+        w.add_cell_data("long".to_string(), vec![0.0; 6]);
+        assert_eq!(
+            w.encode_vtk_binary(),
+            Err(VtkWriteError::ArrayLengthMismatch {
+                kind: "cell_data",
+                name: "long".to_string(),
+                expected: 5,
+                got: 6,
+            })
+        );
+        assert!(w.to_vtk_binary().is_err());
+    }
+
+    #[test]
+    fn test_vtk_binary_rejects_empty_array_name() {
+        let mut w = five_point_writer();
+        w.add_point_data(String::new(), vec![0.0; 5]);
+        assert_eq!(
+            w.encode_vtk_binary(),
+            Err(VtkWriteError::EmptyArrayName { kind: "point_data" })
+        );
+    }
+
+    #[test]
+    fn test_vtk_binary_without_points_has_no_cell_or_data_sections() {
+        let mut w = PyVtkWriter::new("empty.vtk".to_string());
+        // Zero-length arrays are consistent with zero points but have nothing to attach to.
+        w.add_point_data("p".to_string(), Vec::new());
+        w.add_cell_data("c".to_string(), Vec::new());
+        let bytes = w.to_vtk_binary().expect("zero points, zero values");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("POINTS 0 float\n"));
+        for absent in ["CELLS", "CELL_TYPES", "POINT_DATA", "CELL_DATA"] {
+            assert!(!text.contains(absent), "unexpected {absent} section");
+        }
+        // Any non-empty array is a length mismatch against zero points.
+        w.add_point_data("q".to_string(), vec![1.0]);
+        assert!(w.to_vtk_binary().is_err());
+    }
+
+    #[test]
+    fn test_vtk_binary_encodes_whitespace_in_array_names() {
+        let mut w = five_point_writer();
+        w.add_point_data("sea level 50%".to_string(), vec![0.0; 5]);
+        let bytes = w.to_vtk_binary().expect("consistent writer");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("SCALARS sea%20level%2050%25 float 1\n"));
+    }
+
+    #[test]
+    fn test_vtk_write_to_file_rejects_inconsistent_arrays_and_writes_nothing() {
+        let mut w = five_point_writer();
+        w.add_point_data("short".to_string(), vec![0.0; 2]);
+        let tmp = std::env::temp_dir().join("test_vtk_write_rejected.vtk");
+        let _ = std::fs::remove_file(&tmp);
+        let path = tmp.to_str().expect("valid path");
+        assert!(w.write_to_file(path).is_err());
+        assert!(
+            !tmp.exists(),
+            "no file may be created for an invalid writer"
+        );
     }
 
     // --- N2: PyCsvWriter write_to_file ---

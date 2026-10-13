@@ -110,23 +110,46 @@ pub struct VirialStress {
     pub atom_mass: f64,
 }
 impl VirialStress {
+    /// Conventional diamond-cubic lattice parameter of silicon (nm).
+    const SILICON_LATTICE_PARAMETER_NM: f64 = 0.543;
+    /// Atoms per conventional diamond-cubic unit cell.
+    const SILICON_ATOMS_PER_CELL: f64 = 8.0;
     /// Silicon RVE for nanoscale stress calculation.
+    ///
+    /// The RVE is a cube of edge `side_nm` cut from the diamond-cubic lattice
+    /// (a = 0.543 nm, 8 atoms per conventional cell), so it contains
+    /// 8 (side / a)^3 atoms and the atom number density is the lattice value
+    /// 8 / a^3 independent of the RVE size.
     pub fn silicon_rve(side_nm: f64) -> Self {
         let side_m = side_nm * 1.0e-9;
+        let cells_per_edge = side_nm / Self::SILICON_LATTICE_PARAMETER_NM;
         VirialStress {
             volume_m3: side_m.powi(3),
             temperature: 300.0,
-            n_atoms: (side_nm / 0.543 * 8.0).round() as usize,
+            n_atoms: (cells_per_edge.powi(3) * Self::SILICON_ATOMS_PER_CELL).round() as usize,
             atom_mass: 28.0 * 1.660e-27,
         }
     }
-    /// Virial kinetic stress (Pa) = N*m*kT / V per component.
+    /// Ideal-gas kinetic contribution to the virial pressure (Pa):
+    /// P_kin = N k_B T / V.
+    ///
+    /// By equipartition the kinetic term Σ m v_x^2 / V of the virial stress
+    /// equals N k_B T / V per diagonal component, with no dependence on the
+    /// atom mass.  This is a positive pressure; the corresponding contribution
+    /// to the (tension-positive) Cauchy stress returned by
+    /// [`VirialStress::hardy_stress_xx`] is -P_kin.
     pub fn kinetic_stress_pa(&self) -> f64 {
         const KB: f64 = 1.380649e-23;
-        self.n_atoms as f64 * self.atom_mass * KB * self.temperature / self.volume_m3
+        self.n_atoms as f64 * KB * self.temperature / self.volume_m3
     }
-    /// Virial potential stress (Pa) from pair force-distance list.
-    /// `pairs`: list of (force_x: f64, force_y: f64, force_z: f64, dx: f64, dy: f64, dz: f64).
+    /// Virial potential (configurational) stress σ_xx (Pa) from a pair list,
+    /// σ_xx = -(1/V) Σ_pairs f_x r_x (tension positive).
+    ///
+    /// `pairs`: each interacting pair listed once as
+    /// `(f_x, f_y, f_z, r_x, r_y, r_z)` where `r = r_i - r_j` is the
+    /// separation vector from atom j to atom i and `f` is the force exerted on
+    /// atom i by atom j.  An attractive pair has `f · r < 0` and therefore
+    /// contributes a tensile (positive) stress.
     pub fn potential_stress_xx(&self, pairs: &[(f64, f64, f64, f64, f64, f64)]) -> f64 {
         let sum: f64 = pairs
             .iter()
@@ -153,26 +176,43 @@ impl VirialStress {
             ftf23,
         ]
     }
-    /// Atomistic-to-continuum stress via Hardy formulation (simplified).
-    pub fn hardy_stress_xx(&self, velocities: &[[f64; 3]], forces: &[[f64; 3]]) -> f64 {
-        const KB: f64 = 1.380649e-23;
+    /// Atomistic-to-continuum stress σ_xx (Pa, tension positive) from the
+    /// Hardy formulation with a uniform (top-hat) averaging kernel over the RVE.
+    ///
+    /// With a uniform kernel the Hardy stress reduces to the volume-averaged
+    /// virial stress
+    ///
+    /// σ_xx = -(1/V) [ Σ_i m (v_ix - ū_x)^2 + Σ_pairs f_x r_x ],
+    ///
+    /// where ū_x is the mean x-velocity of the atoms in the RVE (the local
+    /// streaming velocity of the continuum).  The kinetic term therefore uses
+    /// thermal (peculiar) velocities, which makes the result invariant under a
+    /// uniform translation of the RVE; velocities that are already thermal have
+    /// a vanishing mean and are unaffected.
+    ///
+    /// * `velocities`: velocity of every atom in the RVE (m/s).
+    /// * `pairs`: each interacting pair listed once as
+    ///   `(f_x, f_y, f_z, r_x, r_y, r_z)` with `r = r_i - r_j` and `f` the
+    ///   force on atom i from atom j, exactly as in
+    ///   [`VirialStress::potential_stress_xx`].
+    pub fn hardy_stress_xx(
+        &self,
+        velocities: &[[f64; 3]],
+        pairs: &[(f64, f64, f64, f64, f64, f64)],
+    ) -> f64 {
+        let mean_vx = if velocities.is_empty() {
+            0.0
+        } else {
+            velocities.iter().map(|v| v[0]).sum::<f64>() / velocities.len() as f64
+        };
         let kinetic: f64 = velocities
             .iter()
-            .map(|v| self.atom_mass * v[0] * v[0])
-            .sum();
-        let potential: f64 = forces
-            .iter()
-            .enumerate()
-            .map(|(i, f_arr)| {
-                if i < velocities.len() {
-                    f_arr[0] * velocities[i][0] * 1.0e-9
-                } else {
-                    0.0
-                }
+            .map(|v| {
+                let peculiar = v[0] - mean_vx;
+                self.atom_mass * peculiar * peculiar
             })
             .sum();
-        let _ = KB;
-        -(kinetic + potential) / self.volume_m3
+        -kinetic / self.volume_m3 + self.potential_stress_xx(pairs)
     }
 }
 /// Quantum dot confinement energy using particle-in-a-box model.

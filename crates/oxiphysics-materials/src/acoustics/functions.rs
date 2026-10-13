@@ -26,49 +26,6 @@ pub fn transmission_loss_db(z1: f64, z2: f64) -> f64 {
     let tau = 4.0 * z1 * z2 / ((z1 + z2) * (z1 + z2));
     -10.0 * tau.log10()
 }
-/// Transfer-matrix method for a multilayer system at normal incidence.
-///
-/// `impedances` has length N (outer medium, layers…, outer medium).
-/// `thicknesses` has length N−2 (one per interior layer).
-/// `freq` in Hz.
-/// Returns the power transmission coefficient |T|².
-pub fn multilayer_transmission(impedances: &[f64], thicknesses: &[f64], freq: f64) -> f64 {
-    let n = impedances.len();
-    if n < 2 {
-        return 1.0;
-    }
-    let n_layers = n - 2;
-    let mut m11 = 1.0_f64;
-    let mut m12 = 0.0_f64;
-    let mut m21 = 0.0_f64;
-    let mut m22 = 1.0_f64;
-    for i in 0..n_layers {
-        let z = impedances[i + 1];
-        let omega = 2.0 * PI * freq;
-        let c = z / 1.2;
-        let k = omega / c;
-        let d = thicknesses[i];
-        let kd = k * d;
-        let cos_kd = kd.cos();
-        let sin_kd = kd.sin();
-        let a11 = cos_kd * m11 + (z * sin_kd) * m21;
-        let a12 = cos_kd * m12 + (z * sin_kd) * m22;
-        let a21 = (sin_kd / z) * m11 + cos_kd * m21;
-        let a22 = (sin_kd / z) * m12 + cos_kd * m22;
-        m11 = a11;
-        m12 = a12;
-        m21 = a21;
-        m22 = a22;
-    }
-    let z1 = impedances[0];
-    let z2 = impedances[n - 1];
-    let denom = m11 + m12 / z2 + z1 * m21 + z1 / z2 * m22;
-    if denom.abs() < f64::EPSILON {
-        return 0.0;
-    }
-    let t_amp = 2.0 / denom;
-    t_amp * t_amp
-}
 /// Classical viscous attenuation coefficient (Stokes/Kirchhoff).
 ///
 /// alpha = 2·mu·omega² / (3·rho·c³)  \[Np/m\]
@@ -76,23 +33,77 @@ pub fn viscous_attenuation(freq: f64, viscosity: f64, density: f64, c: f64) -> f
     let omega = 2.0 * PI * freq;
     2.0 * viscosity * omega * omega / (3.0 * density * c * c * c)
 }
-/// Simplified ISO 9613-1 atmospheric absorption in dB/m.
+/// Reference ambient pressure of ISO 9613-1 (kPa).
+const ISO9613_REFERENCE_PRESSURE_KPA: f64 = 101.325;
+
+/// Pure-tone atmospheric absorption coefficient in dB/m following
+/// ISO 9613-1:1993, including classical absorption, the vibrational
+/// relaxation of oxygen and nitrogen, and the conversion from relative
+/// humidity to molar water-vapour concentration.
 ///
-/// Includes O₂ and N₂ vibrational relaxation.
-/// `temp_c` in °C, `humidity` as fraction 0–1.
-pub fn atmospheric_attenuation_db_per_m(freq: f64, temp_c: f64, humidity: f64) -> f64 {
-    let t_kelvin = temp_c + 273.15;
-    let t_ref = 293.15_f64;
-    let t_ratio = t_kelvin / t_ref;
-    let h = humidity * t_ratio.powf(-5.0 / 2.0) * (-2239.1 / t_kelvin).exp() * 1.0e4;
-    let f_ro = 24.0 + 4.04e4 * h * (0.02 + h) / (0.391 + h);
-    let f_rn =
-        t_ratio.powf(-0.5) * (9.0 + 280.0 * h * (-4.17 * (t_ratio.powf(-1.0 / 3.0) - 1.0)).exp());
+/// * `freq` – frequency in Hz,
+/// * `temp_c` – air temperature in °C,
+/// * `humidity` – *relative* humidity as a fraction 0–1,
+/// * `pressure_kpa` – ambient static pressure in kPa (101.325 kPa = standard
+///   atmosphere).
+///
+/// With `T` the absolute temperature, `T₀ = 293.15 K`, `T₀₁ = 273.16 K`,
+/// `p_r = 101.325 kPa` and `p_a` the ambient pressure:
+///
+/// ```text
+/// C   = -6.8346·(T₀₁/T)^1.261 + 4.6151
+/// h   = 100·humidity·10^C·(p_r/p_a)              molar water-vapour concentration [%]
+/// f_rO = (p_a/p_r)·(24 + 4.04e4·h·(0.02 + h)/(0.391 + h))
+/// f_rN = (p_a/p_r)·(T/T₀)^-½·(9 + 280·h·exp(-4.17·((T/T₀)^-⅓ - 1)))
+/// α   = 8.686·f²·[ 1.84e-11·(p_r/p_a)·(T/T₀)^½
+///        + (T/T₀)^-5/2·( 0.01275·e^(-2239.1/T)/(f_rO + f²/f_rO)
+///                      + 0.1068 ·e^(-3352/T) /(f_rN + f²/f_rN) ) ]
+/// ```
+///
+/// At 1 kHz, 20 °C, 50 % relative humidity and standard pressure this gives
+/// 4.66 dB/km.  ISO 9613-1 states ±10 % accuracy for water-vapour
+/// concentrations of 0.05–5 %, temperatures of −20…+50 °C and pressures up to
+/// 200 kPa; outside the physical domain (`T <= 0 K`, `p_a <= 0`) the result is
+/// NaN or infinite.
+pub fn atmospheric_attenuation_iso9613_db_per_m(
+    freq: f64,
+    temp_c: f64,
+    humidity: f64,
+    pressure_kpa: f64,
+) -> f64 {
+    const T_REF: f64 = 293.15;
+    const T_TRIPLE: f64 = 273.16;
+    let p_ref = ISO9613_REFERENCE_PRESSURE_KPA;
+    let t = temp_c + 273.15;
+    let t_ratio = t / T_REF;
+    let pressure_ratio = pressure_kpa / p_ref;
+
+    // Saturation vapour pressure ratio p_sat/p_r = 10^C and the molar
+    // concentration of water vapour h (in percent).
+    let c = -6.8346 * (T_TRIPLE / t).powf(1.261) + 4.6151;
+    let h = 100.0 * humidity * 10.0_f64.powf(c) / pressure_ratio;
+
+    let f_ro = pressure_ratio * (24.0 + 4.04e4 * h * (0.02 + h) / (0.391 + h));
+    let f_rn = pressure_ratio
+        * t_ratio.powf(-0.5)
+        * (9.0 + 280.0 * h * (-4.170 * (t_ratio.powf(-1.0 / 3.0) - 1.0)).exp());
+
     let f2 = freq * freq;
-    let alpha_classic = 1.84e-11 * t_ratio.powf(0.5) * f2;
-    let alpha_o2 = 0.01275 * (-2239.1 / t_kelvin).exp() * (f_ro + f2 / f_ro).recip() * freq;
-    let alpha_n2 = 0.1068 * (-3352.0 / t_kelvin).exp() * (f_rn + f2 / f_rn).recip() * freq;
-    (alpha_classic + alpha_o2 + alpha_n2) * 8.686
+    let classical = 1.84e-11 * t_ratio.sqrt() / pressure_ratio;
+    let relaxation_o2 = 0.01275 * (-2239.1 / t).exp() / (f_ro + f2 / f_ro);
+    let relaxation_n2 = 0.1068 * (-3352.0 / t).exp() / (f_rn + f2 / f_rn);
+    8.686 * f2 * (classical + t_ratio.powf(-2.5) * (relaxation_o2 + relaxation_n2))
+}
+
+/// ISO 9613-1 atmospheric absorption in dB/m at standard atmospheric
+/// pressure (101.325 kPa).
+///
+/// Includes classical absorption and O₂ / N₂ vibrational relaxation;
+/// `temp_c` in °C, `humidity` as relative humidity fraction 0–1.  See
+/// [`atmospheric_attenuation_iso9613_db_per_m`] for the formulation and for
+/// other ambient pressures.
+pub fn atmospheric_attenuation_db_per_m(freq: f64, temp_c: f64, humidity: f64) -> f64 {
+    atmospheric_attenuation_iso9613_db_per_m(freq, temp_c, humidity, ISO9613_REFERENCE_PRESSURE_KPA)
 }
 /// Convert attenuation coefficient (dB/m or Np/m) over a distance to total dB loss.
 pub fn attenuation_db(alpha_per_m: f64, distance: f64) -> f64 {
@@ -905,16 +916,6 @@ mod tests {
         assert!(tl > 20.0, "TL = {tl} dB");
     }
     #[test]
-    fn test_multilayer_trivial_no_layers() {
-        let t2 = multilayer_transmission(&[400.0, 400.0], &[], 1000.0);
-        assert!((t2 - 1.0).abs() < 1e-6, "|T|² = {t2}");
-    }
-    #[test]
-    fn test_multilayer_single_layer_returns_nonzero() {
-        let t2 = multilayer_transmission(&[400.0, 400.0, 400.0], &[0.1], 1000.0);
-        assert!(t2 > 0.0, "|T|² = {t2}");
-    }
-    #[test]
     fn test_viscous_attenuation_increases_with_freq() {
         let alpha1 = viscous_attenuation(1000.0, 1e-3, 998.0, 1500.0);
         let alpha2 = viscous_attenuation(4000.0, 1e-3, 998.0, 1500.0);
@@ -935,6 +936,65 @@ mod tests {
         let a1 = atmospheric_attenuation_db_per_m(1000.0, 20.0, 0.50);
         let a2 = atmospheric_attenuation_db_per_m(8000.0, 20.0, 0.50);
         assert!(a2 > a1, "a1={a1}, a2={a2}");
+    }
+    #[test]
+    fn test_atmospheric_attenuation_matches_iso9613_reference_values() {
+        // ISO 9613-1 table values for 20 °C, 50 % relative humidity, 101.325 kPa
+        // (dB/km, as printed with two to three significant digits).
+        let reference = [
+            (125.0, 0.44),
+            (1000.0, 4.66),
+            (4000.0, 29.7),
+            (8000.0, 105.0),
+        ];
+        for (freq, db_per_km) in reference {
+            let alpha = atmospheric_attenuation_db_per_m(freq, 20.0, 0.50);
+            let expected = db_per_km * 1.0e-3;
+            assert!(
+                (alpha - expected).abs() <= 0.01 * expected,
+                "f = {freq} Hz: α = {alpha} dB/m, ISO {expected} dB/m"
+            );
+        }
+    }
+    #[test]
+    fn test_atmospheric_attenuation_1khz_regression_value() {
+        // The previous implementation returned about 0.17 dB/km here.
+        let alpha = atmospheric_attenuation_db_per_m(1000.0, 20.0, 0.50);
+        assert!(
+            (alpha - 4.66e-3).abs() <= 0.01 * 4.66e-3,
+            "α = {alpha} dB/m, expected 4.66e-3 dB/m ±1 %"
+        );
+    }
+    #[test]
+    fn test_atmospheric_attenuation_standard_pressure_wrapper() {
+        for &(f, t, h) in &[
+            (500.0, 5.0, 0.3),
+            (2000.0, 30.0, 0.8),
+            (10_000.0, -10.0, 0.6),
+        ] {
+            let wrapped = atmospheric_attenuation_db_per_m(f, t, h);
+            let direct = atmospheric_attenuation_iso9613_db_per_m(f, t, h, 101.325);
+            assert_eq!(wrapped, direct);
+        }
+    }
+    #[test]
+    fn test_atmospheric_attenuation_pressure_scaling_law() {
+        // At equal molar water-vapour concentration the ISO formulation obeys
+        // α(f, p_a) = (p_a/p_r)·α(f·p_r/p_a, p_r).  Doubling the pressure and
+        // doubling the relative humidity keeps the concentration unchanged.
+        let sea_level = atmospheric_attenuation_iso9613_db_per_m(1000.0, 20.0, 0.5, 101.325);
+        let two_atm = atmospheric_attenuation_iso9613_db_per_m(2000.0, 20.0, 1.0, 202.65);
+        assert!(
+            (two_atm - 2.0 * sea_level).abs() < 1e-12 * sea_level,
+            "two_atm = {two_atm}, 2·sea_level = {}",
+            2.0 * sea_level
+        );
+    }
+    #[test]
+    fn test_atmospheric_attenuation_dry_air_absorbs_more_at_1khz() {
+        let dry = atmospheric_attenuation_db_per_m(1000.0, 20.0, 0.10);
+        let humid = atmospheric_attenuation_db_per_m(1000.0, 20.0, 0.50);
+        assert!(dry > 2.0 * humid, "dry {dry}, humid {humid}");
     }
     #[test]
     fn test_attenuation_db_linear_in_distance() {

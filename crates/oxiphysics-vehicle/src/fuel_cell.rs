@@ -28,6 +28,14 @@ pub const R_GAS: f64 = 8.314_462;
 pub const FARADAY: f64 = 96_485.0;
 /// Number of electrons transferred per mole of H₂ in PEM fuel cell.
 pub const N_ELECTRONS: f64 = 2.0;
+/// Molar mass of molecular hydrogen (g mol⁻¹).
+pub const M_H2_G_PER_MOL: f64 = 2.016;
+/// Lower heating value of hydrogen (kWh kg⁻¹).
+pub const LHV_H2_KWH_PER_KG: f64 = 33.33;
+/// Thermoneutral cell voltage on a higher-heating-value basis (V).
+pub const V_THERMONEUTRAL_HHV: f64 = 1.481;
+/// Thermoneutral cell voltage on a lower-heating-value basis (V).
+pub const V_THERMONEUTRAL_LHV: f64 = 1.254;
 
 // ---------------------------------------------------------------------------
 // Nernst voltage
@@ -195,7 +203,22 @@ impl FuelCellStack {
     ///
     /// η = V_stack / (n_cells * V_thermo), where V_thermo = 1.481 V (HHV basis).
     pub fn efficiency(&self) -> f64 {
-        let v_thermo = 1.481 * self.n_cells as f64;
+        self.efficiency_for_thermoneutral_voltage(V_THERMONEUTRAL_HHV)
+    }
+
+    /// Thermodynamic efficiency (0–1) relative to the lower heating value of
+    /// hydrogen.
+    ///
+    /// η_LHV = V_stack / (n_cells * 1.254 V).  This is the efficiency that has
+    /// to be combined with the LHV of the fuel (33.33 kWh/kg) when converting a
+    /// hydrogen mass into usable electrical energy.
+    pub fn efficiency_lhv(&self) -> f64 {
+        self.efficiency_for_thermoneutral_voltage(V_THERMONEUTRAL_LHV)
+    }
+
+    /// Stack voltage divided by the thermoneutral voltage of all cells in series.
+    fn efficiency_for_thermoneutral_voltage(&self, v_thermoneutral: f64) -> f64 {
+        let v_thermo = v_thermoneutral * self.n_cells as f64;
         if v_thermo < 1e-12 {
             return 0.0;
         }
@@ -207,13 +230,16 @@ impl FuelCellStack {
         self.current_density = j.max(0.0);
     }
 
-    /// Hydrogen consumption rate (g s⁻¹) at current operating point.
+    /// Hydrogen consumption rate (g s⁻¹) of the whole stack at the current
+    /// operating point.
     ///
-    /// From Faraday's law: ṁ_H2 = I * M_H2 / (2 * F)
+    /// From Faraday's law: every cell of the series stack carries the same
+    /// current `I = j · A_cell` and consumes `I / (2 F)` mol s⁻¹ of H₂, so
+    /// the stack consumes
+    /// ṁ_H2 = n_cells * I * M_H2 / (2 * F)
     /// where M_H2 = 2.016 g/mol.
     pub fn hydrogen_consumption_rate_gs(&self) -> f64 {
-        let i_total = self.current();
-        i_total * 2.016 / (N_ELECTRONS * FARADAY)
+        self.n_cells as f64 * self.current() * M_H2_G_PER_MOL / (N_ELECTRONS * FARADAY)
     }
 }
 
@@ -327,38 +353,71 @@ impl FuelCellVehicle {
     /// Simulate one time step of duration `dt` (s) with a `power_demand` (W).
     ///
     /// The fuel cell provides power; excess goes to/from the buffer battery.
-    /// Hydrogen is consumed proportional to stack current.
+    /// Hydrogen is consumed at the Faraday rate of the whole stack
+    /// ([`FuelCellStack::hydrogen_consumption_rate_gs`]).
+    ///
+    /// A stack cannot generate electricity without fuel: with an empty tank the
+    /// stack output is zero and the demand is served from the buffer battery
+    /// alone; when the remaining hydrogen lasts for only part of the step the
+    /// stack output is scaled by that fraction.  The energy credited to the
+    /// drivetrain never exceeds what the stack and battery actually supplied.
     pub fn step(&mut self, dt: f64, power_demand: f64) {
-        let fc_power = self.stack.power_output();
-        let excess = fc_power - power_demand;
+        // Hydrogen the stack would burn during this step and the part of it the
+        // tank can still provide.
+        let h2_needed_kg = self.stack.hydrogen_consumption_rate_gs() * dt / 1000.0;
+        let h2_available_kg = self.tank.current_mass.max(0.0);
+        let supply_fraction = if h2_available_kg <= 0.0 {
+            0.0
+        } else if h2_needed_kg <= h2_available_kg {
+            1.0
+        } else {
+            h2_available_kg / h2_needed_kg
+        };
 
+        let fc_power = self.stack.power_output() * supply_fraction;
+        let excess = fc_power - power_demand;
+        let battery_capacity_wh = self.battery_buffer_kwh * 1000.0;
+
+        // Power that actually reaches the drivetrain bus during this step (W).
+        let mut supplied_power = power_demand;
         if excess >= 0.0 {
             // Charge battery with excess
-            let charge_wh = (excess * dt / 3600.0)
-                .min(self.battery_buffer_kwh * 1000.0 * (1.0 - self.battery_soc));
-            self.battery_soc += charge_wh / (self.battery_buffer_kwh * 1000.0).max(1e-12);
+            let charge_wh =
+                (excess * dt / 3600.0).min(battery_capacity_wh * (1.0 - self.battery_soc));
+            self.battery_soc += charge_wh / battery_capacity_wh.max(1e-12);
         } else {
             // Discharge battery for deficit
-            let deficit_wh =
-                (-excess * dt / 3600.0).min(self.battery_buffer_kwh * 1000.0 * self.battery_soc);
-            self.battery_soc -= deficit_wh / (self.battery_buffer_kwh * 1000.0).max(1e-12);
+            let deficit_wh = (-excess * dt / 3600.0).min(battery_capacity_wh * self.battery_soc);
+            self.battery_soc -= deficit_wh / battery_capacity_wh.max(1e-12);
+            if dt > 0.0 {
+                supplied_power = fc_power + deficit_wh * 3600.0 / dt;
+            }
         }
 
-        // Consume hydrogen
-        let h2_rate = self.stack.hydrogen_consumption_rate_gs(); // g/s
-        let h2_kg = h2_rate * dt / 1000.0;
-        self.tank.consume(h2_kg);
+        // Consume hydrogen (the tank clamps to what it still holds)
+        self.tank.consume(h2_needed_kg);
 
         // Track energy delivered
-        let motor_power = power_demand.min(self.motor_power_kw * 1000.0);
+        let motor_power = power_demand
+            .min(self.motor_power_kw * 1000.0)
+            .min(supplied_power);
         self.energy_delivered_wh += motor_power * self.motor_efficiency * dt / 3600.0;
 
         self.battery_soc = self.battery_soc.clamp(0.0, 1.0);
     }
 
     /// Remaining range estimate (km) given current state.
+    ///
+    /// Uses the hydrogen mass that is actually left in the tank
+    /// ([`HydrogenTank::current_mass`]); see [`FcvRange::estimate_range`].
     pub fn remaining_range_km(&self, mass_kg: f64, drag_coeff: f64, speed_kmh: f64) -> f64 {
-        FcvRange::estimate_range(mass_kg, drag_coeff, speed_kmh, &self.stack) * self.tank.soc()
+        FcvRange::estimate_range(
+            mass_kg,
+            drag_coeff,
+            speed_kmh,
+            self.tank.current_mass,
+            &self.stack,
+        )
     }
 }
 
@@ -370,44 +429,59 @@ impl FuelCellVehicle {
 pub struct FcvRange;
 
 impl FcvRange {
-    /// Estimate the maximum range (km) of a fuel cell vehicle.
+    /// Estimate the range (km) of a fuel cell vehicle cruising at a constant
+    /// speed on a given hydrogen load.
     ///
-    /// Uses a simplified steady-state power balance:
+    /// Steady-state road-load balance:
     /// - Rolling resistance: `F_roll = m * g * Cr`
     /// - Aerodynamic drag:   `F_drag = 0.5 * rho * Cd * A * v^2`
-    /// - Power demand:       `P = (F_roll + F_drag) * v`
     ///
-    /// Then range = `(tank_capacity_kg * LHV_H2 * efficiency) / P * v`
+    /// The usable energy is the lower heating value of the hydrogen in the
+    /// tank times the stack efficiency on the same (LHV) basis,
+    /// `E = m_H2 * LHV_H2 * eta_LHV` with
+    /// `eta_LHV = V_stack / (n_cells * 1.254 V)`
+    /// ([`FuelCellStack::efficiency_lhv`]).  Spending `E` against the road
+    /// load, `E = (F_roll + F_drag) * range`, gives
+    ///
+    /// `range = E / (F_roll + F_drag)`
+    ///
+    /// which is the distance travelled (not the driving time).
     ///
     /// * `mass_kg`    – vehicle mass (kg)
     /// * `drag_coeff` – product `Cd * A` (m²)
     /// * `speed_kmh`  – cruise speed (km/h)
-    /// * `stack`      – reference to the fuel cell stack for efficiency
+    /// * `tank_kg_h2` – hydrogen mass available for the trip (kg)
+    /// * `stack`      – fuel cell stack providing the operating-point efficiency
+    ///
+    /// Returns `0.0` when no usable energy is available (empty tank or a stack
+    /// that produces no voltage) and `f64::INFINITY` when the vehicle meets no
+    /// resisting force at all.
     pub fn estimate_range(
         mass_kg: f64,
         drag_coeff: f64,
         speed_kmh: f64,
+        tank_kg_h2: f64,
         stack: &FuelCellStack,
     ) -> f64 {
+        const GRAVITY: f64 = 9.81; // m/s²
+        const ROLLING_RESISTANCE: f64 = 0.01; // dimensionless
+        const AIR_DENSITY: f64 = 1.225; // kg/m³
+        const JOULES_PER_KWH: f64 = 3.6e6;
+
         let v = speed_kmh / 3.6; // m/s
-        let g = 9.81;
-        let cr = 0.01; // rolling resistance coefficient
-        let rho_air = 1.225; // kg/m³
-        let lhv_h2 = 33.33; // kWh/kg (lower heating value)
-        let tank_kg = stack.active_area * 0.001; // simplified: area scales tank
+        let f_roll = mass_kg.max(0.0) * GRAVITY * ROLLING_RESISTANCE;
+        let f_drag = 0.5 * AIR_DENSITY * drag_coeff.max(0.0) * v * v;
+        let f_total = f_roll + f_drag; // N
 
-        let f_roll = mass_kg * g * cr;
-        let f_drag = 0.5 * rho_air * drag_coeff * v * v;
-        let p_demand = (f_roll + f_drag) * v; // W
-
-        if p_demand < 1.0 {
-            return 1e6; // effectively infinite range at negligible demand
+        let energy_j =
+            tank_kg_h2.max(0.0) * LHV_H2_KWH_PER_KG * JOULES_PER_KWH * stack.efficiency_lhv();
+        if energy_j <= 0.0 {
+            return 0.0;
         }
-
-        let efficiency = stack.efficiency();
-        let energy_available_wh = tank_kg * lhv_h2 * 1000.0 * efficiency;
-        let range_m = energy_available_wh / (p_demand / 3600.0);
-        range_m / 1000.0 // km
+        if f_total <= 0.0 {
+            return f64::INFINITY;
+        }
+        energy_j / f_total / 1000.0 // km
     }
 }
 
@@ -666,32 +740,222 @@ mod tests {
     #[test]
     fn fcv_range_higher_speed_less_range() {
         let stack = FuelCellStack::new(400, 300.0);
-        let r1 = FcvRange::estimate_range(1500.0, 0.6, 80.0, &stack);
-        let r2 = FcvRange::estimate_range(1500.0, 0.6, 130.0, &stack);
+        let r1 = FcvRange::estimate_range(1500.0, 0.6, 80.0, 5.0, &stack);
+        let r2 = FcvRange::estimate_range(1500.0, 0.6, 130.0, 5.0, &stack);
         assert!(r1 > r2, "lower speed -> longer range due to less drag");
     }
 
     #[test]
     fn fcv_range_higher_drag_less_range() {
         let stack = FuelCellStack::new(400, 300.0);
-        let r1 = FcvRange::estimate_range(1500.0, 0.4, 100.0, &stack);
-        let r2 = FcvRange::estimate_range(1500.0, 0.8, 100.0, &stack);
+        let r1 = FcvRange::estimate_range(1500.0, 0.4, 100.0, 5.0, &stack);
+        let r2 = FcvRange::estimate_range(1500.0, 0.8, 100.0, 5.0, &stack);
         assert!(r1 > r2, "higher drag -> less range");
     }
 
     #[test]
     fn fcv_range_positive() {
         let stack = FuelCellStack::new(400, 300.0);
-        let r = FcvRange::estimate_range(1500.0, 0.6, 100.0, &stack);
+        let r = FcvRange::estimate_range(1500.0, 0.6, 100.0, 5.0, &stack);
         assert!(r > 0.0);
     }
 
     #[test]
-    fn fcv_range_zero_demand_gives_large_range() {
+    fn fcv_range_at_vanishing_speed_is_energy_over_rolling_resistance() {
         let stack = FuelCellStack::new(400, 300.0);
-        // Very low speed ~0 => tiny drag => essentially infinite range
-        let r = FcvRange::estimate_range(1500.0, 0.6, 0.001, &stack);
+        let tank_kg = 5.0;
+        // Without aerodynamic drag only rolling resistance remains, so the
+        // range is a finite, speed-independent distance (no sentinel value).
+        let r = FcvRange::estimate_range(1500.0, 0.6, 0.001, tank_kg, &stack);
+        let energy_j = tank_kg * 33.33 * 3.6e6 * stack.voltage() / (1.254 * 400.0);
+        let expected_km = energy_j / (1500.0 * 9.81 * 0.01) / 1000.0;
+        assert!(r.is_finite());
+        assert!(
+            (r - expected_km).abs() <= 1e-6 * expected_km,
+            "range {r} km vs {expected_km} km"
+        );
         assert!(r > 1000.0, "near-zero speed gives very large range: {r}");
+    }
+
+    #[test]
+    fn fcv_range_equals_energy_over_road_load() {
+        let stack = FuelCellStack::new(400, 300.0);
+        let (mass_kg, cd_a, speed_kmh, tank_kg) = (1800.0_f64, 0.65_f64, 100.0_f64, 5.6_f64);
+        let v = speed_kmh / 3.6;
+        let road_load_n = mass_kg * 9.81 * 0.01 + 0.5 * 1.225 * cd_a * v * v;
+        // LHV based stack efficiency: V_stack / (n_cells * 1.254 V)
+        let eta_lhv = stack.voltage() / (1.254 * 400.0);
+        let energy_j = tank_kg * 33.33 * 3.6e6 * eta_lhv;
+        let expected_km = energy_j / road_load_n / 1000.0;
+        let got = FcvRange::estimate_range(mass_kg, cd_a, speed_kmh, tank_kg, &stack);
+        assert!(
+            (got - expected_km).abs() <= 1e-9 * expected_km,
+            "range {got} km vs closed form {expected_km} km"
+        );
+        // A 5.6 kg tank of a passenger FCV is good for a few hundred km.
+        assert!(got > 300.0 && got < 700.0, "implausible range {got} km");
+    }
+
+    #[test]
+    fn fcv_range_scales_linearly_with_tank_mass() {
+        let stack = FuelCellStack::new(400, 300.0);
+        let r_small = FcvRange::estimate_range(1500.0, 0.6, 100.0, 2.5, &stack);
+        let r_large = FcvRange::estimate_range(1500.0, 0.6, 100.0, 5.0, &stack);
+        assert!(
+            (r_large / r_small - 2.0).abs() < 1e-12,
+            "doubling the hydrogen must double the range"
+        );
+    }
+
+    #[test]
+    fn fcv_range_cruise_at_80_beats_130_kmh() {
+        let stack = FuelCellStack::new(400, 300.0);
+        let r_80 = FcvRange::estimate_range(1500.0, 0.6, 80.0, 5.0, &stack);
+        let r_130 = FcvRange::estimate_range(1500.0, 0.6, 130.0, 5.0, &stack);
+        assert!(r_80 > r_130);
+    }
+
+    #[test]
+    fn fcv_range_is_zero_for_empty_tank() {
+        let stack = FuelCellStack::new(400, 300.0);
+        assert_eq!(
+            FcvRange::estimate_range(1500.0, 0.6, 100.0, 0.0, &stack),
+            0.0
+        );
+        assert_eq!(
+            FcvRange::estimate_range(1500.0, 0.6, 100.0, -1.0, &stack),
+            0.0
+        );
+    }
+
+    #[test]
+    fn fcv_range_is_infinite_without_any_resisting_force() {
+        let stack = FuelCellStack::new(400, 300.0);
+        let r = FcvRange::estimate_range(0.0, 0.0, 100.0, 5.0, &stack);
+        assert!(r.is_infinite() && r > 0.0);
+    }
+
+    #[test]
+    fn fcv_remaining_range_tracks_hydrogen_left_in_tank() {
+        let stack = FuelCellStack::new(400, 300.0);
+        let tank = HydrogenTank::new(5.0, 700.0);
+        let mut fcv = FuelCellVehicle::new(stack, tank, 100.0, 0.95, 1.0);
+        let full = fcv.remaining_range_km(1500.0, 0.6, 100.0);
+        let expected_full = FcvRange::estimate_range(1500.0, 0.6, 100.0, 5.0, &fcv.stack);
+        assert!((full - expected_full).abs() <= 1e-9 * expected_full);
+        fcv.tank.consume(2.5);
+        let half = fcv.remaining_range_km(1500.0, 0.6, 100.0);
+        assert!(
+            (half / full - 0.5).abs() < 1e-12,
+            "half a tank must give half the range"
+        );
+    }
+
+    // --- Faraday consumption of the whole stack ---
+
+    #[test]
+    fn hydrogen_consumption_matches_faraday_for_series_stack() {
+        // 300 cells of 300 cm^2 at 0.5 A/cm^2: every cell carries 150 A.
+        let stack = FuelCellStack::new(300, 300.0);
+        let rate = stack.hydrogen_consumption_rate_gs();
+        let expected = 300.0 * 150.0 * 2.016 / (2.0 * 96_485.0);
+        assert!((rate - expected).abs() < 1e-12, "rate {rate} vs {expected}");
+        assert!((rate - 0.470).abs() < 0.005, "rate {rate} g/s");
+    }
+
+    #[test]
+    fn hydrogen_consumption_scales_with_cell_count() {
+        let single = FuelCellStack::new(150, 300.0).hydrogen_consumption_rate_gs();
+        let double = FuelCellStack::new(300, 300.0).hydrogen_consumption_rate_gs();
+        assert!((double / single - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn hydrogen_consumption_is_consistent_with_stack_efficiency() {
+        // The chemical power of the consumed hydrogen (HHV basis) must equal
+        // the electrical output divided by the stack efficiency.
+        let stack = FuelCellStack::new(250, 280.0);
+        let mol_per_s = stack.hydrogen_consumption_rate_gs() / M_H2_G_PER_MOL;
+        let chemical_power_w = mol_per_s * N_ELECTRONS * FARADAY * V_THERMONEUTRAL_HHV;
+        let ratio = stack.power_output() / chemical_power_w;
+        assert!((ratio - stack.efficiency()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn efficiency_lhv_is_hhv_efficiency_scaled_by_thermoneutral_voltages() {
+        let stack = FuelCellStack::new(400, 300.0);
+        let ratio = stack.efficiency_lhv() / stack.efficiency();
+        assert!((ratio - 1.481 / 1.254).abs() < 1e-12);
+    }
+
+    #[test]
+    fn fcv_step_drains_tank_at_faraday_rate() {
+        let stack = FuelCellStack::new(300, 300.0);
+        let rate_gs = stack.hydrogen_consumption_rate_gs();
+        let tank = HydrogenTank::new(5.0, 700.0);
+        let mut fcv = FuelCellVehicle::new(stack, tank, 100.0, 0.95, 1.0);
+        fcv.step(10.0, 20_000.0);
+        let consumed_kg = 5.0 - fcv.tank.current_mass;
+        assert!(
+            (consumed_kg - rate_gs * 10.0 / 1000.0).abs() < 1e-12,
+            "consumed {consumed_kg} kg"
+        );
+    }
+
+    #[test]
+    fn fcv_step_with_empty_tank_produces_no_stack_power() {
+        let stack = FuelCellStack::new(300, 300.0);
+        let mut tank = HydrogenTank::new(5.0, 700.0);
+        tank.consume(5.0);
+        let mut fcv = FuelCellVehicle::new(stack, tank, 100.0, 0.95, 2.0);
+        fcv.battery_soc = 0.5;
+        let demand_w = 10_000.0;
+        fcv.step(10.0, demand_w);
+        // The whole demand is served from the buffer battery.
+        let expected_soc = 0.5 - demand_w * 10.0 / 3600.0 / 2000.0;
+        assert!(
+            (fcv.battery_soc - expected_soc).abs() < 1e-12,
+            "soc {} vs {expected_soc}",
+            fcv.battery_soc
+        );
+        assert_eq!(fcv.tank.current_mass, 0.0);
+        let expected_wh = demand_w * 0.95 * 10.0 / 3600.0;
+        assert!((fcv.energy_delivered_wh - expected_wh).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fcv_step_with_empty_tank_and_flat_battery_delivers_nothing() {
+        let stack = FuelCellStack::new(300, 300.0);
+        let mut tank = HydrogenTank::new(5.0, 700.0);
+        tank.consume(5.0);
+        let mut fcv = FuelCellVehicle::new(stack, tank, 100.0, 0.95, 2.0);
+        fcv.battery_soc = 0.0;
+        fcv.step(10.0, 10_000.0);
+        assert_eq!(fcv.battery_soc, 0.0);
+        assert_eq!(fcv.energy_delivered_wh, 0.0);
+    }
+
+    #[test]
+    fn fcv_step_scales_stack_output_when_tank_runs_dry_mid_step() {
+        let stack = FuelCellStack::new(300, 300.0);
+        let rate_gs = stack.hydrogen_consumption_rate_gs();
+        let stack_power_w = stack.power_output();
+        let dt = 10.0;
+        let needed_kg = rate_gs * dt / 1000.0;
+        let mut tank = HydrogenTank::new(5.0, 700.0);
+        tank.current_mass = needed_kg / 2.0; // only half of the step's hydrogen is left
+        let mut fcv = FuelCellVehicle::new(stack, tank, 100.0, 0.95, 2.0);
+        fcv.battery_soc = 0.5;
+        // With no demand the stack output goes straight into the battery.
+        fcv.step(dt, 0.0);
+        let charged_wh = stack_power_w * 0.5 * dt / 3600.0;
+        let expected_soc = 0.5 + charged_wh / 2000.0;
+        assert!(
+            (fcv.battery_soc - expected_soc).abs() < 1e-12,
+            "soc {} vs {expected_soc}",
+            fcv.battery_soc
+        );
+        assert!(fcv.tank.current_mass.abs() < 1e-15);
     }
 
     // --- integration of stack and polarization ---

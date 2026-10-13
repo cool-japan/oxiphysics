@@ -42,13 +42,32 @@ impl Cone {
         PI * r * r + PI * r * slant
     }
 
-    /// Inertia tensor as \[\[f64;3\\];3] row-major.
+    /// Inertia tensor about the center of mass as \[\[f64;3\\];3] row-major.
+    ///
+    /// The cone axis is Y.  For a solid cone of mass `m`, base radius `r` and
+    /// full height `h = 2 * half_height`:
+    ///
+    /// * about the axis (Y): `I_yy = 3 m r² / 10`
+    /// * about a transverse axis through the center of mass (X or Z):
+    ///   `I_xx = I_zz = m (3 r² / 20 + 3 h² / 80)`
+    ///
+    /// The center of mass lies at `h / 4` above the base (see
+    /// [`Shape::center_of_mass`]).  The transverse moment about a diameter of
+    /// the base would be `m (3 r² / 20 + h² / 10)`; the parallel-axis shift by
+    /// `h / 4` yields the value above.
     pub fn inertia_tensor_array(&self, mass: f64) -> [[f64; 3]; 3] {
+        let (iy, ixz) = self.principal_moments(mass);
+        [[ixz, 0.0, 0.0], [0.0, iy, 0.0], [0.0, 0.0, ixz]]
+    }
+
+    /// Principal moments `(I_yy, I_xx = I_zz)` of the solid cone about its
+    /// center of mass.
+    fn principal_moments(&self, mass: f64) -> (f64, f64) {
         let r2 = self.radius * self.radius;
         let h2 = (2.0 * self.half_height).powi(2);
         let iy = 3.0 * mass * r2 / 10.0;
-        let ixz = mass * (3.0 * r2 + 2.0 * h2) / 20.0;
-        [[ixz, 0.0, 0.0], [0.0, iy, 0.0], [0.0, 0.0, ixz]]
+        let ixz = mass * (3.0 * r2 / 20.0 + 3.0 * h2 / 80.0);
+        (iy, ixz)
     }
 
     /// Ray cast returning (t, normal) as plain arrays.
@@ -661,13 +680,12 @@ impl Shape for Cone {
     }
 
     fn inertia_tensor(&self, mass: Real) -> Mat3 {
-        let r2 = self.radius * self.radius;
-        // Full height h = 2 * half_height
-        let h2 = (2.0 * self.half_height).powi(2);
-        // I_zz (spin axis) = 3*m*r²/10
-        let iy = 3.0 * mass * r2 / 10.0;
-        // I_xx = I_yy = m*(3r² + 2h²)/20  (h = full height)
-        let ixz = mass * (3.0 * r2 + 2.0 * h2) / 20.0;
+        // Inertia about the center of mass (see `center_of_mass`), which is
+        // the convention the compound parallel-axis step and `RigidBody`
+        // rely on.  The spin axis is Y:
+        //   I_yy = 3 m r² / 10
+        //   I_xx = I_zz = m (3 r² / 20 + 3 h² / 80)   (h = 2 * half_height)
+        let (iy, ixz) = self.principal_moments(mass);
         Mat3::new(ixz, 0.0, 0.0, 0.0, iy, 0.0, 0.0, 0.0, ixz)
     }
 
@@ -807,6 +825,99 @@ mod tests {
         assert!(it[0][0] > 0.0);
         assert!(it[1][1] > 0.0);
         assert!((it[0][0] - it[2][2]).abs() < 1e-10);
+    }
+
+    /// Radius 1, half-height 1 (h = 2), mass 1: about the center of mass
+    /// `I_yy = 3/10` and `I_xx = I_zz = 3/20 + 3*4/80 = 3/10`.
+    #[test]
+    fn test_cone_inertia_about_center_of_mass_reference_values() {
+        let c = Cone::new(1.0, 1.0);
+        let it = c.inertia_tensor(1.0);
+        assert!((it[(0, 0)] - 0.3).abs() < 1e-12, "I_xx = {}", it[(0, 0)]);
+        assert!((it[(1, 1)] - 0.3).abs() < 1e-12, "I_yy = {}", it[(1, 1)]);
+        assert!((it[(2, 2)] - 0.3).abs() < 1e-12, "I_zz = {}", it[(2, 2)]);
+        let arr = c.inertia_tensor_array(1.0);
+        assert!((arr[0][0] - 0.3).abs() < 1e-12);
+        assert!((arr[1][1] - 0.3).abs() < 1e-12);
+        assert!((arr[2][2] - 0.3).abs() < 1e-12);
+    }
+
+    /// The transverse moment about the center of mass must equal the textbook
+    /// moment about a base diameter, `m (3 r² + 2 h²) / 20`, minus the
+    /// parallel-axis term `m (h/4)²` (the center of mass is `h/4` above the
+    /// base).  This is the exact relationship that was violated before the fix,
+    /// when the base-diameter value was reported as the center-of-mass value.
+    #[test]
+    fn test_cone_inertia_parallel_axis_relation_to_base_diameter() {
+        let radius = 0.5;
+        let half_height = 2.0;
+        let mass = 3.0;
+        let c = Cone::new(radius, half_height);
+        let h = 2.0 * half_height;
+        let it = c.inertia_tensor(mass);
+        let about_base = mass * (3.0 * radius * radius + 2.0 * h * h) / 20.0;
+        let shift = mass * (h / 4.0) * (h / 4.0);
+        assert!(
+            (it[(0, 0)] - (about_base - shift)).abs() < 1e-12,
+            "I_xx = {} expected {}",
+            it[(0, 0)],
+            about_base - shift
+        );
+        assert!((it[(2, 2)] - it[(0, 0)]).abs() < 1e-14);
+        // Spin axis moment is unchanged by the shift along the axis.
+        assert!((it[(1, 1)] - 3.0 * mass * radius * radius / 10.0).abs() < 1e-12);
+        // Explicit numbers for this cone: I_xx = 3 * (0.0375 + 0.6) = 1.9125.
+        assert!((it[(0, 0)] - 1.9125).abs() < 1e-12);
+        assert!((it[(1, 1)] - 0.225).abs() < 1e-12);
+    }
+
+    /// Independent check: the analytic cone tensor must agree (within 1 %)
+    /// with the polyhedral inertia of a 256-segment cone point cloud computed
+    /// by the convex-hull divergence-theorem integrator, which is taken about
+    /// the hull's own center of mass.
+    #[test]
+    fn test_cone_inertia_matches_convex_hull_integration() {
+        use crate::ConvexHull3D;
+        let radius = 1.0;
+        let half_height = 1.5;
+        let mass = 2.0;
+        let cone = Cone::new(radius, half_height);
+        let segments = 256usize;
+        let mut pts: Vec<[f64; 3]> = vec![[0.0, half_height, 0.0]];
+        for k in 0..segments {
+            let a = 2.0 * PI * k as f64 / segments as f64;
+            pts.push([radius * a.cos(), -half_height, radius * a.sin()]);
+        }
+        let hull = ConvexHull3D::build(&pts).expect("cone point cloud must produce a hull");
+        let com = hull.compute_center_of_mass();
+        let expected_com = cone.center_of_mass();
+        assert!(
+            (com[1] - expected_com.y).abs() < 1e-3 * (2.0 * half_height),
+            "hull COM y = {} analytic {}",
+            com[1],
+            expected_com.y
+        );
+        let hull_inertia = hull.compute_moment_of_inertia(mass);
+        let analytic = cone.inertia_tensor(mass);
+        for axis in 0..3 {
+            let rel =
+                (hull_inertia[axis][axis] - analytic[(axis, axis)]).abs() / analytic[(axis, axis)];
+            assert!(
+                rel < 0.01,
+                "axis {axis}: hull {} analytic {} (rel {rel})",
+                hull_inertia[axis][axis],
+                analytic[(axis, axis)]
+            );
+        }
+        // The cone is rotationally symmetric: products of inertia vanish.
+        let scale = analytic[(0, 0)];
+        for (i, row) in hull_inertia.iter().enumerate() {
+            for (j, &value) in row.iter().enumerate() {
+                if i != j {
+                    assert!(value.abs() < 1e-3 * scale, "I[{i}][{j}] = {value}");
+                }
+            }
+        }
     }
 
     #[test]

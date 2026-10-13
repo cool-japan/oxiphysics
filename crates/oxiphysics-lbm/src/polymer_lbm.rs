@@ -320,12 +320,76 @@ impl PolymerStress2D {
     }
 }
 
+/// Upper-convected stretching term `L·A + A·Lᵀ` of a 2D conformation tensor.
+///
+/// `L` is the velocity-gradient tensor with `L_ij = ∂u_i/∂x_j`, i.e.
+/// `L = [[∂u/∂x, ∂u/∂y], [∂v/∂x, ∂v/∂y]]`.  The components of the symmetric
+/// result are
+///
+/// ```text
+/// S_xx = 2 (A_xx ∂u/∂x + A_xy ∂u/∂y)
+/// S_yy = 2 (A_xy ∂v/∂x + A_yy ∂v/∂y)
+/// S_xy = A_xy ∂u/∂x + A_yy ∂u/∂y + A_xx ∂v/∂x + A_xy ∂v/∂y
+/// ```
+///
+/// In simple shear (`∂u/∂y = γ̇`) this stretches `A_xx` (through `A_xy`) and
+/// `A_xy` (through `A_yy`) while leaving `A_yy` untouched, which gives the
+/// positive first normal-stress difference of a viscoelastic fluid.
+///
+/// # Arguments
+/// * `a`    – conformation tensor
+/// * `dudx`, `dudy`, `dvdx`, `dvdy` – velocity-gradient components
+pub fn upper_convected_stretch_2d(
+    a: &ConformationTensor2D,
+    dudx: f64,
+    dudy: f64,
+    dvdx: f64,
+    dvdy: f64,
+) -> ConformationTensor2D {
+    ConformationTensor2D {
+        xx: 2.0 * (a.xx * dudx + a.xy * dudy),
+        yy: 2.0 * (a.xy * dvdx + a.yy * dvdy),
+        xy: a.xy * dudx + a.yy * dudy + a.xx * dvdx + a.xy * dvdy,
+    }
+}
+
+/// Upper-convected stretching term `L·A + A·Lᵀ` of a 3D conformation tensor.
+///
+/// `grad_u` stores the velocity-gradient tensor row-major with
+/// `grad_u[3 i + j] = ∂u_i/∂x_j`; the result is
+/// `S_ij = Σ_k (L_ik A_kj + A_ik L_jk)`.
+pub fn upper_convected_stretch_3d(
+    a: &ConformationTensor3D,
+    grad_u: &[f64; 9],
+) -> ConformationTensor3D {
+    let m = [[a.xx, a.xy, a.xz], [a.xy, a.yy, a.yz], [a.xz, a.yz, a.zz]];
+    let mut s = [[0.0_f64; 3]; 3];
+    for (i, s_row) in s.iter_mut().enumerate() {
+        for (j, s_ij) in s_row.iter_mut().enumerate() {
+            let mut sum = 0.0;
+            for k in 0..3 {
+                sum += grad_u[3 * i + k] * m[k][j] + m[i][k] * grad_u[3 * j + k];
+            }
+            *s_ij = sum;
+        }
+    }
+    ConformationTensor3D {
+        xx: s[0][0],
+        yy: s[1][1],
+        zz: s[2][2],
+        xy: s[0][1],
+        xz: s[0][2],
+        yz: s[1][2],
+    }
+}
+
 /// Evolve the 2D conformation tensor by one Oldroyd-B time step (explicit Euler).
 ///
-/// dA/dt + (u·∇)A = A·(∇u)ᵀ + (∇u)·A − (1/λ)(A − I)
+/// dA/dt + (u·∇)A = L·A + A·Lᵀ − (1/λ)(A − I),   `L_ij = ∂u_i/∂x_j`
 ///
 /// This function applies only the relaxation + stretching terms (no advection).
-/// Pass the velocity gradient components directly.
+/// Pass the velocity gradient components directly; the stretching term is
+/// [`upper_convected_stretch_2d`].
 ///
 /// # Arguments
 /// * `a`      – current conformation tensor
@@ -344,10 +408,8 @@ pub fn oldroyd_b_evolve_2d(
     lambda: f64,
     dt: f64,
 ) -> ConformationTensor2D {
-    // Upper-convected derivative stretching: A·(∇u)ᵀ + (∇u)·A
-    let stretch_xx = 2.0 * (a.xx * dudx + a.xy * dvdx);
-    let stretch_yy = 2.0 * (a.xy * dudy + a.yy * dvdy);
-    let stretch_xy = a.xx * dudy + a.xy * dvdy + a.xy * dudx + a.yy * dvdx;
+    // Upper-convected derivative stretching: L·A + A·Lᵀ
+    let stretch = upper_convected_stretch_2d(a, dudx, dudy, dvdx, dvdy);
 
     // Relaxation: −(A − I)/λ
     let relax_xx = -(a.xx - 1.0) / lambda;
@@ -355,9 +417,9 @@ pub fn oldroyd_b_evolve_2d(
     let relax_xy = -a.xy / lambda;
 
     ConformationTensor2D {
-        xx: a.xx + dt * (stretch_xx + relax_xx),
-        yy: a.yy + dt * (stretch_yy + relax_yy),
-        xy: a.xy + dt * (stretch_xy + relax_xy),
+        xx: a.xx + dt * (stretch.xx + relax_xx),
+        yy: a.yy + dt * (stretch.yy + relax_yy),
+        xy: a.xy + dt * (stretch.xy + relax_xy),
     }
 }
 
@@ -380,9 +442,10 @@ pub fn fene_p_spring(trace_a: f64, b: f64) -> f64 {
 
 /// Evolve the 2D FENE-P conformation tensor by one explicit Euler step.
 ///
-/// dA/dt = A·(∇u)ᵀ + (∇u)·A − (f/λ)(A − (1/f)I)
+/// dA/dt = L·A + A·Lᵀ − (f/λ)(A − (1/f)I),   `L_ij = ∂u_i/∂x_j`
 ///
-/// where f = 1/(1 − tr(A)/b) is the Peterlin spring factor.
+/// where f = 1/(1 − tr(A)/b) is the Peterlin spring factor and the stretching
+/// term is [`upper_convected_stretch_2d`].
 ///
 /// # Arguments
 /// * `a`      – current conformation tensor
@@ -406,18 +469,34 @@ pub fn fene_p_evolve_2d(
     let tr = a.trace();
     let f = fene_p_spring(tr, b);
 
-    let stretch_xx = 2.0 * (a.xx * dudx + a.xy * dvdx);
-    let stretch_yy = 2.0 * (a.xy * dudy + a.yy * dvdy);
-    let stretch_xy = a.xx * dudy + a.xy * dvdy + a.xy * dudx + a.yy * dvdx;
+    let stretch = upper_convected_stretch_2d(a, dudx, dudy, dvdx, dvdy);
 
     let relax_xx = -(f * a.xx - 1.0) / lambda;
     let relax_yy = -(f * a.yy - 1.0) / lambda;
     let relax_xy = -(f * a.xy) / lambda;
 
     ConformationTensor2D {
-        xx: a.xx + dt * (stretch_xx + relax_xx),
-        yy: a.yy + dt * (stretch_yy + relax_yy),
-        xy: a.xy + dt * (stretch_xy + relax_xy),
+        xx: a.xx + dt * (stretch.xx + relax_xx),
+        yy: a.yy + dt * (stretch.yy + relax_yy),
+        xy: a.xy + dt * (stretch.xy + relax_xy),
+    }
+}
+
+/// Rest-state conformation tensor of the 2D FENE-P model, `A_eq = b/(b+2) I`.
+///
+/// With the Peterlin factor `f = 1/(1 − tr(A)/b)` the relaxation term
+/// `f A − I` vanishes at `A = I/f` with `f = 1 + 2/b`, so a fluid at rest sits
+/// at `A_eq` (zero polymer stress), not at the identity.  For `b → ∞` this
+/// reduces to the identity of Oldroyd-B.
+pub fn fene_p_equilibrium_conformation(b: f64) -> ConformationTensor2D {
+    if !b.is_finite() {
+        return ConformationTensor2D::identity();
+    }
+    let s = b / (b + 2.0);
+    ConformationTensor2D {
+        xx: s,
+        yy: s,
+        xy: 0.0,
     }
 }
 
@@ -713,11 +792,31 @@ pub const D2Q9_OPP: [usize; 9] = [0, 3, 4, 1, 2, 7, 8, 5, 6];
 /// * `eta_p`   – polymer viscosity in lattice units
 /// * `lambda`  – polymer relaxation time in lattice units
 pub fn bgk_polymer_collision(cell: &mut PolymerCell, omega_s: f64, eta_p: f64, lambda: f64) {
+    let tau_p = PolymerStress2D::from_conformation(&cell.conformation, eta_p, lambda);
+    bgk_polymer_collision_with_stress(cell, omega_s, tau_p);
+}
+
+/// BGK collision with polymer stress forcing for a caller-supplied polymer
+/// extra stress.
+///
+/// [`bgk_polymer_collision`] uses the Oldroyd-B stress `(η_p/λ)(A − I)`; other
+/// constitutive models (for example the FENE-P stress of [`fene_p_stress_2d`])
+/// compute their own stress from the conformation tensor and pass it here.
+/// The stress is also stored in `cell.stress`.
+///
+/// # Arguments
+/// * `cell`    – mutable polymer cell (updated in-place)
+/// * `omega_s` – solvent BGK relaxation frequency
+/// * `tau_p`   – polymer extra stress acting on this cell
+pub fn bgk_polymer_collision_with_stress(
+    cell: &mut PolymerCell,
+    omega_s: f64,
+    tau_p: PolymerStress2D,
+) {
     cell.compute_macroscopic();
     cell.compute_equilibrium();
 
     // Polymer stress contribution to the collision operator (Fattal-Kupferman approach)
-    let tau_p = PolymerStress2D::from_conformation(&cell.conformation, eta_p, lambda);
     cell.stress = tau_p;
 
     let ex = D2Q9_EX;
@@ -745,6 +844,12 @@ pub fn bgk_polymer_collision(cell: &mut PolymerCell, omega_s: f64, eta_p: f64, l
 // ============================================================================
 
 /// 2D polymer LBM simulation grid (Nx × Ny cells).
+///
+/// The grid is periodic in x.  The rows `iy = 0` and `iy = ny - 1` are solid
+/// wall rows; the fluid lives in the rows `1..ny - 1` and the no-slip walls
+/// sit half a cell away from the first fluid rows (halfway bounce-back, applied
+/// in [`PolymerLbmGrid2D::stream`]).  The channel width is therefore `ny - 2`
+/// cells.
 #[derive(Debug, Clone)]
 pub struct PolymerLbmGrid2D {
     /// Number of cells in x direction.
@@ -775,7 +880,11 @@ impl PolymerLbmGrid2D {
     /// * `lambda`   – polymer relaxation time (lattice units)
     /// * `fene_b`   – FENE extensibility parameter (∞ for Oldroyd-B)
     pub fn new(nx: usize, ny: usize, omega_s: f64, eta_p: f64, lambda: f64, fene_b: f64) -> Self {
-        let cells = vec![PolymerCell::new_equilibrium(1.0, 0.0, 0.0); nx * ny];
+        let mut rest_cell = PolymerCell::new_equilibrium(1.0, 0.0, 0.0);
+        // A fluid at rest sits at the rest state of its constitutive model:
+        // the identity for Oldroyd-B, b/(b+2) I for FENE-P.
+        rest_cell.conformation = fene_p_equilibrium_conformation(fene_b);
+        let cells = vec![rest_cell; nx * ny];
         Self {
             nx,
             ny,
@@ -793,17 +902,35 @@ impl PolymerLbmGrid2D {
         iy * self.nx + ix
     }
 
+    /// Rows that hold fluid nodes: every row except the two wall rows
+    /// `iy = 0` and `iy = ny - 1`.  Empty for grids with fewer than three rows.
+    pub fn fluid_rows(&self) -> std::ops::Range<usize> {
+        if self.ny >= 3 { 1..self.ny - 1 } else { 0..0 }
+    }
+
+    /// Whether row `iy` is a fluid row (see [`PolymerLbmGrid2D::fluid_rows`]).
+    pub fn is_fluid_row(&self, iy: usize) -> bool {
+        self.fluid_rows().contains(&iy)
+    }
+
     /// Set all cells to a Poiseuille velocity profile (channel flow).
     ///
-    /// u_x(y) = u_max * 4 y/H (1 − y/H),  where H = ny − 1.
+    /// u_x(y) = u_max * 4 y/H (1 − y/H),  where H = ny − 2 is the channel
+    /// width between the halfway-bounce-back walls and
+    /// y = (iy − 1/2) is the distance from the lower wall.  The wall rows are
+    /// at rest.
     ///
     /// # Arguments
     /// * `u_max` – maximum centreline velocity (lattice units)
     pub fn set_poiseuille_profile(&mut self, u_max: f64) {
-        let h = (self.ny - 1) as f64;
+        let h = self.ny as f64 - 2.0;
         for iy in 0..self.ny {
-            let y = iy as f64 / h;
-            let ux = u_max * 4.0 * y * (1.0 - y);
+            let ux = if self.is_fluid_row(iy) {
+                let y = (iy as f64 - 0.5) / h;
+                u_max * 4.0 * y * (1.0 - y)
+            } else {
+                0.0
+            };
             for ix in 0..self.nx {
                 let idx = self.idx(ix, iy);
                 self.cells[idx].ux = ux;
@@ -814,7 +941,13 @@ impl PolymerLbmGrid2D {
         }
     }
 
-    /// Apply bounce-back boundary conditions on top and bottom walls.
+    /// Reflect every population stored on the two wall rows (full-way
+    /// bounce-back on the wall nodes).
+    ///
+    /// [`PolymerLbmGrid2D::step`] already imposes the no-slip walls by halfway
+    /// bounce-back inside [`PolymerLbmGrid2D::stream`], and the fluid never
+    /// reads the wall rows, so this is only needed by callers that run their
+    /// own collision/streaming sequence directly on the wall nodes.
     pub fn apply_wall_bounce_back(&mut self) {
         let nx = self.nx;
         let ny = self.ny;
@@ -839,69 +972,199 @@ impl PolymerLbmGrid2D {
         }
     }
 
-    /// Perform streaming step (periodic in x, bounce-back walls in y).
+    /// Perform the streaming step (periodic in x, halfway bounce-back walls in y).
+    ///
+    /// Only the fluid rows are updated.  A population that would arrive from a
+    /// wall row is replaced by the post-collision population of the opposite
+    /// direction at the same node (halfway bounce-back), which places the
+    /// no-slip wall half a cell beyond the first fluid row.  Mass is conserved
+    /// exactly.
     pub fn stream(&mut self) {
         let nx = self.nx;
-        let ny = self.ny;
+        let rows = self.fluid_rows();
+        if rows.is_empty() || nx == 0 {
+            return;
+        }
         let ex: [i64; 9] = [0, 1, 0, -1, 0, 1, -1, -1, 1];
         let ey: [i64; 9] = [0, 0, 1, 0, -1, 1, 1, -1, -1];
 
         let old_f: Vec<[f64; 9]> = self.cells.iter().map(|c| c.f).collect();
 
-        for iy in 0..ny {
+        for iy in rows.clone() {
             for ix in 0..nx {
                 let dst = self.idx(ix, iy);
                 for i in 0..9 {
-                    let sx = (ix as i64 - ex[i]).rem_euclid(nx as i64) as usize;
-                    let sy = (iy as i64 - ey[i]).rem_euclid(ny as i64) as usize;
-                    let src = self.idx(sx, sy);
-                    self.cells[dst].f[i] = old_f[src][i];
+                    let sy = iy as i64 - ey[i];
+                    let from_wall = sy < rows.start as i64 || sy >= rows.end as i64;
+                    if from_wall {
+                        self.cells[dst].f[i] = old_f[dst][D2Q9_OPP[i]];
+                    } else {
+                        let sx = (ix as i64 - ex[i]).rem_euclid(nx as i64) as usize;
+                        let src = self.idx(sx, sy as usize);
+                        self.cells[dst].f[i] = old_f[src][i];
+                    }
                 }
+            }
+        }
+    }
+
+    /// Polymer extra stress of the grid's constitutive model for a given
+    /// conformation tensor: FENE-P for finite `fene_b`, Oldroyd-B otherwise.
+    pub fn polymer_stress(&self, conformation: &ConformationTensor2D) -> PolymerStress2D {
+        if self.fene_b.is_finite() {
+            fene_p_stress_2d(conformation, self.eta_p, self.lambda, self.fene_b)
+        } else {
+            PolymerStress2D::from_conformation(conformation, self.eta_p, self.lambda)
+        }
+    }
+
+    /// Velocity gradient `[∂u/∂x, ∂u/∂y, ∂v/∂x, ∂v/∂y]` at the fluid cell
+    /// `(ix, iy)` from the cell velocities.
+    ///
+    /// x-derivatives are central differences on the periodic grid.  y-derivatives
+    /// are three-point (second-order) differences on the non-uniform stencil
+    /// formed by the neighbouring rows; a neighbouring wall row is replaced by
+    /// the no-slip wall itself (zero velocity, half a cell away).
+    fn velocity_gradient(&self, ix: usize, iy: usize) -> [f64; 4] {
+        let nx = self.nx;
+        let west = &self.cells[self.idx((ix + nx - 1) % nx, iy)];
+        let east = &self.cells[self.idx((ix + 1) % nx, iy)];
+        let dudx = 0.5 * (east.ux - west.ux);
+        let dvdx = 0.5 * (east.uy - west.uy);
+
+        let centre = &self.cells[self.idx(ix, iy)];
+        let (d_lo, u_lo, v_lo) = if iy == 1 {
+            (0.5, 0.0, 0.0)
+        } else {
+            let c = &self.cells[self.idx(ix, iy - 1)];
+            (1.0, c.ux, c.uy)
+        };
+        let (d_hi, u_hi, v_hi) = if iy + 2 == self.ny {
+            (0.5, 0.0, 0.0)
+        } else {
+            let c = &self.cells[self.idx(ix, iy + 1)];
+            (1.0, c.ux, c.uy)
+        };
+        let dudy = nonuniform_central_difference(u_lo, centre.ux, u_hi, d_lo, d_hi);
+        let dvdy = nonuniform_central_difference(v_lo, centre.uy, v_hi, d_lo, d_hi);
+        [dudx, dudy, dvdx, dvdy]
+    }
+
+    /// Advance the conformation tensor of every fluid cell by `dt`:
+    ///
+    /// ∂A/∂t + (u·∇)A = L·A + A·Lᵀ − relaxation
+    ///
+    /// with the velocity gradient `L` from the current cell velocities, the
+    /// constitutive relaxation of the selected model (Oldroyd-B or FENE-P) and
+    /// first-order upwind advection of `A` (periodic in x; zero normal
+    /// gradient at the walls).  The polymer stress of every fluid cell is
+    /// refreshed from the updated conformation.
+    fn advance_conformation(&mut self, dt: f64) {
+        let nx = self.nx;
+        let rows = self.fluid_rows();
+        if rows.is_empty() || nx == 0 {
+            return;
+        }
+        let old: Vec<ConformationTensor2D> = self.cells.iter().map(|c| c.conformation).collect();
+        let (lambda, fene_b) = (self.lambda, self.fene_b);
+        for iy in rows.clone() {
+            for ix in 0..nx {
+                let k = self.idx(ix, iy);
+                let a = old[k];
+                let [dudx, dudy, dvdx, dvdy] = self.velocity_gradient(ix, iy);
+                let mut next = if fene_b.is_finite() {
+                    fene_p_evolve_2d(&a, dudx, dudy, dvdx, dvdy, lambda, fene_b, dt)
+                } else {
+                    oldroyd_b_evolve_2d(&a, dudx, dudy, dvdx, dvdy, lambda, dt)
+                };
+
+                // Upwind advection (u·∇)A.
+                let (u, v) = (self.cells[k].ux, self.cells[k].uy);
+                let west = old[self.idx((ix + nx - 1) % nx, iy)];
+                let east = old[self.idx((ix + 1) % nx, iy)];
+                let south = if iy == rows.start {
+                    a
+                } else {
+                    old[self.idx(ix, iy - 1)]
+                };
+                let north = if iy + 1 == rows.end {
+                    a
+                } else {
+                    old[self.idx(ix, iy + 1)]
+                };
+                let grad_x = upwind_difference(u, &west, &a, &east);
+                let grad_y = upwind_difference(v, &south, &a, &north);
+                next.xx -= dt * (u * grad_x.xx + v * grad_y.xx);
+                next.yy -= dt * (u * grad_x.yy + v * grad_y.yy);
+                next.xy -= dt * (u * grad_x.xy + v * grad_y.xy);
+
+                self.cells[k].conformation = next;
+                self.cells[k].stress = self.polymer_stress(&next);
             }
         }
     }
 
     /// Perform one complete LBM time step (collision + streaming + conformation update).
     ///
-    /// Uses explicit Euler for the conformation tensor evolution with a simple
-    /// estimate of the velocity gradient from neighbouring cells.
+    /// 1. BGK collision with the polymer stress of the selected constitutive
+    ///    model on the fluid rows.
+    /// 2. Streaming (periodic in x, halfway bounce-back walls in y).
+    /// 3. Macroscopic update of density and velocity.
+    /// 4. Explicit-Euler update (`dt` = 1 lattice step) of the conformation
+    ///    tensor: upper-convected stretching by the velocity gradient of the
+    ///    freshly updated velocity field, relaxation, and first-order upwind
+    ///    advection.  The explicit relaxation needs `λ` larger than about half a
+    ///    lattice time step.
     pub fn step(&mut self) {
         let nx = self.nx;
-        let ny = self.ny;
+        let rows = self.fluid_rows();
 
-        // --- Collision ---
-        for idx in 0..(nx * ny) {
-            bgk_polymer_collision(&mut self.cells[idx], self.omega_s, self.eta_p, self.lambda);
+        // --- Collision (fluid rows only) ---
+        for iy in rows.clone() {
+            for ix in 0..nx {
+                let idx = self.idx(ix, iy);
+                let tau_p = self.polymer_stress(&self.cells[idx].conformation);
+                bgk_polymer_collision_with_stress(&mut self.cells[idx], self.omega_s, tau_p);
+            }
         }
 
         // --- Streaming ---
         self.stream();
 
         // --- Update macroscopic fields ---
-        for idx in 0..(nx * ny) {
-            self.cells[idx].compute_macroscopic();
+        for iy in rows {
+            for ix in 0..nx {
+                let idx = self.idx(ix, iy);
+                self.cells[idx].compute_macroscopic();
+            }
         }
 
-        // --- Conformation tensor evolution (relaxation only, no spatial gradient here) ---
-        let lambda = self.lambda;
-        let fene_b = self.fene_b;
-        let dt = 1.0_f64; // lattice time step
-        for idx in 0..(nx * ny) {
-            let a = self.cells[idx].conformation;
-            self.cells[idx].conformation = if fene_b.is_finite() {
-                fene_p_evolve_2d(&a, 0.0, 0.0, 0.0, 0.0, lambda, fene_b, dt)
-            } else {
-                oldroyd_b_evolve_2d(&a, 0.0, 0.0, 0.0, 0.0, lambda, dt)
-            };
-        }
+        // --- Conformation tensor evolution (stretching + relaxation + advection) ---
+        self.advance_conformation(1.0);
 
         self.step += 1;
     }
 
-    /// Compute the volume-averaged polymer kinetic energy k_p = Σ tr(A) / (2 N).
+    /// Compute the mean polymer conformation trace `Σ tr(A) / N` over the
+    /// fluid cells (all cells if the grid has no fluid rows).
     pub fn mean_polymer_trace(&self) -> f64 {
-        let sum: f64 = self.cells.iter().map(|c| c.conformation.trace()).sum();
-        sum / (self.cells.len() as f64)
+        let rows = self.fluid_rows();
+        let (sum, count) = if rows.is_empty() {
+            (
+                self.cells
+                    .iter()
+                    .map(|c| c.conformation.trace())
+                    .sum::<f64>(),
+                self.cells.len(),
+            )
+        } else {
+            let slice = &self.cells[rows.start * self.nx..rows.end * self.nx];
+            (
+                slice.iter().map(|c| c.conformation.trace()).sum::<f64>(),
+                slice.len(),
+            )
+        };
+        if count == 0 { 0.0 } else { sum / count as f64 }
     }
 
     /// Compute the maximum first normal stress difference across the grid.
@@ -910,6 +1173,35 @@ impl PolymerLbmGrid2D {
             .iter()
             .map(|c| c.stress.n1().abs())
             .fold(0.0_f64, f64::max)
+    }
+}
+
+/// Second-order derivative at a node from its two neighbours on a non-uniform
+/// three-point stencil, `d_lo` below and `d_hi` above the node.
+fn nonuniform_central_difference(f_lo: f64, f_0: f64, f_hi: f64, d_lo: f64, d_hi: f64) -> f64 {
+    (d_lo / d_hi * (f_hi - f_0) + d_hi / d_lo * (f_0 - f_lo)) / (d_lo + d_hi)
+}
+
+/// Component-wise first-order upwind difference of a tensor field: the backward
+/// difference for a positive transport velocity, the forward one otherwise.
+fn upwind_difference(
+    velocity: f64,
+    minus: &ConformationTensor2D,
+    centre: &ConformationTensor2D,
+    plus: &ConformationTensor2D,
+) -> ConformationTensor2D {
+    if velocity >= 0.0 {
+        ConformationTensor2D {
+            xx: centre.xx - minus.xx,
+            yy: centre.yy - minus.yy,
+            xy: centre.xy - minus.xy,
+        }
+    } else {
+        ConformationTensor2D {
+            xx: plus.xx - centre.xx,
+            yy: plus.yy - centre.yy,
+            xy: plus.xy - centre.xy,
+        }
     }
 }
 
@@ -1042,9 +1334,12 @@ pub fn huggins_relative_viscosity(intrinsic_visc: f64, concentration: f64, huggi
 
 /// Evolve the 3D Oldroyd-B conformation tensor by one explicit Euler step.
 ///
+/// dA/dt = L·A + A·Lᵀ − (1/λ)(A − I),   `L_ij = ∂u_i/∂x_j`
+///
 /// # Arguments
 /// * `a`         – current 3D conformation tensor
-/// * `grad_u`    – velocity gradient tensor \[3×3\] stored row-major
+/// * `grad_u`    – velocity gradient tensor \[3×3\] stored row-major,
+///   `grad_u[3*i + j] = ∂u_i/∂x_j`
 /// * `lambda`    – polymer relaxation time
 /// * `dt`        – time step
 pub fn oldroyd_b_evolve_3d(
@@ -1053,19 +1348,15 @@ pub fn oldroyd_b_evolve_3d(
     lambda: f64,
     dt: f64,
 ) -> ConformationTensor3D {
-    // grad_u[3*i+j] = ∂u_i / ∂x_j
-    let l = grad_u;
-    // Upper-convected derivative: (∇u)·A + A·(∇u)ᵀ
-    // A·Lᵀ  (L = ∇u, row-major)
-    let stretch_xx = 2.0 * (a.xx * l[0] + a.xy * l[3] + a.xz * l[6]);
-    let stretch_yy = 2.0 * (a.xy * l[1] + a.yy * l[4] + a.yz * l[7]);
-    let stretch_zz = 2.0 * (a.xz * l[2] + a.yz * l[5] + a.zz * l[8]);
-    let stretch_xy =
-        a.xx * l[1] + a.xy * l[4] + a.xz * l[7] + a.xy * l[0] + a.yy * l[3] + a.yz * l[6];
-    let stretch_xz =
-        a.xx * l[2] + a.xy * l[5] + a.xz * l[8] + a.xz * l[0] + a.yz * l[3] + a.zz * l[6];
-    let stretch_yz =
-        a.xy * l[2] + a.yy * l[5] + a.yz * l[8] + a.xz * l[1] + a.yz * l[4] + a.zz * l[7];
+    // Upper-convected derivative stretching: L·A + A·Lᵀ with
+    // grad_u[3*i+j] = ∂u_i / ∂x_j.
+    let stretch = upper_convected_stretch_3d(a, grad_u);
+    let stretch_xx = stretch.xx;
+    let stretch_yy = stretch.yy;
+    let stretch_zz = stretch.zz;
+    let stretch_xy = stretch.xy;
+    let stretch_xz = stretch.xz;
+    let stretch_yz = stretch.yz;
 
     let relax_xx = -(a.xx - 1.0) / lambda;
     let relax_yy = -(a.yy - 1.0) / lambda;
@@ -1150,14 +1441,16 @@ impl PolymerChannelConfig {
     }
 }
 
-/// Run a polymer channel flow LBM simulation and return the mean polymer trace.
+/// Run a polymer channel flow LBM simulation and return the final grid.
 ///
-/// This is the high-level driver that orchestrates the grid, time stepping,
-/// and diagnostic collection.
+/// The channel is initialised with a Poiseuille profile of centreline velocity
+/// 0.01 (lattice units), driven by the body force of `cfg` on every fluid row
+/// and advanced for `cfg.n_steps` steps (halfway bounce-back walls are applied
+/// inside [`PolymerLbmGrid2D::step`]).
 ///
 /// # Arguments
 /// * `cfg` – simulation configuration
-pub fn run_polymer_channel(cfg: &PolymerChannelConfig) -> f64 {
+pub fn run_polymer_channel_grid(cfg: &PolymerChannelConfig) -> PolymerLbmGrid2D {
     let mut grid = PolymerLbmGrid2D::new(
         cfg.nx,
         cfg.ny,
@@ -1168,23 +1461,35 @@ pub fn run_polymer_channel(cfg: &PolymerChannelConfig) -> f64 {
     );
     grid.set_poiseuille_profile(0.01);
 
+    let ex = D2Q9_EX;
+    let w = D2Q9_WEIGHTS;
     for _ in 0..cfg.n_steps {
-        // Apply body force to all interior cells
-        for iy in 1..cfg.ny - 1 {
+        // Apply body force to all fluid cells
+        for iy in grid.fluid_rows() {
             for ix in 0..cfg.nx {
                 let idx = grid.idx(ix, iy);
-                let ex = D2Q9_EX;
-                let w = D2Q9_WEIGHTS;
                 for i in 0..9 {
                     grid.cells[idx].f[i] += 3.0 * w[i] * cfg.body_force * ex[i];
                 }
             }
         }
         grid.step();
-        grid.apply_wall_bounce_back();
     }
 
-    grid.mean_polymer_trace()
+    grid
+}
+
+/// Run a polymer channel flow LBM simulation and return the mean polymer trace.
+///
+/// This is the high-level driver that orchestrates the grid, time stepping,
+/// and diagnostic collection; see [`run_polymer_channel_grid`] for the setup.
+/// The result is the mean of `tr(A)` over the fluid cells, `2` for an
+/// unstretched Oldroyd-B fluid.
+///
+/// # Arguments
+/// * `cfg` – simulation configuration
+pub fn run_polymer_channel(cfg: &PolymerChannelConfig) -> f64 {
+    run_polymer_channel_grid(cfg).mean_polymer_trace()
 }
 
 // ============================================================================
@@ -1240,6 +1545,9 @@ pub fn radius_of_gyration_sq(r_sq: f64) -> f64 {
 // ============================================================================
 // Unit tests
 // ============================================================================
+
+#[cfg(test)]
+mod conformation_tests;
 
 #[cfg(test)]
 mod tests {

@@ -2,27 +2,72 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-/// Simplified isotropic Parrinello-Rahman barostat.
+/// Isotropic Parrinello-Rahman barostat.
 ///
-/// Uses an extended-Lagrangian approach where the box has its own
-/// equation of motion driven by the pressure mismatch.
+/// Extended-Lagrangian pressure control: the cubic-equivalent box edge
+/// `L = V^(1/3)` is a dynamical variable with inertia, obeying
+///
+/// ```text
+/// L̈ = 3·V·(P − P₀) / W
+/// ```
+///
+/// where `P` is the instantaneous pressure, `P₀` the target pressure and `W`
+/// the barostat mass.  The box velocity `L̇` ([`ParrinelloRahmanBarostat::box_velocity`])
+/// is persistent state: it is accumulated over successive steps, so the box
+/// oscillates around the equilibrium volume instead of creeping towards it.
+/// Positions are rescaled together with the box and, because the canonical
+/// momentum `m·L²·ṡ` of the scaled coordinates is conserved, the peculiar
+/// velocities scale inversely with the box edge (an expanding box cools the
+/// system).
 #[derive(Debug, Clone)]
 pub struct ParrinelloRahmanBarostat {
     /// Target pressure.
     pub target_pressure: f64,
     /// Coupling time constant τ_P.
+    ///
+    /// Used to derive the barostat mass when `mass` is not positive: the mass
+    /// is then chosen so that the box coupled to an ideal gas with the
+    /// instantaneous kinetic energy of the system oscillates with period τ_P.
     pub tau_p: f64,
-    /// Barostat mass (controls oscillation frequency).
+    /// Barostat mass `W` in the convention `L̈ = 3·V·(P − P₀) / W`.
+    ///
+    /// A value that is not finite and positive selects the mass derived from
+    /// `tau_p` (see [`ParrinelloRahmanBarostat::effective_mass`]).
     pub mass: f64,
+    /// Rate of change `dL/dt` of the box edge `L = V^(1/3)` (initially zero).
+    pub box_velocity: f64,
 }
 impl ParrinelloRahmanBarostat {
-    /// Create a new Parrinello-Rahman barostat.
+    /// Create a new Parrinello-Rahman barostat with the box at rest.
     pub fn new(target_pressure: f64, tau_p: f64, mass: f64) -> Self {
         Self {
             target_pressure,
             tau_p,
             mass,
+            box_velocity: 0.0,
         }
+    }
+    /// Barostat mass `W` actually used for the box equation of motion.
+    ///
+    /// Returns `mass` if it is finite and positive.  Otherwise the mass is
+    /// derived from `tau_p`: linearising `L̈ = 3·V·(P − P₀)/W` around equilibrium
+    /// for an ideal gas (`P = N·k_B·T/V`, `N·k_B·T = 2·KE/3`) gives the angular
+    /// frequency `ω² = 9·N·k_B·T / (W·L)`, and requiring a period `τ_P = 2π/ω`
+    ///
+    /// ```text
+    /// W = 3·KE·τ_P² / (2·π²·L)
+    /// ```
+    ///
+    /// Returns `None` when neither source yields a positive finite mass (no
+    /// `tau_p`, no kinetic energy, or a degenerate box): the box is then left
+    /// untouched.
+    pub fn effective_mass(&self, kinetic_energy: f64, box_edge: f64) -> Option<f64> {
+        if self.mass.is_finite() && self.mass > 0.0 {
+            return Some(self.mass);
+        }
+        let derived = 3.0 * kinetic_energy * self.tau_p * self.tau_p
+            / (2.0 * std::f64::consts::PI * std::f64::consts::PI * box_edge);
+        (derived.is_finite() && derived > 0.0).then_some(derived)
     }
     /// Compute the derivative of the enthalpy with respect to the cell matrix h.
     ///
@@ -58,9 +103,9 @@ impl ParrinelloRahmanBarostat {
     pub fn compute_cell_derivative(&self, current_pressure: f64, volume: f64) -> f64 {
         -(current_pressure - self.target_pressure) * 3.0 * volume
     }
-    /// Advance the box velocity by one half-step.
+    /// Advance the box velocity by one time step.
     ///
-    /// v_box += (V / W) * (P − P₀) * dt
+    /// v_box += 3 · V · (P − P₀) / W · dt
     ///
     /// # Arguments
     /// * `box_vel`          – current box velocity (rate of change of box edge).
@@ -74,11 +119,15 @@ impl ParrinelloRahmanBarostat {
         volume: f64,
         dt: f64,
     ) -> f64 {
-        box_vel + (volume / self.mass) * (current_pressure - self.target_pressure) * dt
+        box_vel + 3.0 * volume * (current_pressure - self.target_pressure) / self.mass * dt
     }
-    /// Perform one full Parrinello-Rahman integration step.
+    /// Perform one full Parrinello-Rahman integration step with caller-owned
+    /// box velocity.
     ///
-    /// Updates the box velocity, rescales the box and all positions.
+    /// Updates the box velocity, rescales the box and all positions.  Unlike
+    /// [`Barostat::apply`](super::functions::Barostat::apply) this variant
+    /// keeps the box velocity in the caller's `box_vel`, uses the configured
+    /// `mass` and does not touch particle velocities.
     ///
     /// # Arguments
     /// * `positions`        – mutable atomic positions.
@@ -421,8 +470,10 @@ impl McBarostatRng {
         let new_volume = current_volume * ((xi - 0.5) * self.move_size).exp();
         let delta_volume = new_volume - current_volume;
         let beta = 1.0 / (kb * temp);
+        // The proposal is uniform in ln V, so the Jacobian carries N + 1 (see
+        // `MonteCarloBarostat::acceptance_log_prob`).
         let log_acc = -beta * (delta_energy + self.target_pressure * delta_volume)
-            + (n_atoms as f64) * (new_volume / current_volume).ln();
+            + (n_atoms as f64 + 1.0) * (new_volume / current_volume).ln();
         self.n_attempted += 1;
         let accept_prob = log_acc.exp().min(1.0);
         if self.next_uniform() < accept_prob {
@@ -569,8 +620,18 @@ impl BerendsenBarostat {
     ///
     /// μ = (1 − β·dt/τ·(P₀ − P))^(1/3)
     pub fn scale_factor(&self, current_pressure: f64, dt: f64) -> f64 {
-        let mu_cube = 1.0
-            - self.compressibility * dt / self.tau_p * (self.target_pressure - current_pressure);
+        self.scale_factor_to(current_pressure, self.target_pressure, dt)
+    }
+    /// Compute the isotropic scale factor μ for an explicit target pressure.
+    ///
+    /// μ = (1 − β·dt/τ·(P_target − P))^(1/3)
+    ///
+    /// [`BerendsenBarostat::scale_factor`] is this with the barostat's own
+    /// `target_pressure`; the [`Barostat`](super::functions::Barostat) impl uses
+    /// the target handed over by the simulation driver.
+    pub fn scale_factor_to(&self, current_pressure: f64, target_pressure: f64, dt: f64) -> f64 {
+        let mu_cube =
+            1.0 - self.compressibility * dt / self.tau_p * (target_pressure - current_pressure);
         mu_cube.cbrt()
     }
     /// Compute the isotropic pressure-scaling matrix μ·I for one time step.
@@ -806,9 +867,10 @@ impl SemiIsotropicBerendsenBarostat {
 }
 /// Monte Carlo barostat for the NPT ensemble.
 ///
-/// Proposes isotropic volume moves and accepts/rejects them via
-/// a Metropolis criterion that includes the P·ΔV work and the
-/// Jacobian N·ln(V_new/V_old).
+/// Proposes isotropic volume moves that are uniform in `ln V` and
+/// accepts/rejects them via a Metropolis criterion that includes the P·ΔV work
+/// and the Jacobian `(N + 1)·ln(V_new/V_old)` (the `+ 1` comes from sampling
+/// `ln V` instead of `V`; the `N` from the scaled particle coordinates).
 #[derive(Debug, Clone)]
 pub struct MonteCarloBarostat {
     /// Target pressure P₀.
@@ -836,27 +898,39 @@ impl MonteCarloBarostat {
     }
     /// Log-probability of accepting a volume move (Metropolis criterion).
     ///
-    /// ln(acc) = −β·(ΔE + P₀·ΔV) + N·ln(V_new/V_old)
+    /// ln(acc) = −β·(ΔE + P₀·(V_new − V_old)) + (N + 1)·ln(V_new/V_old)
     ///
-    /// where β = 1/(k_B·T).
+    /// where β = 1/(k_B·T).  The Jacobian uses `N + 1` because
+    /// [`MonteCarloBarostat::propose_volume_change`] draws the new volume
+    /// uniformly in `ln V`; for an ideal gas the sampled volume distribution is
+    /// then `p(V) ∝ V^N·exp(−β·P₀·V)`.
+    ///
+    /// Returns `-∞` (always reject) if either volume is not positive and
+    /// finite, because `ln(V_new/V_old)` does not exist.
     ///
     /// # Arguments
     /// * `delta_energy`  – potential-energy change ΔE = E_new − E_old.
-    /// * `delta_volume`  – volume change ΔV = V_new − V_old.
+    /// * `v_old`         – volume V_old before the move.
+    /// * `v_new`         – proposed volume V_new.
     /// * `n_atoms`       – number of atoms N.
     /// * `temp`          – temperature T.
     /// * `kb`            – Boltzmann constant k_B.
     pub fn acceptance_log_prob(
         &self,
         delta_energy: f64,
-        delta_volume: f64,
+        v_old: f64,
+        v_new: f64,
         n_atoms: usize,
         temp: f64,
         kb: f64,
     ) -> f64 {
+        if !(v_old.is_finite() && v_new.is_finite() && v_old > 0.0 && v_new > 0.0) {
+            return f64::NEG_INFINITY;
+        }
         let beta = 1.0 / (kb * temp);
+        let delta_volume = v_new - v_old;
         -beta * (delta_energy + self.target_pressure * delta_volume)
-            + (n_atoms as f64) * delta_volume
+            + (n_atoms as f64 + 1.0) * (v_new / v_old).ln()
     }
     /// Compute the change in potential energy due to a volume move.
     ///
@@ -865,12 +939,13 @@ impl MonteCarloBarostat {
     /// pressure-volume work:
     ///
     /// ```text
-    /// ΔU_total = ΔU_pot + P₀ · ΔV − N · k_B · T · ln(V_new / V_old)
+    /// ΔU_total = ΔU_pot + P₀ · ΔV − (N + 1) · k_B · T · ln(V_new / V_old)
     /// ```
     ///
     /// The last term is the Jacobian for the Cartesian-coordinate change of
-    /// variables when the box is rescaled.  This method returns `ΔU_total`
-    /// so that the caller can perform a simple Metropolis test
+    /// variables when the box is rescaled (`N`) together with the measure
+    /// factor of the log-volume proposal (`+ 1`).  This method returns
+    /// `ΔU_total` so that the caller can perform a simple Metropolis test
     /// `min(1, exp(−β · ΔU_total))`.
     ///
     /// # Arguments
@@ -891,7 +966,7 @@ impl MonteCarloBarostat {
     ) -> f64 {
         let delta_v = v_new - v_old;
         let jacobian = if v_old > 1e-300 && v_new > 1e-300 {
-            -(n_atoms as f64) * boltzmann_k * temp * (v_new / v_old).ln()
+            -(n_atoms as f64 + 1.0) * boltzmann_k * temp * (v_new / v_old).ln()
         } else {
             0.0
         };

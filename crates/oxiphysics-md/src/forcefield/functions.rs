@@ -11,6 +11,7 @@ use super::types::{
     IntraEnergyDecomposition, LjAtomType, MixingRule, UreyBradleyTerm, ValidationError,
     ValidationSeverity,
 };
+use super::virial::scaling_virial;
 
 /// Trait for force fields that compute forces on atoms.
 pub trait ForceField: Send + Sync {
@@ -19,6 +20,26 @@ pub trait ForceField: Send + Sync {
     /// This should **add** to `atoms.forces` (not clear them first)
     /// so that multiple force fields can be composed.
     fn compute_forces(&self, atoms: &mut AtomSet, pbox: &PeriodicBox) -> f64;
+
+    /// Compute forces like [`ForceField::compute_forces`] and additionally
+    /// return the scalar virial needed for the pressure.
+    ///
+    /// Returns `(potential_energy, virial)` where the virial is the
+    /// translation-invariant pair sum `W = Σ_{pairs} r_ij · F_ij` over
+    /// minimum-image separations, so that the instantaneous pressure is
+    /// `P = (2·KE + W) / (3·V)` (see [`crate::barostat::virial_pressure`]).
+    /// Do **not** use `Σ_i r_i · F_i` of wrapped coordinates instead: it picks
+    /// up a spurious `L · F_ij` term from every pair that interacts across a
+    /// periodic boundary.
+    ///
+    /// The default implementation derives the virial from the energy alone
+    /// with [`scaling_virial`] (two extra energy evaluations).  Force fields
+    /// with a cheap analytic pair decomposition should override it.
+    fn compute_forces_virial(&self, atoms: &mut AtomSet, pbox: &PeriodicBox) -> (f64, f64) {
+        let energy = self.compute_forces(atoms, pbox);
+        let virial = scaling_virial(self, atoms, pbox);
+        (energy, virial)
+    }
 }
 /// Helper trait to allow cloning boxed potentials.
 pub trait PotentialClone: Potential {

@@ -7,6 +7,17 @@
 //! computation for 2D polygons, simplified Voronoi-based 2D skeletons, and
 //! centerline extraction for tubular structures.
 
+mod construct;
+mod contraction;
+mod kdtree;
+mod poles;
+mod skeleton_graph;
+mod thinning3d;
+
+pub use construct::MedialAxisConfig;
+
+use crate::error::Result;
+
 /// Method used to compute the skeleton / medial axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkeletonMethod {
@@ -57,66 +68,69 @@ pub struct MedialAxis {
 }
 
 impl MedialAxis {
-    /// Construct a medial axis from a boundary point cloud using the given method.
+    /// Construct the medial axis of the solid whose boundary is sampled by
+    /// `boundary`, using the default [`MedialAxisConfig`].
     ///
-    /// This is a simplified approximation: it finds the centroid of the boundary,
-    /// then builds an axis by iteratively projecting toward the centroid.
-    pub fn from_points(boundary: &[[f64; 3]], method: SkeletonMethod) -> Self {
-        let _ = method; // method selects algorithm family; simplified here
-        if boundary.is_empty() {
-            return Self {
-                points: vec![],
-                branches: vec![],
-                junctions: vec![],
-            };
-        }
+    /// See [`MedialAxis::from_points_with_config`] for the algorithms behind
+    /// each [`SkeletonMethod`].
+    ///
+    /// # Errors
+    ///
+    /// See [`MedialAxis::from_points_with_config`].
+    pub fn from_points(boundary: &[[f64; 3]], method: SkeletonMethod) -> Result<Self> {
+        Self::from_points_with_config(boundary, method, &MedialAxisConfig::default())
+    }
 
-        // Compute centroid
-        let n = boundary.len() as f64;
-        let cx = boundary.iter().map(|p| p[0]).sum::<f64>() / n;
-        let cy = boundary.iter().map(|p| p[1]).sum::<f64>() / n;
-        let cz = boundary.iter().map(|p| p[2]).sum::<f64>() / n;
-        let center = [cx, cy, cz];
-
-        // Compute average radius
-        let avg_r = boundary.iter().map(|p| dist3(*p, center)).sum::<f64>() / n;
-
-        // Build a simple single-branch axis: midpoint between furthest two points
-        let mut max_dist = 0.0_f64;
-        let mut far_a = boundary[0];
-        let mut far_b = boundary[0];
-        for i in 0..boundary.len() {
-            for j in (i + 1)..boundary.len() {
-                let d = dist3(boundary[i], boundary[j]);
-                if d > max_dist {
-                    max_dist = d;
-                    far_a = boundary[i];
-                    far_b = boundary[j];
-                }
-            }
-        }
-
-        // Build a 5-point axis from far_a to far_b
-        let steps = 5usize;
-        let mut pts = Vec::with_capacity(steps);
-        for i in 0..steps {
-            let t = i as f64 / (steps - 1) as f64;
-            let pos = lerp3(far_a, far_b, t);
-            // radius = distance from pos to closest boundary point
-            let r = boundary
-                .iter()
-                .map(|p| dist3(pos, *p))
-                .fold(f64::INFINITY, f64::min);
-            let r = if r == f64::INFINITY { avg_r } else { r };
-            let tangent = normalize3(sub3(far_b, far_a));
-            pts.push(MedialAxisPoint::new(pos, r, tangent, r));
-        }
-
-        let branch: Vec<usize> = (0..pts.len()).collect();
-        Self {
-            points: pts,
-            branches: vec![branch],
-            junctions: vec![],
+    /// Construct the medial axis of the solid whose boundary is sampled by the
+    /// unorganised point cloud `boundary` (a closed surface sample).
+    ///
+    /// Every method starts from the exact 3-D Delaunay tetrahedralisation of
+    /// the samples and their *Voronoi poles* (Amenta et al.): each sample gets
+    /// an oriented outward normal (convex-hull faces, then minimum-spanning-tree
+    /// propagation) and an inner pole, the farthest Voronoi vertex of its cell
+    /// on the inner side, whose distance to the sample is the radius of the
+    /// local medial ball. Poles with a radius below
+    /// `config.min_radius_factor ×` the local sample spacing are discarded.
+    ///
+    /// * [`SkeletonMethod::Voronoi`] — curve skeleton: the inner Voronoi
+    ///   vertices linked by Voronoi edges form a graph that is reduced to a
+    ///   minimum spanning forest spanning the poles, pruned with the
+    ///   scale-axis criterion, re-closed around genuine tunnels and split into
+    ///   branches (maximal chains) and junctions (degree ≥ 3).
+    /// * [`SkeletonMethod::MedialSurface`] — the unstructured medial-surface
+    ///   sample: one point per distinct inner pole with its medial radius.
+    ///   `branches` and `junctions` are empty and tangents are zero because a
+    ///   medial *surface* has no curve connectivity.
+    /// * [`SkeletonMethod::BallRolling`] — shrinking-ball medial balls
+    ///   (Ma, Bae & Choi 2012) computed from the oriented normals and a k-d
+    ///   tree, linked through surface-neighbour relations, then skeletonised as
+    ///   for `Voronoi`.
+    /// * [`SkeletonMethod::Thinning`] — the union of inner polar balls is
+    ///   voxelised (`config.thinning_resolution` voxels along the longest side)
+    ///   and thinned to a one-voxel curve skeleton with a topology-preserving
+    ///   3-D simple-point test, then skeletonised as for `Voronoi`.
+    ///
+    /// Each point's `radius` and `feature_size` are the distance from the
+    /// medial point to the nearest boundary sample; `tangent` is the unit
+    /// direction of the branch through the point (zero when undefined).
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::TooFewPoints`](crate::error::Error::TooFewPoints) for fewer than four samples;
+    /// * [`Error::DegenerateGeometry`](crate::error::Error::DegenerateGeometry) for non-finite or coplanar samples, or
+    ///   when no interior medial ball is resolved by the sampling;
+    /// * [`Error::OutOfRange`](crate::error::Error::OutOfRange) for invalid `config` values.
+    pub fn from_points_with_config(
+        boundary: &[[f64; 3]],
+        method: SkeletonMethod,
+        config: &MedialAxisConfig,
+    ) -> Result<Self> {
+        config.validate()?;
+        match method {
+            SkeletonMethod::Voronoi => construct::voronoi_skeleton(boundary, config),
+            SkeletonMethod::MedialSurface => construct::medial_surface(boundary, config),
+            SkeletonMethod::BallRolling => construct::ball_rolling(boundary, config),
+            SkeletonMethod::Thinning => thinning3d::thinning_skeleton(boundary, config),
         }
     }
 
@@ -485,14 +499,6 @@ fn normalize3(v: [f64; 3]) -> [f64; 3] {
     }
 }
 
-fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
-    [
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t,
-        a[2] + (b[2] - a[2]) * t,
-    ]
-}
-
 fn sub2(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     [a[0] - b[0], a[1] - b[1]]
 }
@@ -628,82 +634,98 @@ pub fn distance_transform(img: &BinaryImage) -> Vec<f64> {
     dt
 }
 
-/// Compute the exact Euclidean distance transform using Meijster's algorithm
-/// (two-pass, O(n) per row/column).
+/// Compute the exact Euclidean distance transform using Meijster's algorithm.
+///
+/// For every pixel the result is the Euclidean distance (in pixel units) from
+/// the pixel centre to the centre of the nearest *background* (`false`) pixel;
+/// background pixels map to `0.0`. The output is laid out row-major exactly
+/// like [`BinaryImage::data`].
+///
+/// The implementation follows A. Meijster, J. B. T. M. Roerdink and
+/// W. H. Hesselink, "A General Algorithm for Computing Distance Transforms in
+/// Linear Time" (2000):
+///
+/// 1. a column-wise pass computes `g(x, y)`, the vertical distance to the
+///    nearest background pixel in the same column;
+/// 2. a row-wise pass computes the lower envelope of the parabolas
+///    `f(x, i) = (x − i)² + g(i)²` with a stack of parabola indices `s` and
+///    segment start positions `t`, then scans it to read off the minimum.
+///
+/// All intermediate quantities are squared integer distances held in `i64`, so
+/// the result is *exact*: every returned value is the square root of an
+/// integer and is bit-identical to a brute-force evaluation. The total cost is
+/// `O(width · height)`.
+///
+/// If the image contains no background pixel at all, no distance is defined
+/// and every pixel is reported as [`f64::INFINITY`].
 pub fn distance_transform_exact(img: &BinaryImage) -> Vec<f64> {
     let w = img.width;
     let h = img.height;
-    if w == 0 || h == 0 {
+    let n = w * h;
+    if n == 0 {
         return vec![];
     }
-
-    // If no foreground pixels, return all zeros
-    if !img.data.iter().any(|&v| v) {
-        return vec![0.0; w * h];
+    if img.data.iter().all(|&v| v) {
+        return vec![f64::INFINITY; n];
     }
 
-    let big = (w * w + h * h) as f64;
-    // Phase 1: column-wise 1-D transform (squared distances)
-    let mut g = vec![0.0_f64; w * h];
+    // Phase 1: column-wise vertical distance, stored squared.
+    // `inf` exceeds any attainable distance, so a column without background
+    // never wins the row-wise minimum against a column that has one.
+    let inf = (w + h) as i64;
+    let mut g = vec![0_i64; n];
     for c in 0..w {
-        // Forward
-        g[c] = if img.data[c] { big } else { 0.0 };
+        g[c] = if img.data[c] { inf } else { 0 };
         for r in 1..h {
-            g[r * w + c] = if img.data[r * w + c] {
-                g[(r - 1) * w + c] + 1.0
-            } else {
-                0.0
-            };
+            let idx = r * w + c;
+            g[idx] = if img.data[idx] { g[idx - w] + 1 } else { 0 };
         }
-        // Backward
         for r in (0..h.saturating_sub(1)).rev() {
-            if g[(r + 1) * w + c] + 1.0 < g[r * w + c] {
-                g[r * w + c] = g[(r + 1) * w + c] + 1.0;
+            let idx = r * w + c;
+            let below = g[idx + w] + 1;
+            if below < g[idx] {
+                g[idx] = below;
             }
         }
-        // Square
-        for r in 0..h {
-            let v = g[r * w + c];
-            g[r * w + c] = v * v;
-        }
+    }
+    for v in &mut g {
+        *v *= *v;
     }
 
-    // Phase 2: row-wise lower-envelope transform
-    let mut dt = vec![0.0_f64; w * h];
-    let mut s_buf = vec![0usize; w];
-    let mut t_buf = vec![0i64; w];
-
+    // Phase 2: row-wise lower envelope of the parabolas f(x, i) = (x-i)² + G(i).
+    let mut dt = vec![0.0_f64; n];
+    let mut s_buf = vec![0_i64; w];
+    let mut t_buf = vec![0_i64; w];
+    let width = w as i64;
     for r in 0..h {
-        // Build lower envelope
-        let mut q = 0usize; // stack pointer
+        let row = &g[r * w..(r + 1) * w];
+        let f = |x: i64, i: i64| -> i64 {
+            let d = x - i;
+            d * d + row[i as usize]
+        };
+        let mut q: isize = 0;
         s_buf[0] = 0;
         t_buf[0] = 0;
-
-        for u in 1..w {
-            let g_su = g[r * w + s_buf[q]];
-            let g_u = g[r * w + u];
-            while q > 0 {
-                let s_val = s_buf[q];
-                let g_s = g[r * w + s_val];
-                let sep = sep_edt(s_buf[q - 1], s_val, g[r * w + s_buf[q - 1]], g_s, w);
-                if t_buf[q] as usize <= sep {
-                    break;
-                }
+        for u in 1..width {
+            while q >= 0 && f(t_buf[q as usize], s_buf[q as usize]) > f(t_buf[q as usize], u) {
                 q -= 1;
             }
-            let _ = g_su;
-            q += 1;
-            s_buf[q] = u;
-            let prev_s = s_buf[q - 1];
-            t_buf[q] = (sep_edt(prev_s, u, g[r * w + prev_s], g_u, w) + 1) as i64;
+            if q < 0 {
+                q = 0;
+                s_buf[0] = u;
+            } else {
+                let w1 = 1 + sep_edt(s_buf[q as usize], u, row);
+                if w1 < width {
+                    q += 1;
+                    s_buf[q as usize] = u;
+                    t_buf[q as usize] = w1;
+                }
+            }
         }
-
-        // Scan
-        for u in (0..w).rev() {
-            let s = s_buf[q];
-            let diff = u.abs_diff(s);
-            dt[r * w + u] = ((diff * diff) as f64 + g[r * w + s]).sqrt();
-            if u as i64 == t_buf[q] && q > 0 {
+        for u in (0..width).rev() {
+            let qi = q as usize;
+            dt[r * w + u as usize] = (f(u, s_buf[qi]) as f64).sqrt();
+            if u == t_buf[qi] {
                 q -= 1;
             }
         }
@@ -712,15 +734,15 @@ pub fn distance_transform_exact(img: &BinaryImage) -> Vec<f64> {
     dt
 }
 
-/// Separator function for the row-wise lower-envelope computation.
-fn sep_edt(i: usize, u: usize, gi: f64, gu: f64, _w: usize) -> usize {
-    // (u^2 - i^2 + gu - gi) / (2*(u - i))
-    let num = (u * u) as f64 - (i * i) as f64 + gu - gi;
-    let den = 2.0 * (u as f64 - i as f64);
-    if den.abs() < 1e-15 {
-        return 0;
-    }
-    (num / den).floor().max(0.0) as usize
+/// Meijster separator for the Euclidean metric.
+///
+/// Returns the largest integer abscissa `x` at which the parabola rooted at
+/// column `i` is still no higher than the one rooted at column `u > i`:
+/// `Sep(i, u) = ⌊(u² − i² + G(u) − G(i)) / (2 (u − i))⌋`, using Euclidean
+/// (floor) division so negative numerators round toward −∞.
+fn sep_edt(i: i64, u: i64, row: &[i64]) -> i64 {
+    let num = u * u - i * i + row[u as usize] - row[i as usize];
+    num.div_euclid(2 * (u - i))
 }
 
 // ─── Thinning algorithm (Zhang-Suen) ────────────────────────────────────────
@@ -1052,43 +1074,27 @@ pub struct CurveSkeleton {
 }
 
 impl CurveSkeleton {
-    /// Extract a curve skeleton from a surface point cloud using iterative
-    /// Laplacian contraction.
+    /// Extract a curve skeleton from a surface point cloud by Laplacian
+    /// contraction (Au et al. 2008, point-cloud form of Cao et al. 2010).
     ///
-    /// This is a simplified version: it builds a medial axis from the boundary
-    /// points, then converts the medial axis branches into a connected graph.
-    pub fn from_surface_points(boundary: &[[f64; 3]], _contraction_steps: usize) -> Self {
-        let ma = MedialAxis::from_points(boundary, SkeletonMethod::Voronoi);
-
-        let nodes: Vec<CurveSkeletonNode> = ma
-            .points
-            .iter()
-            .map(|p| CurveSkeletonNode {
-                position: p.position,
-                radius: p.radius,
-                neighbors: vec![],
-            })
-            .collect();
-
-        let mut skeleton = Self { nodes };
-
-        // Build adjacency from branches
-        for branch in &ma.branches {
-            for w in branch.windows(2) {
-                let a = w[0];
-                let b = w[1];
-                if a < skeleton.nodes.len() && b < skeleton.nodes.len() {
-                    if !skeleton.nodes[a].neighbors.contains(&b) {
-                        skeleton.nodes[a].neighbors.push(b);
-                    }
-                    if !skeleton.nodes[b].neighbors.contains(&a) {
-                        skeleton.nodes[b].neighbors.push(a);
-                    }
-                }
-            }
-        }
-
-        skeleton
+    /// At most `contraction_steps` contraction iterations are run (fewer once
+    /// the cross-sections have collapsed): each solves the cotangent-Laplacian
+    /// least-squares system `(W_L² LᵀL + W_H²) P' = W_H² P` with conjugate
+    /// gradients and then raises `W_L` threefold. The contracted cloud is
+    /// clustered by farthest-point sampling; nodes are placed at the centroid
+    /// of their clusters' original samples with the mean distance to them as
+    /// radius, connected where their samples are neighbours, and reduced to a
+    /// curve skeleton (spanning tree, twig pruning, loop closure). See
+    /// [`laplacian_contraction`] for the contraction step alone.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::TooFewPoints`](crate::error::Error::TooFewPoints) for fewer than four samples;
+    /// * [`Error::OutOfRange`](crate::error::Error::OutOfRange) when `contraction_steps == 0`;
+    /// * [`Error::DegenerateGeometry`](crate::error::Error::DegenerateGeometry) for non-finite or coincident samples;
+    /// * [`Error::ConvergenceFailure`](crate::error::Error::ConvergenceFailure) if a linear solve fails to converge.
+    pub fn from_surface_points(boundary: &[[f64; 3]], contraction_steps: usize) -> Result<Self> {
+        contraction::curve_skeleton(boundary, contraction_steps)
     }
 
     /// Number of nodes in the skeleton.
@@ -1192,6 +1198,30 @@ pub fn laplacian_smooth(
     result
 }
 
+/// Contract a surface point cloud towards its curve skeleton with
+/// `steps` iterations of cotangent-Laplacian contraction (Au et al. 2008;
+/// Cao et al. 2010) and return the contracted positions in input order.
+///
+/// Each iteration solves `(W_L² LᵀL + W_H²) P' = W_H² P` per coordinate,
+/// where `L` is the cotangent Laplacian of every sample's tangent-plane
+/// Delaunay one-ring (evaluated on the input cloud), `W_L` starts at 1 and
+/// grows threefold per iteration (capped at 2048) and `W_H,i = √(A_i⁰ / A_i)`
+/// tracks the shrinking one-ring area. A sample whose one-ring area dropped
+/// below `10⁻³` of its initial value is pinned, and iteration stops early once
+/// the total one-ring area has shrunk below `10⁻²` of its initial value (the
+/// cross-sections have collapsed onto the skeleton), so `steps` is an upper
+/// bound on the number of iterations.
+///
+/// # Errors
+///
+/// * [`Error::TooFewPoints`](crate::error::Error::TooFewPoints) for fewer than four points;
+/// * [`Error::OutOfRange`](crate::error::Error::OutOfRange) when `steps == 0`;
+/// * [`Error::DegenerateGeometry`](crate::error::Error::DegenerateGeometry) for non-finite or coincident points;
+/// * [`Error::ConvergenceFailure`](crate::error::Error::ConvergenceFailure) if a linear solve fails to converge.
+pub fn laplacian_contraction(points: &[[f64; 3]], steps: usize) -> Result<Vec<[f64; 3]>> {
+    contraction::contract(points, steps)
+}
+
 // ─── Voronoi-based medial axis approximation ────────────────────────────────
 
 /// Approximate the 2-D medial axis using Voronoi vertices of a dense boundary
@@ -1246,10 +1276,16 @@ pub fn hausdorff_distance(a: &MedialAxis, b: &MedialAxis) -> f64 {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+mod edt_tests;
+
+#[cfg(test)]
+mod skeleton_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    // Helper: unit cube boundary points
+    // Helper: unit cube corner points
     fn cube_boundary() -> Vec<[f64; 3]> {
         let mut pts = vec![];
         for &x in &[-1.0, 1.0] {
@@ -1262,67 +1298,102 @@ mod tests {
         pts
     }
 
+    // Helper: hand-built medial axis — a 5-point path along +x with radii
+    // 1, 2, 3, 2, 1 plus a 2-point side branch hanging off the middle point.
+    fn path_axis() -> MedialAxis {
+        let radii = [1.0, 2.0, 3.0, 2.0, 1.0];
+        let mut points: Vec<MedialAxisPoint> = (0..5)
+            .map(|i| {
+                MedialAxisPoint::new([i as f64, 0.0, 0.0], radii[i], [1.0, 0.0, 0.0], radii[i])
+            })
+            .collect();
+        points.push(MedialAxisPoint::new(
+            [2.0, 0.5, 0.0],
+            0.5,
+            [0.0, 1.0, 0.0],
+            0.5,
+        ));
+        MedialAxis {
+            points,
+            branches: vec![vec![0, 1, 2], vec![2, 3, 4], vec![2, 5]],
+            junctions: vec![2],
+        }
+    }
+
     // Helper: unit square polygon
     fn unit_square() -> Vec<[f64; 2]> {
         vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
     }
 
     #[test]
-    fn test_medial_axis_from_empty() {
-        let ma = MedialAxis::from_points(&[], SkeletonMethod::BallRolling);
-        assert_eq!(ma.points.len(), 0);
-        assert_eq!(ma.branch_count(), 0);
+    fn test_medial_axis_from_empty_is_error() {
+        let err = MedialAxis::from_points(&[], SkeletonMethod::BallRolling);
+        assert!(matches!(
+            err,
+            Err(crate::error::Error::TooFewPoints {
+                required: 4,
+                actual: 0
+            })
+        ));
     }
 
     #[test]
-    fn test_medial_axis_from_cube() {
+    fn test_medial_axis_from_cube_corners_is_cube_centre() {
+        // The eight cospherical corners have a single Voronoi vertex inside
+        // the cube: the centre, at distance sqrt(3) from every corner.
         let pts = cube_boundary();
-        let ma = MedialAxis::from_points(&pts, SkeletonMethod::Voronoi);
-        assert!(!ma.points.is_empty());
-        assert!(ma.branch_count() >= 1);
-    }
-
-    #[test]
-    fn test_medial_axis_total_length_positive() {
-        let pts = cube_boundary();
-        let ma = MedialAxis::from_points(&pts, SkeletonMethod::Thinning);
-        assert!(ma.total_length() > 0.0);
-    }
-
-    #[test]
-    fn test_medial_axis_is_tubular() {
-        // Build a synthetic tube-like boundary
-        let mut pts = vec![];
-        for i in 0..20 {
-            let x = i as f64 * 0.5;
-            for &(dy, dz) in &[(0.5, 0.0), (-0.5, 0.0), (0.0, 0.5), (0.0, -0.5)] {
-                pts.push([x, dy, dz]);
-            }
+        for method in [SkeletonMethod::Voronoi, SkeletonMethod::MedialSurface] {
+            let ma = MedialAxis::from_points(&pts, method).expect("cube corners");
+            assert_eq!(ma.points.len(), 1, "{method:?}");
+            let p = &ma.points[0];
+            assert!(
+                dist3(p.position, [0.0; 3]) < 1e-9,
+                "{method:?}: {:?}",
+                p.position
+            );
+            assert!((p.radius - 3.0_f64.sqrt()).abs() < 1e-9, "{method:?}");
+            assert!(ma.junctions.is_empty());
+            assert_eq!(ma.total_length(), 0.0);
         }
-        let ma = MedialAxis::from_points(&pts, SkeletonMethod::MedialSurface);
-        // tubularity check should be true for this cylinder-like set
-        let _ = ma.is_tubular(); // just ensure no panic
     }
 
     #[test]
-    fn test_medial_axis_single_point() {
-        let pts = vec![[0.0, 0.0, 0.0]];
-        let ma = MedialAxis::from_points(&pts, SkeletonMethod::BallRolling);
-        assert_eq!(ma.points.len(), 5); // single-point set still generates axis
+    fn test_medial_axis_is_tubular_on_constant_radius_path() {
+        let points: Vec<MedialAxisPoint> = (0..6)
+            .map(|i| MedialAxisPoint::new([i as f64, 0.0, 0.0], 1.0, [1.0, 0.0, 0.0], 1.0))
+            .collect();
+        let ma = MedialAxis {
+            points,
+            branches: vec![(0..6).collect()],
+            junctions: vec![],
+        };
+        assert!(ma.is_tubular());
+        assert!(!path_axis().is_tubular());
     }
 
     #[test]
-    fn test_skeleton_method_variants() {
-        let methods = [
+    fn test_medial_axis_collinear_or_too_few_points_are_errors() {
+        let few = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        assert!(matches!(
+            MedialAxis::from_points(&few, SkeletonMethod::Voronoi),
+            Err(crate::error::Error::TooFewPoints { .. })
+        ));
+        let planar: Vec<[f64; 3]> = (0..10)
+            .map(|i| [i as f64, (i * i) as f64 * 0.1, 0.0])
+            .collect();
+        for method in [
             SkeletonMethod::BallRolling,
             SkeletonMethod::Thinning,
             SkeletonMethod::Voronoi,
             SkeletonMethod::MedialSurface,
-        ];
-        for m in methods {
-            let pts = cube_boundary();
-            let ma = MedialAxis::from_points(&pts, m);
-            assert!(ma.total_length() >= 0.0);
+        ] {
+            assert!(
+                matches!(
+                    MedialAxis::from_points(&planar, method),
+                    Err(crate::error::Error::DegenerateGeometry { .. })
+                ),
+                "{method:?}"
+            );
         }
     }
 
@@ -1480,45 +1551,42 @@ mod tests {
 
     #[test]
     fn test_prune_short_branches() {
-        let pts = cube_boundary();
-        let mut ma = MedialAxis::from_points(&pts, SkeletonMethod::Voronoi);
-        let before = ma.branch_count();
+        let mut ma = path_axis();
+        prune_short_branches(&mut ma, 1.0); // side branch has length 0.5
+        assert_eq!(ma.branch_count(), 2);
+        assert!(ma.branches.iter().all(|b| b.len() == 3));
         prune_short_branches(&mut ma, 1e12); // prune everything
-        assert!(ma.branch_count() <= before);
+        assert_eq!(ma.branch_count(), 0);
     }
 
     #[test]
     fn test_prune_keeps_long_branches() {
-        let pts = cube_boundary();
-        let mut ma = MedialAxis::from_points(&pts, SkeletonMethod::Voronoi);
+        let mut ma = path_axis();
         prune_short_branches(&mut ma, 0.0); // keep all
-        assert!(ma.branch_count() >= 1);
+        assert_eq!(ma.branch_count(), 3);
     }
 
     #[test]
     fn test_euler_characteristic() {
-        let pts = cube_boundary();
-        let ma = MedialAxis::from_points(&pts, SkeletonMethod::Voronoi);
-        let chi = euler_characteristic(&ma);
-        // For a path graph V=5, E=4, chi = 1 (tree)
-        assert_eq!(chi, 1);
+        // V = 6 points, E = 2 + 2 + 1 = 5 edges: a tree, chi = 1.
+        assert_eq!(euler_characteristic(&path_axis()), 1);
     }
 
     #[test]
     fn test_axis_aligned_slab_decompose() {
-        let pts = cube_boundary();
-        let ma = MedialAxis::from_points(&pts, SkeletonMethod::Voronoi);
-        let slabs = AxisAlignedSlab::decompose(&ma, 3);
-        assert_eq!(slabs.len(), 3);
+        let ma = path_axis();
+        let slabs = AxisAlignedSlab::decompose(&ma, 4);
+        assert_eq!(slabs.len(), 4);
         let total_pts: usize = slabs.iter().map(|s| s.point_indices.len()).sum();
         assert_eq!(total_pts, ma.points.len());
+        // x = 0 falls in slab 0, x = 4 in the last slab.
+        assert!(slabs[0].point_indices.contains(&0));
+        assert!(slabs[3].point_indices.contains(&4));
     }
 
     #[test]
     fn test_axis_aligned_slab_zero_slabs() {
-        let pts = cube_boundary();
-        let ma = MedialAxis::from_points(&pts, SkeletonMethod::Voronoi);
-        let slabs = AxisAlignedSlab::decompose(&ma, 0);
+        let slabs = AxisAlignedSlab::decompose(&path_axis(), 0);
         assert!(slabs.is_empty());
     }
 
@@ -1643,95 +1711,105 @@ mod tests {
 
     #[test]
     fn test_branch_significance() {
-        let pts = cube_boundary();
-        let ma = MedialAxis::from_points(&pts, SkeletonMethod::Voronoi);
-        let sig = branch_significance(&ma, 0);
-        assert!(sig > 0.0, "Significance should be positive");
+        let ma = path_axis();
+        // Branch 0: max radius 3 over length 2.
+        assert!((branch_significance(&ma, 0) - 1.5).abs() < 1e-12);
+        // Side branch: max radius 3 (junction) over length 0.5.
+        assert!((branch_significance(&ma, 2) - 6.0).abs() < 1e-12);
+        assert_eq!(branch_significance(&ma, 99), 0.0);
     }
 
     #[test]
     fn test_prune_by_significance() {
-        let pts = cube_boundary();
-        let mut ma = MedialAxis::from_points(&pts, SkeletonMethod::Voronoi);
+        let mut ma = path_axis();
+        prune_by_significance(&mut ma, 2.0); // keeps only the side branch
+        assert_eq!(ma.branches, vec![vec![2, 5]]);
         prune_by_significance(&mut ma, 1e12); // very high threshold => prune all
-        assert!(
-            ma.branches.is_empty()
-                || ma.branches.iter().all(|b| {
-                    let _ = b;
-                    true // just check no panic
-                })
-        );
+        assert!(ma.branches.is_empty());
     }
 
     // ─── Radius function tests ──────────────────────────────────────────
 
     #[test]
     fn test_radius_function() {
-        let pts = cube_boundary();
-        let ma = MedialAxis::from_points(&pts, SkeletonMethod::Voronoi);
+        let ma = path_axis();
         let rf = radius_function(&ma, 0);
-        assert!(!rf.is_empty());
-        // Arc lengths should be non-decreasing
-        for w in rf.windows(2) {
-            assert!(w[1].0 >= w[0].0, "Arc length should be non-decreasing");
-        }
+        assert_eq!(rf, vec![(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]);
     }
 
     #[test]
     fn test_average_and_max_radius() {
-        let pts = cube_boundary();
-        let ma = MedialAxis::from_points(&pts, SkeletonMethod::Voronoi);
-        let avg = average_radius(&ma, 0);
-        let mx = max_radius(&ma, 0);
-        assert!(avg > 0.0);
-        assert!(mx >= avg, "Max radius should be >= average");
+        let ma = path_axis();
+        assert!((average_radius(&ma, 0) - 2.0).abs() < 1e-12);
+        assert_eq!(max_radius(&ma, 0), 3.0);
+        assert!((average_radius(&ma, 2) - 1.75).abs() < 1e-12);
     }
 
     // ─── Shape decomposition tests ──────────────────────────────────────
 
     #[test]
     fn test_decompose_from_skeleton() {
-        let pts = cube_boundary();
-        let ma = MedialAxis::from_points(&pts, SkeletonMethod::Voronoi);
+        let ma = path_axis();
         let parts = decompose_from_skeleton(&ma);
-        assert!(!parts.is_empty());
+        assert_eq!(parts.len(), 3);
+        let ball = |r: f64| 4.0 / 3.0 * std::f64::consts::PI * r * r * r;
+        let expected0 = ball(1.0) + ball(2.0) + ball(3.0);
+        assert!((parts[0].approx_volume - expected0).abs() < 1e-9);
+        assert!((parts[0].centroid[0] - 1.0).abs() < 1e-12);
         let vol = total_decomposed_volume(&parts);
-        assert!(vol > 0.0, "Total volume should be positive");
+        assert!(vol > expected0);
     }
 
     // ─── Curve skeleton tests ───────────────────────────────────────────
 
-    #[test]
-    fn test_curve_skeleton_from_tube() {
-        let mut pts = vec![];
-        for i in 0..20 {
-            let x = i as f64 * 0.5;
-            for &(dy, dz) in &[(0.5, 0.0), (-0.5, 0.0), (0.0, 0.5), (0.0, -0.5)] {
-                pts.push([x, dy, dz]);
-            }
+    // Helper: hand-built curve skeleton — a path 0-1-2-3 with a short spur
+    // 1-4 (length 0.2).
+    fn star_skeleton() -> CurveSkeleton {
+        let node = |p: [f64; 3], nb: Vec<usize>| CurveSkeletonNode {
+            position: p,
+            radius: 1.0,
+            neighbors: nb,
+        };
+        CurveSkeleton {
+            nodes: vec![
+                node([0.0, 0.0, 0.0], vec![1]),
+                node([1.0, 0.0, 0.0], vec![0, 2, 4]),
+                node([2.0, 0.0, 0.0], vec![1, 3]),
+                node([3.0, 0.0, 0.0], vec![2]),
+                node([1.0, 0.2, 0.0], vec![1]),
+            ],
         }
-        let cs = CurveSkeleton::from_surface_points(&pts, 5);
-        assert!(cs.node_count() > 0);
-        assert!(cs.total_length() > 0.0);
     }
 
     #[test]
-    fn test_curve_skeleton_leaf_nodes() {
-        let pts = cube_boundary();
-        let cs = CurveSkeleton::from_surface_points(&pts, 3);
-        let leaves = cs.leaf_nodes();
-        // A single-branch skeleton has exactly 2 leaves
-        assert!(leaves.len() >= 2 || cs.node_count() <= 2);
+    fn test_curve_skeleton_graph_queries() {
+        let cs = star_skeleton();
+        assert_eq!(cs.node_count(), 5);
+        assert_eq!(cs.edge_count(), 4);
+        assert!((cs.total_length() - 3.2).abs() < 1e-12);
+        assert_eq!(cs.leaf_nodes(), vec![0, 3, 4]);
+        assert_eq!(cs.junction_nodes(), vec![1]);
     }
 
     #[test]
     fn test_curve_skeleton_prune() {
-        let pts = cube_boundary();
-        let mut cs = CurveSkeleton::from_surface_points(&pts, 3);
-        let before = cs.edge_count();
-        cs.prune_leaves(1e12); // prune everything
-        let after = cs.edge_count();
-        assert!(after <= before);
+        let mut cs = star_skeleton();
+        cs.prune_leaves(0.5); // removes the 0.2 spur only
+        assert_eq!(cs.edge_count(), 3);
+        assert!(cs.junction_nodes().is_empty());
+        assert!((cs.total_length() - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_curve_skeleton_rejects_zero_steps_and_tiny_input() {
+        assert!(matches!(
+            CurveSkeleton::from_surface_points(&cube_boundary(), 0),
+            Err(crate::error::Error::OutOfRange { .. })
+        ));
+        assert!(matches!(
+            CurveSkeleton::from_surface_points(&[[0.0; 3]; 2], 3),
+            Err(crate::error::Error::TooFewPoints { .. })
+        ));
     }
 
     #[test]
@@ -1757,8 +1835,7 @@ mod tests {
 
     #[test]
     fn test_hausdorff_self_zero() {
-        let pts = cube_boundary();
-        let ma = MedialAxis::from_points(&pts, SkeletonMethod::Voronoi);
+        let ma = path_axis();
         let d = hausdorff_distance(&ma, &ma);
         assert!(d < 1e-10, "Hausdorff to self should be 0, got {:.6}", d);
     }
@@ -1767,9 +1844,9 @@ mod tests {
     fn test_hausdorff_different_shapes() {
         let pts1 = cube_boundary();
         let pts2: Vec<[f64; 3]> = pts1.iter().map(|p| [p[0] + 5.0, p[1], p[2]]).collect();
-        let ma1 = MedialAxis::from_points(&pts1, SkeletonMethod::Voronoi);
-        let ma2 = MedialAxis::from_points(&pts2, SkeletonMethod::Voronoi);
+        let ma1 = MedialAxis::from_points(&pts1, SkeletonMethod::Voronoi).expect("cube");
+        let ma2 = MedialAxis::from_points(&pts2, SkeletonMethod::Voronoi).expect("shifted cube");
         let d = hausdorff_distance(&ma1, &ma2);
-        assert!(d > 1.0, "Shifted shapes should have Hausdorff > 1");
+        assert!((d - 5.0).abs() < 1e-9, "centres are 5 apart, got {d}");
     }
 }

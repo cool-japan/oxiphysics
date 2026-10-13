@@ -3,10 +3,12 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::invert_small_dense;
+use crate::error::PhysicsError;
 
 /// Sparse LU factorization result.
 ///
-/// Stores L and U factors as CSR matrices.
+/// Stores L and U factors as CSR matrices.  [`SparseLu::ilu0`] produces an
+/// *incomplete* factorisation (a preconditioner), not an exact LU.
 pub struct SparseLu {
     /// Lower triangular factor (unit diagonal).
     pub l: CsrMatrix,
@@ -16,64 +18,170 @@ pub struct SparseLu {
     pub perm: Vec<usize>,
 }
 impl SparseLu {
-    /// Compute an ILU(0) factorization (incomplete LU with no fill-in).
+    /// Compute an ILU(0) factorization (incomplete LU with zero fill-in).
     ///
-    /// This is a preconditioner-quality factorization.
-    /// The sparsity pattern of L+U matches that of A.
+    /// This is Saad's row-wise (IKJ) algorithm on the CSR structure of `A`:
+    /// the entries of `A` are overwritten by the multipliers (strictly lower
+    /// part) and by `U`, and every update that would create an entry outside the
+    /// sparsity pattern of `A` is dropped.  Consequently `L` is unit lower
+    /// triangular, `L + U` has exactly the sparsity pattern of `A` (the
+    /// diagonal is always stored), and `(L U)_ij = a_ij` for every stored
+    /// `(i, j)` of `A`.  Memory and work are proportional to the number of
+    /// non-zeros; no dense matrix is formed.
+    ///
+    /// ILU(0) is an *approximate* factorisation: [`solve`](Self::solve) is an
+    /// exact solve only when `A` generates no fill (for example diagonal or
+    /// tridiagonal matrices); in general it is a preconditioner `M^{-1} b`.
+    ///
+    /// A (numerically) zero pivot makes the factorisation break down.  Here
+    /// the pivot is replaced by `sqrt(eps) * max_j |a_kj|` of its row (by `1`
+    /// for an empty row), the usual remedy that keeps the factors usable as a
+    /// preconditioner; [`try_ilu0`](Self::try_ilu0) reports the breakdown
+    /// instead.
+    ///
+    /// # Panics
+    /// Panics if `a` is not square.
     pub fn ilu0(a: &CsrMatrix) -> Self {
-        let n = a.nrows;
         assert_eq!(a.nrows, a.ncols, "ILU(0) requires square matrix");
-        let mut lval = vec![vec![0.0f64; n]; n];
-        for (r, lval_row) in lval.iter_mut().enumerate() {
-            for k in a.row_ptr[r]..a.row_ptr[r + 1] {
-                lval_row[a.col_idx[k]] = a.values[k];
-            }
+        Self::ilu0_factor(a).0
+    }
+    /// Compute an ILU(0) factorization, reporting breakdowns as errors.
+    ///
+    /// Identical to [`ilu0`](Self::ilu0) for a matrix with non-zero pivots.
+    ///
+    /// # Errors
+    /// * [`PhysicsError::InvalidInput`] if `a` is not square.
+    /// * [`PhysicsError::NumericalDivergence`] if a pivot is zero, below
+    ///   `eps * max_j |a_kj|` of its row, or non-finite (including a missing
+    ///   diagonal entry).
+    pub fn try_ilu0(a: &CsrMatrix) -> Result<Self, PhysicsError> {
+        if a.nrows != a.ncols {
+            return Err(PhysicsError::InvalidInput {
+                field: "a".to_string(),
+                reason: format!(
+                    "ILU(0) requires a square matrix, got {} x {}",
+                    a.nrows, a.ncols
+                ),
+            });
         }
-        for k in 0..n {
-            let akk = lval[k][k];
-            if akk.abs() < 1e-30 {
-                continue;
+        match Self::ilu0_factor(a) {
+            (lu, None) => Ok(lu),
+            (_, Some(row)) => Err(PhysicsError::NumericalDivergence {
+                message: format!("ILU(0) breakdown: zero pivot at row {row}"),
+            }),
+        }
+    }
+    /// ILU(0) of a square matrix; also returns the first row with a breakdown
+    /// (zero/non-finite pivot), whose pivot has then been perturbed.
+    fn ilu0_factor(a: &CsrMatrix) -> (Self, Option<usize>) {
+        let n = a.nrows;
+        // Working copy of A: sorted, duplicate-free rows that always hold the diagonal.
+        let mut row_ptr = Vec::with_capacity(n + 1);
+        let mut cols: Vec<usize> = Vec::with_capacity(a.values.len() + n);
+        let mut vals: Vec<f64> = Vec::with_capacity(a.values.len() + n);
+        let mut row_scale = Vec::with_capacity(n);
+        row_ptr.push(0usize);
+        let mut entries: Vec<(usize, f64)> = Vec::new();
+        let mut merged: Vec<(usize, f64)> = Vec::new();
+        for i in 0..n {
+            entries.clear();
+            merged.clear();
+            for k in a.row_ptr[i]..a.row_ptr[i + 1] {
+                let j = a.col_idx[k];
+                if j < n {
+                    entries.push((j, a.values[k]));
+                }
             }
-            for i in (k + 1)..n {
-                if lval[i][k].abs() > 0.0 {
-                    lval[i][k] /= akk;
-                    for j in (k + 1)..n {
-                        if lval[i][j].abs() > 0.0 || lval[k][j].abs() > 0.0 {
-                            lval[i][j] -= lval[i][k] * lval[k][j];
-                        }
+            entries.sort_by_key(|&(j, _)| j);
+            for &(j, v) in entries.iter() {
+                match merged.last_mut() {
+                    Some(last) if last.0 == j => last.1 += v,
+                    _ => merged.push((j, v)),
+                }
+            }
+            row_scale.push(merged.iter().fold(0.0f64, |m, &(_, v)| m.max(v.abs())));
+            let diagonal_slot = merged.partition_point(|&(j, _)| j < i);
+            if merged.get(diagonal_slot).map(|&(j, _)| j) != Some(i) {
+                merged.insert(diagonal_slot, (i, 0.0));
+            }
+            for &(j, v) in merged.iter() {
+                cols.push(j);
+                vals.push(v);
+            }
+            row_ptr.push(cols.len());
+        }
+        // Row-wise (IKJ) elimination restricted to the pattern of A.
+        let mut diag_ptr = vec![0usize; n];
+        let mut position = vec![usize::MAX; n];
+        let mut breakdown: Option<usize> = None;
+        for i in 0..n {
+            let (start, end) = (row_ptr[i], row_ptr[i + 1]);
+            for (offset, &col) in cols[start..end].iter().enumerate() {
+                position[col] = start + offset;
+            }
+            let diag = position[i];
+            diag_ptr[i] = diag;
+            for p in start..diag {
+                let k = cols[p];
+                let multiplier = vals[p] / vals[diag_ptr[k]];
+                vals[p] = multiplier;
+                for q in (diag_ptr[k] + 1)..row_ptr[k + 1] {
+                    let target = position[cols[q]];
+                    if target != usize::MAX {
+                        vals[target] -= multiplier * vals[q];
                     }
                 }
             }
+            let pivot = vals[diag];
+            if !pivot.is_finite() || pivot.abs() <= f64::EPSILON * row_scale[i] {
+                breakdown.get_or_insert(i);
+                vals[diag] = if row_scale[i] > 0.0 {
+                    f64::EPSILON.sqrt() * row_scale[i]
+                } else {
+                    1.0
+                };
+            }
+            for &col in &cols[start..end] {
+                position[col] = usize::MAX;
+            }
         }
-        let mut l_rows = Vec::new();
+        // Split into unit-lower L and upper U (both CSR, sorted columns).
+        let mut l_ptr = vec![0usize];
         let mut l_cols = Vec::new();
         let mut l_vals = Vec::new();
-        let mut u_rows = Vec::new();
+        let mut u_ptr = vec![0usize];
         let mut u_cols = Vec::new();
         let mut u_vals = Vec::new();
-        for (i, lrow) in lval.iter().enumerate() {
-            l_rows.push(i);
+        for i in 0..n {
+            for p in row_ptr[i]..diag_ptr[i] {
+                l_cols.push(cols[p]);
+                l_vals.push(vals[p]);
+            }
             l_cols.push(i);
             l_vals.push(1.0);
-            for (j, &v) in lrow.iter().enumerate().take(i) {
-                if v.abs() > 1e-30 {
-                    l_rows.push(i);
-                    l_cols.push(j);
-                    l_vals.push(v);
-                }
+            l_ptr.push(l_cols.len());
+            for p in diag_ptr[i]..row_ptr[i + 1] {
+                u_cols.push(cols[p]);
+                u_vals.push(vals[p]);
             }
-            for (j, &v) in lrow.iter().enumerate().skip(i) {
-                if v.abs() > 1e-30 {
-                    u_rows.push(i);
-                    u_cols.push(j);
-                    u_vals.push(v);
-                }
-            }
+            u_ptr.push(u_cols.len());
         }
-        let l = CsrMatrix::from_triplets(n, n, &l_rows, &l_cols, &l_vals);
-        let u = CsrMatrix::from_triplets(n, n, &u_rows, &u_cols, &u_vals);
+        let l = CsrMatrix {
+            nrows: n,
+            ncols: n,
+            row_ptr: l_ptr,
+            col_idx: l_cols,
+            values: l_vals,
+        };
+        let u = CsrMatrix {
+            nrows: n,
+            ncols: n,
+            row_ptr: u_ptr,
+            col_idx: u_cols,
+            values: u_vals,
+        };
         let perm: Vec<usize> = (0..n).collect();
-        SparseLu { l, u, perm }
+        (SparseLu { l, u, perm }, breakdown)
     }
     /// Solve A x = b using the LU factors via forward/backward substitution.
     pub fn solve(&self, b: &[f64]) -> Vec<f64> {
@@ -844,5 +952,302 @@ impl SsorPreconditioner {
             x[i] = (x[i] - w * sigma) * w / aii;
         }
         x
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sparse::{identity_csr, laplacian_1d, laplacian_2d};
+
+    /// Dense product `L U` of the two factors.
+    fn dense_product(lu: &SparseLu) -> Vec<Vec<f64>> {
+        let l = lu.l.to_dense();
+        let u = lu.u.to_dense();
+        let n = l.len();
+        l.iter()
+            .map(|l_row| {
+                (0..n)
+                    .map(|j| {
+                        l_row
+                            .iter()
+                            .zip(u.iter())
+                            .map(|(&lik, u_row)| lik * u_row[j])
+                            .sum()
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn relative_residual(a: &CsrMatrix, x: &[f64], b: &[f64]) -> f64 {
+        let ax = a.matvec(x);
+        let r: f64 = b
+            .iter()
+            .zip(ax.iter())
+            .map(|(bi, ai)| (bi - ai).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        r / b.iter().map(|v| v * v).sum::<f64>().sqrt()
+    }
+
+    #[test]
+    fn ilu0_pattern_of_l_plus_u_equals_pattern_of_a() {
+        for (nx, ny) in [(1, 1), (3, 4), (6, 5), (9, 9)] {
+            let a = laplacian_2d(nx, ny, 1.0);
+            let lu = SparseLu::ilu0(&a);
+            assert_eq!(
+                lu.l.nnz() + lu.u.nnz() - a.nrows,
+                a.nnz(),
+                "grid {nx} x {ny}"
+            );
+        }
+    }
+
+    #[test]
+    fn ilu0_factors_are_unit_lower_and_upper_triangular() {
+        let a = laplacian_2d(5, 4, 0.5);
+        let lu = SparseLu::ilu0(&a);
+        for i in 0..a.nrows {
+            let mut saw_unit_diagonal = false;
+            for k in lu.l.row_ptr[i]..lu.l.row_ptr[i + 1] {
+                let j = lu.l.col_idx[k];
+                assert!(j <= i, "L must be lower triangular");
+                if j == i {
+                    assert_eq!(lu.l.values[k], 1.0);
+                    saw_unit_diagonal = true;
+                }
+            }
+            assert!(saw_unit_diagonal, "row {i} of L lacks its unit diagonal");
+            for k in lu.u.row_ptr[i]..lu.u.row_ptr[i + 1] {
+                assert!(lu.u.col_idx[k] >= i, "U must be upper triangular");
+            }
+            assert!(lu.u.get(i, i) != 0.0, "U must have a non-zero diagonal");
+        }
+        assert_eq!(lu.perm, (0..a.nrows).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn ilu0_reproduces_a_exactly_on_its_pattern_but_drops_the_fill() {
+        let a = laplacian_2d(5, 5, 1.0);
+        let lu = SparseLu::ilu0(&a);
+        let product = dense_product(&lu);
+        let dense_a = a.to_dense();
+        let mut off_pattern_max = 0.0f64;
+        for (i, row) in product.iter().enumerate() {
+            for (j, &value) in row.iter().enumerate() {
+                let in_pattern = (a.row_ptr[i]..a.row_ptr[i + 1]).any(|k| a.col_idx[k] == j);
+                if in_pattern {
+                    assert!(
+                        (value - dense_a[i][j]).abs() < 1e-12,
+                        "(L U)[{i}][{j}] = {value}, a = {}",
+                        dense_a[i][j]
+                    );
+                } else {
+                    off_pattern_max = off_pattern_max.max(value.abs());
+                }
+            }
+        }
+        // An exact LU would cancel these entries; ILU(0) leaves the dropped fill behind.
+        assert!(
+            off_pattern_max > 0.1,
+            "off-pattern residual = {off_pattern_max}"
+        );
+    }
+
+    #[test]
+    fn ilu0_is_exact_when_the_matrix_generates_no_fill() {
+        let a = laplacian_1d(12, 1.0);
+        let lu = SparseLu::ilu0(&a);
+        let product = dense_product(&lu);
+        for (i, row) in a.to_dense().iter().enumerate() {
+            for (j, &expected) in row.iter().enumerate() {
+                assert!((product[i][j] - expected).abs() < 1e-12);
+            }
+        }
+        let b: Vec<f64> = (0..12).map(|i| (i as f64).cos()).collect();
+        let x = lu.solve(&b);
+        assert!(relative_residual(&a, &x, &b) < 1e-12);
+    }
+
+    #[test]
+    fn ilu0_solve_is_only_an_approximate_inverse_on_a_2d_grid() {
+        let a = laplacian_2d(8, 8, 1.0);
+        let lu = SparseLu::ilu0(&a);
+        let b = vec![1.0; 64];
+        let x = lu.solve(&b);
+        let rel = relative_residual(&a, &x, &b);
+        assert!(rel > 1e-3, "an exact LU would give ~1e-15, got {rel}");
+        assert!(
+            rel < 1.0,
+            "ILU(0) should still be a useful preconditioner: {rel}"
+        );
+    }
+
+    #[test]
+    fn ilu0_preconditioned_richardson_iteration_converges() {
+        let a = laplacian_2d(10, 10, 1.0);
+        let lu = SparseLu::ilu0(&a);
+        let b: Vec<f64> = (0..100).map(|i| 1.0 + (i % 7) as f64).collect();
+        let mut x = vec![0.0f64; 100];
+        for _ in 0..150 {
+            let ax = a.matvec(&x);
+            let r: Vec<f64> = b.iter().zip(ax.iter()).map(|(bi, ai)| bi - ai).collect();
+            let z = lu.solve(&r);
+            for (xi, zi) in x.iter_mut().zip(z.iter()) {
+                *xi += zi;
+            }
+        }
+        assert!(relative_residual(&a, &x, &b) < 1e-9);
+    }
+
+    #[test]
+    fn ilu0_uses_sparse_memory_on_a_large_grid() {
+        // A dense n x n working array for n = 22 500 would need about 4 GB.
+        let a = laplacian_2d(150, 150, 1.0);
+        let lu = SparseLu::ilu0(&a);
+        assert_eq!(lu.l.nnz() + lu.u.nnz() - a.nrows, a.nnz());
+        assert!(lu.u.get(0, 0) > 0.0);
+    }
+
+    #[test]
+    fn ilu0_of_diagonal_matrix_solves_exactly() {
+        let a = CsrMatrix::from_triplets(3, 3, &[0, 1, 2], &[0, 1, 2], &[2.0, 4.0, 8.0]);
+        let lu = SparseLu::ilu0(&a);
+        assert_eq!(lu.l.nnz(), 3);
+        assert_eq!(lu.u.nnz(), 3);
+        let x = lu.solve(&[4.0, 8.0, 16.0]);
+        for (xi, expected) in x.iter().zip([2.0, 2.0, 2.0]) {
+            assert!((xi - expected).abs() < 1e-14);
+        }
+        let identity = SparseLu::ilu0(&identity_csr(4));
+        assert_eq!(identity.u.nnz(), 4);
+    }
+
+    #[test]
+    fn ilu0_accepts_unsorted_rows_with_duplicate_entries() {
+        // laplacian_1d(3, 1.0) stored with shuffled columns and a split diagonal in row 0.
+        let reference = SparseLu::ilu0(&laplacian_1d(3, 1.0));
+        let shuffled = CsrMatrix {
+            nrows: 3,
+            ncols: 3,
+            row_ptr: vec![0, 3, 6, 8],
+            col_idx: vec![1, 0, 0, 2, 1, 0, 2, 1],
+            values: vec![-1.0, 1.0, 1.0, -1.0, 2.0, -1.0, 2.0, -1.0],
+        };
+        let factors = SparseLu::ilu0(&shuffled);
+        assert_eq!(factors.l.col_idx, reference.l.col_idx);
+        assert_eq!(factors.u.col_idx, reference.u.col_idx);
+        for (a, b) in factors.l.values.iter().zip(reference.l.values.iter()) {
+            assert!((a - b).abs() < 1e-14);
+        }
+        for (a, b) in factors.u.values.iter().zip(reference.u.values.iter()) {
+            assert!((a - b).abs() < 1e-14);
+        }
+    }
+
+    #[test]
+    fn ilu0_sums_duplicate_entries() {
+        // Row 0 holds the diagonal twice (1 + 1) and an off-diagonal, stored unsorted.
+        let a = CsrMatrix {
+            nrows: 2,
+            ncols: 2,
+            row_ptr: vec![0, 3, 5],
+            col_idx: vec![0, 1, 0, 1, 0],
+            values: vec![1.0, -1.0, 1.0, 2.0, -1.0],
+        };
+        let lu = SparseLu::ilu0(&a);
+        assert_eq!(lu.u.get(0, 0), 2.0);
+        assert_eq!(lu.u.get(0, 1), -1.0);
+        assert!((lu.l.get(1, 0) + 0.5).abs() < 1e-14);
+        assert!((lu.u.get(1, 1) - 1.5).abs() < 1e-14);
+    }
+
+    /// 5-point convection-diffusion stencil on an `nx` x `ny` grid; the west
+    /// coupling is stronger than the east one, so the matrix is non-symmetric.
+    fn convection_diffusion_2d(nx: usize, ny: usize, wind: f64) -> CsrMatrix {
+        let mut rows = Vec::new();
+        let mut cols = Vec::new();
+        let mut vals = Vec::new();
+        let mut push = |r: usize, c: usize, v: f64| {
+            rows.push(r);
+            cols.push(c);
+            vals.push(v);
+        };
+        for j in 0..ny {
+            for i in 0..nx {
+                let row = j * nx + i;
+                push(row, row, 4.0 + wind);
+                if i > 0 {
+                    push(row, row - 1, -1.0 - wind);
+                }
+                if i + 1 < nx {
+                    push(row, row + 1, -1.0);
+                }
+                if j > 0 {
+                    push(row, row - nx, -1.0);
+                }
+                if j + 1 < ny {
+                    push(row, row + nx, -1.0);
+                }
+            }
+        }
+        CsrMatrix::from_triplets(nx * ny, nx * ny, &rows, &cols, &vals)
+    }
+
+    #[test]
+    fn ilu0_handles_non_symmetric_matrices() {
+        let a = convection_diffusion_2d(7, 6, 0.8);
+        let lu = SparseLu::ilu0(&a);
+        assert_eq!(lu.l.nnz() + lu.u.nnz() - a.nrows, a.nnz());
+        let product = dense_product(&lu);
+        let dense_a = a.to_dense();
+        let mut dropped_fill = 0.0f64;
+        for (i, row) in product.iter().enumerate() {
+            for (j, &value) in row.iter().enumerate() {
+                if (a.row_ptr[i]..a.row_ptr[i + 1]).any(|k| a.col_idx[k] == j) {
+                    assert!(
+                        (value - dense_a[i][j]).abs() < 1e-12,
+                        "(L U)[{i}][{j}] = {value}, a = {}",
+                        dense_a[i][j]
+                    );
+                } else {
+                    dropped_fill = dropped_fill.max(value.abs());
+                }
+            }
+        }
+        assert!(dropped_fill > 0.05, "dropped fill = {dropped_fill}");
+        // The M-matrix is diagonally dominant, so ILU(0) is a convergent preconditioner.
+        let b: Vec<f64> = (0..a.nrows).map(|i| 1.0 + (i % 5) as f64).collect();
+        let mut x = vec![0.0f64; a.nrows];
+        for _ in 0..200 {
+            let ax = a.matvec(&x);
+            let r: Vec<f64> = b.iter().zip(ax.iter()).map(|(bi, ai)| bi - ai).collect();
+            let z = lu.solve(&r);
+            for (xi, zi) in x.iter_mut().zip(z.iter()) {
+                *xi += zi;
+            }
+        }
+        assert!(relative_residual(&a, &x, &b) < 1e-9);
+    }
+
+    #[test]
+    fn try_ilu0_reports_zero_pivots_and_non_square_input() {
+        let swap = CsrMatrix::from_triplets(2, 2, &[0, 1], &[1, 0], &[1.0, 1.0]);
+        assert!(matches!(
+            SparseLu::try_ilu0(&swap),
+            Err(PhysicsError::NumericalDivergence { .. })
+        ));
+        // The infallible variant perturbs the pivot and still yields finite factors.
+        let lu = SparseLu::ilu0(&swap);
+        assert!(lu.u.values.iter().all(|v| v.is_finite() && *v != 0.0));
+        let x = lu.solve(&[1.0, 2.0]);
+        assert!(x.iter().all(|v| v.is_finite()));
+        let rectangular = CsrMatrix::new(2, 3);
+        assert!(matches!(
+            SparseLu::try_ilu0(&rectangular),
+            Err(PhysicsError::InvalidInput { .. })
+        ));
+        assert!(SparseLu::try_ilu0(&laplacian_2d(4, 4, 1.0)).is_ok());
     }
 }

@@ -25,6 +25,18 @@ impl RigidBody {
         let props = shape.mass_properties(density);
         self.set_mass_properties(&props);
     }
+    /// World-space inertia tensor `R * I_local * R^T` for the current orientation.
+    ///
+    /// The angular velocity stored in [`RigidBody`] is expressed in the world
+    /// frame, so every quantity that pairs it with the inertia tensor (angular
+    /// momentum `L = I_w * omega`, rotational kinetic energy
+    /// `0.5 * omega . (I_w * omega)`) has to use this tensor and not
+    /// `local_inertia`. For a body that has never been rotated the two are
+    /// identical.
+    pub fn world_inertia(&self) -> Mat3 {
+        let rot = self.transform.rotation.to_rotation_matrix();
+        rot.matrix() * self.local_inertia * rot.matrix().transpose()
+    }
     /// Update world-space inverse inertia from local inertia and current rotation.
     pub fn update_world_inertia(&mut self) {
         if self.body_type == BodyType::Static || self.body_type == BodyType::Kinematic {

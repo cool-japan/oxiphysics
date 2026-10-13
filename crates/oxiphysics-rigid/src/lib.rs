@@ -250,9 +250,13 @@ pub fn kinetic_energy_linear(body: &RigidBody) -> oxiphysics_core::math::Real {
     0.5 * body.mass * body.velocity.norm_squared()
 }
 
-/// Compute the rotational kinetic energy: 0.5 * omega^T * I * omega.
+/// Compute the rotational kinetic energy: `0.5 * omega . (I_w * omega)`.
+///
+/// The stored angular velocity is expressed in the world frame, so the
+/// world-space inertia tensor [`RigidBody::world_inertia`] is used and not the
+/// local one. This is the rotational part of [`RigidBody::kinetic_energy`].
 pub fn kinetic_energy_rotational(body: &RigidBody) -> oxiphysics_core::math::Real {
-    let i_omega = body.local_inertia * body.angular_velocity;
+    let i_omega = body.world_inertia() * body.angular_velocity;
     0.5 * body.angular_velocity.dot(&i_omega)
 }
 
@@ -263,9 +267,13 @@ pub fn kinetic_energy_total(body: &RigidBody) -> oxiphysics_core::math::Real {
 
 // ── angular momentum ────────────────────────────────────────────────────────
 
-/// Compute the angular momentum of a body: L = I * omega.
+/// Compute the angular momentum of a body in the world frame: `L = I_w * omega`.
+///
+/// The stored angular velocity is expressed in the world frame, so the
+/// world-space inertia tensor [`RigidBody::world_inertia`] is used and not the
+/// local one. Equal to [`RigidBody::angular_momentum`].
 pub fn angular_momentum(body: &RigidBody) -> oxiphysics_core::math::Vec3 {
-    body.local_inertia * body.angular_velocity
+    body.world_inertia() * body.angular_velocity
 }
 
 /// Compute the linear momentum of a body: p = m * v.
@@ -645,6 +653,45 @@ mod lib_tests {
         assert!(total > linear, "total KE should include rotational");
     }
 
+    /// Rotated anisotropic body with a world-frame spin about the world x axis.
+    fn rotated_anisotropic_body() -> RigidBody {
+        use oxiphysics_core::math::{Mat3, Quat, Unit};
+        let mut body = RigidBody::new(1.0);
+        body.local_inertia = Mat3::from_diagonal(&Vec3::new(1.0, 2.0, 3.0));
+        body.transform.rotation = Quat::from_axis_angle(
+            &Unit::new_normalize(Vec3::new(0.0, 0.0, 1.0)),
+            std::f64::consts::FRAC_PI_2,
+        );
+        body.angular_velocity = Vec3::new(1.0, 0.0, 0.0);
+        body
+    }
+
+    #[test]
+    fn rotational_energy_uses_the_world_space_inertia() {
+        // 90 degrees about z maps the body y axis (I = 2) onto the world x axis,
+        // so a world-x spin sees I_w = 2 and KE = 0.5 * 2 * 1 = 1 (the local
+        // tensor would give 0.5).
+        let body = rotated_anisotropic_body();
+        let rotational = kinetic_energy_rotational(&body);
+        assert!((rotational - 1.0).abs() < 1e-12, "got {rotational}");
+        assert!((kinetic_energy_total(&body) - body.kinetic_energy()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn total_kinetic_energy_of_a_set_matches_the_body_kinetic_energy() {
+        let mut body = rotated_anisotropic_body();
+        body.velocity = Vec3::new(0.0, 3.0, 0.0);
+        let expected = body.kinetic_energy();
+        let mut set = RigidBodySet::new();
+        set.insert(body);
+        let total = total_kinetic_energy(&set);
+        assert!((total - expected).abs() < 1e-12, "{total} vs {expected}");
+        assert!(
+            (total - 5.5).abs() < 1e-12,
+            "0.5*9 + 1.0 = 5.5, got {total}"
+        );
+    }
+
     // ── momentum tests ───────────────────────────────────────────────────
 
     #[test]
@@ -660,6 +707,18 @@ mod lib_tests {
         let body = RigidBody::new(1.0);
         let l = angular_momentum(&body);
         assert!(l.norm() < 1e-10);
+    }
+
+    #[test]
+    fn angular_momentum_uses_the_world_space_inertia() {
+        // L = I_w * omega = (2, 0, 0); the local tensor would give (1, 0, 0).
+        let body = rotated_anisotropic_body();
+        let l = angular_momentum(&body);
+        assert!(
+            (l - Vec3::new(2.0, 0.0, 0.0)).norm() < 1e-12,
+            "L should be (2,0,0), got {l:?}"
+        );
+        assert!((l - body.angular_momentum()).norm() < 1e-14);
     }
 
     // ── mass properties tests ────────────────────────────────────────────
@@ -820,6 +879,7 @@ pub mod multiscale_rigid;
 pub mod neural_control;
 pub mod orbital_mechanics;
 pub mod planetary_mechanics;
+mod rng_util;
 pub mod robotic_systems;
 pub mod satellite_dynamics;
 pub mod sensor_model;

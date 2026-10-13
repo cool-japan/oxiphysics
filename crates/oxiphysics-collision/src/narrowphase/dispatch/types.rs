@@ -9,7 +9,8 @@ use oxiphysics_core::math::Vec3;
 use oxiphysics_geometry::Shape;
 use std::collections::HashMap;
 
-use super::functions::{NarrowPhaseFn, gjk_epa, shape_type_ordinal, try_specialized};
+use super::box_manifold::box_box_manifold;
+use super::functions::{NarrowPhaseFn, as_box, gjk_epa, shape_type_ordinal, try_specialized};
 
 /// Identifies a shape category for dispatch table lookups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -405,6 +406,11 @@ impl NarrowPhaseDispatcher {
         self.gjk_registry.remove_body(id as u64);
     }
     /// Generate contacts between two shapes (original API, no type hint needed).
+    ///
+    /// All contact normals point from `shape_b` toward `shape_a`. Box-box pairs
+    /// get the full SAT + face-clip manifold of [`box_box_manifold`] (up to four
+    /// points on the contact patch); the other specialised pairs yield a single
+    /// contact, and everything else falls back to GJK/EPA.
     pub fn generate_contacts(
         shape_a: &dyn Shape,
         transform_a: &Transform,
@@ -412,6 +418,9 @@ impl NarrowPhaseDispatcher {
         transform_b: &Transform,
         pair: CollisionPair,
     ) -> Option<ContactManifold> {
+        if let (Some(box_a), Some(box_b)) = (as_box(shape_a), as_box(shape_b)) {
+            return box_box_manifold(box_a, transform_a, box_b, transform_b, pair).manifold;
+        }
         if let Some(contact) = try_specialized(shape_a, transform_a, shape_b, transform_b) {
             let mut manifold = ContactManifold::new(pair);
             manifold.add_contact(contact);

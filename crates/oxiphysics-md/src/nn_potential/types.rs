@@ -62,7 +62,14 @@ impl EnsembleNNP {
 ///
 /// Descriptor → hidden layers → single scalar (atomic energy).
 /// Total energy = sum of atomic energies.
-/// Forces are computed via central finite differences (proof of concept).
+///
+/// Forces are analytic: the gradient of each atomic energy with respect to its
+/// descriptor is obtained by back-propagation through the dense layers and is
+/// contracted with the analytic derivatives of the symmetry functions, using a
+/// cell-grid neighbor search, so one force evaluation costs `O(N · k²)` for
+/// `k` neighbors per atom.  [`FeedForwardPotential::finite_difference_forces`]
+/// is an independent central-difference reference (using `fd_step`) for
+/// validating them.
 #[derive(Debug, Clone)]
 pub struct FeedForwardPotential {
     /// Network layers.
@@ -71,7 +78,8 @@ pub struct FeedForwardPotential {
     pub symmetry_functions: SymmetryFunctionSet,
     /// Cutoff radius for the descriptor computation.
     pub cutoff: f64,
-    /// Finite-difference step size for force computation.
+    /// Step size of the central-difference reference forces
+    /// ([`FeedForwardPotential::finite_difference_forces`]).
     pub fd_step: f64,
 }
 impl FeedForwardPotential {
@@ -129,6 +137,10 @@ impl FeedForwardPotential {
         x.iter().sum()
     }
     /// Compute total energy for the given positions and species.
+    ///
+    /// Reference implementation that evaluates every descriptor against all
+    /// atoms (`O(N²)`); [`MlPotential::energy_and_forces`] obtains the same
+    /// energy from neighbor lists.
     pub(super) fn total_energy(&self, positions: &[Vec3], species: &[u32]) -> f64 {
         let mut energy = 0.0;
         for i in 0..positions.len() {
@@ -451,8 +463,9 @@ impl EnsembleNnp {
     }
     /// Predict forces for a set of atom positions.
     ///
-    /// Returns the mean force vector per atom across all ensemble members.
-    /// Forces are obtained by finite differences on the mean energy.
+    /// Returns the mean force vector per atom across all ensemble members
+    /// (the mean of the members' analytic forces, which equals the force of
+    /// the mean energy).
     pub fn predict_forces(&self, positions: &[[f64; 3]]) -> Vec<[f64; 3]> {
         let n = positions.len();
         let species: Vec<u32> = vec![1; n];
@@ -686,6 +699,26 @@ pub enum Activation {
     Linear,
 }
 impl Activation {
+    /// Derivative `f'(z)` of the activation expressed through its *output* `y = f(z)`.
+    ///
+    /// `tanh`: `1 - y²`; sigmoid: `y (1 - y)`; ReLU: `1` if `y > 0` else `0`
+    /// (the sub-gradient `0` is used at the kink); linear: `1`.  Expressing the
+    /// derivative through the output lets back-propagation reuse the stored
+    /// forward activations without keeping the pre-activations.
+    pub fn derivative_from_output(&self, y: f64) -> f64 {
+        match self {
+            Activation::Tanh => 1.0 - y * y,
+            Activation::Sigmoid => y * (1.0 - y),
+            Activation::ReLU => {
+                if y > 0.0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            Activation::Linear => 1.0,
+        }
+    }
     /// Apply the activation element-wise to a mutable slice.
     fn apply(&self, v: &mut [f64]) {
         for x in v.iter_mut() {
@@ -805,6 +838,12 @@ impl EnergyConservationValidator {
     }
 }
 /// Descriptor type for the DeePMD-style environment matrix.
+///
+/// The environment matrix of atom `i` has one row `[s, s x̂, s ŷ, s ẑ]` per
+/// neighbor `j` (`s = s(r_ij)`, unit vector `r̂_ij`), the nearest
+/// `max_neighbours` neighbors first, zero-padded to `max_neighbours` rows.
+/// Neighbors are ordered by distance (not by atom index), so the set of rows
+/// does not depend on how the atoms are labelled.
 #[derive(Debug, Clone)]
 pub struct DeepPotDescriptor {
     /// Maximum number of neighbours per atom.
@@ -842,36 +881,24 @@ impl DeepPotDescriptor {
         let envelope = 1.0 - 3.0 * u * u + 2.0 * u * u * u;
         inv_r * envelope
     }
-    /// Compute the DeePMD environment matrix for atom `center`.
+    /// Derivative `ds/dr` of the switching function [`DeepPotDescriptor::smooth_fn`].
     ///
-    /// Returns a flattened row-major matrix of shape [M × 4]:
-    ///   column 0: s(r_ij)
-    ///   columns 1-3: s(r_ij) * r_hat_ij[0..2]
-    pub fn environment_matrix(&self, positions: &[[f64; 3]], center: usize) -> Vec<f64> {
-        let _n = positions.len();
-        let mut rows: Vec<[f64; 4]> = Vec::new();
-        let rc = positions[center];
-        for (j, pos_j) in positions.iter().enumerate() {
-            if j == center {
-                continue;
-            }
-            let dx = pos_j[0] - rc[0];
-            let dy = pos_j[1] - rc[1];
-            let dz = pos_j[2] - rc[2];
-            let r2 = dx * dx + dy * dy + dz * dz;
-            let r = r2.sqrt();
-            if r >= self.cutoff {
-                continue;
-            }
-            let s = self.smooth_fn(r);
-            let inv_r = if r > 1e-15 { 1.0 / r } else { 0.0 };
-            rows.push([s, s * dx * inv_r, s * dy * inv_r, s * dz * inv_r]);
+    /// With `s(r) = w(r)/r`, `w = 1` inside the inner cutoff and the smoothstep
+    /// `w(u) = 1 - 3u² + 2u³`, `u = (r - r_inner)/(r_cut - r_inner)` between the
+    /// cutoffs: `s'(r) = -w/r² + w'/r`.  Both `s` and `s'` vanish at the outer
+    /// cutoff, so energies and forces are continuous there.
+    pub fn smooth_fn_derivative(&self, r: f64) -> f64 {
+        if r >= self.cutoff || r <= 0.0 {
+            return 0.0;
         }
-        rows.truncate(self.max_neighbours);
-        while rows.len() < self.max_neighbours {
-            rows.push([0.0; 4]);
+        if r <= self.inner_cutoff {
+            return -1.0 / (r * r);
         }
-        rows.iter().flat_map(|row| row.iter().copied()).collect()
+        let width = self.cutoff - self.inner_cutoff;
+        let u = (r - self.inner_cutoff) / width;
+        let envelope = 1.0 - 3.0 * u * u + 2.0 * u * u * u;
+        let d_envelope = (-6.0 * u + 6.0 * u * u) / width;
+        -envelope / (r * r) + d_envelope / r
     }
     /// Descriptor dimension = max_neighbours × 4.
     pub fn descriptor_dim(&self) -> usize {
@@ -1268,25 +1295,48 @@ impl NnpNormalizer {
             .collect()
     }
 }
-/// DeePMD-style neural network potential.
+/// DeePMD-SE-style neural network potential (`se_e2_a`, one species).
 ///
-/// Uses the environment matrix as descriptor input to a feedforward network.
+/// The atomic energy is a rotation-, translation- and permutation-invariant
+/// function of the local environment (Zhang et al., NeurIPS 2018):
+///
+/// 1. neighbors within the cutoff are sorted by distance and the nearest
+///    `N_c = max_neighbours` are kept, each giving the environment-matrix row
+///    `R̃_j = [s, s x̂, s ŷ, s ẑ]` with the smooth switching function `s(r_ij)`;
+/// 2. the *embedding* network maps the scalar `s(r_ij)` to `M1` features
+///    `G_j`;
+/// 3. `A = (1/N_c) Gᵀ R̃` (`M1 × 4`) and the descriptor is
+///    `D = A A[:M2]ᵀ` (`M1 × M2`, the first `M2 = axis_neurons` rows of `A`
+///    in the second factor), invariant under rotations and neighbor
+///    permutations;
+/// 4. the *fitting* network maps the flattened `D` to the atomic energy.
+///
+/// As in DeePMD-kit, `max_neighbours` should be at least the largest number of
+/// neighbors found inside the cutoff: when more atoms are in range, which of
+/// them are kept changes with the geometry and the energy is discontinuous
+/// where the set of the nearest `max_neighbours` atoms changes.
+///
+/// Energy and forces are analytic ([`DeepPotPotential::forces`]).
 #[derive(Clone)]
 pub struct DeepPotPotential {
     /// Descriptor builder.
     pub descriptor: DeepPotDescriptor,
-    /// Embedding network layers.
+    /// Embedding network layers (input: the scalar `s(r_ij)`, output: `M1` features).
     pub embedding: Vec<DenseLayer>,
-    /// Fitting network layers.
+    /// Fitting network layers (input: the flattened `M1 × M2` descriptor, output: the atomic energy).
     pub fitting: Vec<DenseLayer>,
+    /// Number of axis neurons `M2` (`1 ≤ M2 ≤ M1`).
+    pub axis_neurons: usize,
 }
 impl DeepPotPotential {
-    /// Create a DeePMD potential with random weights.
+    /// Create a DeePMD potential with random weights and `M2 = min(M1, 4)` axis neurons.
     ///
     /// # Arguments
-    /// * `max_neigh`    – Max neighbours in environment matrix.
-    /// * `embed_sizes`  – Hidden sizes for embedding network (e.g., [8, 16]).
-    /// * `fit_sizes`    – Hidden sizes for fitting network (e.g., [64, 64, 1]).
+    /// * `max_neigh`    – Max neighbours in environment matrix (`N_c`).
+    /// * `embed_sizes`  – Layer sizes of the embedding network (e.g., [8, 16]); the
+    ///   last entry is the feature dimension `M1`.  The network input is the scalar `s(r)`.
+    /// * `fit_sizes`    – Layer sizes of the fitting network (e.g., [64, 64, 1]); the last
+    ///   entry is the output (atomic energy) and uses a linear activation.
     /// * `cutoff`       – Outer cutoff (Å).
     /// * `inner_cutoff` – Inner cutoff (Å).
     pub fn new(
@@ -1296,12 +1346,33 @@ impl DeepPotPotential {
         cutoff: f64,
         inner_cutoff: f64,
     ) -> Self {
+        let m1 = embed_sizes.last().copied().unwrap_or(1);
+        Self::new_with_axis_neurons(
+            max_neigh,
+            embed_sizes,
+            m1.min(4),
+            fit_sizes,
+            cutoff,
+            inner_cutoff,
+        )
+    }
+    /// Like [`DeepPotPotential::new`] with an explicit number of axis neurons `M2`
+    /// (clamped to `1 ..= M1`).
+    pub fn new_with_axis_neurons(
+        max_neigh: usize,
+        embed_sizes: &[usize],
+        axis_neurons: usize,
+        fit_sizes: &[usize],
+        cutoff: f64,
+        inner_cutoff: f64,
+    ) -> Self {
         let descriptor = DeepPotDescriptor::new(max_neigh, cutoff, inner_cutoff);
-        let input_dim = descriptor.descriptor_dim();
         let mut lcg = Lcg::new(777);
-        let make_layers = |dims: &[usize], lcg: &mut Lcg| -> Vec<DenseLayer> {
+        // Hidden layers use tanh; `last_linear` makes the final layer linear.
+        let make_layers = |dims: &[usize], lcg: &mut Lcg, last_linear: bool| -> Vec<DenseLayer> {
             let mut layers = Vec::new();
-            for w in dims.windows(2) {
+            let n_layers = dims.len().saturating_sub(1);
+            for (l, w) in dims.windows(2).enumerate() {
                 let n_in = w[0];
                 let n_out = w[1];
                 let scale = (2.0 / (n_in + n_out) as f64).sqrt();
@@ -1309,60 +1380,30 @@ impl DeepPotPotential {
                     .map(|_| (0..n_in).map(|_| lcg.next_f64(scale)).collect())
                     .collect();
                 let biases = vec![0.0; n_out];
-                layers.push(DenseLayer::new(weights, biases, Activation::Tanh));
+                let activation = if last_linear && l + 1 == n_layers {
+                    Activation::Linear
+                } else {
+                    Activation::Tanh
+                };
+                layers.push(DenseLayer::new(weights, biases, activation));
             }
             layers
         };
-        let mut embed_full = vec![input_dim];
+        // The embedding network sees the single scalar s(r_ij).
+        let mut embed_full = vec![1];
         embed_full.extend_from_slice(embed_sizes);
-        let embedding = make_layers(&embed_full, &mut lcg);
-        let embed_out = *embed_sizes.last().unwrap_or(&input_dim);
-        let mut fit_full = vec![embed_out];
+        let embedding = make_layers(&embed_full, &mut lcg, false);
+        let m1 = embed_sizes.last().copied().unwrap_or(1);
+        let m2 = axis_neurons.clamp(1, m1.max(1));
+        let mut fit_full = vec![m1 * m2];
         fit_full.extend_from_slice(fit_sizes);
-        let fitting = make_layers(&fit_full, &mut lcg);
+        let fitting = make_layers(&fit_full, &mut lcg, true);
         Self {
             descriptor,
             embedding,
             fitting,
+            axis_neurons: m2,
         }
-    }
-    fn run_layers(layers: &[DenseLayer], input: &[f64]) -> Vec<f64> {
-        let mut x = input.to_vec();
-        for layer in layers {
-            x = layer.forward(&x);
-        }
-        x
-    }
-    /// Compute atomic energy for a single atom.
-    pub fn atomic_energy(&self, positions: &[[f64; 3]], center: usize) -> f64 {
-        let desc = self.descriptor.environment_matrix(positions, center);
-        let embedded = Self::run_layers(&self.embedding, &desc);
-        let out = Self::run_layers(&self.fitting, &embedded);
-        out.iter().sum()
-    }
-    /// Total energy = sum of atomic energies.
-    pub fn total_energy(&self, positions: &[[f64; 3]]) -> f64 {
-        (0..positions.len())
-            .map(|i| self.atomic_energy(positions, i))
-            .sum()
-    }
-    /// Forces via finite differences.
-    pub fn forces(&self, positions: &[[f64; 3]]) -> Vec<[f64; 3]> {
-        let n = positions.len();
-        let h = 1e-5;
-        let mut forces = vec![[0.0_f64; 3]; n];
-        let mut pos = positions.to_vec();
-        for i in 0..n {
-            for a in 0..3 {
-                pos[i][a] += h;
-                let ep = self.total_energy(&pos);
-                pos[i][a] -= 2.0 * h;
-                let em = self.total_energy(&pos);
-                pos[i][a] += h;
-                forces[i][a] = -(ep - em) / (2.0 * h);
-            }
-        }
-        forces
     }
 }
 /// Normalises descriptor vectors to zero mean and unit variance.

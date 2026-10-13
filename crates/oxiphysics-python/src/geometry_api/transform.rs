@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::mesh::{PyTriangleMesh, compute_aabb_internal};
-use super::shapes::{PyConvexHull, add3, centroid, cross3, dot3, len3, normalize3, scale3, sub3};
+use super::shapes::{
+    ConvexHullError, PyConvexHull, add3, centroid, cross3, dot3, len3, normalize3, scale3, sub3,
+};
 
 // ---------------------------------------------------------------------------
 // PyPointCloud
@@ -436,14 +438,20 @@ pub fn py_obj_string_to_mesh(obj: &str) -> PyTriangleMesh {
 }
 
 /// Compute the convex hull of all vertices in a mesh (Rust API).
-pub fn convex_hull_from_mesh(mesh: &PyTriangleMesh) -> PyConvexHull {
+///
+/// Fails when the mesh has fewer than four vertices or its vertices are
+/// coplanar, see [`ConvexHullError`].
+pub fn convex_hull_from_mesh(mesh: &PyTriangleMesh) -> Result<PyConvexHull, ConvexHullError> {
     PyConvexHull::from_points_internal(&mesh.vertices)
 }
 
 /// Python-facing convex hull from mesh.
+///
+/// Raises `ValueError` when the mesh has fewer than four vertices or its
+/// vertices are coplanar.
 #[pyfunction]
-pub fn py_convex_hull_from_mesh(mesh: &PyTriangleMesh) -> PyConvexHull {
-    convex_hull_from_mesh(mesh)
+pub fn py_convex_hull_from_mesh(mesh: &PyTriangleMesh) -> PyResult<PyConvexHull> {
+    Ok(convex_hull_from_mesh(mesh)?)
 }
 
 // ---------------------------------------------------------------------------

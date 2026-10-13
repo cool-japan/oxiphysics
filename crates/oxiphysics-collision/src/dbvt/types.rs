@@ -414,49 +414,83 @@ impl DynamicBvh {
         self.insert(new_aabb, data);
         true
     }
-    /// Return all leaf-data pairs `(a, b)` where `a < b` and the leaves
-    /// overlap. Uses a stack-based traversal.
+    /// Return all leaf-data pairs `(a, b)` where `a < b` and the (fat) leaf
+    /// AABBs overlap.
+    ///
+    /// The pairs are found with a stack-based self-collision traversal of the
+    /// hierarchy: a stack entry `(n, n)` stands for "every pair inside the
+    /// subtree of `n`" and expands into the two child self-pairs plus the cross
+    /// pair of the children; an entry `(a, b)` with `a != b` is discarded when
+    /// the node AABBs are disjoint, reported when both nodes are leaves, and
+    /// otherwise expanded by descending into the node with the larger surface
+    /// area.  Subtrees that cannot overlap are therefore never visited leaf by
+    /// leaf, and every unordered leaf pair is considered at most once.
+    ///
+    /// The result is sorted and free of duplicates, so it is deterministic and
+    /// independent of the tree shape.  Leaves that carry the same payload are
+    /// never paired with each other.
     pub fn query_overlapping_pairs(&self) -> Vec<(u32, u32)> {
         let mut pairs = Vec::new();
         let Some(root) = self.root else {
             return pairs;
         };
-        let mut leaves: Vec<NodeIdx> = Vec::new();
-        let mut stack = vec![root];
-        while let Some(idx) = stack.pop() {
-            let node = &self.nodes[idx];
-            if node.is_leaf() {
-                leaves.push(idx);
-            } else {
-                if let Some(l) = node.left {
-                    stack.push(l);
+        let mut stack: Vec<(NodeIdx, NodeIdx)> = vec![(root, root)];
+        while let Some((idx_a, idx_b)) = stack.pop() {
+            let node_a = &self.nodes[idx_a];
+            if idx_a == idx_b {
+                if let (Some(left), Some(right)) = (node_a.left, node_a.right) {
+                    stack.push((left, right));
+                    if !self.nodes[left].is_leaf() {
+                        stack.push((left, left));
+                    }
+                    if !self.nodes[right].is_leaf() {
+                        stack.push((right, right));
+                    }
                 }
-                if let Some(r) = node.right {
-                    stack.push(r);
-                }
+                continue;
             }
-        }
-        for (i, &la) in leaves.iter().enumerate() {
-            let aabb_a = self.nodes[la].aabb;
-            let data_a = match self.nodes[la].data {
-                Some(d) => d,
-                None => continue,
-            };
-            for &lb in &leaves[(i + 1)..] {
-                if aabb_a.intersects(&self.nodes[lb].aabb) {
-                    let Some(data_b) = self.nodes[lb].data else {
-                        continue;
-                    };
-                    let (x, y) = if data_a < data_b {
-                        (data_a, data_b)
+            let node_b = &self.nodes[idx_b];
+            if !node_a.aabb.intersects(&node_b.aabb) {
+                continue;
+            }
+            match (node_a.data, node_b.data) {
+                (Some(data_a), Some(data_b)) => {
+                    if data_a != data_b {
+                        pairs.push((data_a.min(data_b), data_a.max(data_b)));
+                    }
+                }
+                (None, Some(_)) => {
+                    Self::push_children(&mut stack, node_a, |child| (child, idx_b));
+                }
+                (Some(_), None) => {
+                    Self::push_children(&mut stack, node_b, |child| (idx_a, child));
+                }
+                (None, None) => {
+                    if node_a.aabb.surface_area() >= node_b.aabb.surface_area() {
+                        Self::push_children(&mut stack, node_a, |child| (child, idx_b));
                     } else {
-                        (data_b, data_a)
-                    };
-                    pairs.push((x, y));
+                        Self::push_children(&mut stack, node_b, |child| (idx_a, child));
+                    }
                 }
             }
         }
+        pairs.sort_unstable();
+        pairs.dedup();
         pairs
+    }
+    /// Push one stack entry per child of the internal node `node`, built by
+    /// `entry` from the child index.
+    fn push_children(
+        stack: &mut Vec<(NodeIdx, NodeIdx)>,
+        node: &DbvtNode,
+        entry: impl Fn(NodeIdx) -> (NodeIdx, NodeIdx),
+    ) {
+        if let Some(left) = node.left {
+            stack.push(entry(left));
+        }
+        if let Some(right) = node.right {
+            stack.push(entry(right));
+        }
     }
     /// Return the data of all leaves whose fat AABB overlaps `aabb`.
     pub fn query_aabb(&self, aabb: &BvhAabb) -> Vec<u32> {

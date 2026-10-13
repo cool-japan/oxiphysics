@@ -733,7 +733,10 @@ pub struct OrderedPacking {
     pub lattice: LatticeType,
     /// Sphere radius.
     pub radius: f64,
-    /// Lattice parameter (edge length of unit cell).
+    /// Lattice parameter: the edge length of the cubic unit cell (FCC, BCC,
+    /// simple cubic) or the in-plane lattice constant `a` of the hexagonal
+    /// close-packed layers (HCP). See [`OrderedPacking::cell_lengths`] for the
+    /// edge lengths of the unit cell that is repeated.
     pub lattice_parameter: f64,
     /// Number of unit cells in each direction.
     pub n_cells: [usize; 3],
@@ -747,11 +750,12 @@ impl OrderedPacking {
     /// - FCC: `a = 2*r*sqrt(2)`
     /// - BCC: `a = 4*r/sqrt(3)`
     /// - SC:  `a = 2*r`
+    /// - HCP: `a = 2*r` (in-plane lattice constant, `c = a*sqrt(8/3)`)
     pub fn new(lattice: LatticeType, radius: f64, n_cells: [usize; 3]) -> Self {
         let a = match lattice {
-            LatticeType::Fcc | LatticeType::Hcp => 2.0 * radius * 2.0_f64.sqrt(),
+            LatticeType::Fcc => 2.0 * radius * 2.0_f64.sqrt(),
             LatticeType::Bcc => 4.0 * radius / 3.0_f64.sqrt(),
-            LatticeType::SimpleCubic => 2.0 * radius,
+            LatticeType::SimpleCubic | LatticeType::Hcp => 2.0 * radius,
         };
         Self {
             lattice,
@@ -761,10 +765,25 @@ impl OrderedPacking {
             spheres: Vec::new(),
         }
     }
+    /// Edge lengths `[lx, ly, lz]` of the orthogonal unit cell that is repeated by
+    /// [`OrderedPacking::generate`].
+    ///
+    /// The cubic lattices repeat a cube of edge `lattice_parameter`. HCP repeats
+    /// the orthohexagonal cell of its close-packed layers, which holds four
+    /// spheres: with the in-plane lattice constant `a` the layers have the
+    /// rectangular period `a` by `sqrt(3)*a` and the ABAB stacking repeats after
+    /// `c = a*sqrt(8/3)`, so the cell is not a cube.
+    pub fn cell_lengths(&self) -> [f64; 3] {
+        let a = self.lattice_parameter;
+        match self.lattice {
+            LatticeType::Hcp => [a, 3.0_f64.sqrt() * a, (8.0_f64 / 3.0).sqrt() * a],
+            LatticeType::Fcc | LatticeType::Bcc | LatticeType::SimpleCubic => [a, a, a],
+        }
+    }
     /// Generate all sphere positions for the lattice.
     pub fn generate(&mut self) {
         self.spheres.clear();
-        let a = self.lattice_parameter;
+        let [lx, ly, lz] = self.cell_lengths();
         let [nx, ny, nz] = self.n_cells;
         let basis: &[[f64; 3]] = match self.lattice {
             LatticeType::Fcc => &[
@@ -786,9 +805,9 @@ impl OrderedPacking {
             for iy in 0..ny {
                 for iz in 0..nz {
                     for b in basis {
-                        let cx = (ix as f64 + b[0]) * a;
-                        let cy = (iy as f64 + b[1]) * a;
-                        let cz = (iz as f64 + b[2]) * a;
+                        let cx = (ix as f64 + b[0]) * lx;
+                        let cy = (iy as f64 + b[1]) * ly;
+                        let cz = (iz as f64 + b[2]) * lz;
                         let id = self.spheres.len();
                         self.spheres
                             .push(PackingSphere::new([cx, cy, cz], self.radius, id));
@@ -819,8 +838,8 @@ impl OrderedPacking {
             return 0.0;
         }
         let [nx, ny, nz] = self.n_cells;
-        let a = self.lattice_parameter;
-        let volume = (nx as f64 * a) * (ny as f64 * a) * (nz as f64 * a);
+        let [lx, ly, lz] = self.cell_lengths();
+        let volume = (nx as f64 * lx) * (ny as f64 * ly) * (nz as f64 * lz);
         let sphere_vol: f64 = self.spheres.iter().map(|s| s.volume()).sum();
         sphere_vol / volume
     }
@@ -1039,6 +1058,9 @@ pub enum ConfinementShape {
     /// Sphere container.
     SphericalContainer,
 }
+/// Relative round-off allowance below which two spheres count as touching
+/// rather than overlapping (see [`PackingSphere::overlaps`]).
+const TOUCH_TOLERANCE: f64 = 1e-12;
 /// A sphere in 3D space, described by its center and radius.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PackingSphere {
@@ -1059,8 +1081,13 @@ impl PackingSphere {
         4.0 / 3.0 * std::f64::consts::PI * self.radius.powi(3)
     }
     /// Check if this sphere overlaps with another sphere.
+    ///
+    /// Spheres that merely touch do not overlap: a centre distance that falls
+    /// short of the radius sum by less than a relative `1e-12` still counts as
+    /// touching, so the exactly touching spheres of a crystal lattice are not
+    /// reported as interpenetrating because of floating-point round-off.
     pub fn overlaps(&self, other: &PackingSphere) -> bool {
-        let min_dist = self.radius + other.radius;
+        let min_dist = (self.radius + other.radius) * (1.0 - TOUCH_TOLERANCE);
         let dx = self.center[0] - other.center[0];
         let dy = self.center[1] - other.center[1];
         let dz = self.center[2] - other.center[2];

@@ -590,7 +590,8 @@ pub struct RopeConstraint {
     pub segment_rest_length: f64,
     /// Stiffness factor for position constraint projection (XPBD compliance).
     pub stiffness: f64,
-    /// Velocity damping factor per segment.
+    /// Velocity damping rate in 1/s: every [`RopeConstraint::step`] multiplies
+    /// the node velocities by `max(1 - damping * dt, 0)`.
     pub damping: f64,
     /// Gravity applied to each un-pinned node.
     pub gravity: [f64; 3],
@@ -733,11 +734,35 @@ impl RopeConstraint {
         }
     }
 
-    /// Step the rope simulation forward by `dt` seconds.
+    /// Step the rope simulation forward by `dt` seconds (position-based
+    /// dynamics).
+    ///
+    /// Positions are predicted from the gravity-updated velocities, the segment
+    /// constraints are projected, and the velocity of every un-pinned node is
+    /// then reconstructed from its net displacement, `(x - x_prev) / dt`, and
+    /// damped by `max(1 - damping * dt, 0)`.  Reconciling the velocity with
+    /// the projected positions is what stops gravity from accumulating in the
+    /// nodes of a constrained rope.  Pinned nodes keep their position and
+    /// velocity.  A non-positive or non-finite `dt` leaves the rope unchanged.
     pub fn step(&mut self, dt: f64) {
+        if !(dt.is_finite() && dt > 0.0) {
+            return;
+        }
+        let previous: Vec<[f64; 3]> = self.nodes.iter().map(|node| node.position).collect();
         self.apply_gravity(dt);
         self.integrate(dt);
         self.project_constraints();
+        let keep = (1.0 - self.damping * dt).max(0.0);
+        for (node, prev) in self.nodes.iter_mut().zip(previous.iter()) {
+            if node.pinned {
+                continue;
+            }
+            node.velocity = [
+                keep * (node.position[0] - prev[0]) / dt,
+                keep * (node.position[1] - prev[1]) / dt,
+                keep * (node.position[2] - prev[2]) / dt,
+            ];
+        }
     }
 }
 
@@ -1436,6 +1461,9 @@ impl ConstraintSolver {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod rope_tests;
 
 #[cfg(test)]
 mod tests {

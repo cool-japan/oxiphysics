@@ -40,19 +40,48 @@ procedural generation. 57+ modules, 3,245 public items, 3,120 passing tests, 0 s
 
 ## Quick Example
 
+The Rust block below is compiled and run by `cargo test --doc`, so it cannot
+drift away from the real API.
+
 ```rust
-use oxiphysics_geometry::{TriangleMesh, ConvexHull, Sphere, SignedDistanceField};
+use oxiphysics_core::math::Vec3;
+use oxiphysics_geometry::{ConvexHull3DVec, Sdf, SdfSphere, Shape, Sphere, TriangleMesh};
 
-// Build a triangle mesh and compute its convex hull
-let mesh = TriangleMesh::from_obj("model.obj").expect("load mesh");
-let hull = ConvexHull::from_mesh(&mesh);
-println!("hull vertices: {}", hull.vertex_count());
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Primitive shapes implement the `Shape` trait (volume, inertia, support, ray casts).
+    let sphere = Sphere::new(1.0);
+    println!("sphere volume: {:.4}", sphere.volume());
 
-// Query SDF at a point
-let sphere = Sphere::new(1.0);
-let sdf = SignedDistanceField::from_shape(&sphere, 0.05);
-let dist = sdf.query([0.5, 0.0, 0.0].into());
-println!("distance to surface: {dist:.4}");
+    // Build a watertight tetrahedron mesh in memory ...
+    let mesh = TriangleMesh::new(
+        vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        ],
+        vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
+    );
+    assert!(mesh.is_watertight());
+    println!("mesh surface area: {:.4}", mesh.surface_area());
+
+    // ... and compute its convex hull with QuickHull (`None` for degenerate input).
+    let hull = ConvexHull3DVec::build(&mesh.vertices).ok_or("degenerate point set")?;
+    assert!((hull.volume() - 1.0 / 6.0).abs() < 1e-12);
+    println!(
+        "hull: {} vertices, {} faces, volume {:.4}",
+        hull.n_vertices(),
+        hull.n_faces(),
+        hull.volume()
+    );
+
+    // Signed distance to an analytic sphere SDF: negative inside, positive outside.
+    let sdf = SdfSphere::new([0.0, 0.0, 0.0], 1.0);
+    let inside = sdf.distance([0.5, 0.0, 0.0]);
+    assert!((inside + 0.5).abs() < 1e-12);
+    println!("signed distance at (0.5, 0, 0): {inside:.4}");
+    Ok(())
+}
 ```
 
 ## License

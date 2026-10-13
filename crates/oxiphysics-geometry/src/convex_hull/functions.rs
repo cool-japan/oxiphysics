@@ -125,18 +125,22 @@ pub(super) fn ch_farthest_from_plane(
             face_plane_dist(normal, origin, **a)
                 .abs()
                 .partial_cmp(&face_plane_dist(normal, origin, **b).abs())
-                .expect("operation should succeed")
+                .unwrap_or(std::cmp::Ordering::Equal)
         })
         .map(|(i, _)| i)
 }
 /// Orient face so that `interior` is on the negative side of the face plane.
+///
+/// Returns `None` for a degenerate face whose normal has a squared length
+/// below `min_normal_sq`.
 pub(super) fn ch_orient_face(
     face: [usize; 3],
     interior: usize,
     points: &[[f64; 3]],
+    min_normal_sq: f64,
 ) -> Option<[usize; 3]> {
     let n = face_normal(points[face[0]], points[face[1]], points[face[2]]);
-    if dot(n, n) < 1e-24 {
+    if dot(n, n) < min_normal_sq {
         return None;
     }
     if face_plane_dist(n, points[face[0]], points[interior]) > 0.0 {

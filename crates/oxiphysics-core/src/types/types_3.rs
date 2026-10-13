@@ -92,12 +92,39 @@ impl MassProperties {
         self.mass <= 0.0
     }
     /// Combine two mass properties (additive).
+    ///
+    /// Both parts must be expressed in the same local frame. The result is the
+    /// rigid composite of the two parts:
+    ///
+    /// * the masses add,
+    /// * the centre of mass is the mass-weighted mean of the two centres, and
+    /// * the inertia tensor about the *combined* centre of mass is the sum of
+    ///   each part's own inertia plus its parallel-axis term
+    ///   ([`MassProperties::shifted_inertia`]) for the offset of that part's
+    ///   centre of mass from the combined one.
+    ///
+    /// If the total mass is not positive (for example two massless parts) no
+    /// mass-weighted centre exists. The result is then a massless property set
+    /// located midway between the two centres with a zero inertia tensor, so
+    /// the centre of mass is always finite for finite inputs.
     pub fn combine(&self, other: &MassProperties) -> MassProperties {
-        MassProperties {
-            mass: self.mass + other.mass,
-            center_of_mass: (self.center_of_mass * self.mass + other.center_of_mass * other.mass)
-                / (self.mass + other.mass),
-            local_inertia: self.local_inertia + other.local_inertia,
+        let total_mass = self.mass + other.mass;
+        if total_mass > 0.0 {
+            let center_of_mass =
+                (self.center_of_mass * self.mass + other.center_of_mass * other.mass) / total_mass;
+            let local_inertia = self.shifted_inertia(self.center_of_mass - center_of_mass)
+                + other.shifted_inertia(other.center_of_mass - center_of_mass);
+            MassProperties {
+                mass: total_mass,
+                center_of_mass,
+                local_inertia,
+            }
+        } else {
+            MassProperties {
+                mass: 0.0,
+                center_of_mass: (self.center_of_mass + other.center_of_mass) * 0.5,
+                local_inertia: Mat3::zeros(),
+            }
         }
     }
 }
@@ -174,6 +201,16 @@ pub struct BodyHandle {
     pub generation: u32,
 }
 impl BodyHandle {
+    /// The null handle: a sentinel that refers to no body.
+    ///
+    /// Slot arenas hand out generation `0` for the first occupant of a slot
+    /// and start at index `0`, so `(0, 0)` is a perfectly ordinary handle (the
+    /// very first body of a world). The sentinel therefore uses the largest
+    /// index and generation, a pair no arena can realistically issue.
+    pub const NULL: Self = Self {
+        index: u32::MAX,
+        generation: u32::MAX,
+    };
     /// Create a new body handle.
     pub fn new(index: u32, generation: u32) -> Self {
         Self { index, generation }
@@ -181,14 +218,183 @@ impl BodyHandle {
 }
 impl BodyHandle {
     /// Check if this is a valid (non-null) handle.
+    ///
+    /// Only [`BodyHandle::NULL`] is invalid. A valid handle may still be stale;
+    /// ask the owning arena whether the body is alive.
     pub fn is_valid(&self) -> bool {
-        self.generation > 0 || self.index > 0
+        *self != Self::NULL
     }
-    /// Create a null handle.
+    /// Create a null handle (see [`BodyHandle::NULL`]).
     pub fn null() -> Self {
-        Self {
-            index: 0,
-            generation: 0,
+        Self::NULL
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ColliderHandle;
+    use crate::world::{Body, PhysicsWorld};
+
+    const TOL: Real = 1e-12;
+
+    fn assert_mat_close(actual: &Mat3, expected: &Mat3) {
+        for row in 0..3 {
+            for col in 0..3 {
+                assert!(
+                    (actual[(row, col)] - expected[(row, col)]).abs() < TOL,
+                    "entry ({row}, {col}): {} vs {}",
+                    actual[(row, col)],
+                    expected[(row, col)]
+                );
+            }
         }
+    }
+
+    fn assert_vec_close(actual: &Vec3, expected: &Vec3) {
+        assert!(
+            (actual - expected).norm() < TOL,
+            "{actual:?} differs from {expected:?}"
+        );
+    }
+
+    /// Inertia tensor of point masses about `origin`: `sum m (|r|^2 I - r r^T)`.
+    fn point_cloud_inertia(points: &[(Real, Vec3)], origin: &Vec3) -> Mat3 {
+        points.iter().fold(Mat3::zeros(), |acc, (mass, position)| {
+            let r = position - origin;
+            acc + (Mat3::identity() * r.dot(&r) - r * r.transpose()) * *mass
+        })
+    }
+
+    #[test]
+    fn combine_applies_the_parallel_axis_theorem() {
+        let left = MassProperties::new(1.0, Vec3::new(-1.0, 0.0, 0.0), Mat3::zeros());
+        let right = MassProperties::new(1.0, Vec3::new(1.0, 0.0, 0.0), Mat3::zeros());
+        let both = left.combine(&right);
+        assert!((both.mass - 2.0).abs() < TOL);
+        assert_vec_close(&both.center_of_mass, &Vec3::zeros());
+        // Two unit masses on the x axis: nothing about x, 1 + 1 about y and z.
+        assert_mat_close(
+            &both.local_inertia,
+            &Mat3::from_diagonal(&Vec3::new(0.0, 2.0, 2.0)),
+        );
+    }
+
+    #[test]
+    fn combine_matches_the_point_mass_definition_of_inertia() {
+        let a = MassProperties::new(2.0, Vec3::new(1.0, 2.0, -0.5), Mat3::zeros());
+        let b = MassProperties::new(3.0, Vec3::new(-2.0, 0.5, 1.0), Mat3::zeros());
+        let combined = a.combine(&b);
+        let expected_com = (a.center_of_mass * 2.0 + b.center_of_mass * 3.0) / 5.0;
+        assert_vec_close(&combined.center_of_mass, &expected_com);
+        let expected = point_cloud_inertia(
+            &[(2.0, a.center_of_mass), (3.0, b.center_of_mass)],
+            &expected_com,
+        );
+        assert_mat_close(&combined.local_inertia, &expected);
+    }
+
+    #[test]
+    fn combine_keeps_each_part_own_inertia() {
+        // Two solid spheres stacked along y: the shift only adds m d^2 about
+        // the two axes perpendicular to the stacking direction.
+        let sphere = MassProperties::sphere(1.0, 0.5);
+        let lower = MassProperties::new(1.0, Vec3::new(0.0, -1.0, 0.0), sphere.local_inertia);
+        let upper = MassProperties::new(1.0, Vec3::new(0.0, 1.0, 0.0), sphere.local_inertia);
+        let stack = lower.combine(&upper);
+        let own = sphere.local_inertia[(0, 0)];
+        assert_vec_close(&stack.center_of_mass, &Vec3::zeros());
+        assert_mat_close(
+            &stack.local_inertia,
+            &Mat3::from_diagonal(&Vec3::new(2.0 * own + 2.0, 2.0 * own, 2.0 * own + 2.0)),
+        );
+    }
+
+    #[test]
+    fn combine_is_commutative_and_associative() {
+        let a = MassProperties::new(1.5, Vec3::new(0.2, -0.1, 0.4), Mat3::identity() * 0.3);
+        let b = MassProperties::new(0.5, Vec3::new(-1.0, 0.7, 0.0), Mat3::identity() * 0.1);
+        let c = MassProperties::new(4.0, Vec3::new(0.3, 0.3, -2.0), Mat3::identity() * 0.8);
+        let ab = a.combine(&b);
+        let ba = b.combine(&a);
+        assert!((ab.mass - ba.mass).abs() < TOL);
+        assert_vec_close(&ab.center_of_mass, &ba.center_of_mass);
+        assert_mat_close(&ab.local_inertia, &ba.local_inertia);
+        let left = ab.combine(&c);
+        let right = a.combine(&b.combine(&c));
+        assert!((left.mass - 6.0).abs() < TOL);
+        assert_vec_close(&left.center_of_mass, &right.center_of_mass);
+        assert_mat_close(&left.local_inertia, &right.local_inertia);
+    }
+
+    #[test]
+    fn combining_with_a_massless_part_changes_nothing() {
+        let part = MassProperties::new(
+            2.0,
+            Vec3::new(1.0, -1.0, 0.5),
+            Mat3::from_diagonal(&Vec3::new(0.4, 0.5, 0.6)),
+        );
+        let combined = part.combine(&MassProperties::point_mass(0.0));
+        assert!((combined.mass - 2.0).abs() < TOL);
+        assert_vec_close(&combined.center_of_mass, &part.center_of_mass);
+        assert_mat_close(&combined.local_inertia, &part.local_inertia);
+    }
+
+    #[test]
+    fn combining_two_massless_parts_has_a_finite_centre() {
+        let a = MassProperties::new(0.0, Vec3::new(2.0, 0.0, 0.0), Mat3::zeros());
+        let b = MassProperties::new(0.0, Vec3::new(4.0, 2.0, 0.0), Mat3::zeros());
+        let combined = a.combine(&b);
+        assert_eq!(combined.mass, 0.0);
+        assert!(combined.is_static());
+        assert!(combined.center_of_mass.iter().all(|c| c.is_finite()));
+        assert_vec_close(&combined.center_of_mass, &Vec3::new(3.0, 1.0, 0.0));
+        assert_mat_close(&combined.local_inertia, &Mat3::zeros());
+    }
+
+    #[test]
+    fn null_is_the_only_invalid_body_handle() {
+        assert!(!BodyHandle::null().is_valid());
+        assert_eq!(BodyHandle::null(), BodyHandle::NULL);
+        assert!(!BodyHandle::new(u32::MAX, u32::MAX).is_valid());
+        for (index, generation) in [(0, 0), (0, 1), (1, 0), (u32::MAX, 0), (0, u32::MAX)] {
+            assert!(
+                BodyHandle::new(index, generation).is_valid(),
+                "({index}, {generation}) must be a valid handle"
+            );
+        }
+    }
+
+    #[test]
+    fn null_is_the_only_invalid_collider_handle() {
+        assert!(!ColliderHandle::null().is_valid());
+        assert_eq!(ColliderHandle::null(), ColliderHandle::NULL);
+        assert!(!ColliderHandle::new(u32::MAX, u32::MAX).is_valid());
+        for (index, generation) in [(0, 0), (0, 1), (1, 0), (u32::MAX, 0), (0, u32::MAX)] {
+            assert!(
+                ColliderHandle::new(index, generation).is_valid(),
+                "({index}, {generation}) must be a valid handle"
+            );
+        }
+    }
+
+    #[test]
+    fn every_handle_issued_by_the_world_arena_is_valid() {
+        let mut world = PhysicsWorld::new();
+        let first = world.add_body(Body::new_dynamic([0.0; 3], 1.0));
+        assert_eq!((first.index, first.generation), (0, 0));
+        assert!(first.is_valid(), "the very first body must be addressable");
+        assert_ne!(first, BodyHandle::null());
+        assert!(world.body(first).is_some());
+        assert!(world.body(BodyHandle::null()).is_none());
+
+        let second = world.add_body(Body::new_dynamic([1.0, 0.0, 0.0], 1.0));
+        assert!(second.is_valid());
+        assert!(world.remove_body(first).is_some());
+        let recycled = world.add_body(Body::new_dynamic([2.0, 0.0, 0.0], 1.0));
+        assert_eq!(recycled.index, first.index);
+        assert_ne!(recycled.generation, first.generation);
+        assert!(recycled.is_valid());
+        assert!(world.body(first).is_none(), "the old handle is stale");
     }
 }

@@ -13,6 +13,7 @@ pub(super) const N_A: f64 = 6.022e23;
 #[cfg(test)]
 mod tests {
 
+    use super::EPSILON_0;
     use crate::electrokinetic::types::*;
     fn water_params() -> ElectrolyteParams {
         ElectrolyteParams::new(298.15, 80.0, 1e-3)
@@ -51,7 +52,70 @@ mod tests {
         let iters =
             PoissonSolver::solve_poisson_2d(&mut phi, &rho_charge, nx, ny, 1e-6, 80.0, 5000, 1e-10);
         assert!(iters < 5000, "Did not converge (used {iters})");
-        assert!(phi[5 * nx + 5].abs() > 0.0);
+        assert!(
+            phi[5 * nx + 5] > 0.0,
+            "positive charge must give a positive potential, got {}",
+            phi[5 * nx + 5]
+        );
+    }
+    /// A point charge in a grounded box: nabla^2 phi = -rho / eps puts the
+    /// potential maximum (positive charge) or minimum (negative charge) at
+    /// the charge itself.
+    #[test]
+    fn test_poisson_point_charge_extremum_at_charge() {
+        let (nx, ny) = (21, 21);
+        let centre = 10 * nx + 10;
+        for &sign in &[1.0_f64, -1.0] {
+            let mut rho = vec![0.0_f64; nx * ny];
+            rho[centre] = sign * 4.0 * EPSILON_0;
+            let mut phi = vec![0.0_f64; nx * ny];
+            let iters =
+                PoissonSolver::solve_poisson_2d(&mut phi, &rho, nx, ny, 1.0, 1.0, 20_000, 1e-12);
+            assert!(iters < 20_000, "did not converge (used {iters})");
+            let peak = phi[centre];
+            assert!(peak * sign > 0.0, "sign {sign}: phi at charge = {peak}");
+            for (k, &p) in phi.iter().enumerate() {
+                assert!(
+                    p * sign >= 0.0 && p.abs() <= peak.abs() + 1e-12,
+                    "sign {sign}: phi[{k}] = {p} violates the maximum principle (peak {peak})"
+                );
+            }
+            assert!(
+                (phi[centre + 1] - phi[centre - 1]).abs() < 1e-8 * peak.abs(),
+                "potential must be symmetric about the charge"
+            );
+            assert!(
+                phi[centre + 1].abs() > phi[centre + 5].abs(),
+                "potential must decay away from the charge"
+            );
+        }
+    }
+    /// Uniform charge between grounded plates reproduces the 1-D parabola
+    /// phi(x) = rho x (L - x) / (2 eps) with L = (nx + 1) dx.
+    #[test]
+    fn test_poisson_uniform_charge_between_grounded_plates() {
+        let (nx, ny) = (16, 160);
+        let dx = 1.0;
+        let epsilon_r = 1.0;
+        let rho0 = EPSILON_0;
+        let rho = vec![rho0; nx * ny];
+        let mut phi = vec![0.0_f64; nx * ny];
+        let iters =
+            PoissonSolver::solve_poisson_2d(&mut phi, &rho, nx, ny, dx, epsilon_r, 50_000, 1e-11);
+        assert!(iters < 50_000, "did not converge (used {iters})");
+        let eps = EPSILON_0 * epsilon_r;
+        let gap = (nx + 1) as f64 * dx;
+        let peak = rho0 * (gap / 2.0) * (gap / 2.0) / (2.0 * eps);
+        let mid_row = ny / 2;
+        for x in 0..nx {
+            let pos = (x + 1) as f64 * dx;
+            let expected = rho0 * pos * (gap - pos) / (2.0 * eps);
+            let got = phi[mid_row * nx + x];
+            assert!(
+                (got - expected).abs() < 0.01 * peak,
+                "x = {x}: phi = {got}, analytic {expected}"
+            );
+        }
     }
     #[test]
     fn test_charge_density_cancels() {
@@ -70,6 +134,76 @@ mod tests {
         let ep = ElectrophoreticMobility::new(500e-9, -0.05, params);
         let v = ep.velocity(1000.0, 1e6);
         assert!(v < 0.0, "v = {v}");
+    }
+    /// Henry's function must tend to 1 (Hückel) for thick and 3/2
+    /// (Smoluchowski) for thin double layers.
+    #[test]
+    fn test_henry_function_limits() {
+        let ep = ElectrophoreticMobility::new(500e-9, -0.05, water_params());
+        let f_huckel = ep.henry_function(1e-6);
+        assert!((f_huckel - 1.0).abs() < 1e-6, "Hückel limit f = {f_huckel}");
+        let f_smoluchowski = ep.henry_function(1e6);
+        assert!(
+            (f_smoluchowski - 1.5).abs() < 1e-3,
+            "Smoluchowski limit f = {f_smoluchowski}"
+        );
+    }
+    /// Henry's function is bounded by [1, 3/2] and monotonically increasing.
+    #[test]
+    fn test_henry_function_monotone_and_bounded() {
+        let ep = ElectrophoreticMobility::new(500e-9, -0.05, water_params());
+        let samples = [
+            1e-4, 1e-2, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 50.0, 100.0, 1e3, 1e6,
+        ];
+        let mut previous = 1.0 - 1e-12;
+        for &kappa_a in &samples {
+            let f = ep.henry_function(kappa_a);
+            assert!(
+                (1.0..=1.5).contains(&f),
+                "f({kappa_a}) = {f} outside [1, 1.5]"
+            );
+            assert!(f >= previous, "f({kappa_a}) = {f} < previous {previous}");
+            previous = f;
+        }
+    }
+    /// Intermediate values agree with the tabulated Henry function (the
+    /// Ohshima approximation is accurate to about 1.5 %).
+    #[test]
+    fn test_henry_function_matches_tabulated_values() {
+        let ep = ElectrophoreticMobility::new(500e-9, -0.05, water_params());
+        for &(kappa_a, tabulated) in &[(1.0, 1.027), (10.0, 1.239), (100.0, 1.460)] {
+            let f = ep.henry_function(kappa_a);
+            assert!(
+                (f - tabulated).abs() / tabulated < 0.02,
+                "f({kappa_a}) = {f}, tabulated {tabulated}"
+            );
+        }
+    }
+    /// Thin double layer: mobility reduces to Smoluchowski's eps0*eps_r*zeta/mu.
+    #[test]
+    fn test_electrophoretic_mobility_smoluchowski_limit() {
+        let radius = 500e-9;
+        let zeta = -0.05;
+        let ep = ElectrophoreticMobility::new(radius, zeta, water_params());
+        let mobility = ep.mobility(1e6 / radius);
+        let smoluchowski = EPSILON_0 * 80.0 * zeta / 1e-3;
+        assert!(
+            (mobility - smoluchowski).abs() / smoluchowski.abs() < 0.01,
+            "mobility {mobility} vs Smoluchowski {smoluchowski}"
+        );
+    }
+    /// Thick double layer: mobility reduces to Hückel's (2/3)*eps0*eps_r*zeta/mu.
+    #[test]
+    fn test_electrophoretic_mobility_huckel_limit() {
+        let radius = 500e-9;
+        let zeta = -0.05;
+        let ep = ElectrophoreticMobility::new(radius, zeta, water_params());
+        let mobility = ep.mobility(1e-6 / radius);
+        let huckel = 2.0 / 3.0 * EPSILON_0 * 80.0 * zeta / 1e-3;
+        assert!(
+            (mobility - huckel).abs() / huckel.abs() < 0.01,
+            "mobility {mobility} vs Hückel {huckel}"
+        );
     }
     #[test]
     fn test_pb_flat_surface_at_wall() {

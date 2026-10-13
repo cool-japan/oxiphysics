@@ -94,7 +94,9 @@ fn fem_diagnostic_patch_test() {
         max_iter: 200_000,
         tolerance: 1e-14,
     };
-    let result = analysis.solve(&mesh, &material, &dirichlet, &[], &Vec3::new(0.0, 0.0, 0.0));
+    let result = analysis
+        .try_solve(&mesh, &material, &dirichlet, &[], &Vec3::new(0.0, 0.0, 0.0))
+        .expect("patch-test analysis must converge");
 
     // Check every interior node matches the field.
     let mut worst = 0.0_f64;
@@ -186,13 +188,15 @@ fn fem_diagnostic_tension_test() {
         max_iter: 200_000,
         tolerance: 1e-14,
     };
-    let result = analysis.solve(
-        &mesh,
-        &material,
-        &dirichlet,
-        &neumann,
-        &Vec3::new(0.0, 0.0, 0.0),
-    );
+    let result = analysis
+        .try_solve(
+            &mesh,
+            &material,
+            &dirichlet,
+            &neumann,
+            &Vec3::new(0.0, 0.0, 0.0),
+        )
+        .expect("analysis must converge");
 
     // Analytical: u_x(L) = (F/A) L / E.
     let area = width * height;
@@ -266,13 +270,15 @@ fn solve_cantilever_tip(nx: usize, ny: usize, nz: usize) -> (f64, usize) {
         max_iter: 200_000,
         tolerance: 1e-12,
     };
-    let result = analysis.solve(
-        &mesh,
-        &material,
-        &dirichlet,
-        &neumann,
-        &Vec3::new(0.0, 0.0, 0.0),
-    );
+    let result = analysis
+        .try_solve(
+            &mesh,
+            &material,
+            &dirichlet,
+            &neumann,
+            &Vec3::new(0.0, 0.0, 0.0),
+        )
+        .expect("analysis must converge");
 
     let min_y = tip_nodes
         .iter()

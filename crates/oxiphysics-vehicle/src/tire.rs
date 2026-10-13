@@ -57,18 +57,38 @@ impl Default for PacejkaCoeffs {
     }
 }
 
+/// Default stiffness factor of the longitudinal-force weighting function
+/// `G_xα(α) = cos(atan(B_xα · tan α))`.
+const DEFAULT_B_X_ALPHA: Real = 12.0;
+/// Default stiffness factor of the lateral-force weighting function
+/// `G_yκ(κ) = cos(atan(B_yκ · κ))`.
+const DEFAULT_B_Y_KAPPA: Real = 10.0;
+
 /// Pacejka "Magic Formula" tire model.
 ///
-/// Models both lateral (cornering) and longitudinal (traction/braking) forces
-/// with optional combined-slip coupling via friction ellipse.
+/// Models both lateral (cornering) and longitudinal (traction/braking) forces.
+/// Combined slip is handled with the Magic Formula weighting functions
+/// `G_xα(α) = cos(atan(B_xα · tan α))` and `G_yκ(κ) = cos(atan(B_yκ · κ))`
+/// (`Fx = G_xα · Fx0`, `Fy = G_yκ · Fy0`), followed by a friction-ellipse
+/// limit whose semi-axes are the pure-slip peak forces `D·μ·Fz` of the two
+/// axes.  The resultant therefore never exceeds `μ·Fz` for tires with
+/// `D ≤ 1`, and pure-slip forces are never altered by the limit.
 #[derive(Debug, Clone)]
 pub struct PacejkaTire {
     /// Lateral (cornering) coefficients.
     pub lateral: PacejkaCoeffs,
     /// Longitudinal (traction/braking) coefficients.
     pub longitudinal: PacejkaCoeffs,
-    /// Enable combined slip weight (0 = no interaction, 1 = full friction ellipse).
+    /// Strength of the Magic Formula combined-slip coupling in `[0, 1]`:
+    /// `0` disables the weighting functions (only the friction-ellipse limit
+    /// couples the axes), `1` applies them fully.
     pub combined_slip_weight: Real,
+    /// Stiffness factor `B_xα` of the weighting function `G_xα` that reduces the
+    /// longitudinal force with slip angle.
+    pub b_x_alpha: Real,
+    /// Stiffness factor `B_yκ` of the weighting function `G_yκ` that reduces the
+    /// lateral force with slip ratio.
+    pub b_y_kappa: Real,
 }
 
 impl Default for PacejkaTire {
@@ -87,7 +107,35 @@ impl Default for PacejkaTire {
                 e: 0.97,
             },
             combined_slip_weight: 0.5,
+            b_x_alpha: DEFAULT_B_X_ALPHA,
+            b_y_kappa: DEFAULT_B_Y_KAPPA,
         }
+    }
+}
+
+/// Scale a lateral/longitudinal force pair radially onto the friction ellipse
+/// with semi-axes `(fy_max, fx_max)` when it lies outside.
+///
+/// A direction whose semi-axis is zero, negative or NaN has no grip, so its
+/// force component is zeroed and does not take part in the ellipse test.  With
+/// equal semi-axes this is the classic friction circle
+/// `scale = min(1, μFz / hypot(fy, fx))`.
+fn limit_to_friction_ellipse(fy: Real, fx: Real, fy_max: Real, fx_max: Real) -> (Real, Real) {
+    let (fy, ny) = if fy_max > 0.0 {
+        (fy, fy / fy_max)
+    } else {
+        (0.0, 0.0)
+    };
+    let (fx, nx) = if fx_max > 0.0 {
+        (fx, fx / fx_max)
+    } else {
+        (0.0, 0.0)
+    };
+    let utilisation = ny.hypot(nx);
+    if utilisation > 1.0 {
+        (fy / utilisation, fx / utilisation)
+    } else {
+        (fy, fx)
     }
 }
 
@@ -107,7 +155,17 @@ impl PacejkaTire {
             lateral,
             longitudinal,
             combined_slip_weight,
+            b_x_alpha: DEFAULT_B_X_ALPHA,
+            b_y_kappa: DEFAULT_B_Y_KAPPA,
         }
+    }
+
+    /// Set the stiffness factors `B_xα` and `B_yκ` of the combined-slip
+    /// weighting functions (defaults 12 and 10).
+    pub fn with_combined_slip_stiffness(mut self, b_x_alpha: Real, b_y_kappa: Real) -> Self {
+        self.b_x_alpha = b_x_alpha;
+        self.b_y_kappa = b_y_kappa;
+        self
     }
 
     /// Evaluate the Magic Formula for a single axis.
@@ -147,6 +205,13 @@ impl PacejkaTire {
 }
 
 impl TireModel for PacejkaTire {
+    /// Combined-slip forces `(Fy, Fx)`.
+    ///
+    /// Pure-slip Magic Formula forces `Fy0(tan α)` and `Fx0(κ)` are weighted
+    /// with `G_yκ(κ) = cos(atan(B_yκ·κ))` and `G_xα(α) = cos(atan(B_xα·tan α))`
+    /// (blended by `combined_slip_weight`), then scaled radially onto the
+    /// friction ellipse with semi-axes `D_y·μ·Fz` and `D_x·μ·Fz`.  Non-positive
+    /// or NaN normal force or friction yield `(0, 0)`.
     fn compute_forces(
         &self,
         slip_angle: Real,
@@ -154,32 +219,25 @@ impl TireModel for PacejkaTire {
         normal_force: Real,
         friction: Real,
     ) -> (Real, Real) {
-        if normal_force <= 0.0 {
+        let has_grip = normal_force > 0.0 && friction > 0.0;
+        if !has_grip {
             return (0.0, 0.0);
         }
 
-        let fy_pure = Self::magic_formula(&self.lateral, slip_angle.tan(), normal_force, friction);
+        let tan_alpha = slip_angle.tan();
+        let fy_pure = Self::magic_formula(&self.lateral, tan_alpha, normal_force, friction);
         let fx_pure = Self::magic_formula(&self.longitudinal, slip_ratio, normal_force, friction);
 
-        if self.combined_slip_weight > 0.0 {
-            let sigma_lat = slip_angle.tan().abs();
-            let sigma_lon = slip_ratio.abs();
-            let sigma_total = (sigma_lat * sigma_lat + sigma_lon * sigma_lon).sqrt();
+        // cos(atan(x)) = 1 / sqrt(1 + x²)
+        let weight_x_alpha = 1.0 / (1.0 + (self.b_x_alpha * tan_alpha).powi(2)).sqrt();
+        let weight_y_kappa = 1.0 / (1.0 + (self.b_y_kappa * slip_ratio).powi(2)).sqrt();
+        let w = self.combined_slip_weight.clamp(0.0, 1.0);
+        let fy = fy_pure * (1.0 - w + w * weight_y_kappa);
+        let fx = fx_pure * (1.0 - w + w * weight_x_alpha);
 
-            if sigma_total > 1e-10 {
-                let lat_weight = sigma_lat / sigma_total;
-                let lon_weight = sigma_lon / sigma_total;
-
-                let w = self.combined_slip_weight;
-                let fy = fy_pure * (1.0 - w + w * lat_weight);
-                let fx = fx_pure * (1.0 - w + w * lon_weight);
-                (fy, fx)
-            } else {
-                (fy_pure, fx_pure)
-            }
-        } else {
-            (fy_pure, fx_pure)
-        }
+        let fy_max = self.lateral.d * normal_force * friction;
+        let fx_max = self.longitudinal.d * normal_force * friction;
+        limit_to_friction_ellipse(fy, fx, fy_max, fx_max)
     }
 }
 
@@ -298,18 +356,17 @@ impl TireModel for LinearTire {
         normal_force: Real,
         friction: Real,
     ) -> (Real, Real) {
-        if normal_force <= 0.0 {
+        let max_force = friction * normal_force;
+        let has_grip = normal_force > 0.0 && max_force > 0.0;
+        if !has_grip {
             return (0.0, 0.0);
         }
-        let max_force = friction * normal_force;
 
         let fy_raw = self.cornering_stiffness * slip_angle;
         let fx_raw = self.longitudinal_stiffness * slip_ratio;
 
-        let fy = fy_raw.clamp(-max_force, max_force);
-        let fx = fx_raw.clamp(-max_force, max_force);
-
-        (fy, fx)
+        // The resultant is limited to the friction circle; direction is kept.
+        limit_to_friction_ellipse(fy_raw, fx_raw, max_force, max_force)
     }
 }
 
@@ -837,11 +894,14 @@ impl TransientBrushState {
         friction: f64,
     ) -> (f64, f64) {
         let max_force = friction * normal_force;
+        let has_grip = normal_force > 0.0 && max_force > 0.0;
+        if !has_grip {
+            return (0.0, 0.0);
+        }
         let fy_raw = model.cornering_stiffness * self.slip_lat;
         let fx_raw = model.longitudinal_stiffness * self.slip_lon;
-        let fy = fy_raw.clamp(-max_force, max_force);
-        let fx = fx_raw.clamp(-max_force, max_force);
-        (fy, fx)
+        // The resultant is limited to the friction circle; direction is kept.
+        limit_to_friction_ellipse(fy_raw, fx_raw, max_force, max_force)
     }
 }
 
@@ -1515,6 +1575,40 @@ mod tests {
         assert!(
             l > 0.0 && w > 0.0,
             "contact patch must have positive dimensions"
+        );
+    }
+
+    // ── Combined-slip friction-circle limiter ───────────────────────────────
+
+    fn resultant(forces: (Real, Real)) -> Real {
+        forces.0.hypot(forces.1)
+    }
+
+    #[test]
+    fn test_limit_to_friction_ellipse_circle() {
+        // Inside the circle: untouched.
+        assert_eq!(
+            limit_to_friction_ellipse(300.0, 400.0, 1000.0, 1000.0),
+            (300.0, 400.0)
+        );
+        // Outside: scaled radially onto the circle, direction preserved.
+        let (fy, fx) = limit_to_friction_ellipse(3000.0, 4000.0, 2500.0, 2500.0);
+        assert!((fy - 1500.0).abs() < 1e-9 && (fx - 2000.0).abs() < 1e-9);
+        assert!((resultant((fy, fx)) - 2500.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_limit_to_friction_ellipse_unequal_axes_and_no_grip() {
+        // Semi-axes (2, 1): the point (2, 1) has utilisation sqrt(2).
+        let (fy, fx) = limit_to_friction_ellipse(2.0, 1.0, 2.0, 1.0);
+        let inv = std::f64::consts::FRAC_1_SQRT_2;
+        assert!((fy - 2.0 * inv).abs() < 1e-12 && (fx - inv).abs() < 1e-12);
+        // An axis without grip contributes nothing and is zeroed.
+        assert_eq!(limit_to_friction_ellipse(5.0, 7.0, 0.0, 10.0), (0.0, 7.0));
+        assert_eq!(limit_to_friction_ellipse(5.0, 7.0, 10.0, -1.0), (5.0, 0.0));
+        assert_eq!(
+            limit_to_friction_ellipse(5.0, 7.0, f64::NAN, f64::NAN),
+            (0.0, 0.0)
         );
     }
 }

@@ -3,6 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::super::functions::*;
+use crate::ode::rk45_step_fsal;
 use std::f64::consts::PI;
 
 use super::types_impl::BoundaryCondition;
@@ -552,7 +553,24 @@ impl MethodOfLines {
         }
         u
     }
-    /// Integrates using adaptive DOPRI5 with tolerance `tol`.
+    /// Integrates `du/dt = rhs(t, u)` from `t = 0` to `t_end` with the adaptive
+    /// Dormand-Prince 5(4) pair.
+    ///
+    /// Every Runge-Kutta stage is evaluated at its own time `t + c_i * dt`
+    /// (see [`rk45_step_fsal`]), so a spatial operator with explicit time
+    /// dependence (a driven or forced PDE) keeps the full 5th-order accuracy.
+    /// A step is accepted when the RMS norm of the embedded error estimate is not
+    /// above `tol`; the step size is then rescaled by `0.9 * (tol / err)^(1/5)`
+    /// limited to the interval `[0.1, 5]` (`[0.1, 1]` after a rejection).
+    ///
+    /// A step that is already shorter than `1e-12` is accepted regardless of its
+    /// error so that the integration always advances.  If the right-hand side
+    /// produces non-finite values, or the step size collapses to zero or becomes
+    /// `NaN` (for example for a `NaN` or non-positive `tol`), the integration
+    /// stops early and the last accepted state is returned.  A non-positive or
+    /// non-finite `dt_init` falls back to `t_end / 100`.  An empty, reversed or
+    /// non-finite interval (`t_end` not a finite number above 0) returns `u0`
+    /// unchanged.
     pub fn integrate_dopri5<F>(
         &self,
         u0: &[f64],
@@ -564,64 +582,41 @@ impl MethodOfLines {
     where
         F: Fn(f64, &[f64]) -> Vec<f64>,
     {
-        let n = u0.len();
+        const MIN_STEP: f64 = 1.0e-12;
         let mut u = u0.to_vec();
         let mut t = 0.0;
-        let mut dt = dt_init;
+        if !t_end.is_finite() || t_end <= t {
+            return u;
+        }
+        let mut dt = if dt_init.is_finite() && dt_init > 0.0 {
+            dt_init
+        } else {
+            t_end / 100.0
+        };
+        let mut k1 = rhs(t, &u);
         while t < t_end {
-            if t + dt > t_end {
+            let reaches_end = t + dt >= t_end;
+            if reaches_end {
                 dt = t_end - t;
             }
-            let k1 = rhs(t, &u);
-            let u2: Vec<f64> = (0..n).map(|i| u[i] + dt * 0.2 * k1[i]).collect();
-            let k2 = rhs(t + 0.2 * dt, &u2);
-            let u3: Vec<f64> = (0..n)
-                .map(|i| u[i] + dt * (3.0 / 40.0 * k1[i] + 9.0 / 40.0 * k2[i]))
-                .collect();
-            let k3 = rhs(t + 0.3 * dt, &u3);
-            let u4: Vec<f64> = (0..n)
-                .map(|i| {
-                    u[i] + dt * (44.0 / 45.0 * k1[i] - 56.0 / 15.0 * k2[i] + 32.0 / 9.0 * k3[i])
-                })
-                .collect();
-            let k4 = rhs(t + 0.8 * dt, &u4);
-            let u5: Vec<f64> = (0..n)
-                .map(|i| {
-                    u[i] + dt
-                        * (19372.0 / 6561.0 * k1[i] - 25360.0 / 2187.0 * k2[i]
-                            + 64448.0 / 6561.0 * k3[i]
-                            - 212.0 / 729.0 * k4[i])
-                })
-                .collect();
-            let k5 = rhs(t + dt, &u5);
-            let u4th: Vec<f64> = (0..n)
-                .map(|i| {
-                    u[i] + dt
-                        * (25.0 / 216.0 * k1[i] + 1408.0 / 2565.0 * k3[i] + 2197.0 / 4104.0 * k4[i]
-                            - 0.2 * k5[i])
-                })
-                .collect();
-            let u5th: Vec<f64> = (0..n)
-                .map(|i| {
-                    u[i] + dt
-                        * (16.0 / 135.0 * k1[i]
-                            + 6656.0 / 12825.0 * k3[i]
-                            + 28561.0 / 56430.0 * k4[i]
-                            - 9.0 / 50.0 * k5[i]
-                            + 2.0 / 55.0 * k5[i])
-                })
-                .collect();
-            let err = (0..n)
-                .map(|i| (u5th[i] - u4th[i]).powi(2))
-                .sum::<f64>()
-                .sqrt()
-                / (n as f64).sqrt();
-            if err <= tol || dt < 1e-12 {
-                u = u5th;
-                t += dt;
-                dt *= (0.9 * (tol / (err + 1e-15)).powf(0.2)).clamp(0.1, 5.0);
+            let (u_new, err, k_last) = rk45_step_fsal(t, &u, &k1, &rhs, dt);
+            if err.is_finite() {
+                let factor = 0.9 * (tol / (err + 1e-15)).powf(0.2);
+                if err <= tol || dt < MIN_STEP {
+                    t = if reaches_end { t_end } else { t + dt };
+                    u = u_new;
+                    k1 = k_last;
+                    dt *= factor.clamp(0.1, 5.0);
+                } else {
+                    dt *= factor.clamp(0.1, 1.0);
+                }
+            } else if dt < MIN_STEP {
+                break;
             } else {
-                dt *= (0.9 * (tol / (err + 1e-15)).powf(0.2)).clamp(0.1, 1.0);
+                dt *= 0.1;
+            }
+            if !dt.is_finite() || dt <= 0.0 {
+                break;
             }
         }
         u

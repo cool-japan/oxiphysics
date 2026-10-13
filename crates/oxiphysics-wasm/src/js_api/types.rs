@@ -531,11 +531,14 @@ impl JsExtendedState {
 /// ```no_run
 /// use oxiphysics_wasm::js_api::JsPhysicsConfig;
 ///
+/// # fn main() -> Result<(), oxiphysics_wasm::Error> {
 /// let engine = JsPhysicsConfig::new()
 ///     .with_gravity(0.0, -9.81, 0.0)
 ///     .with_fixed_dt(1.0 / 60.0)
-///     .build();
+///     .build()?;
 /// assert_eq!(engine.get_body_count(), 0);
+/// # Ok(())
+/// # }
 /// ```
 #[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -613,7 +616,12 @@ impl JsPhysicsConfig {
         }
     }
     /// Build a `WasmPhysicsEngine` from this config.
-    pub fn build(&self) -> WasmPhysicsEngine {
+    ///
+    /// # Errors
+    ///
+    /// The error of [`SimulationConfig::validate`] when the configuration is
+    /// unusable (for example a non-positive `fixed_dt` or zero `max_substeps`).
+    pub fn build(&self) -> crate::error::Result<WasmPhysicsEngine> {
         WasmPhysicsEngine::from_config(self.to_sim_config())
     }
     /// Serialize this config to a JSON string.
@@ -633,9 +641,12 @@ impl JsPhysicsConfig {
         JsPhysicsConfig::new()
     }
     /// Build a WasmPhysicsEngine from this config (JS-accessible).
+    ///
+    /// Throws if the configuration is unusable (non-positive or non-finite
+    /// `fixed_dt`, zero `max_substeps`, non-finite gravity, ...).
     #[wasm_bindgen(js_name = "build")]
-    pub fn build_js(&self) -> WasmPhysicsEngine {
-        self.build()
+    pub fn build_js(&self) -> Result<WasmPhysicsEngine, JsValue> {
+        Ok(self.build()?)
     }
     /// Serialize to JSON (JS-accessible).
     #[wasm_bindgen(js_name = "toJson")]

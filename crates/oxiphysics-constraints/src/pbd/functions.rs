@@ -592,18 +592,22 @@ pub(super) fn pbd2_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
         a[0] * b[1] - a[1] * b[0],
     ]
 }
+/// Scaled XPBD compliance `α̃ = α / dt²`.
+///
+/// A time step below `1e-15` carries no stiffness information, so the
+/// constraint is treated as rigid (`α̃ = 0`) instead of dividing by zero.  This
+/// is the convention of `XpbdParams::alpha_tilde`.
 #[inline(always)]
-pub(super) fn pbd2_normalize(a: [f64; 3]) -> Option<[f64; 3]> {
-    let n = pbd2_norm(a);
-    if n < 1e-14 {
-        None
+pub(super) fn pbd2_alpha_tilde(compliance: f64, dt: f64) -> f64 {
+    if dt.abs() < 1e-15 {
+        0.0
     } else {
-        Some(pbd2_scale(a, 1.0 / n))
+        compliance / (dt * dt)
     }
 }
+
 #[cfg(test)]
 mod tests_pbd_new {
-    use super::*;
     use crate::pbd::HierarchicalPbdSolver;
     use crate::pbd::HierarchyLevel;
     use crate::pbd::IsometricBending;
@@ -616,7 +620,6 @@ mod tests_pbd_new {
     use crate::pbd::XpbdCollisionConstraint;
     use crate::pbd::XpbdDihedralBending;
 
-    use crate::pbd::XpbdPressureConstraint;
     use crate::pbd::XpbdStretchConstraint;
 
     #[test]
@@ -682,19 +685,7 @@ mod tests_pbd_new {
             "angle should be in [0,pi], got {angle}"
         );
     }
-    #[test]
-    fn test_dihedral_project_runs_without_panic() {
-        let mut positions = [
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.5, 1.0, 0.0],
-            [0.5, 0.0, 1.0],
-        ];
-        let inv_masses = [1.0, 1.0, 1.0, 1.0];
-        let c = XpbdDihedralBending::new([0, 1, 2, 3], std::f64::consts::PI / 2.0, 0.01);
-        let mut lambda = 0.0_f64;
-        c.project(&mut positions, &inv_masses, &mut lambda, 0.01);
-    }
+
     #[test]
     fn test_isometric_bending_rest_pose_energy() {
         let rest = [
@@ -721,50 +712,7 @@ mod tests_pbd_new {
         let energy = ib.bending_energy(&deformed);
         assert!(energy >= 0.0);
     }
-    #[test]
-    fn test_pressure_constraint_at_rest_no_correction() {
-        let p0 = [0.0, 0.0, 0.0_f64];
-        let p1 = [1.0, 0.0, 0.0_f64];
-        let p2 = [0.5, 1.0, 0.0_f64];
-        let p3 = [0.5, 0.5, 1.0_f64];
-        let rest_vol = {
-            let v1 = pbd2_sub(p1, p0);
-            let v2 = pbd2_sub(p2, p0);
-            let v3 = pbd2_sub(p3, p0);
-            pbd2_dot(v1, pbd2_cross(v2, v3)) / 6.0
-        };
-        let mut positions = [p0, p1, p2, p3];
-        let inv_masses = [1.0, 1.0, 1.0, 1.0];
-        let c = XpbdPressureConstraint::new([0, 1, 2, 3], rest_vol, 0.0);
-        let mut lambda = 0.0_f64;
-        let before = positions;
-        c.project(&mut positions, &inv_masses, &mut lambda, 0.01);
-        assert!(lambda.abs() < 0.1, "lambda={lambda}");
-        let _ = before;
-    }
-    #[test]
-    fn test_pressure_constraint_reduces_error() {
-        let p0 = [0.0, 0.0, 0.0_f64];
-        let p1 = [1.0, 0.0, 0.0_f64];
-        let p2 = [0.5, 1.0, 0.0_f64];
-        let p3_rest = [0.5, 0.5, 1.0_f64];
-        let rest_vol = pbd2_dot(
-            pbd2_sub(p1, p0),
-            pbd2_cross(pbd2_sub(p2, p0), pbd2_sub(p3_rest, p0)),
-        ) / 6.0;
-        let p3_perturbed = [0.5, 0.5, 3.0_f64];
-        let mut positions = [p0, p1, p2, p3_perturbed];
-        let inv_masses = [1.0, 1.0, 1.0, 1.0];
-        let c = XpbdPressureConstraint::new([0, 1, 2, 3], rest_vol, 0.0);
-        let mut lambda = 0.0_f64;
-        for _ in 0..20 {
-            c.project(&mut positions, &inv_masses, &mut lambda, 0.01);
-        }
-        assert!(
-            lambda.abs() > 0.0,
-            "lambda should be nonzero after iteration"
-        );
-    }
+
     #[test]
     fn test_collision_constraint_no_penetration_no_change() {
         let mut positions = [[0.0, 1.0, 0.0]];

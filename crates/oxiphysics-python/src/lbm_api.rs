@@ -7,6 +7,7 @@
 //! configurable boundaries (no-slip walls, periodic, inlet/outlet),
 //! and full velocity and density field extraction.
 
+use oxiphysics::lbm::lattice::D3Q19_OPPOSITES;
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -828,10 +829,24 @@ const D3Q19_W: [f64; 19] = [
     1.0 / 36.0,
 ];
 
-/// Opposite directions for D3Q19 bounce-back.
-const D3Q19_OPP: [usize; 19] = [
-    0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15, 18, 17,
-];
+/// Full-way bounce-back of one D3Q19 cell.
+///
+/// `f` holds the 19 populations of a single cell, indexed like
+/// [`D3Q19_EX`]/[`D3Q19_EY`]/[`D3Q19_EZ`]. The population that travels along
+/// direction `q` is sent back along its opposite direction, so
+/// `f_out[D3Q19_OPPOSITES[q]] = f_in[q]`. The opposite table is the engine's
+/// [`D3Q19_OPPOSITES`], which is the one consistent with this velocity
+/// ordering: for the diagonals it pairs `(1, 1, 0)` with `(-1, -1, 0)`, not
+/// with `(-1, 1, 0)`.
+fn bounce_back_cell(f: &mut [f64]) {
+    let mut reflected = [0.0f64; 19];
+    for (q, &population) in f.iter().take(19).enumerate() {
+        reflected[D3Q19_OPPOSITES[q]] = population;
+    }
+    for (dst, &src) in f.iter_mut().zip(reflected.iter()) {
+        *dst = src;
+    }
+}
 
 /// Configuration for a 3-D D3Q19 LBM simulation.
 #[pyclass(from_py_object)]
@@ -1117,11 +1132,7 @@ impl PyLbm3dSimulation {
                         continue;
                     }
                     let idx = cell * 19;
-                    let mut tmp = [0.0f64; 19];
-                    for q in 0..19 {
-                        tmp[D3Q19_OPP[q]] = self.f[idx + q];
-                    }
-                    self.f[idx..(19 + idx)].copy_from_slice(&tmp);
+                    bounce_back_cell(&mut self.f[idx..idx + 19]);
                 }
             }
         }
@@ -1346,13 +1357,31 @@ mod d3q19_tests {
 
     use crate::LbmBoundary;
 
+    use crate::lbm_api::D3Q19_EX;
+    use crate::lbm_api::D3Q19_EY;
+    use crate::lbm_api::D3Q19_EZ;
     use crate::lbm_api::PyLbm3dConfig;
     use crate::lbm_api::PyLbm3dSimulation;
     use crate::lbm_api::apply_moving_wall_3d;
+    use crate::lbm_api::bounce_back_cell;
     use crate::lbm_api::d3q19_equilibrium;
+    use oxiphysics::lbm::lattice::D3Q19_OPPOSITES;
 
     fn small_3d() -> PyLbm3dSimulation {
         PyLbm3dSimulation::new(&PyLbm3dConfig::small())
+    }
+
+    /// Mass and momentum `(rho, [px, py, pz])` of one cell's 19 populations.
+    fn cell_moments(f: &[f64]) -> (f64, [f64; 3]) {
+        let mut rho = 0.0;
+        let mut p = [0.0; 3];
+        for (q, &fq) in f.iter().enumerate() {
+            rho += fq;
+            p[0] += fq * f64::from(D3Q19_EX[q]);
+            p[1] += fq * f64::from(D3Q19_EY[q]);
+            p[2] += fq * f64::from(D3Q19_EZ[q]);
+        }
+        (rho, p)
     }
 
     #[test]
@@ -1475,6 +1504,88 @@ mod d3q19_tests {
         // The equilibrium was forced, so the reconstructed velocity should shift
         // (not identical because velocity_at recomputes from f)
         let _ = (v_before, v_after); // just ensure no panic
+    }
+
+    #[test]
+    fn test_d3q19_opposite_table_reverses_every_velocity() {
+        for q in 0..19 {
+            let opp = D3Q19_OPPOSITES[q];
+            assert_eq!(D3Q19_EX[opp], -D3Q19_EX[q], "ex of the opposite of {q}");
+            assert_eq!(D3Q19_EY[opp], -D3Q19_EY[q], "ey of the opposite of {q}");
+            assert_eq!(D3Q19_EZ[opp], -D3Q19_EZ[q], "ez of the opposite of {q}");
+            assert_eq!(D3Q19_OPPOSITES[opp], q, "opposite of {q} is an involution");
+        }
+    }
+
+    #[test]
+    fn test_d3q19_bounce_back_sends_diagonal_straight_back() {
+        // Mass only in f7 = (+1, +1, 0) must come back in f10 = (-1, -1, 0).
+        let mut cell = [0.0f64; 19];
+        cell[7] = 0.25;
+        bounce_back_cell(&mut cell);
+        assert!((cell[10] - 0.25).abs() < 1e-15, "f10 = {}", cell[10]);
+        let others: f64 = cell
+            .iter()
+            .enumerate()
+            .filter(|(q, _)| *q != 10)
+            .map(|(_, v)| v.abs())
+            .sum();
+        assert!(
+            others < 1e-15,
+            "mass leaked into other directions: {others}"
+        );
+    }
+
+    #[test]
+    fn test_d3q19_bounce_back_flips_momentum_and_keeps_mass() {
+        let mut cell: [f64; 19] = std::array::from_fn(|q| 0.01 * (q as f64 + 1.0));
+        let (rho_before, p_before) = cell_moments(&cell);
+        bounce_back_cell(&mut cell);
+        let (rho_after, p_after) = cell_moments(&cell);
+        assert!((rho_after - rho_before).abs() < 1e-14);
+        for k in 0..3 {
+            assert!(
+                (p_after[k] + p_before[k]).abs() < 1e-14,
+                "momentum component {k} must flip sign: before {} after {}",
+                p_before[k],
+                p_after[k]
+            );
+        }
+    }
+
+    #[test]
+    fn test_d3q19_wall_returns_every_population_to_its_origin_cell() {
+        // Collisionless regime (a huge viscosity drives omega to ~3e-10) in a
+        // periodic 5x5x5 box with one wall cell W. A population leaving
+        // N = W - c_q along c_q reaches W in step one, is reflected there, and
+        // must arrive back at N along the opposite direction in step two.
+        let cfg = PyLbm3dConfig::new(5, 5, 5, 1.0e9);
+        let (nx, ny) = (5usize, 5usize);
+        let wall = [2usize, 2, 2];
+        for q in 1..19 {
+            let mut sim = PyLbm3dSimulation::new(&cfg);
+            sim.f.fill(0.0);
+            sim.set_boundary(wall[0], wall[1], wall[2], LbmBoundary::NoSlipWall);
+            let origin = [
+                (wall[0] as i32 - D3Q19_EX[q]) as usize,
+                (wall[1] as i32 - D3Q19_EY[q]) as usize,
+                (wall[2] as i32 - D3Q19_EZ[q]) as usize,
+            ];
+            let origin_cell = origin[2] * ny * nx + origin[1] * nx + origin[0];
+            sim.f[origin_cell * 19 + q] = 1.0;
+            sim.step();
+            sim.step();
+            let returned = sim.f[origin_cell * 19 + D3Q19_OPPOSITES[q]];
+            assert!(
+                (returned - 1.0).abs() < 1e-6,
+                "direction {q}: population returned along the opposite direction is {returned}"
+            );
+            let total: f64 = sim.f.iter().sum();
+            assert!(
+                (total - 1.0).abs() < 1e-6,
+                "direction {q}: total mass {total} must stay 1"
+            );
+        }
     }
 }
 

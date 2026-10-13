@@ -7,17 +7,55 @@ use super::types::{
 };
 
 /// Trait for a compute backend (GPU or CPU fallback).
+///
+/// Buffers are addressed by [`BufferHandle`]s that the backend itself handed
+/// out from [`create_buffer`](Self::create_buffer); every operation that takes a
+/// handle reports a foreign or stale handle as
+/// [`Error::InvalidBufferHandle`](crate::Error::InvalidBufferHandle) instead of
+/// panicking.
 pub trait ComputeBackend {
     /// Human-readable name of this backend.
     fn name(&self) -> &str;
     /// Allocate a buffer that can hold `size` f64 elements.
     fn create_buffer(&self, size: usize) -> BufferHandle;
     /// Write `data` into the buffer referenced by `handle`.
-    fn write_buffer(&self, handle: BufferHandle, data: &[f64]);
+    ///
+    /// The buffer takes the length of `data`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidBufferHandle`](crate::Error::InvalidBufferHandle) if
+    /// `handle` does not belong to this backend.
+    fn write_buffer(&self, handle: BufferHandle, data: &[f64]) -> crate::Result<()>;
     /// Read the full contents of the buffer referenced by `handle`.
-    fn read_buffer(&self, handle: BufferHandle) -> Vec<f64>;
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidBufferHandle`](crate::Error::InvalidBufferHandle) if
+    /// `handle` does not belong to this backend.
+    fn read_buffer(&self, handle: BufferHandle) -> crate::Result<Vec<f64>>;
     /// Dispatch a compute kernel over `work_size` work items.
-    fn dispatch(&self, kernel: &dyn ComputeKernel, work_size: usize);
+    ///
+    /// `inputs` are the buffers the kernel reads (they reach
+    /// [`ComputeKernel::execute`] as its `inputs` slices, in order) and
+    /// `outputs` the buffers it writes (its `outputs` vectors, in order,
+    /// pre-sized to the current length of each buffer).  When the call returns
+    /// every output buffer holds what the kernel produced.  A buffer may appear
+    /// in both lists; the kernel then sees its contents from before the call.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::InvalidBufferHandle`](crate::Error::InvalidBufferHandle) if any
+    ///   handle does not belong to this backend (no buffer is modified).
+    /// * [`Error::General`](crate::Error::General) if one buffer is bound to more
+    ///   than one output.
+    fn dispatch(
+        &self,
+        kernel: &dyn ComputeKernel,
+        inputs: &[BufferHandle],
+        outputs: &[BufferHandle],
+        work_size: usize,
+    ) -> crate::Result<()>;
 }
 /// Trait for a compute kernel that can be dispatched on a backend.
 pub trait ComputeKernel {
@@ -136,9 +174,113 @@ mod tests {
     fn cpu_backend_buffer_roundtrip() {
         let backend = CpuBackend::new();
         let buf = backend.create_buffer(4);
-        backend.write_buffer(buf, &[1.0, 2.0, 3.0, 4.0]);
-        let data = backend.read_buffer(buf);
+        backend.write_buffer(buf, &[1.0, 2.0, 3.0, 4.0]).unwrap();
+        let data = backend.read_buffer(buf).unwrap();
         assert_eq!(data, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+    #[test]
+    fn cpu_backend_invalid_handles_are_errors_not_panics() {
+        let backend = CpuBackend::new();
+        let good = backend.create_buffer(2);
+        let bad = BufferHandle(7);
+        assert!(matches!(
+            backend.write_buffer(bad, &[1.0]),
+            Err(crate::Error::InvalidBufferHandle(7))
+        ));
+        assert!(matches!(
+            backend.read_buffer(bad),
+            Err(crate::Error::InvalidBufferHandle(7))
+        ));
+        assert!(matches!(
+            backend.dispatch(&ScaleKernel(2.0), &[bad], &[good], 2),
+            Err(crate::Error::InvalidBufferHandle(7))
+        ));
+        assert!(matches!(
+            backend.dispatch(&ScaleKernel(2.0), &[good], &[bad], 2),
+            Err(crate::Error::InvalidBufferHandle(7))
+        ));
+        // The good buffer was not touched by the failed dispatches.
+        assert_eq!(backend.read_buffer(good).unwrap(), vec![0.0, 0.0]);
+    }
+    /// Test kernel: `outputs[0][i] = factor * inputs[0][i]`.
+    struct ScaleKernel(f64);
+    impl ComputeKernel for ScaleKernel {
+        fn name(&self) -> &str {
+            "ScaleKernel"
+        }
+        fn execute(&self, inputs: &[&[f64]], outputs: &mut [Vec<f64>], work_size: usize) {
+            if inputs.is_empty() || outputs.is_empty() {
+                return;
+            }
+            for i in 0..work_size {
+                outputs[0][i] = self.0 * inputs[0][i];
+            }
+        }
+    }
+    #[test]
+    fn cpu_backend_dispatch_writes_kernel_output_to_buffers() {
+        let backend = CpuBackend::new();
+        let src = backend.create_buffer(4);
+        let dst = backend.create_buffer(4);
+        backend.write_buffer(src, &[1.0, 2.0, 3.0, 4.0]).unwrap();
+        backend
+            .dispatch(&ScaleKernel(3.0), &[src], &[dst], 4)
+            .unwrap();
+        assert_eq!(backend.read_buffer(dst).unwrap(), vec![3.0, 6.0, 9.0, 12.0]);
+        // The input is untouched.
+        assert_eq!(backend.read_buffer(src).unwrap(), vec![1.0, 2.0, 3.0, 4.0]);
+    }
+    #[test]
+    fn cpu_backend_dispatch_in_place_sees_pre_call_contents() {
+        let backend = CpuBackend::new();
+        let buf = backend.create_buffer(3);
+        backend.write_buffer(buf, &[1.0, 2.0, 3.0]).unwrap();
+        backend
+            .dispatch(&ScaleKernel(2.0), &[buf], &[buf], 3)
+            .unwrap();
+        assert_eq!(backend.read_buffer(buf).unwrap(), vec![2.0, 4.0, 6.0]);
+        backend
+            .dispatch(&ScaleKernel(2.0), &[buf], &[buf], 3)
+            .unwrap();
+        assert_eq!(backend.read_buffer(buf).unwrap(), vec![4.0, 8.0, 12.0]);
+    }
+    #[test]
+    fn cpu_backend_dispatch_rejects_duplicate_output_buffers() {
+        let backend = CpuBackend::new();
+        let src = backend.create_buffer(2);
+        let dst = backend.create_buffer(2);
+        let result = backend.dispatch(&ScaleKernel(2.0), &[src], &[dst, dst], 2);
+        assert!(matches!(result, Err(crate::Error::General(_))));
+    }
+    #[test]
+    fn cpu_backend_dispatch_matches_direct_lennard_jones_execution() {
+        use crate::kernels::md_force::LennardJonesKernel;
+        let positions = vec![0.0, 0.0, 0.0, 1.5, 0.0, 0.0, 3.0, 0.0, 0.0, 4.5, 0.0, 0.0];
+        let params = vec![1.0, 1.0, 3.0];
+        let mut direct = vec![Vec::new(), Vec::new()];
+        LennardJonesKernel.execute(&[&positions, &params], &mut direct, 4);
+        assert!(
+            direct[0].iter().any(|&f| f != 0.0),
+            "the reference run must produce forces"
+        );
+
+        let backend = CpuBackend::new();
+        let pos_buf = backend.create_buffer(positions.len());
+        let par_buf = backend.create_buffer(params.len());
+        let force_buf = backend.create_buffer(12);
+        let energy_buf = backend.create_buffer(1);
+        backend.write_buffer(pos_buf, &positions).unwrap();
+        backend.write_buffer(par_buf, &params).unwrap();
+        backend
+            .dispatch(
+                &LennardJonesKernel,
+                &[pos_buf, par_buf],
+                &[force_buf, energy_buf],
+                4,
+            )
+            .unwrap();
+        assert_eq!(backend.read_buffer(force_buf).unwrap(), direct[0]);
+        assert_eq!(backend.read_buffer(energy_buf).unwrap(), direct[1]);
     }
     #[test]
     fn dispatcher_buffer_write_read_roundtrip() {

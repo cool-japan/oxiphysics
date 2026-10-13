@@ -7,6 +7,7 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use oxiphysics::pipeline::PhysicsPipeline;
 use oxiphysics_collision::broadphase::{BruteForceBroadPhase, SweepAndPrune};
 use oxiphysics_collision::gjk_epa::{GjkBox, GjkSphere, gjk_distance, gjk_intersect};
+use oxiphysics_collision::mesh_collision::{ClothVertex, cloth_self_collision};
 use oxiphysics_collision::{BroadPhase, CollisionPair, NarrowPhaseDispatcher};
 use oxiphysics_core::math::Vec3;
 use oxiphysics_core::{Aabb, Transform};
@@ -913,6 +914,66 @@ fn bench_aabb(c: &mut Criterion) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Cloth self-collision benchmark
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A flat `side x side` sheet (spacing 0.01) with its structural triangles and
+/// a few extra vertices hovering inside the collision thickness of sheet
+/// vertices, so the pass has real work to do.
+fn build_cloth(side: usize) -> (Vec<ClothVertex>, Vec<[usize; 3]>) {
+    let spacing = 0.01;
+    let mut vertices = Vec::with_capacity(side * side + 8);
+    for iy in 0..side {
+        for ix in 0..side {
+            vertices.push(ClothVertex::new(
+                [ix as f64 * spacing, iy as f64 * spacing, 0.0],
+                1.0,
+            ));
+        }
+    }
+    let mut triangles = Vec::with_capacity(2 * (side - 1) * (side - 1));
+    for iy in 0..side - 1 {
+        for ix in 0..side - 1 {
+            let a = iy * side + ix;
+            let (b, c, d) = (a + 1, a + side, a + side + 1);
+            triangles.push([a, b, c]);
+            triangles.push([b, d, c]);
+        }
+    }
+    for k in 0..8 {
+        let sheet = ((k + 1) * side * side / 9).min(side * side - 1);
+        let mut pos = vertices[sheet].pos;
+        pos[2] = 0.003;
+        vertices.push(ClothVertex::new(pos, 1.0));
+    }
+    (vertices, triangles)
+}
+
+fn bench_cloth_self_collision(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cloth_self_collision");
+    // 1 024 and 10 000 sheet vertices: the former brute-force scan needed
+    // O(V^2 T) operations, about 1e12 for the larger sheet.
+    for &side in &[32usize, 100usize] {
+        let (vertices, triangles) = build_cloth(side);
+        group.bench_with_input(
+            BenchmarkId::new("spatial_hash", side * side),
+            &side,
+            |b, _| {
+                b.iter(|| {
+                    let mut working = vertices.clone();
+                    black_box(cloth_self_collision(
+                        black_box(&mut working),
+                        black_box(&triangles),
+                        0.005,
+                    ))
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Criterion entry points
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -928,6 +989,7 @@ criterion_group!(lbm, bench_lbm);
 criterion_group!(fem, bench_fem);
 criterion_group!(md, bench_md);
 criterion_group!(aabb, bench_aabb);
+criterion_group!(cloth, bench_cloth_self_collision);
 
 criterion_main!(
     broadphase,
@@ -941,5 +1003,6 @@ criterion_main!(
     lbm,
     fem,
     md,
-    aabb
+    aabb,
+    cloth
 );

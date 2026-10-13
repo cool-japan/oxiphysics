@@ -172,11 +172,68 @@ impl BoilingSph {
         1.15 * self.t_sat
     }
 }
+/// Per-particle bookkeeping of the enthalpy method.
+///
+/// `enthalpy` is the specific enthalpy (J/kg) that the simulation integrates and
+/// `temperature` the temperature that was derived from it and written back to
+/// the particle.  A particle whose temperature no longer equals `temperature`
+/// was modified from outside (boundary condition, re-initialisation, ...), and
+/// its enthalpy is then re-derived from the new temperature.
+#[derive(Clone, Copy, Debug)]
+struct PhaseState {
+    enthalpy: f64,
+    temperature: f64,
+}
+impl PhaseState {
+    /// A state that matches no particle (NaN never compares equal), which
+    /// forces the enthalpy to be derived from the particle temperature.
+    const UNSYNCED: PhaseState = PhaseState {
+        enthalpy: 0.0,
+        temperature: f64::NAN,
+    };
+}
+/// Specific enthalpy (J/kg) of `particle` under `model`: the tracked value if
+/// `state` is still in sync with the particle temperature, otherwise `H(T)`.
+fn tracked_enthalpy(
+    state: Option<&PhaseState>,
+    particle: &ThermalParticle,
+    model: &PhaseChangeSph,
+) -> f64 {
+    match state {
+        Some(s) if s.temperature == particle.temperature => s.enthalpy,
+        _ => model.enthalpy(particle.temperature),
+    }
+}
 /// Complete thermal SPH simulation state manager.
 ///
 /// Manages a collection of thermal particles and advances them
-/// using the Brookshaw heat conduction operator with optional
-/// phase change, radiation, and boiling.
+/// using the Brookshaw heat conduction operator with an optional
+/// enthalpy-method phase change (see below).  Radiative losses
+/// ([`OpticallyThinRadiation`], [`RadiationSph`]) and boiling
+/// ([`BoilingSph`], [`NucleateBoilingSph`]) are separate models that
+/// [`ThermalSphSimulation::step`] does not apply.
+///
+/// # Phase change
+///
+/// With [`ThermalSphSimulation::with_phase_change`] (or by setting
+/// `enable_phase_change` and `phase_change`) the simulation uses the enthalpy
+/// method: each step advances the specific enthalpy `H` of every particle by
+/// the conducted heat `c_p dT/dt Δt` and derives the temperature from it with
+/// [`PhaseChangeSph::temperature_from_enthalpy`].  A particle crossing the
+/// melting range therefore dwells there until the latent heat `L` has been
+/// absorbed (or released).  The sensible-heat capacity `c_p` is taken from each
+/// particle, so that the conduction operator (which divides by the same
+/// `c_p`) and the enthalpy stay consistent; the model provides `T_melt`,
+/// `T_liquidus` and `L`.
+///
+/// The enthalpies are stored per particle index.  A particle whose temperature
+/// was changed from outside (boundary condition, re-initialisation) is
+/// recognised and gets its enthalpy re-derived from the new temperature, and
+/// so does a particle appended to `particles`.  Away from the temperature
+/// plateau of an isothermal transition (`T_liquidus <= T_melt`) the enthalpy
+/// follows from the temperature anyway; on the plateau, particles must keep
+/// their index, because reordering or removing them would mix up or discard
+/// the latent heat they have absorbed so far.
 pub struct ThermalSphSimulation {
     /// All particles in the simulation.
     pub particles: Vec<ThermalParticle>,
@@ -190,6 +247,8 @@ pub struct ThermalSphSimulation {
     pub enable_phase_change: bool,
     /// Optional phase-change parameters.
     pub phase_change: Option<PhaseChangeSph>,
+    /// Enthalpy state of each particle while the phase-change model is active.
+    phase_state: Vec<PhaseState>,
 }
 impl ThermalSphSimulation {
     /// Construct a new simulation.
@@ -201,6 +260,7 @@ impl ThermalSphSimulation {
             dt,
             enable_phase_change: false,
             phase_change: None,
+            phase_state: Vec::new(),
         }
     }
     /// Add a particle to the simulation.
@@ -208,10 +268,30 @@ impl ThermalSphSimulation {
         self.particles.push(p);
     }
     /// Enable phase change with given parameters.
+    ///
+    /// Subsequent [`ThermalSphSimulation::step`] calls integrate the particle
+    /// enthalpies (sensible plus latent heat) instead of the temperatures.
     pub fn with_phase_change(mut self, pc: PhaseChangeSph) -> Self {
         self.phase_change = Some(pc);
         self.enable_phase_change = true;
         self
+    }
+    /// The phase-change model if it is both configured and enabled.
+    fn active_phase_change(&self) -> Option<&PhaseChangeSph> {
+        if self.enable_phase_change {
+            self.phase_change.as_ref()
+        } else {
+            None
+        }
+    }
+    /// The configured model specialised to the specific heat of `particle`.
+    fn model_for(pc: &PhaseChangeSph, particle: &ThermalParticle) -> PhaseChangeSph {
+        PhaseChangeSph::new(
+            pc.t_melt,
+            pc.t_liquidus,
+            pc.latent_heat,
+            particle.specific_heat,
+        )
     }
     /// Number of particles.
     pub fn particle_count(&self) -> usize {
@@ -238,14 +318,67 @@ impl ThermalSphSimulation {
             .map(|p| p.temperature)
             .fold(f64::INFINITY, f64::min)
     }
-    /// Total thermal energy Σ m c_p T.
+    /// Total sensible thermal energy Σ m c_p T (latent heat is not included;
+    /// see [`ThermalSphSimulation::total_enthalpy`]).
     pub fn total_thermal_energy(&self) -> f64 {
         self.particles
             .iter()
             .map(|p| p.mass * p.specific_heat * p.temperature)
             .sum()
     }
+    /// Specific enthalpy (J/kg) of particle `index` under the active
+    /// phase-change model, including the latent heat absorbed so far.
+    ///
+    /// Returns `None` if the phase-change model is disabled or `index` is out
+    /// of range.
+    pub fn specific_enthalpy(&self, index: usize) -> Option<f64> {
+        let pc = self.active_phase_change()?;
+        let particle = self.particles.get(index)?;
+        let model = Self::model_for(pc, particle);
+        Some(tracked_enthalpy(
+            self.phase_state.get(index),
+            particle,
+            &model,
+        ))
+    }
+    /// Liquid fraction `f_l ∈ [0, 1]` of particle `index`, resolved from its
+    /// enthalpy (so it is also meaningful on the plateau of an isothermal
+    /// transition).
+    ///
+    /// Returns `None` if the phase-change model is disabled or `index` is out
+    /// of range.
+    pub fn liquid_fraction(&self, index: usize) -> Option<f64> {
+        let pc = self.active_phase_change()?;
+        let particle = self.particles.get(index)?;
+        let model = Self::model_for(pc, particle);
+        let enthalpy = tracked_enthalpy(self.phase_state.get(index), particle, &model);
+        Some(model.liquid_fraction_from_enthalpy(enthalpy))
+    }
+    /// Total enthalpy Σ m H, the quantity that heat conduction conserves.
+    ///
+    /// With the phase-change model active, `H` includes the latent heat
+    /// (`c_p T + L f_l`); otherwise this equals
+    /// [`ThermalSphSimulation::total_thermal_energy`].
+    pub fn total_enthalpy(&self) -> f64 {
+        match self.active_phase_change() {
+            Some(pc) => self
+                .particles
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let model = Self::model_for(pc, p);
+                    p.mass * tracked_enthalpy(self.phase_state.get(i), p, &model)
+                })
+                .sum(),
+            None => self.total_thermal_energy(),
+        }
+    }
     /// Advance all particles one time step using brute-force O(N²) neighbor search.
+    ///
+    /// Without a phase-change model the temperatures are advanced explicitly,
+    /// `T += Δt α ∇²T`.  With the model enabled the conducted heat
+    /// `c_p α ∇²T Δt` is added to each particle's enthalpy and the temperature
+    /// is derived from the new enthalpy (see the type-level documentation).
     pub fn step(&mut self) {
         let n = self.particles.len();
         if n == 0 {
@@ -276,10 +409,41 @@ impl ThermalSphSimulation {
             let hc = SphHeatConduction::new(alpha, h);
             *dt_i = hc.dtemp_dt(t_i, &neighbors);
         }
-        for (p, &dt_rate) in self.particles.iter_mut().zip(d_temps.iter()) {
-            p.temperature += self.dt * dt_rate;
+        let dt = self.dt;
+        let phase = if self.enable_phase_change {
+            self.phase_change.as_ref()
+        } else {
+            None
+        };
+        if let Some(pc) = phase {
+            self.phase_state.resize(n, PhaseState::UNSYNCED);
+            for ((p, state), &dt_rate) in self
+                .particles
+                .iter_mut()
+                .zip(self.phase_state.iter_mut())
+                .zip(d_temps.iter())
+            {
+                if p.specific_heat <= 0.0 || p.specific_heat.is_nan() {
+                    p.temperature += dt * dt_rate;
+                    *state = PhaseState::UNSYNCED;
+                    continue;
+                }
+                let model = Self::model_for(pc, p);
+                let enthalpy = tracked_enthalpy(Some(&*state), p, &model);
+                let enthalpy_next = enthalpy + dt * p.specific_heat * dt_rate;
+                let temperature_next = model.temperature_from_enthalpy(enthalpy_next);
+                p.temperature = temperature_next;
+                *state = PhaseState {
+                    enthalpy: enthalpy_next,
+                    temperature: temperature_next,
+                };
+            }
+        } else {
+            for (p, &dt_rate) in self.particles.iter_mut().zip(d_temps.iter()) {
+                p.temperature += dt * dt_rate;
+            }
         }
-        self.time += self.dt;
+        self.time += dt;
     }
 }
 /// Thermo-elastic stress from SPH temperature field.
@@ -1210,6 +1374,12 @@ impl NucleateBoilingSph {
     }
 }
 /// SPH phase-change model using the enthalpy method.
+///
+/// The specific enthalpy is `H(T) = c_p T + L f_l(T)` with the liquid fraction
+/// `f_l` rising linearly from 0 at `t_melt` to 1 at `t_liquidus`.  The
+/// temperature is recovered from `H` with
+/// [`PhaseChangeSph::temperature_from_enthalpy`], which is the exact inverse.
+#[derive(Debug, Clone, PartialEq)]
 pub struct PhaseChangeSph {
     /// Melting temperature T_melt (K).
     pub t_melt: f64,
@@ -1230,7 +1400,7 @@ impl PhaseChangeSph {
             specific_heat,
         }
     }
-    /// Compute enthalpy from temperature.
+    /// Compute the specific enthalpy (J/kg) from temperature.
     pub fn enthalpy(&self, temp: f64) -> f64 {
         enthalpy_from_temp(
             temp,
@@ -1240,29 +1410,37 @@ impl PhaseChangeSph {
             self.latent_heat,
         )
     }
-    /// Compute temperature from enthalpy (inverse of enthalpy method).
+    /// Compute temperature from specific enthalpy (inverse of [`PhaseChangeSph::enthalpy`]).
+    ///
+    /// Inside the melting range this is `T_melt + (H - c_p T_melt) / (c_p + L / ΔT)`;
+    /// see [`temp_from_enthalpy`] for the isothermal limit.
     pub fn temperature_from_enthalpy(&self, h: f64) -> f64 {
-        let h_melt = self.specific_heat * self.t_melt;
-        let h_liquid = h_melt + self.latent_heat;
-        if h < h_melt {
-            h / self.specific_heat.max(1e-300)
-        } else if h < h_liquid {
-            let range = (self.t_liquidus - self.t_melt).max(1e-300);
-            self.t_melt + (h - h_melt) / self.latent_heat * range
-        } else {
-            (h - self.latent_heat) / self.specific_heat.max(1e-300)
-        }
+        temp_from_enthalpy(
+            h,
+            self.specific_heat,
+            self.t_melt,
+            self.t_liquidus,
+            self.latent_heat,
+        )
     }
-    /// Liquid fraction f_l ∈ \[0, 1\].
+    /// Liquid fraction f_l ∈ \[0, 1\] at temperature `temp`.
     pub fn liquid_fraction(&self, temp: f64) -> f64 {
-        if temp <= self.t_melt {
-            return 0.0;
+        liquid_fraction_from_temp(temp, self.t_melt, self.t_liquidus)
+    }
+    /// Liquid fraction f_l ∈ \[0, 1\] of a state with specific enthalpy `h`.
+    ///
+    /// `f_l = (H - H_s) / (H_l - H_s)` with `H_s = c_p T_melt` and
+    /// `H_l = c_p T_liquidus + L`.  Unlike [`PhaseChangeSph::liquid_fraction`]
+    /// this also resolves the melt fraction on the temperature plateau of an
+    /// isothermal transition.
+    pub fn liquid_fraction_from_enthalpy(&self, h: f64) -> f64 {
+        let width = (self.t_liquidus - self.t_melt).max(0.0);
+        let h_solidus = self.specific_heat * self.t_melt;
+        let span = self.specific_heat * width + self.latent_heat;
+        if span <= 0.0 || span.is_nan() {
+            return if h > h_solidus { 1.0 } else { 0.0 };
         }
-        if temp >= self.t_liquidus {
-            return 1.0;
-        }
-        let range = (self.t_liquidus - self.t_melt).max(1e-300);
-        (temp - self.t_melt) / range
+        ((h - h_solidus) / span).clamp(0.0, 1.0)
     }
     /// Is the particle in the mushy zone?
     pub fn is_mushy(&self, temp: f64) -> bool {

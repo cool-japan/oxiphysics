@@ -13,7 +13,7 @@ use oxiphysics_fem::{
     mesh::TetrahedralMesh,
 };
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let length = 1.0_f64; // m
     let width = 0.1_f64; // m
     let height = 0.1_f64; // m
@@ -62,13 +62,14 @@ fn main() {
         tolerance: 1e-12,
     };
 
-    let result = analysis.solve(
+    // `try_solve` reports ill-posed input and a CG solve that did not converge.
+    let result = analysis.try_solve(
         &mesh,
         &material,
         &dirichlet_bcs,
         &neumann_bcs,
         &Vec3::zeros(),
-    );
+    )?;
 
     // Maximum y-displacement at the free end.
     let max_disp_y = free_nodes
@@ -92,4 +93,5 @@ fn main() {
     } else {
         println!("FAIL: unexpected deflection direction");
     }
+    Ok(())
 }

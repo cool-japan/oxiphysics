@@ -222,6 +222,13 @@ impl CgSystem {
             self.beads[angle.j].force = add(self.beads[angle.j].force, fj);
             self.beads[angle.k].force = add(self.beads[angle.k].force, fk);
         }
+        for dihedral in &self.dihedrals {
+            let [fi, fj, fk, fl] = dihedral.forces(&self.beads);
+            self.beads[dihedral.i].force = add(self.beads[dihedral.i].force, fi);
+            self.beads[dihedral.j].force = add(self.beads[dihedral.j].force, fj);
+            self.beads[dihedral.k].force = add(self.beads[dihedral.k].force, fk);
+            self.beads[dihedral.l].force = add(self.beads[dihedral.l].force, fl);
+        }
         let n = self.beads.len();
         let mut excluded: std::collections::HashSet<(usize, usize)> =
             std::collections::HashSet::new();
@@ -243,9 +250,11 @@ impl CgSystem {
                 let (sigma, epsilon) =
                     MartiniLj::get_lj_params(self.beads[i].bead_type, self.beads[j].bead_type);
                 let fmag = MartiniLj::force_magnitude(r, sigma, epsilon);
+                // `rij` points from bead i to bead j and a positive `fmag` is
+                // repulsive, so bead i is pushed along -rij and bead j along +rij.
                 let fvec = scale(normalize(rij), fmag);
-                nb_forces[i] = add(nb_forces[i], fvec);
-                nb_forces[j] = sub(nb_forces[j], fvec);
+                nb_forces[i] = sub(nb_forces[i], fvec);
+                nb_forces[j] = add(nb_forces[j], fvec);
             }
         }
         for (bead, nb_f) in self.beads.iter_mut().zip(nb_forces.iter()).take(n) {
@@ -337,6 +346,49 @@ impl CgDihedral {
     pub fn energy(&self, beads: &[CgBead]) -> f64 {
         let phi = self.dihedral_angle(beads);
         self.kd * (1.0 + (self.multiplicity as f64 * phi - self.phi0).cos())
+    }
+    /// Forces `[f_i, f_j, f_k, f_l]` (kJ/mol/nm) on the four beads, i.e. the exact
+    /// negative gradient of [`CgDihedral::energy`].
+    ///
+    /// With `b1 = r_j - r_i`, `b2 = r_k - r_j`, `b3 = r_l - r_k`, the plane normals
+    /// `n1 = b1 x b2` and `n2 = b2 x b3`, and the torque
+    /// `Q = -dV/dphi = kd * n * sin(n*phi - phi0)` about the central bond
+    /// (`phi` is the angle returned by [`CgDihedral::dihedral_angle`], whose sign
+    /// is opposite to the IUPAC convention):
+    ///
+    /// * `f_i = Q * |b2| / |n1|^2 * n1`
+    /// * `f_l = -Q * |b2| / |n2|^2 * n2`
+    /// * `f_j = -(1 + b1.b2/|b2|^2) f_i + (b3.b2/|b2|^2) f_l`
+    /// * `f_k = -(f_i + f_j + f_l)`
+    ///
+    /// The four forces sum to zero and exert no net torque.  A degenerate
+    /// geometry (collinear `i-j-k` or `j-k-l`, where the angle is undefined)
+    /// yields zero forces, matching the constant energy [`CgDihedral::energy`]
+    /// reports there.
+    pub fn forces(&self, beads: &[CgBead]) -> [[f64; 3]; 4] {
+        let zero = [[0.0; 3]; 4];
+        let b1 = sub(beads[self.j].pos, beads[self.i].pos);
+        let b2 = sub(beads[self.k].pos, beads[self.j].pos);
+        let b3 = sub(beads[self.l].pos, beads[self.k].pos);
+        let n1 = cross(b1, b2);
+        let n2 = cross(b2, b3);
+        let n1_sq = dot(n1, n1);
+        let n2_sq = dot(n2, n2);
+        let b2_sq = dot(b2, b2);
+        if n1_sq < 1e-30 || n2_sq < 1e-30 || b2_sq < 1e-30 {
+            return zero;
+        }
+        let multiplicity = self.multiplicity as f64;
+        let phi = self.dihedral_angle(beads);
+        let torque = self.kd * multiplicity * (multiplicity * phi - self.phi0).sin();
+        let b2_len = b2_sq.sqrt();
+        let fi = scale(n1, torque * b2_len / n1_sq);
+        let fl = scale(n2, -torque * b2_len / n2_sq);
+        let p = dot(b1, b2) / b2_sq;
+        let q = dot(b3, b2) / b2_sq;
+        let fj = add(scale(fi, -(1.0 + p)), scale(fl, q));
+        let fk = scale(add(add(fi, fj), fl), -1.0);
+        [fi, fj, fk, fl]
     }
 }
 /// Elastic Network Model for protein dynamics and normal mode analysis.

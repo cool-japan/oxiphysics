@@ -161,16 +161,63 @@ pub fn johnson_tetrahedron(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -
     }
     (best_pt, false)
 }
+/// Relative accuracy at which the GJK iteration stops: it has converged once the
+/// newest support point cannot bring the simplex closer to the origin by more
+/// than `GJK_CONVERGENCE_TOLERANCE * (1 + distance)`.
+const GJK_CONVERGENCE_TOLERANCE: f64 = 1e-9;
+
+/// Relative decrease of the squared simplex distance below which an iteration
+/// counts as having made no progress (rounding noise or a cycling simplex).
+///
+/// It must be far below the improvement a still-unconverged iteration makes: a
+/// step that is `d` short of the exact distance improves the squared distance
+/// only by about `(d / edge)^2`, so a coarse threshold such as `1e-8` stops
+/// the iteration while the distance is still off by several `1e-6`.
+const GJK_STAGNATION_TOLERANCE: f64 = 1e-12;
+
+/// A [`GjkResult`] together with a separation certificate.
+///
+/// The certificate is a unit `axis` pointing from shape A toward shape B and a
+/// `gap`: every point of B lies at least `gap` further along `axis` than every
+/// point of A, so the shapes are at least `gap` apart and stay separated when A
+/// is moved by any displacement `d` with `d . axis < gap`. It is a *lower*
+/// bound of the distance (the closest points of the result give the upper
+/// bound) and is what a conservative advancement has to step on.
+pub(super) struct GjkCore {
+    /// The public result.
+    pub(super) result: GjkResult,
+    /// Unit separating axis pointing from A toward B (zero if `gap == 0`).
+    pub(super) axis: [f64; 3],
+    /// Certified lower bound of the distance, `0.0` when no separating axis was
+    /// found (for example because the shapes intersect).
+    pub(super) gap: f64,
+}
+
 /// Enhanced GJK algorithm with warm starting.
 ///
 /// Accepts an optional `WarmStartCache` from the previous frame.
 /// Returns a `GjkResult` and optionally updates the cache.
+///
+/// For separated shapes the iteration runs until the distance has converged,
+/// so [`GjkResult::distance`] is the true distance (to within roughly
+/// `1e-9 * (1 + distance)`), not merely an upper bound.
 pub fn gjk_enhanced(
     shape_a: &dyn ConvexShape,
     shape_b: &dyn ConvexShape,
     cache: Option<&WarmStartCache>,
     max_iter: u32,
 ) -> GjkResult {
+    gjk_enhanced_core(shape_a, shape_b, cache, max_iter).result
+}
+/// GJK distance iteration that also records the best separation certificate.
+///
+/// See [`gjk_enhanced`]; the extra output is described on [`GjkCore`].
+pub(super) fn gjk_enhanced_core(
+    shape_a: &dyn ConvexShape,
+    shape_b: &dyn ConvexShape,
+    cache: Option<&WarmStartCache>,
+    max_iter: u32,
+) -> GjkCore {
     let mut metrics = GjkMetrics::new();
     let mut simplex = EnhSimplex::new();
     let mut dir = if let Some(c) = cache.filter(|c| c.valid) {
@@ -188,47 +235,90 @@ pub fn gjk_enhanced(
         dir = [1.0, 0.0, 0.0];
     }
     let mut prev_dist_sq = f64::INFINITY;
+    let mut axis = [0.0; 3];
+    let mut gap = 0.0_f64;
     for _iter in 0..max_iter {
         metrics.iterations += 1;
         let sa = shape_a.support(dir);
         let sb = shape_b.support(vneg(dir));
         metrics.support_calls += 2;
         let w = vsub(sa, sb);
-        if !simplex.verts.is_empty() && vdot(w, dir) < 1e-7 {
-            metrics.converged_early = true;
-            return build_separated_result(simplex, metrics);
+        // `dir` is a unit vector: `reach` is how far the Minkowski difference
+        // extends along it, measured from the origin. A negative value proves
+        // that A and B are separated along `dir` by at least `-reach`.
+        let reach = vdot(w, dir);
+        if reach < 0.0 && -reach > gap {
+            gap = -reach;
+            axis = dir;
+        }
+        if prev_dist_sq.is_finite() {
+            // The simplex is `closest` away from the origin and `dir` points
+            // from its closest point to the origin, so `reach >= -closest`.
+            // When equality holds up to the tolerance no support point can
+            // bring the simplex closer: the distance has converged.
+            let closest = prev_dist_sq.sqrt();
+            if reach + closest <= GJK_CONVERGENCE_TOLERANCE * (1.0 + closest) {
+                metrics.converged_early = true;
+                return GjkCore {
+                    result: build_separated_result(simplex, metrics),
+                    axis,
+                    gap,
+                };
+            }
         }
         simplex.add(SupportPoint::new(w, sa, sb));
         let (new_dir, contains_origin) = simplex.reduce();
         metrics.simplex_reductions += 1;
         if contains_origin {
             metrics.final_dist_sq = 0.0;
-            return GjkResult {
-                intersecting: true,
-                closest_a: [0.0; 3],
-                closest_b: [0.0; 3],
-                dist_sq: 0.0,
-                simplex: simplex.verts,
-                metrics,
+            return GjkCore {
+                result: GjkResult {
+                    intersecting: true,
+                    closest_a: [0.0; 3],
+                    closest_b: [0.0; 3],
+                    dist_sq: 0.0,
+                    simplex: simplex.verts,
+                    metrics,
+                },
+                axis: [0.0; 3],
+                gap: 0.0,
             };
         }
         let new_dist_sq = vlen_sq(new_dir);
         if new_dist_sq < 1e-18 {
             metrics.converged_early = true;
-            return build_separated_result(simplex, metrics);
+            return GjkCore {
+                result: build_separated_result(simplex, metrics),
+                axis,
+                gap,
+            };
         }
-        if new_dist_sq >= prev_dist_sq * (1.0 - 1e-8) && !simplex.verts.is_empty() {
+        if new_dist_sq >= prev_dist_sq * (1.0 - GJK_STAGNATION_TOLERANCE)
+            && !simplex.verts.is_empty()
+        {
             metrics.converged_early = true;
-            return build_separated_result(simplex, metrics);
+            return GjkCore {
+                result: build_separated_result(simplex, metrics),
+                axis,
+                gap,
+            };
         }
         prev_dist_sq = new_dist_sq;
         dir = vnorm(new_dir);
         if vlen_sq(dir) < 1e-18 {
             metrics.converged_early = true;
-            return build_separated_result(simplex, metrics);
+            return GjkCore {
+                result: build_separated_result(simplex, metrics),
+                axis,
+                gap,
+            };
         }
     }
-    build_separated_result(simplex, metrics)
+    GjkCore {
+        result: build_separated_result(simplex, metrics),
+        axis,
+        gap,
+    }
 }
 pub(super) fn build_separated_result(simplex: EnhSimplex, mut metrics: GjkMetrics) -> GjkResult {
     let (closest_a, closest_b) = extract_closest_points(&simplex);
@@ -562,14 +652,39 @@ pub fn gjk_epa_pipeline(
         epa_iterations: epa_res.iterations,
     }
 }
+/// Number of GJK iterations allowed for each distance query of the time-of-impact
+/// search.
+const TOI_GJK_ITERATIONS: u32 = 64;
+
+/// Closing speeds (along the separating axis) at or below this value never close
+/// the gap: the shapes are treated as separating.
+const MIN_CLOSING_SPEED: f64 = 1e-12;
+
 /// GJK-based time-of-impact query.
 ///
-/// Sweeps `shape_a` from its current position along `vel_a - vel_b` and
-/// determines when it first touches `shape_b`.
+/// Sweeps `shape_a` along the relative velocity `vel_rel` over the time
+/// interval \[0, 1\] while `shape_b` stays in place, and determines when the two
+/// first touch.
 ///
-/// Uses the cast GJK (bilateral advancement) method.
+/// Uses conservative advancement: at time `t` the shapes are separated by a
+/// certified gap along a separating axis `n` (A toward B), so they cannot touch
+/// before `t + gap / (vel_rel . n)`; time is advanced by exactly that amount
+/// until the shapes are within `tolerance` of each other (a hit at that time)
+/// or the advance passes `t = 1` (no hit). If the separating axis is not
+/// approached (`vel_rel . n <= 0`) the shapes are known to stay apart and the
+/// sweep misses. Unlike a test of the end positions this cannot tunnel: a shape
+/// that starts and ends the interval separated from the other, but passes
+/// through it in between, is reported as a hit.
 ///
-/// `vel_a` and `vel_b` are relative velocities over the time interval \[0,1\].
+/// Shapes that already intersect, or are within `tolerance`, hit at `toi = 0`.
+/// The reported `toi` is the first sampled time at which the gap is within
+/// `tolerance`; it never exceeds the true time of impact. `normal` points from
+/// B toward A. If the iteration budget `max_iter` is exhausted before the sweep
+/// is decided, a hit at the last conservative time is reported (the true impact
+/// cannot be earlier).
+///
+/// `vel_rel` is the displacement of A relative to B over the interval, so
+/// `vel_a - vel_b` for two moving shapes.
 pub fn gjk_time_of_impact(
     shape_a: &dyn ConvexShape,
     shape_b: &dyn ConvexShape,
@@ -577,74 +692,81 @@ pub fn gjk_time_of_impact(
     max_iter: u32,
     tolerance: f64,
 ) -> ToiResult {
-    let res0 = gjk_enhanced(shape_a, shape_b, None, 64);
-    if res0.intersecting || res0.dist_sq <= tolerance * tolerance {
-        let normal = vnorm(vsub(shape_a.centre(), shape_b.centre()));
-        return ToiResult {
-            hit: true,
-            toi: 0.0,
-            normal,
-            iterations: 1,
-        };
-    }
-    let sep_dir = vnorm(vsub(shape_b.centre(), shape_a.centre()));
-    let approach_speed = vdot(vel_rel, sep_dir);
-    if approach_speed <= 0.0 {
+    let touching_dist_sq = tolerance.max(0.0) * tolerance.max(0.0);
+    let centre_normal = |moved: &dyn ConvexShape| vnorm(vsub(moved.centre(), shape_b.centre()));
+    if !vel_rel.iter().all(|c| c.is_finite()) {
         return ToiResult {
             hit: false,
             toi: 1.0,
-            normal: sep_dir,
-            iterations: 1,
+            normal: centre_normal(shape_a),
+            iterations: 0,
         };
     }
-    let mut t_lo = 0.0f64;
-    let mut t_hi = 1.0f64;
-    let mut hit = false;
-    let mut toi = 1.0f64;
-    let mut normal = sep_dir;
+
+    let mut t = 0.0_f64;
+    let mut normal = centre_normal(shape_a);
     let mut iterations = 0u32;
-    let x1 = vscale(vel_rel, 1.0);
-    let translated_a1 = TranslatedShape {
-        shape: shape_a,
-        offset: x1,
-    };
-    let res1 = gjk_enhanced(&translated_a1, shape_b, None, 64);
-    if !res1.intersecting && res1.dist_sq > tolerance * tolerance {
-        return ToiResult {
-            hit: false,
-            toi: 1.0,
-            normal: sep_dir,
-            iterations: 1,
-        };
-    }
-    for _ in 0..max_iter {
+    for _ in 0..max_iter.max(1) {
         iterations += 1;
-        let t_mid = (t_lo + t_hi) * 0.5;
-        let x_mid = vscale(vel_rel, t_mid);
-        let translated_a = TranslatedShape {
+        let moved = TranslatedShape {
             shape: shape_a,
-            offset: x_mid,
+            offset: vscale(vel_rel, t),
         };
-        let res = gjk_enhanced(&translated_a, shape_b, None, 64);
-        if res.intersecting || res.dist_sq <= tolerance * tolerance {
-            t_hi = t_mid;
-            hit = true;
-            toi = t_mid;
-            if !res.intersecting {
-                normal = vnorm(vsub(res.closest_a, res.closest_b));
-            } else {
-                normal = vnorm(vsub(shape_a.centre(), shape_b.centre()));
-            }
-        } else {
-            t_lo = t_mid;
+        let query = gjk_enhanced_core(&moved, shape_b, None, TOI_GJK_ITERATIONS);
+        let result = &query.result;
+        if result.intersecting {
+            return ToiResult {
+                hit: true,
+                toi: t,
+                normal: centre_normal(&moved),
+                iterations,
+            };
         }
-        if t_hi - t_lo < tolerance {
-            break;
+        if vlen_sq(vsub(result.closest_a, result.closest_b)) > 1e-24 {
+            normal = vnorm(vsub(result.closest_a, result.closest_b));
+        } else if query.gap > 0.0 {
+            normal = vneg(query.axis);
+        }
+        if result.dist_sq <= touching_dist_sq {
+            return ToiResult {
+                hit: true,
+                toi: t,
+                normal,
+                iterations,
+            };
+        }
+        if query.gap <= 0.0 {
+            // No separation could be certified, so a contact before the next
+            // sample cannot be ruled out: stay conservative.
+            return ToiResult {
+                hit: true,
+                toi: t,
+                normal,
+                iterations,
+            };
+        }
+        let closing_speed = vdot(vel_rel, query.axis);
+        if closing_speed <= MIN_CLOSING_SPEED {
+            return ToiResult {
+                hit: false,
+                toi: 1.0,
+                normal: vneg(query.axis),
+                iterations,
+            };
+        }
+        t += query.gap / closing_speed;
+        if t > 1.0 {
+            return ToiResult {
+                hit: false,
+                toi: 1.0,
+                normal: vneg(query.axis),
+                iterations,
+            };
         }
     }
     ToiResult {
-        hit,
-        toi,
+        hit: true,
+        toi: t,
         normal,
         iterations,
     }

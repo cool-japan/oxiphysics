@@ -7,7 +7,15 @@
 //! volume and surface area computation, point-in-hull test, hull merging,
 //! and support queries.
 
-use oxiphysics_core::math::Vec3;
+use oxiphysics_core::math::{Mat3, Vec3};
+
+/// Relative tolerance of the hull construction.
+///
+/// A point only sees a hull face when it lies further than
+/// `HULL_RELATIVE_TOLERANCE * extent` in front of the face plane, where `extent`
+/// is the diagonal of the bounding box of the input. The tolerance scales with
+/// the input, so point clouds of any size are treated alike.
+const HULL_RELATIVE_TOLERANCE: f64 = 1e-10;
 
 /// 3D Convex Hull computed via QuickHull algorithm (nalgebra Vec3 variant).
 pub struct ConvexHull3DVec {
@@ -20,96 +28,82 @@ pub struct ConvexHull3DVec {
 impl ConvexHull3DVec {
     /// Compute convex hull from a point cloud using the QuickHull algorithm.
     ///
-    /// Returns `None` if the input is degenerate (fewer than 4 non-coplanar points).
+    /// Returns `None` if the input is degenerate (fewer than 4 non-coplanar
+    /// points) or contains a non-finite coordinate.
+    ///
+    /// Starting from a seed tetrahedron the hull grows point by point: a point
+    /// outside the current hull removes the faces it sees and is joined to the
+    /// boundary of the removed region (the horizon). A new face takes the place
+    /// of the removed face along its horizon edge and therefore keeps the
+    /// direction of that edge, so all faces stay consistently wound
+    /// (counter-clockwise seen from outside) without any geometric guessing.
+    /// Points closer to a face plane than `1e-10` times the diagonal of the
+    /// bounding box count as inside, which makes the result independent of the
+    /// scale of the input.
     pub fn build(points: &[Vec3]) -> Option<Self> {
         if points.len() < 4 {
             return None;
         }
+        let (tolerance, axis) = hull_tolerance(points)?;
 
         // --- Seed tetrahedron ------------------------------------------------
-        let (i0, i1) = extreme_pair(points)?;
-        let i2 = farthest_from_line(points, i0, i1)?;
-        let (normal_seed, offset_seed) = plane_from_triangle(points[i0], points[i1], points[i2]);
-        if normal_seed.norm() < 1e-12 {
+        let (i0, i1) = extreme_pair(points, axis)?;
+        let (i2, line_distance) = farthest_from_line(points, i0, i1)?;
+        if line_distance <= tolerance {
             return None;
         }
-        let i3 = farthest_point_excluding(points, normal_seed, offset_seed, &[i0, i1, i2])?;
-        if point_plane_distance(points[i3], normal_seed, offset_seed).abs() < 1e-12 {
+        let (seed_normal, _) = plane_from_triangle(points[i0], points[i1], points[i2]);
+        let seed_normal = seed_normal.normalize();
+        let seed_offset = seed_normal.dot(&points[i0]);
+        let i3 = farthest_point_excluding(points, seed_normal, seed_offset, &[i0, i1, i2])?;
+        if point_plane_distance(points[i3], seed_normal, seed_offset).abs() <= tolerance {
             return None;
         }
 
-        // Build the 4 outward-facing faces of the initial tetrahedron.
+        // The centroid of the seed lies strictly inside every hull grown from it.
         let tet = [i0, i1, i2, i3];
-        let mut hull: Vec<[usize; 3]> = Vec::new();
-        let combos: [([usize; 3], usize); 4] = [
-            ([i0, i1, i2], i3),
-            ([i0, i1, i3], i2),
-            ([i0, i2, i3], i1),
-            ([i1, i2, i3], i0),
-        ];
-        for (face, interior) in &combos {
-            let oriented = orient_face(*face, *interior, points)?;
-            hull.push(oriented);
-        }
+        let inside = (points[i0] + points[i1] + points[i2] + points[i3]) / 4.0;
+        let mut hull: Vec<[usize; 3]> = [[i0, i1, i2], [i0, i1, i3], [i0, i2, i3], [i1, i2, i3]]
+            .into_iter()
+            .map(|face| orient_outward(face, inside, points))
+            .collect();
+        let mut planes: Vec<(Vec3, f64)> =
+            hull.iter().map(|face| unit_plane(points, face)).collect();
 
         // --- Iterative QuickHull expansion -----------------------------------
-        let exterior: Vec<usize> = (0..points.len()).filter(|i| !tet.contains(i)).collect();
+        for (p_idx, &p) in points.iter().enumerate() {
+            if tet.contains(&p_idx) {
+                continue;
+            }
 
-        for &p_idx in &exterior {
-            let p = points[p_idx];
-
-            let visible: Vec<usize> = hull
-                .iter()
-                .enumerate()
-                .filter(|(_, face)| {
-                    let (n, off) =
-                        plane_from_triangle(points[face[0]], points[face[1]], points[face[2]]);
-                    point_plane_distance(p, n, off) > 1e-10
-                })
-                .map(|(i, _)| i)
-                .collect();
-
+            let mut is_visible = vec![false; hull.len()];
+            let mut visible: Vec<usize> = Vec::new();
+            for (k, &(normal, offset)) in planes.iter().enumerate() {
+                if point_plane_distance(p, normal, offset) > tolerance {
+                    is_visible[k] = true;
+                    visible.push(k);
+                }
+            }
             if visible.is_empty() {
                 continue;
             }
 
             let horizon = horizon_edges(&hull, &visible);
-
-            let mut new_hull: Vec<[usize; 3]> = hull
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !visible.contains(i))
-                .map(|(_, f)| *f)
-                .collect();
-
-            for (e0, e1) in horizon {
-                let new_face = [e0, e1, p_idx];
-                let (nn, noff) = plane_from_triangle(points[e0], points[e1], points[p_idx]);
-                if nn.norm() < 1e-12 {
-                    continue;
+            let mut next_hull: Vec<[usize; 3]> = Vec::with_capacity(hull.len() + horizon.len());
+            let mut next_planes: Vec<(Vec3, f64)> = Vec::with_capacity(hull.len() + horizon.len());
+            for (k, face) in hull.iter().enumerate() {
+                if !is_visible[k] {
+                    next_hull.push(*face);
+                    next_planes.push(planes[k]);
                 }
-                let interior_ref = new_hull.first().and_then(|f| {
-                    f.iter()
-                        .find(|&&v| v != e0 && v != e1 && v != p_idx)
-                        .copied()
-                });
-                let oriented = if let Some(ref_v) = interior_ref {
-                    if point_plane_distance(points[ref_v], nn, noff) > 0.0 {
-                        [e1, e0, p_idx]
-                    } else {
-                        new_face
-                    }
-                } else {
-                    new_face
-                };
-                new_hull.push(oriented);
             }
-
-            hull = new_hull;
-        }
-
-        if hull.is_empty() {
-            return None;
+            for (e0, e1) in horizon {
+                let face = [e0, e1, p_idx];
+                next_planes.push(unit_plane(points, &face));
+                next_hull.push(face);
+            }
+            hull = next_hull;
+            planes = next_planes;
         }
 
         // Collect unique vertex indices and remap.
@@ -118,14 +112,11 @@ impl ConvexHull3DVec {
         used.dedup();
 
         let vertices: Vec<Vec3> = used.iter().map(|&i| points[i]).collect();
-        let remap = |old: usize| -> usize {
-            used.binary_search(&old)
-                .expect("element must be present in sorted list")
-        };
+        let remap = |old: usize| used.binary_search(&old).ok();
         let faces: Vec<[usize; 3]> = hull
             .iter()
-            .map(|f| [remap(f[0]), remap(f[1]), remap(f[2])])
-            .collect();
+            .map(|f| Some([remap(f[0])?, remap(f[1])?, remap(f[2])?]))
+            .collect::<Option<_>>()?;
 
         Some(Self { vertices, faces })
     }
@@ -403,20 +394,58 @@ fn plane_from_triangle(a: Vec3, b: Vec3, c: Vec3) -> (Vec3, f64) {
     (n, offset)
 }
 
-/// Orient face so that `interior` is strictly behind the face plane.
-fn orient_face(face: [usize; 3], interior: usize, points: &[Vec3]) -> Option<[usize; 3]> {
+/// Orient `face` so that the point `inside` lies behind it, i.e. so that the
+/// face looks outward.
+fn orient_outward(face: [usize; 3], inside: Vec3, points: &[Vec3]) -> [usize; 3] {
     let (n, off) = plane_from_triangle(points[face[0]], points[face[1]], points[face[2]]);
-    if n.norm() < 1e-12 {
+    if point_plane_distance(inside, n, off) > 0.0 {
+        [face[0], face[2], face[1]]
+    } else {
+        face
+    }
+}
+
+/// Unit normal and offset of the plane through `face`.
+///
+/// A degenerate (zero-area) face yields a zero normal, which no point sees.
+fn unit_plane(points: &[Vec3], face: &[usize; 3]) -> (Vec3, f64) {
+    let a = points[face[0]];
+    let normal = (points[face[1]] - a).cross(&(points[face[2]] - a));
+    let length = normal.norm();
+    if length > 0.0 {
+        let unit = normal / length;
+        (unit, unit.dot(&a))
+    } else {
+        (Vec3::zeros(), 0.0)
+    }
+}
+
+/// Distance tolerance and widest axis of a point cloud.
+///
+/// Returns `None` when a coordinate is not finite or when all points coincide.
+fn hull_tolerance(points: &[Vec3]) -> Option<(f64, usize)> {
+    let mut lowest = *points.first()?;
+    let mut highest = lowest;
+    for p in points {
+        if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
+            return None;
+        }
+        lowest = lowest.inf(p);
+        highest = highest.sup(p);
+    }
+    let extent = highest - lowest;
+    let diagonal = extent.norm();
+    if diagonal <= 0.0 || !diagonal.is_finite() {
         return None;
     }
-    if interior == usize::MAX {
-        return Some(face);
-    }
-    if point_plane_distance(points[interior], n, off) > 0.0 {
-        Some([face[0], face[2], face[1]])
+    let axis = if extent.x >= extent.y && extent.x >= extent.z {
+        0
+    } else if extent.y >= extent.z {
+        1
     } else {
-        Some(face)
-    }
+        2
+    };
+    Some((HULL_RELATIVE_TOLERANCE * diagonal, axis))
 }
 
 /// Find the horizon edges of the hull given a set of visible face indices.
@@ -447,57 +476,42 @@ fn horizon_edges(hull: &[[usize; 3]], visible: &[usize]) -> Vec<(usize, usize)> 
     edges
 }
 
-/// Find the pair of points that are farthest apart along the x-axis (for seeding).
-fn extreme_pair(points: &[Vec3]) -> Option<(usize, usize)> {
-    if points.len() < 2 {
-        return None;
-    }
-    let i0 = points
-        .iter()
-        .enumerate()
-        .min_by(|(_, a), (_, b)| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(i, _)| i)?;
-    let i1 = points
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(i, _)| i)?;
-    if i0 == i1 {
-        let i1y = points
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(i, _)| i)?;
-        if i0 == i1y {
-            return None;
+/// Find the pair of points that are farthest apart along `axis` (for seeding).
+///
+/// Returns `None` when all points share the same coordinate along `axis`.
+fn extreme_pair(points: &[Vec3], axis: usize) -> Option<(usize, usize)> {
+    let mut lowest = 0;
+    let mut highest = 0;
+    for (i, p) in points.iter().enumerate() {
+        if p[axis] < points[lowest][axis] {
+            lowest = i;
         }
-        return Some((i0, i1y));
+        if p[axis] >= points[highest][axis] {
+            highest = i;
+        }
     }
-    Some((i0, i1))
+    (lowest != highest).then_some((lowest, highest))
 }
 
-/// Find the point farthest from the line through `points[i0]` and `points[i1]`.
-fn farthest_from_line(points: &[Vec3], i0: usize, i1: usize) -> Option<usize> {
+/// Find the point farthest from the line through `points[i0]` and `points[i1]`
+/// together with its distance from that line.
+fn farthest_from_line(points: &[Vec3], i0: usize, i1: usize) -> Option<(usize, f64)> {
     let a = points[i0];
-    let b = points[i1];
-    let ab = b - a;
-    let ab_len_sq = ab.dot(&ab);
-    if ab_len_sq < 1e-24 {
+    let ab = points[i1] - a;
+    let ab_len = ab.norm();
+    if ab_len <= 0.0 {
         return None;
     }
     points
         .iter()
         .enumerate()
         .filter(|&(i, _)| i != i0 && i != i1)
-        .max_by(|(_, p), (_, q)| {
-            let dp = ((*p - a).cross(&ab)).norm_squared() / ab_len_sq;
-            let dq = ((*q - a).cross(&ab)).norm_squared() / ab_len_sq;
-            dp.partial_cmp(&dq).unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|(i, _)| i)
+        .map(|(i, p)| (i, (*p - a).cross(&ab).norm() / ab_len))
+        .max_by(|(_, d0), (_, d1)| d0.total_cmp(d1))
 }
 
-/// Find the farthest point from the plane, excluding the given indices.
+/// Find the point farthest from the plane (on either side), excluding the
+/// given indices. `normal` must be a unit vector.
 fn farthest_point_excluding(
     points: &[Vec3],
     normal: Vec3,
@@ -510,8 +524,8 @@ fn farthest_point_excluding(
         .filter(|(i, _)| !exclude.contains(i))
         .max_by(|(_, a), (_, b)| {
             point_plane_distance(**a, normal, offset)
-                .partial_cmp(&point_plane_distance(**b, normal, offset))
-                .expect("operation should succeed")
+                .abs()
+                .total_cmp(&point_plane_distance(**b, normal, offset).abs())
         })
         .map(|(i, _)| i)
 }
@@ -705,57 +719,84 @@ fn nn_point_plane_distance(p: Vec3, n: Vec3, offset: f64) -> f64 {
 
 /// Compute the inertia tensor of a convex hull treated as a uniform solid.
 ///
-/// Uses the signed-volume tetrahedral decomposition method, integrating
-/// `I = ∫ρ(r²I - r⊗r)dV` over the hull volume.
+/// The tensor is taken about the centre of mass of the solid and expressed in the
+/// world axes. The hull is split into the tetrahedra spanned by each face and a
+/// reference point; the volume-weighted centroid of those tetrahedra is the
+/// centre of mass. About that point the second moments
+/// `S_ij = ∫ x_i x_j dV` of a tetrahedron with one vertex at the origin and the
+/// others at `a`, `b`, `c` are integrated exactly as
+/// `V / 20 · (a_i a_j + b_i b_j + c_i c_j + s_i s_j)` with `s = a + b + c`, and the
+/// inertia tensor is `ρ (tr(S) · 1 − S)` with the uniform density
+/// `ρ = mass / volume`.
+///
+/// Faces that wind towards the inside of the hull are flipped before the
+/// integration, so the result does not depend on the winding of the faces.
 ///
 /// # Arguments
 /// * `hull`   – convex hull structure.
 /// * `mass`   – total mass of the solid.
 ///
 /// # Returns
-/// The 3×3 inertia tensor as `[[f64;3\];3]`.
+/// The 3×3 inertia tensor as `[[f64;3\];3]`; all zeros for a hull without volume.
 pub fn hull_inertia_tensor(hull: &ConvexHull3DVec, mass: f64) -> [[f64; 3]; 3] {
-    let vol = hull.volume();
-    if vol < 1e-12 {
-        return [[0.0; 3]; 3];
-    }
-    let density = mass / vol;
-    let c = {
-        let sum: Vec3 = hull.vertices.iter().copied().sum();
-        sum / hull.vertices.len() as f64
+    const NO_INERTIA: [[f64; 3]; 3] = [[0.0; 3]; 3];
+    let Some(&origin) = hull.vertices.first() else {
+        return NO_INERTIA;
     };
-    let mut i_xx = 0.0f64;
-    let mut i_yy = 0.0f64;
-    let mut i_zz = 0.0f64;
-    let mut i_xy = 0.0f64;
-    let mut i_xz = 0.0f64;
-    let mut i_yz = 0.0f64;
 
-    for face in &hull.faces {
-        let a = hull.vertices[face[0]] - c;
-        let b = hull.vertices[face[1]] - c;
-        let cc = hull.vertices[face[2]] - c;
-        let tet_vol = a.dot(&b.cross(&cc)) / 6.0;
+    // Positions relative to the first vertex keep the arithmetic well scaled for
+    // hulls far from the origin. The vertex mean is strictly interior for a hull
+    // with volume and tells inward winding from outward winding.
+    let vertex_sum: Vec3 = hull.vertices.iter().copied().sum();
+    let interior = vertex_sum / hull.vertices.len() as f64 - origin;
+    let corners: Vec<[Vec3; 3]> = hull
+        .faces
+        .iter()
+        .map(|face| {
+            let a = hull.vertices[face[0]] - origin;
+            let mut b = hull.vertices[face[1]] - origin;
+            let mut c = hull.vertices[face[2]] - origin;
+            if (b - a).cross(&(c - a)).dot(&(interior - a)) > 0.0 {
+                std::mem::swap(&mut b, &mut c);
+            }
+            [a, b, c]
+        })
+        .collect();
 
-        // Use covariance integrals for the tetrahedron (origin, a, b, cc)
-        // Diagonal: I_xx ≈ (a²_y+a²_z + ...) * tet_vol / 10  (approximation)
-        let coeff = tet_vol / 10.0;
-        for p in &[a, b, cc] {
-            i_xx += coeff * (p.y * p.y + p.z * p.z);
-            i_yy += coeff * (p.x * p.x + p.z * p.z);
-            i_zz += coeff * (p.x * p.x + p.y * p.y);
-            i_xy -= coeff * p.x * p.y;
-            i_xz -= coeff * p.x * p.z;
-            i_yz -= coeff * p.y * p.z;
-        }
+    // Volume and centre of mass from the tetrahedra (origin, a, b, c).
+    let mut volume = 0.0f64;
+    let mut first_moment = Vec3::zeros();
+    for [a, b, c] in &corners {
+        let tet_volume = a.dot(&b.cross(c)) / 6.0;
+        volume += tet_volume;
+        first_moment += (a + b + c) * (tet_volume / 4.0);
+    }
+    let extent = hull
+        .vertices
+        .iter()
+        .map(|v| (v - origin).norm())
+        .fold(0.0f64, f64::max);
+    // Below round-off level the centre of mass is meaningless; non-finite input
+    // is rejected as well.
+    if !volume.is_finite() || volume <= 16.0 * f64::EPSILON * extent.powi(3) {
+        return NO_INERTIA;
+    }
+    let center_of_mass = first_moment / volume;
+
+    // Second moments about the centre of mass, tetrahedron by tetrahedron.
+    let mut second_moment = Mat3::zeros();
+    for [a, b, c] in &corners {
+        let (a, b, c) = (a - center_of_mass, b - center_of_mass, c - center_of_mass);
+        let weight = a.dot(&b.cross(&c)) / 120.0;
+        let s = a + b + c;
+        second_moment +=
+            (a * a.transpose() + b * b.transpose() + c * c.transpose() + s * s.transpose())
+                * weight;
     }
 
-    let s = density;
-    [
-        [i_xx * s, i_xy * s, i_xz * s],
-        [i_xy * s, i_yy * s, i_yz * s],
-        [i_xz * s, i_yz * s, i_zz * s],
-    ]
+    let density = mass / volume;
+    let inertia = (Mat3::identity() * second_moment.trace() - second_moment) * density;
+    std::array::from_fn(|i| std::array::from_fn(|j| inertia[(i, j)]))
 }
 
 // ---------------------------------------------------------------------------
@@ -832,6 +873,12 @@ fn closest_point_on_tri(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod robustness_tests;
+
+#[cfg(test)]
+mod inertia_tests;
 
 #[cfg(test)]
 mod tests {

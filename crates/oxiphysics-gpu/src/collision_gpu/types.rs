@@ -417,34 +417,14 @@ impl NarrowphaseGpuKernel {
     }
     /// Run GJK for two AABB shapes (CPU mock).
     ///
-    /// Returns `true` if the shapes intersect, along with the final simplex
-    /// distance (0.0 on intersection).
+    /// Returns `true` if the shapes intersect, along with the distance between
+    /// them (`0.0` on intersection).  Touching boxes intersect.  The distance
+    /// of separated boxes is the exact box-to-box distance
+    /// `‖max(0, b.min − a.max, a.min − b.max)‖`; if the GJK iteration is
+    /// inconclusive the exact box overlap test decides the verdict.
     pub fn gjk_intersect(&self, a: &AabbGpu, b: &AabbGpu) -> (bool, f32) {
-        let ca = a.centre();
-        let cb = b.centre();
-        let mut d = sub3f(ca, cb);
-        if len_sq3f(d) < 1e-9 {
-            d = [1.0, 0.0, 0.0];
-        }
-        let s0 = minkowski_support(a, b, d);
-        let mut simplex = vec![s0];
-        d = [-s0.v[0], -s0.v[1], -s0.v[2]];
-        for _ in 0..32 {
-            if len_sq3f(d) < 1e-12 {
-                return (true, 0.0);
-            }
-            let a_sup = minkowski_support(a, b, d);
-            if dot3f(a_sup.v, d) < 0.0 {
-                return (false, len3f(d));
-            }
-            simplex.push(a_sup);
-            let (intersecting, new_d) = update_simplex(&mut simplex);
-            if intersecting {
-                return (true, 0.0);
-            }
-            d = new_d;
-        }
-        (true, 0.0)
+        let outcome = aabb_gjk_query(a, b, GJK_MAX_ITERATIONS);
+        (outcome.intersecting, outcome.distance)
     }
     /// Dispatch narrowphase over a list of broadphase pairs and AABBs.
     pub fn dispatch(&self, pairs: &[CollisionPair], aabbs: &[AabbGpu]) -> Vec<ContactResult> {
@@ -626,16 +606,19 @@ impl GpuCollisionPipeline {
     /// 1. Rebuild the AABB tree.
     /// 2. Run SAP broadphase.
     /// 3. Run GJK narrowphase on each pair.
-    /// 4. Refresh contact cache; apply warmstart data.
-    /// 5. Update persistent manifolds.
+    /// 4. Refresh the contact cache, keyed by the body pair each surviving
+    ///    contact belongs to (the narrowphase drops broadphase pairs that do
+    ///    not touch, so contacts are *not* index-aligned with the pairs).
+    /// 5. Update persistent manifolds, applying warmstart data.
     /// 6. Age out stale cache entries.
     pub fn step(&mut self, aabbs: &[AabbGpu]) {
         self.aabb_tree.build(aabbs);
         self.broadphase.sweep_axis = GpuBroadphase::choose_best_axis(aabbs);
         let pairs = self.broadphase.dispatch(aabbs);
         self.contacts = self.narrowphase.dispatch(&pairs, aabbs);
-        for (pair, contact) in pairs.iter().zip(self.contacts.iter()) {
-            self.contact_cache.insert(pair, contact);
+        for contact in &self.contacts {
+            let pair = CollisionPair::new(contact.prim_a, contact.prim_b);
+            self.contact_cache.insert(&pair, contact);
         }
         self.update_manifolds();
         self.contact_cache.advance_frame();
@@ -993,7 +976,7 @@ impl GpuAabbTree {
 /// to compute exact contact information.
 #[derive(Debug, Default)]
 pub struct GpuNarrowphase {
-    /// Maximum GJK iterations before declaring intersection.
+    /// Maximum GJK iterations before the exact box overlap test takes over.
     pub max_iterations: usize,
     /// Stats from the most recent dispatch.
     pub stats: CollisionKernelStats,
@@ -1007,57 +990,23 @@ impl GpuNarrowphase {
         }
     }
     /// Run a GJK distance query for two `AabbGpu` shapes.
+    ///
+    /// The intersection verdict comes from GJK (falling back to the exact box
+    /// overlap test if the iteration budget [`max_iterations`](Self::max_iterations)
+    /// is exhausted).  For separated boxes `distance` is the exact box-to-box
+    /// distance, `closest_a` / `closest_b` realise it and `axis` is the unit
+    /// vector from `closest_b` to `closest_a`.  For intersecting boxes the
+    /// distance is `0`, the closest points are the box centres and `axis` is the
+    /// unit centre-to-centre direction (zero if the centres coincide).
     pub fn gjk_distance(&self, a: &AabbGpu, b: &AabbGpu) -> GjkResult {
-        let ca = a.centre();
-        let cb = b.centre();
-        let mut d = sub3f(ca, cb);
-        if len_sq3f(d) < 1.0e-9_f32 {
-            d = [1.0_f32, 0.0_f32, 0.0_f32];
-        }
-        let s0 = minkowski_support(a, b, d);
-        let mut simplex: Vec<SupportPoint> = vec![s0];
-        d = [-s0.v[0], -s0.v[1], -s0.v[2]];
-        for _ in 0..self.max_iterations {
-            if len_sq3f(d) < 1.0e-12_f32 {
-                return GjkResult {
-                    intersecting: true,
-                    distance: 0.0_f32,
-                    closest_a: ca,
-                    closest_b: cb,
-                    axis: norm3f(sub3f(ca, cb)),
-                };
-            }
-            let sup = minkowski_support(a, b, d);
-            if dot3f(sup.v, d) < 0.0_f32 {
-                let dist = len3f(d);
-                let axis = norm3f(d);
-                return GjkResult {
-                    intersecting: false,
-                    distance: dist,
-                    closest_a: aabb_support(a, axis),
-                    closest_b: aabb_support(b, [-axis[0], -axis[1], -axis[2]]),
-                    axis,
-                };
-            }
-            simplex.push(sup);
-            let (inter, new_d) = update_simplex(&mut simplex);
-            if inter {
-                return GjkResult {
-                    intersecting: true,
-                    distance: 0.0_f32,
-                    closest_a: ca,
-                    closest_b: cb,
-                    axis: norm3f(sub3f(ca, cb)),
-                };
-            }
-            d = new_d;
-        }
+        let outcome = aabb_gjk_query(a, b, self.max_iterations);
+        let axis = norm3f(sub3f(outcome.closest_a, outcome.closest_b));
         GjkResult {
-            intersecting: true,
-            distance: 0.0_f32,
-            closest_a: ca,
-            closest_b: cb,
-            axis: norm3f(sub3f(ca, cb)),
+            intersecting: outcome.intersecting,
+            distance: outcome.distance,
+            closest_a: outcome.closest_a,
+            closest_b: outcome.closest_b,
+            axis,
         }
     }
     /// Compute penetration depth from an overlapping AABB pair using SAT.

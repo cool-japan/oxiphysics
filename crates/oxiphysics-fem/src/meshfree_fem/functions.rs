@@ -2,6 +2,7 @@
 //
 // 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use super::boundary::{apply_lagrange_bc, apply_nitsche_bc, apply_penalty_bc};
 use super::types::{
     BcEnforcementMethod, ConvergencePoint, ConvergenceRate, ConvergenceStudySummary,
     CouplingInterface, CouplingMethod, CouplingNode, EfgMaterial, EfgResult, ErrorIndicator,
@@ -623,73 +624,32 @@ pub fn generate_voronoi_cells(nodes: &[Point2], _max_neighbours: usize) -> Vec<T
     }
     cells
 }
-/// Apply essential BCs via the penalty method to a dense stiffness matrix
-/// and force vector.
+/// Evaluate the MLS displacement field `u_h(x) = Σ_I φ_I(x) û_I` at `pt`.
 ///
-/// Adds `alpha * I` to the diagonal and `alpha * g` to the force at
-/// constrained DOFs.
-pub fn apply_penalty_bc(
-    stiffness: &mut [f64],
-    force: &mut [f64],
-    ndof: usize,
-    bcs: &[EssentialBc],
-    penalty: f64,
-) {
-    for bc in bcs {
-        let idx = bc.node * 2 + bc.dof;
-        if idx < ndof {
-            stiffness[idx * ndof + idx] += penalty;
-            force[idx] += penalty * bc.value;
-        }
-    }
-}
-/// Apply essential BCs via the Lagrange multiplier method.
+/// `params` holds the nodal parameters `û_I` (2 per node, as returned in
+/// [`EfgResult::displacements`]).  Because MLS shape functions are not
+/// interpolatory, `u_h(x_I)` differs from `û_I`: use this function whenever the
+/// displacement at a position is needed.
 ///
-/// Augments the system from (K, f) of size n to size (n + m) where m is
-/// the number of constraints. Returns the augmented system.
-pub fn apply_lagrange_bc(
-    stiffness: &[f64],
-    force: &[f64],
-    ndof: usize,
-    bcs: &[EssentialBc],
-) -> (Vec<f64>, Vec<f64>) {
-    let m = bcs.len();
-    let n_aug = ndof + m;
-    let mut k_aug = vec![0.0; n_aug * n_aug];
-    let mut f_aug = vec![0.0; n_aug];
-    for i in 0..ndof {
-        for j in 0..ndof {
-            k_aug[i * n_aug + j] = stiffness[i * ndof + j];
-        }
-        f_aug[i] = force[i];
+/// Returns `None` if `params` does not hold two values per node or the MLS shape
+/// functions are undefined at `pt` (outside the cloud or a singular moment
+/// matrix).
+pub fn evaluate_displacement_2d(
+    pt: Point2,
+    params: &[f64],
+    domain: &SupportDomain,
+    ktype: KernelType,
+) -> Option<[f64; 2]> {
+    if params.len() != 2 * domain.node_count() {
+        return None;
     }
-    for (c, bc) in bcs.iter().enumerate() {
-        let idx = bc.node * 2 + bc.dof;
-        if idx < ndof {
-            k_aug[(ndof + c) * n_aug + idx] = 1.0;
-            k_aug[idx * n_aug + ndof + c] = 1.0;
-            f_aug[ndof + c] = bc.value;
-        }
+    let shape = mls_shape_2d(pt, domain, ktype)?;
+    let mut u = [0.0; 2];
+    for (k, &node) in shape.neighbours.iter().enumerate() {
+        u[0] += shape.phi[k] * params[2 * node];
+        u[1] += shape.phi[k] * params[2 * node + 1];
     }
-    (k_aug, f_aug)
-}
-/// Apply essential BCs via Nitsche's method.
-///
-/// Modifies the stiffness matrix and force vector in place.
-pub fn apply_nitsche_bc(
-    stiffness: &mut [f64],
-    force: &mut [f64],
-    ndof: usize,
-    bcs: &[EssentialBc],
-    nitsche_param: f64,
-) {
-    for bc in bcs {
-        let idx = bc.node * 2 + bc.dof;
-        if idx < ndof {
-            stiffness[idx * ndof + idx] += nitsche_param;
-            force[idx] += nitsche_param * bc.value;
-        }
-    }
+    Some(u)
 }
 /// Compute stress at a single evaluation point from nodal displacements
 /// using MLS shape function derivatives and a plane-stress constitutive
@@ -973,9 +933,18 @@ pub fn solve_dense(stiffness: &[f64], force: &[f64], ndof: usize) -> Option<Vec<
 /// * `mat` — material properties
 /// * `ktype` — kernel function type
 /// * `body_force` — body force per unit volume
-/// * `bcs` — essential boundary conditions
+/// * `bcs` — essential boundary conditions (boundary points with normal and
+///   weight; see [`EssentialBc`] and [`super::boundary::essential_bcs_on_segment`])
 /// * `bc_method` — boundary condition enforcement method
-/// * `penalty` — penalty parameter (used for Penalty and Nitsche methods)
+/// * `penalty` — method parameter: for [`BcEnforcementMethod::Penalty`] the
+///   penalty `α` (stiffness per unit boundary length squared, large compared with
+///   the stiffness diagonal); for [`BcEnforcementMethod::Nitsche`] the
+///   dimensionless stabilisation factor `β` (about 10 – 100, see
+///   [`apply_nitsche_bc`]); ignored by [`BcEnforcementMethod::LagrangeMultiplier`]
+///
+/// The returned parameters are the MLS nodal parameters, not nodal displacements;
+/// evaluate the field with [`evaluate_displacement_2d`].  `None` is returned if
+/// the assembly, the boundary conditions or the dense solve fail.
 pub fn efg_analysis_2d(
     domain: &SupportDomain,
     cells: &[TriCell],
@@ -990,7 +959,7 @@ pub fn efg_analysis_2d(
     let ndof = domain.node_count() * 2;
     match bc_method {
         BcEnforcementMethod::Penalty => {
-            apply_penalty_bc(&mut stiffness, &mut force, ndof, bcs, penalty);
+            apply_penalty_bc(&mut stiffness, &mut force, domain, ktype, bcs, penalty).ok()?;
             let u = solve_dense(&stiffness, &force, ndof)?;
             Some(EfgResult {
                 displacements: u,
@@ -998,7 +967,7 @@ pub fn efg_analysis_2d(
             })
         }
         BcEnforcementMethod::LagrangeMultiplier => {
-            let (k_aug, f_aug) = apply_lagrange_bc(&stiffness, &force, ndof, bcs);
+            let (k_aug, f_aug) = apply_lagrange_bc(&stiffness, &force, domain, ktype, bcs).ok()?;
             let n_aug = ndof + bcs.len();
             let u_aug = solve_dense(&k_aug, &f_aug, n_aug)?;
             Some(EfgResult {
@@ -1007,7 +976,7 @@ pub fn efg_analysis_2d(
             })
         }
         BcEnforcementMethod::Nitsche => {
-            apply_nitsche_bc(&mut stiffness, &mut force, ndof, bcs, penalty);
+            apply_nitsche_bc(&mut stiffness, &mut force, domain, ktype, mat, bcs, penalty).ok()?;
             let u = solve_dense(&stiffness, &force, ndof)?;
             Some(EfgResult {
                 displacements: u,
@@ -1344,50 +1313,6 @@ mod tests {
     fn test_plane_stress_d_symmetric() {
         let d = plane_stress_d(200e9, 0.3);
         assert!((d[0][1] - d[1][0]).abs() < 1e-3);
-    }
-    #[test]
-    fn test_apply_penalty_bc() {
-        let ndof = 4;
-        let mut k = vec![0.0; ndof * ndof];
-        let mut f = vec![0.0; ndof];
-        let bcs = vec![EssentialBc {
-            node: 0,
-            dof: 0,
-            value: 1.0,
-        }];
-        apply_penalty_bc(&mut k, &mut f, ndof, &bcs, 1e10);
-        assert!(k[0] > 1e9);
-        assert!(f[0] > 1e9);
-    }
-    #[test]
-    fn test_apply_lagrange_bc() {
-        let ndof = 4;
-        let k = vec![1.0; ndof * ndof];
-        let f = vec![0.0; ndof];
-        let bcs = vec![EssentialBc {
-            node: 0,
-            dof: 0,
-            value: 2.0,
-        }];
-        let (k_aug, f_aug) = apply_lagrange_bc(&k, &f, ndof, &bcs);
-        assert_eq!(k_aug.len(), 25);
-        assert_eq!(f_aug.len(), 5);
-        assert!((f_aug[4] - 2.0).abs() < 1e-12);
-    }
-    #[test]
-    fn test_apply_nitsche_bc() {
-        let ndof = 4;
-        let mut k = vec![0.0; ndof * ndof];
-        let mut f = vec![0.0; ndof];
-        let bcs = vec![EssentialBc {
-            node: 1,
-            dof: 1,
-            value: 3.0,
-        }];
-        apply_nitsche_bc(&mut k, &mut f, ndof, &bcs, 1e8);
-        let idx = 2 + 1;
-        assert!(k[idx * ndof + idx] > 1e7);
-        assert!((f[idx] - 3e8).abs() < 1e-3);
     }
     #[test]
     fn test_stress_von_mises() {

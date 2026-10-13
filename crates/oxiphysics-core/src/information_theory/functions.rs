@@ -506,9 +506,30 @@ pub fn transfer_entropy(source: &[f64], target: &[f64], lag: usize) -> f64 {
     }
     te.max(0.0)
 }
-/// Conditional transfer entropy with a conditioning variable.
+/// Conditional transfer entropy T(X->Y|Z) with lag `lag`, in nats.
 ///
-/// T(X->Y|Z) estimated from time-series with lag and 8-bin histogram.
+/// The information that the past of the source X carries about the next value
+/// of the target Y beyond what the past of Y itself and the past of the
+/// conditioning series Z already provide:
+///
+/// T(X->Y|Z) = sum p(y_t, y_{t-l}, x_{t-l}, z_{t-l})
+///             * ln [ p(y_t | y_{t-l}, x_{t-l}, z_{t-l}) / p(y_t | y_{t-l}, z_{t-l}) ]
+///
+/// which is evaluated as
+/// `sum p4 * ln[ p4 * p(y_l, z_l) / ( p(y_t, y_l, z_l) * p(y_l, x_l, z_l) ) ]`
+/// from plug-in histogram estimates.  All three series are quantised into 8
+/// equally spaced bins over their pooled `[min, max]` range (the same scheme as
+/// [`transfer_entropy`]), and the joint 4-D histogram plus its three marginals
+/// are accumulated over the `n - lag` usable samples, where `n` is the length of
+/// the shortest input.
+///
+/// Unlike the difference `T(X->Y) - T(Z->Y)` of two bivariate transfer
+/// entropies, this captures synergy (for example `Y_t = X_{t-1} xor Z_{t-1}`
+/// has `T(X->Y) = 0` but `T(X->Y|Z) = ln 2`) and removes the apparent flow
+/// from X to Y that is only due to a common driver Z.
+///
+/// Returns 0 when `n <= lag + 1` or when all samples are (numerically)
+/// constant.
 pub fn conditional_transfer_entropy(
     source: &[f64],
     target: &[f64],
@@ -519,9 +540,60 @@ pub fn conditional_transfer_entropy(
     if n <= lag + 1 {
         return 0.0;
     }
-    let te_xy = transfer_entropy(source, target, lag);
-    let te_zy = transfer_entropy(cond, target, lag);
-    (te_xy - te_zy).max(0.0)
+    let bins = 8_usize;
+    let range = |series: &[f64]| {
+        series[..n]
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+                (lo.min(v), hi.max(v))
+            })
+    };
+    let (lo_x, hi_x) = range(source);
+    let (lo_y, hi_y) = range(target);
+    let (lo_z, hi_z) = range(cond);
+    let lo = lo_x.min(lo_y).min(lo_z);
+    let hi = hi_x.max(hi_y).max(hi_z);
+    if (hi - lo).abs() < 1e-12 {
+        return 0.0;
+    }
+    let bin_of = |v: f64| -> usize {
+        let idx = ((v - lo) / (hi - lo) * bins as f64) as usize;
+        idx.min(bins - 1)
+    };
+    let b2 = bins * bins;
+    let b3 = b2 * bins;
+    // Joint histogram indexed (y_t, y_l, x_l, z_l) and its marginals.
+    let mut p_joint = vec![0.0_f64; b3 * bins];
+    let mut p_yl_zl = vec![0.0_f64; b2];
+    let mut p_yt_yl_zl = vec![0.0_f64; b3];
+    let mut p_yl_xl_zl = vec![0.0_f64; b3];
+    let weight = 1.0 / (n - lag) as f64;
+    for t in lag..n {
+        let yt = bin_of(target[t]);
+        let yl = bin_of(target[t - lag]);
+        let xl = bin_of(source[t - lag]);
+        let zl = bin_of(cond[t - lag]);
+        p_joint[((yt * bins + yl) * bins + xl) * bins + zl] += weight;
+        p_yl_zl[yl * bins + zl] += weight;
+        p_yt_yl_zl[(yt * bins + yl) * bins + zl] += weight;
+        p_yl_xl_zl[(yl * bins + xl) * bins + zl] += weight;
+    }
+    let mut cte = 0.0_f64;
+    for (idx, &joint) in p_joint.iter().enumerate() {
+        if joint <= 0.0 {
+            continue;
+        }
+        let zl = idx % bins;
+        let xl = (idx / bins) % bins;
+        let yl = (idx / b2) % bins;
+        let yt = idx / b3;
+        // Every marginal contains the joint's sample, so none of them is zero.
+        let a = p_yl_zl[yl * bins + zl];
+        let b = p_yt_yl_zl[(yt * bins + yl) * bins + zl];
+        let c = p_yl_xl_zl[(yl * bins + xl) * bins + zl];
+        cte += joint * (joint * a / (b * c)).ln();
+    }
+    cte.max(0.0)
 }
 /// Shannon-Hartley channel capacity C = B * log2(1 + S/N), in bits/s.
 ///
@@ -921,21 +993,40 @@ pub fn fisher_rao_distance(p: &[f64], q: &[f64]) -> f64 {
         .sum();
     2.0 * bc.clamp(-1.0, 1.0).acos()
 }
-/// Fisher-Rao distance between two univariate Gaussians N(mu1, s1^2) and N(mu2, s2^2).
+/// Fisher-Rao (geodesic) distance between two univariate Gaussians
+/// N(mu1, s1^2) and N(mu2, s2^2).
 ///
-/// d = sqrt(2) * |arctan((mu2-mu1) / (sqrt(2) * s2)) - arctan((mu2-mu1) / (sqrt(2) * s1))|
-/// (simplified form for the 1D case on the (mu, sigma) manifold).
+/// The Fisher metric on the (mu, sigma) half-plane is
+/// ds^2 = (dmu^2 + 2 dsigma^2) / sigma^2, which is `2` times the Poincare
+/// metric of the upper half-plane in the coordinates (mu / sqrt(2), sigma).
+/// The exact geodesic distance is therefore
 ///
-/// Uses the exact formula: d^2 = 2*ln((s1^2+s2^2+(mu1-mu2)^2) / (2*s1*s2)).
+/// d = sqrt(2) * acosh(1 + ((mu1 - mu2)^2 / 2 + (s1 - s2)^2) / (2 * s1 * s2)).
+///
+/// For example d(N(0, 1), N(0, e)) = sqrt(2).  The inverse hyperbolic cosine is
+/// evaluated as `ln(1 + x + sqrt(x (x + 2)))` with `x = acosh_arg - 1`, which
+/// keeps full relative accuracy for nearby distributions where
+/// `acosh(1 + x)` would cancel catastrophically.
+///
+/// Negative standard deviations are interpreted by magnitude; a zero standard
+/// deviation (a degenerate distribution) gives an infinite distance.
 pub fn fisher_rao_gaussian(mu1: f64, sigma1: f64, mu2: f64, sigma2: f64) -> f64 {
     let s1 = sigma1.abs();
     let s2 = sigma2.abs();
     if s1 <= 0.0 || s2 <= 0.0 {
         return f64::INFINITY;
     }
-    let num = s1 * s1 + s2 * s2 + (mu1 - mu2).powi(2);
-    let den = 2.0 * s1 * s2;
-    (2.0 * (num / den).ln()).sqrt()
+    let dmu = mu1 - mu2;
+    let ds = s1 - s2;
+    // x = cosh(d / sqrt(2)) - 1
+    let x = (0.5 * dmu * dmu + ds * ds) / (2.0 * s1 * s2);
+    let hyperbolic = if x > 1.0e8 {
+        // acosh(1 + x) = ln(2) + ln(x) + O(1/x^2) without overflowing x * (x + 2).
+        std::f64::consts::LN_2 + x.ln_1p()
+    } else {
+        (x + (x * (x + 2.0)).sqrt()).ln_1p()
+    };
+    std::f64::consts::SQRT_2 * hyperbolic
 }
 /// Christoffel symbols of the first kind for the Fisher-Rao metric on the simplex.
 ///

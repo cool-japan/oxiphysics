@@ -140,6 +140,15 @@ pub fn compute_contact_points(a: &Obb, b: &Obb, sat_result: &SatResult) -> Vec<[
     contacts
 }
 /// Test an OBB against a sphere.
+///
+/// `contact_normal` points from the OBB towards the sphere centre (the outward
+/// normal of the penetrated box feature) and `contact_point` is the midpoint
+/// between the box-surface point the sphere penetrates through and the point of
+/// the sphere surface facing the box.
+///
+/// When the sphere centre lies inside the OBB the sphere leaves through the
+/// nearest face and `penetration_depth` is `radius + d`, where `d` is the
+/// distance from the centre to that face (the whole sphere has to clear it).
 pub fn obb_sphere_test(obb: &Obb, sphere_center: [f64; 3], radius: f64) -> Option<SatResult> {
     let diff = sub3_raw(sphere_center, obb.center);
     let local: [f64; 3] = [
@@ -158,20 +167,24 @@ pub fn obb_sphere_test(obb: &Obb, sphere_center: [f64; 3], radius: f64) -> Optio
         return None;
     }
     let dist = dist_sq.sqrt();
-    let penetration = radius - dist;
-    let closest_world = obb
-        .rotation
-        .iter()
-        .zip(clamped.iter())
-        .fold(obb.center, |acc, (&r, &c)| add3_raw(acc, scale3_raw(r, c)));
-    let normal = if dist > 1e-10 {
+    let to_world = |p: [f64; 3]| {
+        obb.rotation
+            .iter()
+            .zip(p.iter())
+            .fold(obb.center, |acc, (&r, &c)| add3_raw(acc, scale3_raw(r, c)))
+    };
+    // `surface_local` is the point of the box surface the sphere penetrates
+    // through, expressed in the box frame.
+    let (normal, surface_local, penetration) = if dist > 1e-10 {
+        let closest_world = to_world(clamped);
         let n = sub3_raw(sphere_center, closest_world);
         let n_len = len3_raw(n);
-        if n_len > 1e-10 {
+        let normal = if n_len > 1e-10 {
             scale3_raw(n, 1.0 / n_len)
         } else {
             [0.0, 1.0, 0.0]
-        }
+        };
+        (normal, clamped, radius - dist)
     } else {
         let best_i = obb
             .half_extents
@@ -186,9 +199,18 @@ pub fn obb_sphere_test(obb: &Obb, sphere_center: [f64; 3], radius: f64) -> Optio
             .map(|(i, _)| i)
             .unwrap_or(0);
         let sign = if local[best_i] >= 0.0 { 1.0 } else { -1.0 };
-        scale3_raw(obb.rotation[best_i], sign)
+        let face_distance = obb.half_extents[best_i] - local[best_i].abs();
+        let mut surface_local = local;
+        surface_local[best_i] = sign * obb.half_extents[best_i];
+        (
+            scale3_raw(obb.rotation[best_i], sign),
+            surface_local,
+            radius + face_distance,
+        )
     };
-    let contact_point = add3_raw(closest_world, scale3_raw(normal, penetration * 0.5));
+    let surface_point = to_world(surface_local);
+    let sphere_point = sub3_raw(sphere_center, scale3_raw(normal, radius));
+    let contact_point = scale3_raw(add3_raw(surface_point, sphere_point), 0.5);
     Some(SatResult {
         penetration_depth: penetration,
         contact_normal: normal,

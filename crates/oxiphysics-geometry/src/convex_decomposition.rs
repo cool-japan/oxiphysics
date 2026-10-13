@@ -12,6 +12,8 @@
 //! - Inertia tensor from convex hull (divergence theorem)
 //! - Hull erosion (inner hull / offset by margin)
 
+use crate::Result;
+
 // ─── Vec3 helpers (plain f64 arrays, no nalgebra) ──────────────────────────
 
 /// 3-component vector as \[f64; 3\].
@@ -74,6 +76,10 @@ pub fn neg(v: Vec3) -> Vec3 {
     [-v[0], -v[1], -v[2]]
 }
 
+mod acd_mesh;
+#[cfg(test)]
+mod acd_tests;
+
 // ─── ConvexHull3d ──────────────────────────────────────────────────────────
 
 /// A half-edge record: directed edge from `origin` to some vertex, belonging to `face`.
@@ -117,10 +123,18 @@ pub struct ConvexHull3d {
 impl ConvexHull3d {
     /// Build a convex hull from a set of 3D points using a simple incremental method.
     ///
-    /// Falls back to a robust but O(n²) approach for clarity.
+    /// The hull starts from a non-degenerate tetrahedron chosen from the
+    /// whole point set (so leading coplanar points are harmless) and grows
+    /// one point at a time, which costs O(n²) overall.  All input points are
+    /// kept in [`ConvexHull3d::vertices`]; the surface is described by
+    /// [`ConvexHull3d::triangles`] (outward, counter-clockwise).  The
+    /// tolerances scale with the extent of the point set.
+    ///
+    /// Points that span no volume (fewer than four points, or all points
+    /// coincident, collinear or coplanar, or a non-finite coordinate) have no
+    /// hull surface: the result then has no triangles, faces or half-edges
+    /// and zero volume.
     pub fn build(points: &[Vec3]) -> Self {
-        assert!(points.len() >= 4, "need at least 4 non-coplanar points");
-        // Use gift-wrapping / brute-force method
         let tris = incremental_hull(points);
         let vertices = points.to_vec();
         // Build half-edge structure
@@ -141,6 +155,25 @@ impl ConvexHull3d {
                 let v0 = self.vertices[tri[0]];
                 let signed_dist = dot(f.normal, sub(p, v0));
                 signed_dist <= tol
+            })
+        })
+    }
+
+    /// Check that every point lies on the hull boundary: within `tol` of at
+    /// least one facet plane, so that none is buried strictly inside the hull.
+    ///
+    /// Together with [`ConvexHull3d::all_points_inside_or_on`] this says that
+    /// the points are in convex position.  A hull without facets (degenerate
+    /// input) has no interior, so every point passes.
+    pub fn all_points_on_boundary(&self, points: &[Vec3], tol: f64) -> bool {
+        if self.faces.is_empty() {
+            return true;
+        }
+        points.iter().all(|&p| {
+            self.faces.iter().enumerate().any(|(fi, f)| {
+                let tri = &self.triangles[fi];
+                let v0 = self.vertices[tri[0]];
+                dot(f.normal, sub(p, v0)).abs() <= tol
             })
         })
     }
@@ -173,90 +206,196 @@ impl ConvexHull3d {
             .fold(f64::NEG_INFINITY, f64::max)
     }
 
-    /// Support point: the vertex maximising d·x.
+    /// Support point: the vertex maximising d·x (the origin for an empty hull).
     pub fn support_point(&self, direction: Vec3) -> Vec3 {
-        *self
-            .vertices
+        self.vertices
             .iter()
             .max_by(|&&a, &&b| {
                 dot(a, direction)
                     .partial_cmp(&dot(b, direction))
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
-            .expect("operation should succeed")
+            .copied()
+            .unwrap_or([0.0; 3])
     }
 }
 
-/// Incremental hull: O(n²·f) but correct for any non-degenerate point set.
+/// Relative tolerance of the incremental hull.
+///
+/// A point only sees a facet when it lies further than this fraction of the
+/// largest extent of the point set in front of the facet plane, and a seed
+/// vertex must be at least that far from the line (plane) through the
+/// previous seed vertices.
+const HULL_RELATIVE_TOLERANCE: f64 = 1e-10;
+
+/// Component-wise minimum and maximum of a non-empty point set, `None` if it
+/// is empty or has a non-finite coordinate.
+fn point_cloud_bounds(pts: &[Vec3]) -> Option<(Vec3, Vec3)> {
+    let first = *pts.first()?;
+    let mut lo = first;
+    let mut hi = first;
+    for p in pts {
+        for ((low, high), &c) in lo.iter_mut().zip(hi.iter_mut()).zip(p.iter()) {
+            if !c.is_finite() {
+                return None;
+            }
+            *low = low.min(c);
+            *high = high.max(c);
+        }
+    }
+    Some((lo, hi))
+}
+
+/// Index and value of the point that maximises `distance`.
+fn farthest(pts: &[Vec3], distance: impl Fn(Vec3) -> f64) -> Option<(usize, f64)> {
+    pts.iter()
+        .enumerate()
+        .map(|(i, &p)| (i, distance(p)))
+        .max_by(|x, y| x.1.total_cmp(&y.1))
+}
+
+/// Four affinely independent points to start the hull from, or `None` if the
+/// points are coincident, collinear or coplanar within `tolerance`.
+///
+/// The first two are the extremes along `axis` (the axis of largest extent),
+/// the third is the point farthest from the line through them and the fourth
+/// the point farthest from the plane through the three.
+fn seed_tetrahedron(pts: &[Vec3], axis: usize, tolerance: f64) -> Option<[usize; 4]> {
+    let mut lowest = 0_usize;
+    let mut highest = 0_usize;
+    for (i, p) in pts.iter().enumerate() {
+        if p[axis] < pts[lowest][axis] {
+            lowest = i;
+        }
+        if p[axis] > pts[highest][axis] {
+            highest = i;
+        }
+    }
+    let origin = pts[lowest];
+    let along = sub(pts[highest], origin);
+    let along_length = norm(along);
+    if lowest == highest || along_length <= tolerance {
+        return None;
+    }
+    let (third, line_distance) =
+        farthest(pts, |p| norm(cross(sub(p, origin), along)) / along_length)?;
+    if line_distance <= tolerance {
+        return None;
+    }
+    let normal = cross(along, sub(pts[third], origin));
+    let normal_length = norm(normal);
+    let (fourth, plane_distance) =
+        farthest(pts, |p| dot(normal, sub(p, origin)).abs() / normal_length)?;
+    if plane_distance <= tolerance {
+        return None;
+    }
+    Some([lowest, highest, third, fourth])
+}
+
+/// Incremental hull: O(n²·f).  The seed tetrahedron is chosen from the whole
+/// point set, so the order of the points (for example four leading coplanar
+/// points) does not matter.  Returns outward counter-clockwise triangles, or
+/// an empty list if the points span no volume.
 fn incremental_hull(pts: &[Vec3]) -> Vec<[usize; 3]> {
-    // Start with a tetrahedron from the first 4 points
-    let mut tris: Vec<[usize; 3]> = vec![[0, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]];
-    // Orient each face outward w.r.t. centroid
-    let centroid = {
-        let s = pts[0..4].iter().fold([0.0; 3], |acc, &v| add(acc, v));
-        scale(s, 0.25)
+    let Some((lo, hi)) = point_cloud_bounds(pts) else {
+        return Vec::new();
     };
+    let extents = sub(hi, lo);
+    let axis = if extents[0] >= extents[1] && extents[0] >= extents[2] {
+        0
+    } else if extents[1] >= extents[2] {
+        1
+    } else {
+        2
+    };
+    let extent = extents[axis];
+    if extent <= 0.0 || !extent.is_finite() {
+        return Vec::new();
+    }
+    let tolerance = HULL_RELATIVE_TOLERANCE * extent;
+    let Some(seed) = seed_tetrahedron(pts, axis, tolerance) else {
+        return Vec::new();
+    };
+    // The centroid of the seed tetrahedron lies strictly inside every hull
+    // grown from it, so it fixes the outward side of every facet.
+    let centroid = scale(seed.iter().fold([0.0; 3], |acc, &i| add(acc, pts[i])), 0.25);
+    let [s0, s1, s2, s3] = seed;
+    let mut tris: Vec<[usize; 3]> = vec![[s0, s1, s2], [s0, s3, s1], [s0, s2, s3], [s1, s3, s2]];
     for tri in &mut tris {
         orient_outward(pts, tri, centroid);
     }
 
-    // Add remaining points
-    for i in 4..pts.len() {
-        let p = pts[i];
-        // Find visible faces
+    for (i, &p) in pts.iter().enumerate() {
+        if seed.contains(&i) {
+            continue;
+        }
+        // Facets that see the point.
         let visible: Vec<bool> = tris
             .iter()
-            .map(|tri| {
-                let n = face_normal(pts, tri);
-                let v0 = pts[tri[0]];
-                dot(n, sub(p, v0)) > 1e-12
-            })
+            .map(|tri| dot(face_normal(pts, tri), sub(p, pts[tri[0]])) > tolerance)
             .collect();
+        if !visible.contains(&true) {
+            continue;
+        }
 
-        // Collect horizon edges (edges between visible and non-visible faces)
+        // Horizon: directed edges of visible facets whose neighbour across
+        // the edge does not see the point.
         let mut horizon: Vec<(usize, usize)> = Vec::new();
-        for (fi, &vis) in visible.iter().enumerate() {
-            if vis {
-                let tri = tris[fi];
-                for k in 0..3 {
-                    let a = tri[k];
-                    let b = tri[(k + 1) % 3];
-                    // Check if twin face is non-visible
-                    let twin_visible = tris.iter().enumerate().any(|(fj, &t)| {
-                        fj != fi && t.contains(&b) && t.contains(&a) && visible[fj]
-                    });
-                    if !twin_visible {
-                        horizon.push((a, b));
-                    }
+        for (fi, tri) in tris.iter().enumerate() {
+            if !visible[fi] {
+                continue;
+            }
+            for k in 0..3 {
+                let a = tri[k];
+                let b = tri[(k + 1) % 3];
+                let twin_visible = tris
+                    .iter()
+                    .enumerate()
+                    .any(|(fj, t)| fj != fi && visible[fj] && t.contains(&a) && t.contains(&b));
+                if !twin_visible {
+                    horizon.push((a, b));
                 }
             }
         }
-        // Remove visible faces
-        let mut new_tris: Vec<[usize; 3]> = tris
+
+        // Replace the visible facets by a cone from the point to the horizon.
+        let mut next: Vec<[usize; 3]> = tris
             .iter()
             .zip(visible.iter())
-            .filter(|&(_, v)| !v)
+            .filter(|&(_, &sees)| !sees)
             .map(|(&t, _)| t)
             .collect();
-        // Add new faces from horizon edges
         for (a, b) in horizon {
+            // A point on the line through the edge cannot form a facet with it.
+            let edge = sub(pts[b], pts[a]);
+            if norm(cross(edge, sub(p, pts[a]))) <= tolerance * norm(edge) {
+                continue;
+            }
             let mut tri = [a, b, i];
             orient_outward(pts, &mut tri, centroid);
-            new_tris.push(tri);
+            next.push(tri);
         }
-        if !new_tris.is_empty() {
-            tris = new_tris;
-        }
+        tris = next;
     }
     tris
 }
 
-/// Compute outward face normal.
+/// Unit normal of the triangle, following its winding (the zero vector for a
+/// zero-area triangle).
+///
+/// Unlike [`normalize`] this has no absolute length threshold, so the result
+/// does not depend on the scale of the point set.
 fn face_normal(pts: &[Vec3], tri: &[usize; 3]) -> Vec3 {
     let a = pts[tri[0]];
     let b = pts[tri[1]];
     let c = pts[tri[2]];
-    normalize(cross(sub(b, a), sub(c, a)))
+    let normal = cross(sub(b, a), sub(c, a));
+    let length = norm(normal);
+    if length > 0.0 && length.is_finite() {
+        scale(normal, 1.0 / length)
+    } else {
+        [0.0; 3]
+    }
 }
 
 /// Flip winding if face points inward w.r.t. centroid.
@@ -287,11 +426,7 @@ fn build_half_edge_structure(
                 face: fi,
             });
         }
-        // Compute normal
-        let a = verts[tri[0]];
-        let b = verts[tri[1]];
-        let c = verts[tri[2]];
-        let normal = normalize(cross(sub(b, a), sub(c, a)));
+        let normal = face_normal(verts, tri);
         faces.push(HullFace { edge: base, normal });
     }
     // Pair twins (O(n²))
@@ -322,10 +457,16 @@ fn build_half_edge_structure(
 #[derive(Debug, Clone)]
 pub struct AcdConfig {
     /// Maximum concavity threshold \[same units as mesh\]
+    ///
+    /// A part is accepted once the deepest gap between its convex hull and
+    /// the real surface is at most this large.
     pub max_concavity: f64,
-    /// Maximum number of convex parts
+    /// Maximum number of convex parts (at least 1)
     pub max_parts: usize,
     /// Minimum volume for a sub-part (ignore tiny fragments)
+    ///
+    /// Parts whose hull volume is below this fraction (in `[0, 1]`) of the
+    /// volume of the convex hull of the whole mesh are discarded.
     pub min_volume_fraction: f64,
 }
 
@@ -346,23 +487,27 @@ impl AcdConfig {
     }
 }
 
-/// A convex sub-part from ACD: stores vertex indices into the original mesh.
+/// A convex sub-part of a decomposition: the convex hull of one cluster.
 #[derive(Debug, Clone)]
 pub struct ConvexPart {
-    /// Vertex positions of this sub-part
+    /// Vertex positions of this sub-part (hull vertices for ACD)
     pub vertices: Vec<Vec3>,
     /// Concavity of this part (0 = perfectly convex)
     pub concavity: f64,
-    /// Triangular face indices into `vertices` (V-HACD: populated; HACD: empty).
+    /// Outward counter-clockwise hull triangles as indices into `vertices`
+    /// (empty for parts built with [`ConvexPart::new`]).
     pub indices: Vec<[u32; 3]>,
-    /// Approximate volume of this part (V-HACD: hull volume; HACD: 0.0).
+    /// Volume of the hull of this part (0.0 for parts built with
+    /// [`ConvexPart::new`]).
     pub volume: f64,
-    /// Centroid of this part.
+    /// Centroid of the hull solid of this part ([0, 0, 0] for parts built
+    /// with [`ConvexPart::new`]).
     pub centroid: Vec3,
 }
 
 impl ConvexPart {
-    /// Create a ConvexPart from vertices (HACD path; indices/volume/centroid default).
+    /// Create a ConvexPart from bare vertices: no hull triangles, zero concavity,
+    /// volume 0 and centroid at the origin.
     pub fn new(vertices: Vec<Vec3>) -> Self {
         let concavity = 0.0;
         Self {
@@ -374,13 +519,19 @@ impl ConvexPart {
         }
     }
 
-    /// Rough convexity check: all vertices on or inside own convex hull.
+    /// Check that the vertices form a convex polytope: every vertex lies on
+    /// the boundary of the convex hull of all the vertices (within `tol`), so
+    /// none of them is buried inside it.
+    ///
+    /// Fewer than four vertices, and vertex sets that span no volume, count
+    /// as convex.
     pub fn is_convex(&self, tol: f64) -> bool {
         if self.vertices.len() < 4 {
             return true;
         }
         let hull = ConvexHull3d::build(&self.vertices);
         hull.all_points_inside_or_on(&self.vertices, tol)
+            && hull.all_points_on_boundary(&self.vertices, tol)
     }
 }
 
@@ -403,7 +554,14 @@ impl ConvexParts {
     }
 }
 
-/// Approximate Convex Decomposition: splits a point cloud / mesh into convex parts.
+/// Approximate Convex Decomposition: splits a closed triangle mesh into
+/// parts that are each close to their own convex hull.
+///
+/// Concavity is measured against the mesh surface (how deep the hull of a
+/// part bulges over the real surface), and the part with the largest
+/// concavity is split by the best of several candidate planes until every
+/// part is below [`AcdConfig::max_concavity`] or [`AcdConfig::max_parts`] is
+/// reached; see [`ApproxConvexDecomp::decompose`].
 #[derive(Debug, Clone)]
 pub struct ApproxConvexDecomp {
     /// Algorithm configuration
@@ -429,134 +587,62 @@ impl ApproxConvexDecomp {
         Self { config }
     }
 
-    /// Decompose a set of vertices into convex parts.
+    /// Decompose the triangle mesh `(vertices, triangles)` into convex parts.
     ///
-    /// Simple HACD approximation: iteratively compute convex hull, find the point with
-    /// maximum concavity, split the set, repeat until all parts are convex or
-    /// `max_parts` is reached.
-    pub fn decompose(&self, vertices: &[Vec3]) -> ConvexParts {
-        let mut pending: Vec<Vec<Vec3>> = vec![vertices.to_vec()];
-        let mut results: Vec<ConvexPart> = Vec::new();
-
-        while !pending.is_empty() && results.len() < self.config.max_parts {
-            let cluster = pending.pop().expect("collection should not be empty");
-            if cluster.len() < 4 {
-                results.push(ConvexPart::new(cluster));
-                continue;
-            }
-            let hull = ConvexHull3d::build(&cluster);
-            let concavity = self.max_concavity_of(&cluster, &hull);
-            if concavity <= self.config.max_concavity
-                || results.len() + pending.len() + 1 >= self.config.max_parts
-            {
-                let mut part = ConvexPart::new(cluster);
-                part.concavity = concavity;
-                results.push(part);
-            } else {
-                // Split at the point with maximum concavity
-                let (left, right) = self.split_at_max_concavity(&cluster, &hull);
-                let small_left = left.len() < 4;
-                let small_right = right.len() < 4;
-                if !small_left {
-                    pending.push(left);
-                }
-                if !small_right {
-                    pending.push(right);
-                }
-                if small_left || small_right {
-                    let mut part = ConvexPart::new(cluster);
-                    part.concavity = concavity;
-                    results.push(part);
-                }
-            }
-        }
-        // Drain remaining pending as-is
-        for cluster in pending {
-            results.push(ConvexPart::new(cluster));
-        }
-        ConvexParts { parts: results }
+    /// The mesh should be closed (watertight); either triangle winding is
+    /// accepted.  A part of the decomposition is the piece of the solid cut
+    /// out by the split planes chosen so far, represented by the mesh
+    /// triangles clipped to it; the result replaces each part by its convex
+    /// hull.
+    ///
+    /// The *concavity* of a part measures how far its convex hull sticks out
+    /// beyond the part: it is the largest distance from a probe point on a
+    /// hull facet to the part, where the probes form a barycentric grid on
+    /// every facet (so the value is a sampled lower bound of the exact
+    /// one-sided Hausdorff distance).  Probes that lie on the mesh surface or
+    /// inside the solid, which includes the planar faces created by earlier
+    /// cuts, are at distance zero.
+    ///
+    /// Parts are split, worst first, until every part is below
+    /// [`AcdConfig::max_concavity`] or [`AcdConfig::max_parts`] is reached.
+    /// A part is split by the candidate plane for which the concavities of
+    /// the two children add up to the least (ties go to the smaller total
+    /// hull volume).  The candidates have the coordinate axes or the
+    /// principal axes of the part as normal and pass through the most concave
+    /// point (the surface point nearest to the worst probe) or through the
+    /// hull centroid; the planes of the mesh face nearest to the worst probe
+    /// and of the faces that share a corner with it (the extensions of the
+    /// walls of a notch) are tried as well.
+    ///
+    /// Every returned part is the convex hull of its cluster, with the hull
+    /// triangles in [`ConvexPart::indices`] and the hull volume and centroid
+    /// filled in.  Parts below [`AcdConfig::min_volume_fraction`] of the
+    /// volume of the hull of the whole mesh are dropped.  A part whose
+    /// [`ConvexPart::concavity`] still exceeds [`AcdConfig::max_concavity`]
+    /// signals that `max_parts` was reached (or no plane could improve it).
+    ///
+    /// # Performance
+    ///
+    /// Every candidate plane of every split measures the concavity of both
+    /// children against their clipped triangles, which costs time
+    /// proportional to the number of hull facets times the number of
+    /// triangles.  The method is meant for offline preparation of collision
+    /// meshes with up to a few thousand triangles.
+    ///
+    /// # Errors
+    ///
+    /// * [`InvalidMesh`](crate::Error::InvalidMesh) for an empty mesh or a
+    ///   non-finite vertex,
+    /// * [`IndexOutOfBounds`](crate::Error::IndexOutOfBounds) for a triangle
+    ///   index past `vertices`,
+    /// * [`DegenerateGeometry`](crate::Error::DegenerateGeometry) if the mesh
+    ///   spans no volume,
+    /// * [`OutOfRange`](crate::Error::OutOfRange) for an invalid configuration
+    ///   (`max_parts` of zero, negative or non-finite `max_concavity`, or
+    ///   `min_volume_fraction` outside `[0, 1]`).
+    pub fn decompose(&self, vertices: &[Vec3], triangles: &[[usize; 3]]) -> Result<ConvexParts> {
+        acd_mesh::decompose_mesh(&self.config, vertices, triangles)
     }
-
-    /// Maximum distance from any mesh vertex to its convex hull (concavity metric).
-    fn max_concavity_of(&self, pts: &[Vec3], hull: &ConvexHull3d) -> f64 {
-        pts.iter()
-            .map(|&p| self.signed_distance_to_hull(p, hull))
-            .fold(0.0_f64, f64::max)
-    }
-
-    /// Approximate signed distance from point p to the convex hull (positive = outside).
-    fn signed_distance_to_hull(&self, p: Vec3, hull: &ConvexHull3d) -> f64 {
-        hull.faces
-            .iter()
-            .enumerate()
-            .map(|(fi, f)| {
-                let v0 = hull.vertices[hull.triangles[fi][0]];
-                dot(f.normal, sub(p, v0))
-            })
-            .fold(f64::NEG_INFINITY, f64::max)
-    }
-
-    /// Split the point set into two halves along the axis with highest variance.
-    fn split_at_max_concavity(&self, pts: &[Vec3], hull: &ConvexHull3d) -> (Vec<Vec3>, Vec<Vec3>) {
-        // Find the point furthest from the hull
-        let (_, split_pt) = pts
-            .iter()
-            .map(|&p| (self.signed_distance_to_hull(p, hull), p))
-            .fold((f64::NEG_INFINITY, pts[0]), |best, curr| {
-                if curr.0 > best.0 { curr } else { best }
-            });
-
-        // Split plane: through split_pt along the axis of max variance
-        let (axis, median) = principal_axis_median(pts);
-        let mut split_used = false;
-        let left: Vec<Vec3> = pts
-            .iter()
-            .filter(|&&p| {
-                if p[axis] < median {
-                    true
-                } else if p == split_pt && !split_used {
-                    split_used = true;
-                    true
-                } else {
-                    false
-                }
-            })
-            .copied()
-            .collect();
-        let right: Vec<Vec3> = pts
-            .iter()
-            .filter(|&&p| p[axis] >= median && p != split_pt)
-            .copied()
-            .collect();
-        (left, right)
-    }
-}
-
-/// Returns (axis index 0..2, median value) for principal axis split.
-fn principal_axis_median(pts: &[Vec3]) -> (usize, f64) {
-    let n = pts.len() as f64;
-    let mean: Vec3 = {
-        let s = pts.iter().fold([0.0; 3], |acc, &v| add(acc, v));
-        scale(s, 1.0 / n)
-    };
-    let var: [f64; 3] = {
-        let mut v = [0.0; 3];
-        for &p in pts {
-            for k in 0..3 {
-                v[k] += (p[k] - mean[k]).powi(2);
-            }
-        }
-        v
-    };
-    let axis = if var[0] >= var[1] && var[0] >= var[2] {
-        0
-    } else if var[1] >= var[2] {
-        1
-    } else {
-        2
-    };
-    let median = mean[axis];
-    (axis, median)
 }
 
 // ─── SupportFunction ──────────────────────────────────────────────────────
@@ -582,17 +668,18 @@ impl SupportFunction {
             .fold(f64::NEG_INFINITY, f64::max)
     }
 
-    /// Support point: vertex realising the maximum.
+    /// Support point: vertex realising the maximum (the origin when there are
+    /// no vertices).
     pub fn support_point(&self, direction: Vec3) -> Vec3 {
-        *self
-            .vertices
+        self.vertices
             .iter()
             .max_by(|&&a, &&b| {
                 dot(a, direction)
                     .partial_cmp(&dot(b, direction))
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
-            .expect("operation should succeed")
+            .copied()
+            .unwrap_or([0.0; 3])
     }
 }
 
@@ -655,12 +742,30 @@ impl MinkowskiSum {
 
 // ─── GjkDistance ─────────────────────────────────────────────────────────
 
-/// GJK distance computation between two convex shapes.
+/// GJK distance computation between two convex polytopes.
+///
+/// Implements the Gilbert–Johnson–Keerthi algorithm on the Minkowski
+/// difference `A ⊖ B = { a − b }` of the two vertex sets.  The distance
+/// between the hulls equals the distance from the origin to `A ⊖ B`.  Each
+/// iteration keeps a simplex of at most four configuration-space points, finds
+/// the point `v` of that simplex closest to the origin (dropping vertices that
+/// carry zero weight), and asks for the support point of `A ⊖ B` in the
+/// direction `−v`.  The loop stops when that support point cannot improve on
+/// `v` (the lower bound meets the upper bound `|v|`), when the origin lies in
+/// a tetrahedron (the hulls overlap) or when `max_iter` is reached.
 #[derive(Debug, Clone)]
 pub struct GjkDistance {
-    /// Maximum number of iterations
+    /// Maximum number of iterations (support-point evaluations).
+    ///
+    /// If the limit is hit before convergence the current upper bound `|v|`
+    /// on the distance is returned.
     pub max_iter: usize,
-    /// Convergence tolerance
+    /// Relative accuracy of the returned distance.
+    ///
+    /// The search stops when the GJK lower bound is within this fraction of
+    /// the current distance estimate; shapes closer than `tolerance` times
+    /// the size of their Minkowski difference are reported as touching
+    /// (distance `0.0`).
     pub tolerance: f64,
 }
 
@@ -682,93 +787,244 @@ impl GjkDistance {
         }
     }
 
-    /// Compute the minimum distance between two convex shapes given their support functions.
+    /// Compute the minimum Euclidean distance between the convex hulls of two
+    /// vertex sets.
     ///
-    /// Returns 0.0 if they intersect.
+    /// * Returns `0.0` if the hulls overlap or touch (GJK cannot report the
+    ///   penetration depth; use an EPA-style algorithm for that).
+    /// * Returns `f64::INFINITY` if either vertex set is empty.
+    /// * Returns `f64::NAN` if any vertex has a non-finite coordinate.
     pub fn distance(&self, a: &SupportFunction, b: &SupportFunction) -> f64 {
-        // CSO support function: support of A - B in direction d is s_A(d) - s_B(-d)
-        let cso_support = |d: Vec3| -> Vec3 { sub(a.support_point(d), b.support_point(neg(d))) };
-
-        let mut dir = [1.0, 0.0, 0.0_f64];
-        let mut simplex: Vec<Vec3> = Vec::with_capacity(4);
-        let first = cso_support(dir);
-        simplex.push(first);
-        dir = neg(first);
+        if a.vertices.is_empty() || b.vertices.is_empty() {
+            return f64::INFINITY;
+        }
+        let all_finite = a
+            .vertices
+            .iter()
+            .chain(b.vertices.iter())
+            .all(|v| v.iter().all(|c| c.is_finite()));
+        if !all_finite {
+            return f64::NAN;
+        }
+        // Support point of the Minkowski difference A ⊖ B in direction d:
+        // s_A(d) − s_B(−d).
+        let cso_support = |d: Vec3| -> Vec3 {
+            sub(
+                farthest_vertex(&a.vertices, d),
+                farthest_vertex(&b.vertices, neg(d)),
+            )
+        };
+        let tol = self.tolerance.max(0.0);
+        let first = cso_support([1.0, 0.0, 0.0]);
+        let mut simplex: [Vec3; 4] = [first; 4];
+        let mut simplex_len = 1_usize;
+        let mut closest = first;
+        let mut extent_sq = dot(first, first);
 
         for _ in 0..self.max_iter {
-            if norm(dir) < self.tolerance {
+            let closest_sq = dot(closest, closest);
+            // The origin lies in (or on the boundary of) A ⊖ B.
+            if closest_sq <= tol * tol * extent_sq {
                 return 0.0;
             }
-            let a_pt = cso_support(normalize(dir));
-            if dot(a_pt, normalize(dir)) < dot(simplex[0], normalize(dir)) - self.tolerance {
-                // No further progress – not intersecting
-                break;
+            let w = cso_support(neg(closest));
+            extent_sq = extent_sq.max(dot(w, w));
+            // v·w = min over A ⊖ B of v·x, so (|v|² − v·w) / |v| bounds the
+            // remaining error of the estimate |v| from above.
+            if closest_sq - dot(closest, w) <= tol * closest_sq {
+                return closest_sq.sqrt();
             }
-            simplex.push(a_pt);
-            let (new_simplex, new_dir, contains_origin) = nearest_simplex(simplex.clone());
-            simplex = new_simplex;
-            if contains_origin {
+            // A support point that is already in the simplex cannot improve it.
+            if simplex[..simplex_len].contains(&w) {
+                return closest_sq.sqrt();
+            }
+            if simplex_len == simplex.len() {
+                // A full tetrahedron survived the reduction: the origin is in it.
                 return 0.0;
             }
-            dir = new_dir;
+            simplex[simplex_len] = w;
+            simplex_len += 1;
+            let (new_closest, kept, kept_len) = closest_point_on_simplex(&simplex[..simplex_len]);
+            if dot(new_closest, new_closest) >= closest_sq {
+                // Rounding stall: the estimate can no longer decrease.
+                return closest_sq.sqrt();
+            }
+            simplex = kept;
+            simplex_len = kept_len;
+            closest = new_closest;
         }
-        norm(dir)
+        norm(closest)
     }
 }
 
-/// GJK nearest-simplex subroutine; returns (new simplex, new direction, origin_contained).
-fn nearest_simplex(simplex: Vec<Vec3>) -> (Vec<Vec3>, Vec3, bool) {
-    match simplex.len() {
-        1 => {
-            let a = simplex[0];
-            (simplex, neg(a), false)
-        }
-        2 => {
-            let (b, a) = (simplex[0], simplex[1]);
-            let ab = sub(b, a);
-            let ao = neg(a);
-            if dot(ab, ao) > 0.0 {
-                let dir = sub(ab, scale(a, dot(ab, ao) / dot(ab, ab)));
-                (vec![b, a], dir, false)
-            } else {
-                (vec![a], ao, false)
-            }
-        }
-        3 => {
-            let (c, b, a) = (simplex[0], simplex[1], simplex[2]);
-            let ab = sub(b, a);
-            let ac = sub(c, a);
-            let ao = neg(a);
-            let abc = cross(ab, ac);
-            if dot(cross(abc, ac), ao) > 0.0 {
-                (
-                    vec![c, a],
-                    sub(ac, scale(a, dot(ac, ao) / dot(ac, ac))),
-                    false,
-                )
-            } else if dot(cross(ab, abc), ao) > 0.0 {
-                (
-                    vec![b, a],
-                    sub(ab, scale(a, dot(ab, ao) / dot(ab, ab))),
-                    false,
-                )
-            } else if dot(abc, ao) > 0.0 {
-                (vec![c, b, a], abc, false)
-            } else {
-                (vec![b, c, a], neg(abc), false)
-            }
-        }
-        _ => {
-            // Tetrahedron: just check if origin is inside (rough)
-            let origin = [0.0; 3];
-            let centroid = scale(simplex.iter().fold([0.0; 3], |acc, &v| add(acc, v)), 0.25);
-            let dir = sub(origin, centroid);
-            if norm(dir) < 1e-12 {
-                return (simplex, [0.0; 3], true);
-            }
-            (simplex, dir, false)
+/// Vertex with the largest projection on `direction` (first one on ties).
+fn farthest_vertex(vertices: &[Vec3], direction: Vec3) -> Vec3 {
+    let mut best = vertices.first().copied().unwrap_or([0.0; 3]);
+    let mut best_dot = dot(best, direction);
+    for &v in vertices.iter().skip(1) {
+        let d = dot(v, direction);
+        if d > best_dot {
+            best_dot = d;
+            best = v;
         }
     }
+    best
+}
+
+/// Point of the simplex `conv(points)` (at most four points) closest to the
+/// origin, together with the minimal sub-simplex that carries it.
+///
+/// Every face of the simplex (every non-empty subset of the points) is tested:
+/// the closest point of the face's affine hull is computed from the normal
+/// equations and accepted when all barycentric weights are non-negative.  The
+/// accepted candidate with the smallest norm is the closest point of the whole
+/// simplex.  Faces are visited in order of increasing dimension, so a vertex
+/// whose weight is zero is never kept.
+///
+/// Returns `(closest point, kept vertices, number of kept vertices)`.
+fn closest_point_on_simplex(points: &[Vec3]) -> (Vec3, [Vec3; 4], usize) {
+    let n = points.len().min(4);
+    let mut best_point = points.first().copied().unwrap_or([0.0; 3]);
+    let mut best_sq = dot(best_point, best_point);
+    let mut best_mask: u8 = 1;
+    for face_size in 1..=n {
+        for mask in 1_u8..(1_u8 << n) {
+            if mask.count_ones() as usize != face_size {
+                continue;
+            }
+            if let Some(candidate) = closest_point_on_face(points, mask) {
+                let candidate_sq = dot(candidate, candidate);
+                if candidate_sq < best_sq {
+                    best_sq = candidate_sq;
+                    best_point = candidate;
+                    best_mask = mask;
+                }
+            }
+        }
+    }
+    let mut kept = [[0.0_f64; 3]; 4];
+    let mut kept_len = 0_usize;
+    for (i, &p) in points.iter().take(n).enumerate() {
+        if best_mask & (1_u8 << i) != 0 {
+            kept[kept_len] = p;
+            kept_len += 1;
+        }
+    }
+    (best_point, kept, kept_len)
+}
+
+/// Closest point to the origin of the affine hull of the face selected by
+/// `mask` (bit `i` selects `points[i]`), if it lies inside the face.
+///
+/// Returns `None` when the selected points are affinely dependent (the normal
+/// equations are singular) or when the closest point of the hull falls
+/// outside the face (a negative barycentric weight).
+fn closest_point_on_face(points: &[Vec3], mask: u8) -> Option<Vec3> {
+    // Barycentric weights below this bound are rounding noise, not geometry.
+    const WEIGHT_SLACK: f64 = 1e-12;
+    let mut idx = [0_usize; 4];
+    let mut k = 0_usize;
+    for i in 0..points.len().min(4) {
+        if mask & (1_u8 << i) != 0 {
+            idx[k] = i;
+            k += 1;
+        }
+    }
+    if k == 0 {
+        return None;
+    }
+    let base = points[idx[0]];
+    if k == 1 {
+        return Some(base);
+    }
+    // Minimise |base + Σ t_j e_j|² over the edge vectors e_j = p_j − base:
+    // (EᵀE) t = −Eᵀ base.
+    let m = k - 1;
+    let mut edges = [[0.0_f64; 3]; 3];
+    for (edge, &i) in edges.iter_mut().zip(idx[1..k].iter()) {
+        *edge = sub(points[i], base);
+    }
+    let mut gram = [[0.0_f64; 3]; 3];
+    let mut rhs = [0.0_f64; 3];
+    for (i, &edge_i) in edges.iter().enumerate().take(m) {
+        for (j, &edge_j) in edges.iter().enumerate().take(m) {
+            gram[i][j] = dot(edge_i, edge_j);
+        }
+        rhs[i] = -dot(edge_i, base);
+    }
+    let t = solve_gram_system(&gram, &rhs, m)?;
+    let sum_t: f64 = t[..m].iter().sum();
+    let mut weights = [0.0_f64; 4];
+    weights[0] = 1.0 - sum_t;
+    weights[1..k].copy_from_slice(&t[..m]);
+    if weights[..k].iter().any(|&w| w < -WEIGHT_SLACK) {
+        return None;
+    }
+    // Clamp rounding noise and renormalise so the result is a genuine convex
+    // combination of the face vertices (hence never closer than the true
+    // closest point).
+    let total: f64 = weights[..k].iter().map(|w| w.max(0.0)).sum();
+    if total <= 0.0 {
+        return None;
+    }
+    let mut point = [0.0_f64; 3];
+    for (&w, &i) in weights[..k].iter().zip(idx[..k].iter()) {
+        point = add(point, scale(points[i], w.max(0.0) / total));
+    }
+    Some(point)
+}
+
+/// Solve the `m × m` (m ≤ 3) symmetric positive semi-definite system
+/// `gram · t = rhs` with Cramer's rule.  Returns `None` when the matrix is
+/// numerically singular relative to the product of its diagonal (Hadamard
+/// bound), i.e. when the edge vectors are (nearly) linearly dependent.
+fn solve_gram_system(gram: &[[f64; 3]; 3], rhs: &[f64; 3], m: usize) -> Option<[f64; 3]> {
+    // Smallest accepted ratio det(G) / Π G_ii; the ratio equals Π sin²(angle)
+    // for orthogonal-ish edges, so 1e-10 rejects edges closer than ~1e-5 rad.
+    const MIN_RELATIVE_DET: f64 = 1e-10;
+    let mut t = [0.0_f64; 3];
+    match m {
+        1 => {
+            let g00 = gram[0][0];
+            if g00 <= 0.0 {
+                return None;
+            }
+            t[0] = rhs[0] / g00;
+        }
+        2 => {
+            let (g00, g01, g11) = (gram[0][0], gram[0][1], gram[1][1]);
+            let det = g00 * g11 - g01 * g01;
+            if g00 <= 0.0 || g11 <= 0.0 || det <= MIN_RELATIVE_DET * g00 * g11 {
+                return None;
+            }
+            t[0] = (rhs[0] * g11 - g01 * rhs[1]) / det;
+            t[1] = (g00 * rhs[1] - g01 * rhs[0]) / det;
+        }
+        3 => {
+            let det = determinant_3x3(gram);
+            let diag_product = gram[0][0] * gram[1][1] * gram[2][2];
+            if diag_product <= 0.0 || det <= MIN_RELATIVE_DET * diag_product {
+                return None;
+            }
+            for (col, slot) in t.iter_mut().enumerate() {
+                // Cramer's rule: replace column `col` of G by the right-hand side.
+                let mut replaced = *gram;
+                for (row, replaced_row) in replaced.iter_mut().enumerate() {
+                    replaced_row[col] = rhs[row];
+                }
+                *slot = determinant_3x3(&replaced) / det;
+            }
+        }
+        _ => return None,
+    }
+    Some(t)
+}
+
+/// Determinant of a 3×3 matrix given as rows.
+fn determinant_3x3(m: &[[f64; 3]; 3]) -> f64 {
+    m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
 }
 
 // ─── ConvexContainment ────────────────────────────────────────────────────
@@ -832,7 +1088,11 @@ pub struct ConvexIntersection;
 impl ConvexIntersection {
     /// Test if two convex hulls intersect using the Separating Axis Theorem.
     ///
-    /// Returns true if they intersect (no separating axis found).
+    /// Returns true if they intersect (no separating axis found).  Both hulls
+    /// should span a volume: a hull without facets (degenerate input to
+    /// [`ConvexHull3d::build`]) contributes no separating axes, so the test
+    /// then only uses the axes of the other hull and can report an
+    /// intersection that does not exist.
     pub fn intersects(hull_a: &ConvexHull3d, hull_b: &ConvexHull3d) -> bool {
         // Test face normals of A
         for f in &hull_a.faces {
@@ -1019,371 +1279,4 @@ impl HullShrink {
 // ─── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn approx_eq(a: f64, b: f64, tol: f64) -> bool {
-        (a - b).abs() < tol
-    }
-
-    /// Build a simple octahedron point set (convex by construction).
-    fn octahedron_points() -> Vec<Vec3> {
-        vec![
-            [1.0, 0.0, 0.0],
-            [-1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, -1.0, 0.0],
-            [0.0, 0.0, 1.0],
-            [0.0, 0.0, -1.0],
-        ]
-    }
-
-    /// Build a cube point set.
-    fn cube_points(half: f64) -> Vec<Vec3> {
-        let h = half;
-        vec![
-            [-h, -h, -h],
-            [h, -h, -h],
-            [-h, h, -h],
-            [h, h, -h],
-            [-h, -h, h],
-            [h, -h, h],
-            [-h, h, h],
-            [h, h, h],
-        ]
-    }
-
-    // ── Vec3 helpers ──
-
-    #[test]
-    fn test_dot_product() {
-        assert!(approx_eq(
-            dot([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]),
-            32.0,
-            1e-12
-        ));
-    }
-
-    #[test]
-    fn test_cross_product_orthogonal() {
-        let c = cross([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
-        assert!(approx_eq(c[0], 0.0, 1e-12));
-        assert!(approx_eq(c[1], 0.0, 1e-12));
-        assert!(approx_eq(c[2], 1.0, 1e-12));
-    }
-
-    #[test]
-    fn test_normalize_unit_length() {
-        let v = normalize([3.0, 4.0, 0.0]);
-        assert!(approx_eq(norm(v), 1.0, 1e-12), "norm={:.6}", norm(v));
-    }
-
-    #[test]
-    fn test_norm_zero_vector() {
-        let v = normalize([0.0, 0.0, 0.0]);
-        assert!(approx_eq(norm(v), 0.0, 1e-12));
-    }
-
-    // ── ConvexHull3d ──
-
-    #[test]
-    fn test_hull_builds_from_octahedron() {
-        let pts = octahedron_points();
-        let hull = ConvexHull3d::build(&pts);
-        assert!(!hull.triangles.is_empty(), "hull should have triangles");
-    }
-
-    #[test]
-    fn test_hull_all_points_inside_or_on() {
-        let pts = octahedron_points();
-        let hull = ConvexHull3d::build(&pts);
-        assert!(
-            hull.all_points_inside_or_on(&pts, 1e-9),
-            "all input points should be on or inside hull"
-        );
-    }
-
-    #[test]
-    fn test_hull_volume_positive() {
-        let pts = octahedron_points();
-        let hull = ConvexHull3d::build(&pts);
-        let vol = hull.volume();
-        assert!(vol > 0.0, "hull volume should be positive: {:.6}", vol);
-    }
-
-    #[test]
-    fn test_hull_volume_cube() {
-        // Unit cube side=2: volume=8
-        let pts = cube_points(1.0);
-        let hull = ConvexHull3d::build(&pts);
-        let vol = hull.volume();
-        assert!(vol > 0.0, "cube hull volume should be positive: {:.6}", vol);
-    }
-
-    #[test]
-    fn test_hull_centroid_near_origin_for_octahedron() {
-        let pts = octahedron_points();
-        let hull = ConvexHull3d::build(&pts);
-        let c = hull.centroid();
-        assert!(
-            approx_eq(norm(c), 0.0, 1e-12),
-            "centroid of symmetric octahedron should be near origin: {:.6}",
-            norm(c)
-        );
-    }
-
-    #[test]
-    fn test_support_function_maximum() {
-        let pts = octahedron_points();
-        let hull = ConvexHull3d::build(&pts);
-        let dir = normalize([1.0, 0.0, 0.0]);
-        let h = hull.support(dir);
-        // Max dot product along X is 1.0 for unit octahedron
-        assert!(
-            approx_eq(h, 1.0, 1e-9),
-            "support along x should be 1.0: {:.6}",
-            h
-        );
-    }
-
-    #[test]
-    fn test_support_point_achieves_max() {
-        let pts = cube_points(2.0);
-        let hull = ConvexHull3d::build(&pts);
-        let dir = [1.0, 1.0, 1.0_f64];
-        let sp = hull.support_point(normalize(dir));
-        let h = hull.support(normalize(dir));
-        let achieved = dot(sp, normalize(dir));
-        assert!(
-            approx_eq(achieved, h, 1e-9),
-            "support point should achieve max: {:.6} vs {:.6}",
-            achieved,
-            h
-        );
-    }
-
-    // ── SupportFunction ──
-
-    #[test]
-    fn test_support_fn_positive_along_positive_dir() {
-        let sf = SupportFunction::new(cube_points(1.0));
-        let h = sf.support([1.0, 0.0, 0.0]);
-        assert!(
-            approx_eq(h, 1.0, 1e-9),
-            "support along +x should be 1.0: {:.6}",
-            h
-        );
-    }
-
-    #[test]
-    fn test_support_fn_symmetric() {
-        let sf = SupportFunction::new(cube_points(1.0));
-        let h_pos = sf.support([0.0, 1.0, 0.0]);
-        let h_neg = sf.support([0.0, -1.0, 0.0]);
-        assert!(
-            approx_eq(h_pos, h_neg, 1e-9),
-            "cube support ±y should be equal"
-        );
-    }
-
-    // ── MinkowskiSum ──
-
-    #[test]
-    fn test_minkowski_sum_contains_centroid_of_a() {
-        let a = SupportFunction::new(cube_points(1.0));
-        let b = SupportFunction::new(octahedron_points());
-        let ms = MinkowskiSum::new(a, b);
-        // centroid of A is origin; it should be in A⊕B
-        assert!(
-            ms.contains_point([0.0; 3], 1e-9),
-            "centroid should be inside Minkowski sum"
-        );
-    }
-
-    #[test]
-    fn test_minkowski_sum_support_additive() {
-        let a = SupportFunction::new(cube_points(1.0));
-        let b = SupportFunction::new(cube_points(0.5));
-        let ms = MinkowskiSum::new(a.clone(), b.clone());
-        let dir = normalize([1.0, 1.0, 0.0]);
-        let h_ms = ms.support(dir);
-        let h_sum = a.support(dir) + b.support(dir);
-        assert!(
-            approx_eq(h_ms, h_sum, 1e-9),
-            "Minkowski sum support should be additive"
-        );
-    }
-
-    // ── GjkDistance ──
-
-    #[test]
-    fn test_gjk_distance_overlapping_returns_zero() {
-        // A larger cube fully contains a smaller cube: separation should be <= 0 (overlap)
-        // The simple GJK returns 0.0 when it detects containment via the simplex test
-        let a = SupportFunction::new(cube_points(1.0));
-        let b = SupportFunction::new(cube_points(0.5));
-        let gjk = GjkDistance::default();
-        let d = gjk.distance(&a, &b);
-        // A simple GJK without EPA cannot compute exact penetration depth,
-        // so it returns a small non-negative number; what matters is it's
-        // much smaller than the separation distance for separated shapes.
-        assert!(
-            d < 1.0,
-            "overlapping shapes should have small GJK distance, got {:.6}",
-            d
-        );
-    }
-
-    #[test]
-    fn test_gjk_distance_touching_zero() {
-        // Two cubes touching at x=1
-        let a = SupportFunction::new(cube_points(1.0));
-        let b_pts: Vec<Vec3> = cube_points(1.0)
-            .iter()
-            .map(|&v| add(v, [2.0, 0.0, 0.0]))
-            .collect();
-        let b = SupportFunction::new(b_pts);
-        let gjk = GjkDistance::default();
-        let d = gjk.distance(&a, &b);
-        // They touch at x=1; GJK should return ~0
-        assert!(
-            d < 0.1,
-            "touching cubes: GJK distance should be near 0, got {:.6}",
-            d
-        );
-    }
-
-    // ── ConvexContainment ──
-
-    #[test]
-    fn test_centroid_always_inside_hull() {
-        let pts = octahedron_points();
-        let hull = ConvexHull3d::build(&pts);
-        let c = hull.centroid();
-        let cc = ConvexContainment::new(hull);
-        assert!(cc.contains_point(c, 1e-9), "centroid should be inside hull");
-    }
-
-    #[test]
-    fn test_far_point_outside_hull() {
-        let pts = octahedron_points();
-        let hull = ConvexHull3d::build(&pts);
-        let cc = ConvexContainment::new(hull);
-        assert!(
-            !cc.contains_point([10.0, 0.0, 0.0], 1e-9),
-            "far point should be outside hull"
-        );
-    }
-
-    #[test]
-    fn test_aabb_inside_hull() {
-        let pts = cube_points(2.0);
-        let hull = ConvexHull3d::build(&pts);
-        let cc = ConvexContainment::new(hull);
-        // A small AABB inside the cube
-        let inside = cc.contains_aabb([-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]);
-        assert!(inside, "small AABB should be inside larger cube hull");
-    }
-
-    // ── ConvexIntersection ──
-
-    #[test]
-    fn test_sat_overlapping_hulls_intersect() {
-        let pts_a = cube_points(1.0);
-        let pts_b = cube_points(0.5); // inside a
-        let hull_a = ConvexHull3d::build(&pts_a);
-        let hull_b = ConvexHull3d::build(&pts_b);
-        assert!(
-            ConvexIntersection::intersects(&hull_a, &hull_b),
-            "nested hulls should intersect"
-        );
-    }
-
-    #[test]
-    fn test_sat_separated_hulls_no_intersect() {
-        let pts_a = cube_points(0.4);
-        let pts_b: Vec<Vec3> = cube_points(0.4)
-            .iter()
-            .map(|&v| add(v, [5.0, 0.0, 0.0]))
-            .collect();
-        let hull_a = ConvexHull3d::build(&pts_a);
-        let hull_b = ConvexHull3d::build(&pts_b);
-        assert!(
-            !ConvexIntersection::intersects(&hull_a, &hull_b),
-            "separated hulls should not intersect"
-        );
-    }
-
-    // ── InertiaFromHull ──
-
-    #[test]
-    fn test_inertia_diagonal_positive() {
-        let pts = cube_points(1.0);
-        let hull = ConvexHull3d::build(&pts);
-        let inertia = InertiaFromHull::compute(&hull, 1000.0);
-        for (i, row) in inertia.iter().enumerate() {
-            assert!(
-                row[i] > 0.0,
-                "diagonal inertia[{}][{}] should be positive: {:.6}",
-                i,
-                i,
-                row[i]
-            );
-        }
-    }
-
-    #[test]
-    fn test_inertia_symmetric() {
-        let pts = octahedron_points();
-        let hull = ConvexHull3d::build(&pts);
-        let inertia = InertiaFromHull::compute(&hull, 1000.0);
-        for (i, row_i) in inertia.iter().enumerate() {
-            for (j, &val_ij) in row_i.iter().enumerate() {
-                assert!(
-                    approx_eq(val_ij, inertia[j][i], 1e-9),
-                    "inertia tensor should be symmetric at ({},{}): {:.6} vs {:.6}",
-                    i,
-                    j,
-                    val_ij,
-                    inertia[j][i]
-                );
-            }
-        }
-    }
-
-    // ── HullShrink ──
-
-    #[test]
-    fn test_shrink_reduces_support() {
-        let pts = cube_points(1.0);
-        let hull = ConvexHull3d::build(&pts);
-        let shrunk = HullShrink::shrink(&hull, 0.1);
-        let sf_orig = SupportFunction::new(pts.clone());
-        let sf_shrunk = SupportFunction::new(shrunk);
-        let dir = normalize([1.0, 0.0, 0.0]);
-        assert!(
-            sf_shrunk.support(dir) < sf_orig.support(dir),
-            "shrunk hull should have smaller support"
-        );
-    }
-
-    // ── ApproxConvexDecomp ──
-
-    #[test]
-    fn test_acd_returns_at_least_one_part() {
-        let pts = cube_points(1.0);
-        let acd = ApproxConvexDecomp::new();
-        let parts = acd.decompose(&pts);
-        assert!(!parts.is_empty(), "ACD should produce at least one part");
-    }
-
-    #[test]
-    fn test_acd_parts_are_convex() {
-        let pts = cube_points(1.0);
-        let acd = ApproxConvexDecomp::new();
-        let parts = acd.decompose(&pts);
-        for (i, part) in parts.parts.iter().enumerate() {
-            assert!(part.is_convex(1e-9), "part {} should be convex", i);
-        }
-    }
-}
+mod tests;

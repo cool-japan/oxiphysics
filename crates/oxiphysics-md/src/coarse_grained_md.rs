@@ -175,9 +175,10 @@ pub fn angle_cg_force(
     let theta = cos_theta.acos();
     let sin_theta = theta.sin().max(1e-10);
     let dv_dtheta = k_angle * (theta - theta0);
-    // dcos/dr using chain rule, then F = −dV/dr
-    let coeff = -dv_dtheta / sin_theta;
-    // ∂θ/∂r_i
+    // F = −dV/dθ · dθ/dr and dθ/dcosθ = −1/sinθ, hence
+    // F = +(dV/dθ / sinθ) · dcosθ/dr.
+    let coeff = dv_dtheta / sin_theta;
+    // ∂cosθ/∂r_i
     let dcos_dri: [f64; 3] = [
         (rkj[0] / (rij_len * rkj_len) - cos_theta * rij[0] / (rij_len * rij_len)),
         (rkj[1] / (rij_len * rkj_len) - cos_theta * rij[1] / (rij_len * rij_len)),
@@ -460,6 +461,135 @@ mod tests {
         for k in 0..3 {
             assert!((fi[k] + fj[k] + fk[k]).abs() < 1e-10, "force sum k={k}");
         }
+    }
+
+    /// Harmonic angle energy `0.5 k (θ − θ0)²` evaluated directly from positions.
+    fn angle_energy_reference(
+        ri: [f64; 3],
+        rj: [f64; 3],
+        rk: [f64; 3],
+        k_angle: f64,
+        theta0: f64,
+    ) -> f64 {
+        let rij = sub(ri, rj);
+        let rkj = sub(rk, rj);
+        let cos_theta = (dot(rij, rkj) / (norm(rij) * norm(rkj))).clamp(-1.0, 1.0);
+        let theta = cos_theta.acos();
+        0.5 * k_angle * (theta - theta0) * (theta - theta0)
+    }
+
+    /// Central finite-difference `−∂U/∂r` for all three beads (9 components).
+    fn angle_force_finite_difference(
+        pos: [[f64; 3]; 3],
+        k_angle: f64,
+        theta0: f64,
+        h: f64,
+    ) -> [[f64; 3]; 3] {
+        let mut out = [[0.0_f64; 3]; 3];
+        for atom in 0..3 {
+            for axis in 0..3 {
+                let mut plus = pos;
+                let mut minus = pos;
+                plus[atom][axis] += h;
+                minus[atom][axis] -= h;
+                let u_plus = angle_energy_reference(plus[0], plus[1], plus[2], k_angle, theta0);
+                let u_minus = angle_energy_reference(minus[0], minus[1], minus[2], k_angle, theta0);
+                out[atom][axis] = -(u_plus - u_minus) / (2.0 * h);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn test_angle_force_matches_finite_difference_open_angle() {
+        // θ = 100° is wider than θ0 = 90°: the restoring force must close the angle.
+        let theta = 100.0_f64.to_radians();
+        let ri = [1.0, 0.0, 0.0];
+        let rj = [0.0; 3];
+        let rk = [theta.cos(), theta.sin(), 0.0];
+        let (k_angle, theta0) = (50.0, 90.0_f64.to_radians());
+        let (fi, fj, fk) = angle_cg_force(ri, rj, rk, k_angle, theta0);
+        let reference = angle_force_finite_difference([ri, rj, rk], k_angle, theta0, 1e-6);
+        for axis in 0..3 {
+            assert!(
+                (fi[axis] - reference[0][axis]).abs() < 1e-6,
+                "fi[{axis}] = {} vs FD {}",
+                fi[axis],
+                reference[0][axis]
+            );
+            assert!(
+                (fj[axis] - reference[1][axis]).abs() < 1e-6,
+                "fj[{axis}] = {} vs FD {}",
+                fj[axis],
+                reference[1][axis]
+            );
+            assert!(
+                (fk[axis] - reference[2][axis]).abs() < 1e-6,
+                "fk[{axis}] = {} vs FD {}",
+                fk[axis],
+                reference[2][axis]
+            );
+        }
+        // Bead i sits on +x and rk is rotated towards +y, so closing the angle
+        // pushes bead i towards +y.
+        assert!(fi[1] > 0.0, "fi must rotate i towards k, fi = {fi:?}");
+        // Bead k is pushed back towards bead i (decreasing polar angle).
+        let k_tangent_towards_i = [theta.sin(), -theta.cos(), 0.0];
+        assert!(
+            dot(fk, k_tangent_towards_i) > 0.0,
+            "fk must rotate k towards i, fk = {fk:?}"
+        );
+    }
+
+    #[test]
+    fn test_angle_force_matches_finite_difference_closed_angle() {
+        // θ = 60° is narrower than θ0 = 110°: the restoring force must open the angle.
+        let theta = 60.0_f64.to_radians();
+        let ri = [1.3, 0.1, -0.2];
+        let rj = [0.2, -0.1, 0.3];
+        let rk = [
+            rj[0] + 0.9 * theta.cos(),
+            rj[1] + 0.9 * theta.sin(),
+            rj[2] + 0.05,
+        ];
+        let (k_angle, theta0) = (80.0, 110.0_f64.to_radians());
+        let (fi, fj, fk) = angle_cg_force(ri, rj, rk, k_angle, theta0);
+        let reference = angle_force_finite_difference([ri, rj, rk], k_angle, theta0, 1e-6);
+        for axis in 0..3 {
+            assert!((fi[axis] - reference[0][axis]).abs() < 1e-6, "fi[{axis}]");
+            assert!((fj[axis] - reference[1][axis]).abs() < 1e-6, "fj[{axis}]");
+            assert!((fk[axis] - reference[2][axis]).abs() < 1e-6, "fk[{axis}]");
+        }
+        // Opening the angle moves i and k apart: fi · (ri − rk) > 0.
+        let separation = sub(ri, rk);
+        assert!(dot(fi, separation) > 0.0, "fi = {fi:?}");
+        assert!(dot(fk, scale(separation, -1.0)) > 0.0, "fk = {fk:?}");
+    }
+
+    #[test]
+    fn test_angle_force_relaxation_decreases_energy() {
+        // A tiny steepest-descent step along the force must lower the angle energy.
+        let theta = 130.0_f64.to_radians();
+        let ri = [1.0, 0.0, 0.0];
+        let rj = [0.0; 3];
+        let rk = [theta.cos(), theta.sin(), 0.0];
+        let (k_angle, theta0) = (40.0, 95.0_f64.to_radians());
+        let (fi, fj, fk) = angle_cg_force(ri, rj, rk, k_angle, theta0);
+        let step = 1e-4;
+        let advance =
+            |r: [f64; 3], f: [f64; 3]| [r[0] + step * f[0], r[1] + step * f[1], r[2] + step * f[2]];
+        let e_before = angle_energy_reference(ri, rj, rk, k_angle, theta0);
+        let e_after = angle_energy_reference(
+            advance(ri, fi),
+            advance(rj, fj),
+            advance(rk, fk),
+            k_angle,
+            theta0,
+        );
+        assert!(
+            e_after < e_before,
+            "descent along the force must reduce U: {e_before} -> {e_after}"
+        );
     }
 
     // --- CgMapping ---

@@ -50,20 +50,77 @@ impl Ray {
         }
     }
 
-    /// Construct a ray from normalised device coordinates (NDC) and a camera.
+    /// Construct a ray through the pixel at normalised device coordinates
+    /// (NDC) of a camera.
     ///
-    /// * `ndc_x`, `ndc_y` — in `[-1, 1]` (right-handed NDC)
-    /// * `inv_proj`        — inverse projection matrix (row-major 4×4)
-    /// * `inv_view`        — inverse view matrix (row-major 4×4)
+    /// * `ndc_x`, `ndc_y` — in `[-1, 1]`, x to the right and y up
+    /// * `inv_proj`        — inverse projection matrix (column-major 4×4,
+    ///   OpenGL clip space: NDC depth `-1` is the near plane, `+1` the far plane)
+    /// * `inv_view`        — inverse view matrix, i.e. camera-to-world
+    ///   (column-major 4×4, translation in elements 12..15)
+    ///
+    /// The points on the near and the far plane under the pixel are both
+    /// unprojected through `inv_proj` (including the perspective divide) and
+    /// carried to world space by `inv_view`; the ray starts at the near-plane
+    /// point and heads towards the far-plane point.  This is exact for
+    /// perspective, orthographic and infinite-far-plane projections alike.
+    ///
+    /// Because the origin lies on the near clip plane, distances reported by
+    /// the [`Picker`] are measured from the near plane, and geometry in front
+    /// of it (which is clipped on screen) cannot be picked.  Matrices that
+    /// cannot be unprojected (for example a zero `inv_proj`) yield a ray with
+    /// a zero direction at the camera position, which never hits anything.
     pub fn from_screen(ndc_x: f32, ndc_y: f32, inv_proj: &[f32; 16], inv_view: &[f32; 16]) -> Self {
-        // Unproject from clip to view space
-        let clip = [ndc_x, ndc_y, -1.0_f32, 1.0_f32];
-        let view = mat4_mul_vec4(inv_proj, clip);
-        let view_dir = [view[0] / view[3], view[1] / view[3], -1.0, 0.0];
-        // Rotate into world space (w=0 → direction only)
-        let world_dir = mat4_mul_vec4(inv_view, view_dir);
-        let origin = [inv_view[12], inv_view[13], inv_view[14]];
-        Self::new(origin, [world_dir[0], world_dir[1], world_dir[2]])
+        const MIN_W: f32 = 1e-9;
+        let usable_w = |w: f32| w.is_finite() && w.abs() > MIN_W;
+        let camera_position = [inv_view[12], inv_view[13], inv_view[14]];
+        let no_ray = Self::new(camera_position, [0.0; 3]);
+
+        // Homogeneous view-space points under the pixel on the near and far planes.
+        let near_h = mat4_mul_vec4(inv_proj, [ndc_x, ndc_y, -1.0_f32, 1.0_f32]);
+        let far_h = mat4_mul_vec4(inv_proj, [ndc_x, ndc_y, 1.0_f32, 1.0_f32]);
+        if !usable_w(near_h[3]) {
+            return no_ray;
+        }
+        let near_view = [
+            near_h[0] / near_h[3],
+            near_h[1] / near_h[3],
+            near_h[2] / near_h[3],
+        ];
+        // The direction is formed in view space, where coordinates are small
+        // and f32 keeps its precision however far the camera is from the origin.
+        let dir_view = if usable_w(far_h[3]) {
+            let far_view = [
+                far_h[0] / far_h[3],
+                far_h[1] / far_h[3],
+                far_h[2] / far_h[3],
+            ];
+            sub3(far_view, near_view)
+        } else {
+            // Far plane at infinity: the homogeneous point with w = 0 is the
+            // direction itself.  Orient it away from the eye, which sits at the
+            // view-space origin of a perspective camera.
+            let dir = [far_h[0], far_h[1], far_h[2]];
+            if dot3(dir, near_view) < 0.0 {
+                scale3(dir, -1.0)
+            } else {
+                dir
+            }
+        };
+        // Carry the origin (w = 1) and the direction (w = 0) into world space.
+        let origin = mat4_mul_vec4(inv_view, [near_view[0], near_view[1], near_view[2], 1.0]);
+        let direction = mat4_mul_vec4(inv_view, [dir_view[0], dir_view[1], dir_view[2], 0.0]);
+        let finite = origin[..3]
+            .iter()
+            .chain(direction[..3].iter())
+            .all(|v| v.is_finite());
+        if !finite {
+            return no_ray;
+        }
+        Self::new(
+            [origin[0], origin[1], origin[2]],
+            [direction[0], direction[1], direction[2]],
+        )
     }
 
     /// Evaluate a point on the ray: `origin + t * direction`.
@@ -533,5 +590,273 @@ mod tests {
         let mut sel = SelectionSet::new();
         sel.select_in_aabb(&scene, [-2.0; 3], [2.0; 3], false);
         assert!(sel.is_selected(10));
+    }
+
+    // ── Ray::from_screen ──────────────────────────────────────────────────────
+
+    const IDENTITY: [f32; 16] = [
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+
+    /// Column-major product `a * b`.
+    fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
+        let mut out = [0.0_f32; 16];
+        for col in 0..4 {
+            for row in 0..4 {
+                out[col * 4 + row] = (0..4).map(|k| a[k * 4 + row] * b[col * 4 + k]).sum();
+            }
+        }
+        out
+    }
+
+    fn assert_identity(m: &[f32; 16], tol: f32) {
+        for col in 0..4 {
+            for row in 0..4 {
+                let expected = if col == row { 1.0 } else { 0.0 };
+                assert!(
+                    (m[col * 4 + row] - expected).abs() < tol,
+                    "element ({row},{col}) = {}, expected {expected}",
+                    m[col * 4 + row]
+                );
+            }
+        }
+    }
+
+    /// OpenGL perspective projection and its analytic inverse (column-major).
+    fn gl_perspective(fov_y: f64, aspect: f64, near: f64, far: f64) -> ([f32; 16], [f32; 16]) {
+        let f = 1.0 / (0.5 * fov_y).tan();
+        let mut p = [0.0_f64; 16];
+        p[0] = f / aspect;
+        p[5] = f;
+        p[10] = (far + near) / (near - far);
+        p[11] = -1.0;
+        p[14] = 2.0 * far * near / (near - far);
+        let mut inv = [0.0_f64; 16];
+        inv[0] = aspect / f;
+        inv[5] = 1.0 / f;
+        inv[11] = (near - far) / (2.0 * far * near);
+        inv[14] = -1.0;
+        inv[15] = (far + near) / (2.0 * far * near);
+        (p.map(|v| v as f32), inv.map(|v| v as f32))
+    }
+
+    /// OpenGL perspective with the far plane at infinity, and its inverse.
+    fn gl_infinite_perspective(fov_y: f64, aspect: f64, near: f64) -> ([f32; 16], [f32; 16]) {
+        let f = 1.0 / (0.5 * fov_y).tan();
+        let mut p = [0.0_f64; 16];
+        p[0] = f / aspect;
+        p[5] = f;
+        p[10] = -1.0;
+        p[11] = -1.0;
+        p[14] = -2.0 * near;
+        let mut inv = [0.0_f64; 16];
+        inv[0] = aspect / f;
+        inv[5] = 1.0 / f;
+        inv[11] = -1.0 / (2.0 * near);
+        inv[14] = -1.0;
+        inv[15] = 1.0 / (2.0 * near);
+        (p.map(|v| v as f32), inv.map(|v| v as f32))
+    }
+
+    /// OpenGL orthographic projection and its analytic inverse.
+    fn gl_orthographic(bounds: [f64; 4], near: f64, far: f64) -> ([f32; 16], [f32; 16]) {
+        let [l, r, b, t] = bounds;
+        let mut p = [0.0_f64; 16];
+        p[0] = 2.0 / (r - l);
+        p[5] = 2.0 / (t - b);
+        p[10] = -2.0 / (far - near);
+        p[12] = -(r + l) / (r - l);
+        p[13] = -(t + b) / (t - b);
+        p[14] = -(far + near) / (far - near);
+        p[15] = 1.0;
+        let mut inv = [0.0_f64; 16];
+        inv[0] = (r - l) / 2.0;
+        inv[5] = (t - b) / 2.0;
+        inv[10] = -(far - near) / 2.0;
+        inv[12] = (r + l) / 2.0;
+        inv[13] = (t + b) / 2.0;
+        inv[14] = -(far + near) / 2.0;
+        inv[15] = 1.0;
+        (p.map(|v| v as f32), inv.map(|v| v as f32))
+    }
+
+    /// Inverse of a rigid transform `[R | t]` (column-major).
+    fn rigid_inverse(m: &[f32; 16]) -> [f32; 16] {
+        let mut out = [0.0_f32; 16];
+        for col in 0..3 {
+            for row in 0..3 {
+                out[col * 4 + row] = m[row * 4 + col];
+            }
+        }
+        for row in 0..3 {
+            out[12 + row] = -(out[row] * m[12] + out[4 + row] * m[13] + out[8 + row] * m[14]);
+        }
+        out[15] = 1.0;
+        out
+    }
+
+    /// Camera-to-world matrix of a camera at `position` turned by 90 degrees
+    /// about +y, so that it looks along world -x.
+    fn camera_looking_down_minus_x(position: [f32; 3]) -> [f32; 16] {
+        [
+            0.0,
+            0.0,
+            -1.0,
+            0.0, // image of +x
+            0.0,
+            1.0,
+            0.0,
+            0.0, // image of +y
+            1.0,
+            0.0,
+            0.0,
+            0.0, // image of +z
+            position[0],
+            position[1],
+            position[2],
+            1.0,
+        ]
+    }
+
+    fn assert_vec3_close(actual: [f32; 3], expected: [f32; 3], tol: f32, what: &str) {
+        for k in 0..3 {
+            assert!(
+                (actual[k] - expected[k]).abs() < tol,
+                "{what}: {actual:?} vs expected {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_projection_helpers_are_inverses() {
+        let (p, inv) = gl_perspective(std::f64::consts::FRAC_PI_2, 1.5, 0.1, 100.0);
+        assert_identity(&mat4_mul(&p, &inv), 1e-4);
+        assert_identity(&mat4_mul(&inv, &p), 1e-4);
+        let (p, inv) = gl_infinite_perspective(1.0, 1.0, 0.1);
+        assert_identity(&mat4_mul(&p, &inv), 1e-5);
+        let (p, inv) = gl_orthographic([-2.0, 2.0, -1.0, 1.0], 0.1, 10.0);
+        assert_identity(&mat4_mul(&p, &inv), 1e-5);
+        let cam = camera_looking_down_minus_x([3.0, 2.0, 5.0]);
+        assert_identity(&mat4_mul(&cam, &rigid_inverse(&cam)), 1e-6);
+    }
+
+    #[test]
+    fn test_from_screen_perspective_edge_rays_use_the_true_field_of_view() {
+        // fov 90 degrees, aspect 1, near 0.1: the right edge of the screen is
+        // a 45 degree ray.  Forcing view z = -1 (instead of z = -near) used to
+        // give atan(0.1) = 5.7 degrees.
+        let (_, inv_proj) = gl_perspective(std::f64::consts::FRAC_PI_2, 1.0, 0.1, 100.0);
+        let right = Ray::from_screen(1.0, 0.0, &inv_proj, &IDENTITY);
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        assert_vec3_close(right.direction, [s, 0.0, -s], 1e-4, "right edge");
+        let centre = Ray::from_screen(0.0, 0.0, &inv_proj, &IDENTITY);
+        assert_vec3_close(centre.direction, [0.0, 0.0, -1.0], 1e-5, "centre");
+        let corner = Ray::from_screen(1.0, 1.0, &inv_proj, &IDENTITY);
+        let c = 1.0 / 3.0_f32.sqrt();
+        assert_vec3_close(corner.direction, [c, c, -c], 1e-4, "corner");
+        // The origin is the near-plane point under the pixel.
+        assert_vec3_close(right.origin, [0.1, 0.0, -0.1], 1e-5, "near-plane origin");
+    }
+
+    #[test]
+    fn test_from_screen_follows_the_camera_pose() {
+        let (_, inv_proj) = gl_perspective(std::f64::consts::FRAC_PI_2, 1.0, 0.1, 100.0);
+        let inv_view = camera_looking_down_minus_x([3.0, 2.0, 5.0]);
+        let centre = Ray::from_screen(0.0, 0.0, &inv_proj, &inv_view);
+        assert_vec3_close(centre.direction, [-1.0, 0.0, 0.0], 1e-5, "centre direction");
+        assert_vec3_close(centre.origin, [2.9, 2.0, 5.0], 1e-5, "centre origin");
+        // Screen-right is the camera's +x, which points along world -z.
+        let right = Ray::from_screen(1.0, 0.0, &inv_proj, &inv_view);
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        assert_vec3_close(right.direction, [-s, 0.0, -s], 1e-4, "right direction");
+    }
+
+    #[test]
+    fn test_from_screen_ray_passes_through_the_projected_point() {
+        // Project a world point to NDC with the real matrices, then unproject
+        // the pixel: the ray must pass through the original point.
+        let (proj, inv_proj) = gl_perspective(1.1, 1.6, 0.25, 200.0);
+        let inv_view = camera_looking_down_minus_x([3.0, 2.0, 5.0]);
+        let view = rigid_inverse(&inv_view);
+        let view_proj = mat4_mul(&proj, &view);
+        for world in [[-4.0_f32, 2.5, 4.0], [-9.0, 0.0, 7.5], [-20.0, 5.0, 1.0]] {
+            let clip = mat4_mul_vec4(&view_proj, [world[0], world[1], world[2], 1.0]);
+            let ndc = [clip[0] / clip[3], clip[1] / clip[3]];
+            assert!(
+                ndc[0].abs() < 1.0 && ndc[1].abs() < 1.0,
+                "{world:?} must be on screen"
+            );
+            let ray = Ray::from_screen(ndc[0], ndc[1], &inv_proj, &inv_view);
+            let to_point = sub3(world, ray.origin);
+            let along = dot3(to_point, ray.direction);
+            let closest = add3(ray.origin, scale3(ray.direction, along));
+            let miss = sub3(world, closest);
+            let miss_len = dot3(miss, miss).sqrt();
+            assert!(along > 0.0, "{world:?} must lie ahead of the ray origin");
+            assert!(miss_len < 1e-3, "ray misses {world:?} by {miss_len}");
+        }
+    }
+
+    #[test]
+    fn test_from_screen_orthographic_rays_are_parallel() {
+        let (_, inv_proj) = gl_orthographic([-2.0, 2.0, -1.0, 1.0], 0.1, 10.0);
+        let a = Ray::from_screen(0.5, 0.25, &inv_proj, &IDENTITY);
+        let b = Ray::from_screen(-1.0, -1.0, &inv_proj, &IDENTITY);
+        assert_vec3_close(a.direction, [0.0, 0.0, -1.0], 1e-5, "ortho direction a");
+        assert_vec3_close(b.direction, [0.0, 0.0, -1.0], 1e-5, "ortho direction b");
+        assert_vec3_close(a.origin, [1.0, 0.25, -0.1], 1e-5, "ortho origin a");
+        assert_vec3_close(b.origin, [-2.0, -1.0, -0.1], 1e-5, "ortho origin b");
+    }
+
+    #[test]
+    fn test_from_screen_infinite_far_plane() {
+        let (_, inv_proj) = gl_infinite_perspective(std::f64::consts::FRAC_PI_2, 1.0, 0.1);
+        let right = Ray::from_screen(1.0, 0.0, &inv_proj, &IDENTITY);
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        assert_vec3_close(right.direction, [s, 0.0, -s], 1e-4, "infinite right edge");
+        assert_vec3_close(right.origin, [0.1, 0.0, -0.1], 1e-5, "infinite origin");
+    }
+
+    #[test]
+    fn test_from_screen_picks_the_pixel_under_the_cursor() {
+        // A large triangle in the plane z = -2 in front of an identity camera.
+        let mut scene = PickScene::new();
+        scene.add_object(PickableObject::single_triangle(
+            7,
+            [-10.0, -10.0, -2.0],
+            [10.0, -10.0, -2.0],
+            [0.0, 10.0, -2.0],
+        ));
+        let (proj, inv_proj) = gl_perspective(std::f64::consts::FRAC_PI_2, 1.0, 0.1, 100.0);
+        let target = [0.8_f32, 0.3, -2.0];
+        let clip = mat4_mul_vec4(&proj, [target[0], target[1], target[2], 1.0]);
+        let ray = Ray::from_screen(clip[0] / clip[3], clip[1] / clip[3], &inv_proj, &IDENTITY);
+        let hit = Picker::new()
+            .pick(&ray, &scene)
+            .expect("pixel must hit the triangle");
+        assert_eq!(hit.object_id, 7);
+        assert_vec3_close(hit.hit_point, target, 1e-3, "picked point");
+        // Distance is measured from the near-plane origin (0.04, 0.015, -0.1)
+        // to the hit point (0.8, 0.3, -2).
+        let expected = (0.76_f32 * 0.76 + 0.285 * 0.285 + 1.9 * 1.9).sqrt();
+        assert!(
+            (hit.distance - expected).abs() < 1e-3,
+            "distance {}",
+            hit.distance
+        );
+    }
+
+    #[test]
+    fn test_from_screen_degenerate_matrices_give_a_harmless_ray() {
+        let zero = [0.0_f32; 16];
+        let ray = Ray::from_screen(0.3, -0.2, &zero, &IDENTITY);
+        assert_eq!(ray.direction, [0.0; 3]);
+        assert_eq!(ray.origin, [0.0; 3]);
+        let nan_proj = [f32::NAN; 16];
+        let ray = Ray::from_screen(0.0, 0.0, &nan_proj, &IDENTITY);
+        assert_eq!(ray.direction, [0.0; 3]);
+        let mut scene = PickScene::new();
+        scene.add_object(unit_triangle());
+        assert!(Picker::new().pick(&ray, &scene).is_none());
     }
 }

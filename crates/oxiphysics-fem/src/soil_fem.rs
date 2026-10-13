@@ -154,13 +154,71 @@ impl StressTensor {
             .sqrt()
     }
 
-    /// Principal stresses (approximate, sorted descending).
+    /// Principal stresses of the full symmetric stress tensor, sorted
+    /// descending (σ₁ ≥ σ₂ ≥ σ₃).
+    ///
+    /// The Voigt components `[xx, yy, zz, xy, yz, xz]` are assembled into the
+    /// symmetric 3×3 tensor (shear included) and diagonalised with cyclic
+    /// Jacobi rotations.  Jacobi keeps full relative accuracy for repeated and
+    /// nearly repeated principal values (uniaxial, axisymmetric and
+    /// hydrostatic states), unlike the trigonometric closed-form solution of
+    /// the characteristic cubic.  The values carry the same sign convention as
+    /// the input components.
     pub fn principal_stresses(&self) -> [f64; 3] {
-        // Simplified: diagonal-only if off-diagonal small
-        let mut p = [self.s[0], self.s[1], self.s[2]];
+        let [xx, yy, zz, xy, yz, xz] = self.s;
+        let mut p = symmetric_eigenvalues_3x3([[xx, xy, xz], [xy, yy, yz], [xz, yz, zz]]);
         p.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
         p
     }
+}
+
+/// Eigenvalues of a symmetric 3×3 matrix by cyclic Jacobi rotations.
+///
+/// Convergence is judged relative to the Frobenius norm of the matrix, so the
+/// routine is scale invariant (Pa or MPa input alike).  The eigenvalues are
+/// returned in no particular order; a matrix with non-finite entries yields
+/// NaN eigenvalues.
+fn symmetric_eigenvalues_3x3(mut a: [[f64; 3]; 3]) -> [f64; 3] {
+    const MAX_SWEEPS: usize = 32;
+    const PAIRS: [(usize, usize); 3] = [(0, 1), (0, 2), (1, 2)];
+    let scale = a.iter().flatten().map(|v| v * v).sum::<f64>().sqrt();
+    if !scale.is_finite() {
+        return [f64::NAN; 3];
+    }
+    for _ in 0..MAX_SWEEPS {
+        let off = (a[0][1] * a[0][1] + a[0][2] * a[0][2] + a[1][2] * a[1][2]).sqrt();
+        if off <= f64::EPSILON * scale {
+            break;
+        }
+        for (p, q) in PAIRS {
+            let apq = a[p][q];
+            if apq == 0.0 {
+                continue;
+            }
+            let tau = (a[q][q] - a[p][p]) / (2.0 * apq);
+            let t = if tau.abs() > 1.0e150 {
+                0.5 / tau
+            } else {
+                tau.signum() / (tau.abs() + (1.0 + tau * tau).sqrt())
+            };
+            let c = 1.0 / (1.0 + t * t).sqrt();
+            let s = t * c;
+            let (app, aqq) = (a[p][p], a[q][q]);
+            a[p][p] = app - t * apq;
+            a[q][q] = aqq + t * apq;
+            a[p][q] = 0.0;
+            a[q][p] = 0.0;
+            let r = 3 - p - q;
+            let (arp, arq) = (a[r][p], a[r][q]);
+            let new_arp = c * arp - s * arq;
+            let new_arq = s * arp + c * arq;
+            a[r][p] = new_arp;
+            a[p][r] = new_arp;
+            a[r][q] = new_arq;
+            a[q][r] = new_arq;
+        }
+    }
+    [a[0][0], a[1][1], a[2][2]]
 }
 
 /// Mohr-Coulomb yield function evaluation.
@@ -1336,10 +1394,138 @@ mod tests {
     }
 
     #[test]
-    fn test_principal_stresses() {
+    fn test_principal_stresses_diagonal_input_is_only_sorted() {
         let s = StressTensor::from_array([-300e3, -100e3, -200e3, 0.0, 0.0, 0.0]);
-        let p = s.principal_stresses();
+        assert_eq!(s.principal_stresses(), [-100e3, -200e3, -300e3]);
+        let uniaxial = StressTensor::from_array([42e3, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(uniaxial.principal_stresses(), [42e3, 0.0, 0.0]);
+        let hydrostatic = StressTensor::from_array([-90e3, -90e3, -90e3, 0.0, 0.0, 0.0]);
+        assert_eq!(hydrostatic.principal_stresses(), [-90e3; 3]);
+    }
+
+    #[test]
+    fn test_principal_stresses_pure_shear_gives_plus_minus_tau() {
+        let tau = 80e3;
+        for slot in 3..6 {
+            let mut v = [0.0; 6];
+            v[slot] = tau;
+            let p = StressTensor::from_array(v).principal_stresses();
+            assert!((p[0] - tau).abs() < 1e-6, "slot {slot}: sigma1 = {}", p[0]);
+            assert!(p[1].abs() < 1e-6, "slot {slot}: sigma2 = {}", p[1]);
+            assert!((p[2] + tau).abs() < 1e-6, "slot {slot}: sigma3 = {}", p[2]);
+        }
+    }
+
+    #[test]
+    fn test_principal_stresses_voigt_slots_are_xy_yz_xz() {
+        // The coupled pair of diagonal entries identifies which shear slot is
+        // which: xy couples (xx, yy), yz couples (yy, zz), xz couples (xx, zz).
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        let cases: [([f64; 6], [f64; 3]); 3] = [
+            ([1.0, 2.0, 3.0, 0.5, 0.0, 0.0], [3.0, 1.5 + h, 1.5 - h]),
+            ([1.0, 2.0, 3.0, 0.0, 0.5, 0.0], [2.5 + h, 2.5 - h, 1.0]),
+            (
+                [1.0, 2.0, 3.0, 0.0, 0.0, 0.5],
+                [2.0 + 1.25_f64.sqrt(), 2.0, 2.0 - 1.25_f64.sqrt()],
+            ),
+        ];
+        for (voigt, expected) in cases {
+            let p = StressTensor::from_array(voigt).principal_stresses();
+            for k in 0..3 {
+                assert!(
+                    (p[k] - expected[k]).abs() < 1e-12,
+                    "voigt {voigt:?}: p[{k}] = {} expected {}",
+                    p[k],
+                    expected[k]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_principal_stresses_preserve_tensor_invariants() {
+        let v = [120e3, -40e3, 75e3, 30e3, -22e3, 15e3];
+        let [xx, yy, zz, xy, yz, xz] = v;
+        let p = StressTensor::from_array(v).principal_stresses();
         assert!(p[0] >= p[1] && p[1] >= p[2]);
+        let trace = xx + yy + zz;
+        let frob_sq = xx * xx + yy * yy + zz * zz + 2.0 * (xy * xy + yz * yz + xz * xz);
+        let det = xx * (yy * zz - yz * yz) - xy * (xy * zz - yz * xz) + xz * (xy * yz - yy * xz);
+        assert!((p[0] + p[1] + p[2] - trace).abs() < 1e-9 * trace.abs());
+        assert!((p[0] * p[0] + p[1] * p[1] + p[2] * p[2] - frob_sq).abs() < 1e-9 * frob_sq);
+        assert!((p[0] * p[1] * p[2] - det).abs() < 1e-9 * det.abs());
+    }
+
+    #[test]
+    fn test_principal_stresses_recover_rotated_diagonal_tensor() {
+        // T = Rᵀ Λ R for a rotation about the axis (1, 2, 3)/√14 by 0.7 rad.
+        let lambda = [150e3, 20e3, -90e3];
+        let axis = [
+            1.0 / 14.0_f64.sqrt(),
+            2.0 / 14.0_f64.sqrt(),
+            3.0 / 14.0_f64.sqrt(),
+        ];
+        let (sn, cs) = 0.7_f64.sin_cos();
+        let k = [
+            [0.0, -axis[2], axis[1]],
+            [axis[2], 0.0, -axis[0]],
+            [-axis[1], axis[0], 0.0],
+        ];
+        let mut r = [[0.0; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                let kk: f64 = (0..3).map(|m| k[i][m] * k[m][j]).sum();
+                let identity = if i == j { 1.0 } else { 0.0 };
+                r[i][j] = identity + sn * k[i][j] + (1.0 - cs) * kk;
+            }
+        }
+        let mut t = [[0.0; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                t[i][j] = (0..3).map(|m| r[m][i] * lambda[m] * r[m][j]).sum();
+            }
+        }
+        assert!(t[0][1].abs() > 1e3, "the test tensor must carry real shear");
+        let s = StressTensor::from_array([t[0][0], t[1][1], t[2][2], t[0][1], t[1][2], t[0][2]]);
+        let p = s.principal_stresses();
+        for (got, want) in p.iter().zip(lambda.iter()) {
+            assert!((got - want).abs() < 1e-6, "got {got}, want {want}");
+        }
+    }
+
+    #[test]
+    fn test_principal_stresses_resolve_nearly_repeated_values() {
+        let s = StressTensor::from_array([1.0e5, 1.0e5, 2.0e5, 1.0e-3, 0.0, 0.0]);
+        let p = s.principal_stresses();
+        assert!((p[0] - 2.0e5).abs() < 1e-8);
+        assert!((p[1] - (1.0e5 + 1.0e-3)).abs() < 1e-8, "p1 = {}", p[1]);
+        assert!((p[2] - (1.0e5 - 1.0e-3)).abs() < 1e-8, "p2 = {}", p[2]);
+    }
+
+    #[test]
+    fn test_principal_stresses_non_finite_input_does_not_hang() {
+        let s = StressTensor::from_array([f64::NAN, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        assert!(s.principal_stresses().iter().all(|v| v.is_nan()));
+    }
+
+    #[test]
+    fn test_mohr_coulomb_yield_sees_pure_shear() {
+        let cohesion = 100e3;
+        let phi = 30f64.to_radians();
+        let params = MohrCoulombParams::new(10e6, 0.3, cohesion, phi, 10f64.to_radians());
+        let strength = cohesion * phi.cos();
+        for slot in 3..6 {
+            let mut below = [0.0; 6];
+            below[slot] = 0.5 * strength;
+            let f_below = mohr_coulomb_yield(&StressTensor::from_array(below), &params);
+            assert!(f_below < 0.0, "slot {slot}: f = {f_below}");
+            let mut above = [0.0; 6];
+            above[slot] = 1.5 * strength;
+            let f_above = mohr_coulomb_yield(&StressTensor::from_array(above), &params);
+            assert!(f_above > 0.0, "slot {slot}: f = {f_above}");
+            // Zero mean stress, so f = tau - c cos(phi) exactly.
+            assert!((f_above - 0.5 * strength).abs() < 1e-6 * strength);
+        }
     }
 
     #[test]

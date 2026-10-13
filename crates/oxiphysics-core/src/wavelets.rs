@@ -839,31 +839,58 @@ impl WaveletDenoising {
 
     /// SURE (Stein's Unbiased Risk Estimator) threshold.
     ///
-    /// Selects the threshold that minimizes the SURE risk estimate.
+    /// Treats `signal` as one band of wavelet coefficients (typically the
+    /// finest detail band) and returns the soft threshold that minimizes
+    /// Stein's unbiased risk estimate. The noise level `σ` is estimated from
+    /// the median absolute deviation of `signal` itself, the coefficients are
+    /// normalised to `z = x / σ`, and the threshold `t` minimizes
+    ///
+    /// `SURE(t) = n - 2 #{i : |z_i| <= t} + Σ_i min(z_i², t²)`
+    ///
+    /// over `t = 0` and the magnitudes `|z_i|`. The result is returned in the
+    /// units of `signal` (`σ t`), so it scales linearly with the input. The
+    /// search sorts the squared magnitudes once and uses prefix sums, which
+    /// makes it `O(n log n)`.
     pub fn sure_threshold(signal: &[f64]) -> f64 {
-        let n = signal.len();
-        if n == 0 {
+        if signal.is_empty() {
             return 0.0;
         }
-        let mut sorted: Vec<f64> = signal.iter().map(|x| x.abs()).collect();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let mut best_risk = f64::INFINITY;
-        let mut best_thresh = 0.0;
-        let total_sq: f64 = signal.iter().map(|x| x * x).sum();
-        for (i, &thresh) in sorted.iter().enumerate() {
-            // SURE risk for threshold t:  N - 2*(# |x_i| <= t) + sum(min(|x_i|,t)^2)
-            let k = i + 1; // number of coefficients with |x| <= thresh
-            let sum_clamped: f64 = sorted
-                .iter()
-                .map(|&x| if x <= thresh { x * x } else { thresh * thresh })
-                .sum();
-            let risk = (n as f64) - 2.0 * (k as f64) + sum_clamped + (total_sq - sum_clamped);
+        Self::sure_threshold_sigma(signal, Self::mad_sigma(signal))
+    }
+
+    /// SURE threshold for coefficients whose noise standard deviation is `sigma`.
+    ///
+    /// Returns `0.0` for an empty `signal` or a `sigma` that is not finite and
+    /// positive.
+    fn sure_threshold_sigma(signal: &[f64], sigma: f64) -> f64 {
+        let n = signal.len();
+        if n == 0 || !sigma.is_finite() || sigma <= 0.0 {
+            return 0.0;
+        }
+        let mut squares: Vec<f64> = signal
+            .iter()
+            .map(|x| {
+                let z = x / sigma;
+                z * z
+            })
+            .collect();
+        squares.sort_by(f64::total_cmp);
+        let n_f = n as f64;
+        // t = 0 leaves every coefficient (almost surely) above the threshold.
+        let mut best_risk = n_f;
+        let mut best_threshold = 0.0;
+        let mut prefix_sum = 0.0;
+        for (k, &square) in squares.iter().enumerate() {
+            prefix_sum += square;
+            // t² = square: k + 1 coefficients are at or below t and keep their own
+            // square in the sum, the other n - k - 1 contribute t² each.
+            let risk = n_f - 2.0 * (k as f64 + 1.0) + prefix_sum + (n - k - 1) as f64 * square;
             if risk < best_risk {
                 best_risk = risk;
-                best_thresh = thresh;
+                best_threshold = square.sqrt();
             }
         }
-        best_thresh
+        sigma * best_threshold
     }
 
     /// Apply full denoising pipeline: DWT → threshold → IDWT.
@@ -1870,3 +1897,6 @@ mod tests {
         assert!(k.is_finite(), "intermittency should be finite");
     }
 }
+
+#[cfg(test)]
+mod sure_tests;

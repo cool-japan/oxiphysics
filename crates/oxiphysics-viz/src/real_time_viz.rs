@@ -351,11 +351,18 @@ impl ViewFrustum {
 // Occlusion culling (hierarchical Z-buffer approximation)
 // ---------------------------------------------------------------------------
 
-/// A hierarchical Z-buffer tile for occlusion culling.
+/// A grid of depth tiles for conservative occlusion culling.
 ///
-/// The buffer is represented as a power-of-two grid of depth tiles.
-/// Each tile stores the *minimum* depth (closest) so that occluder
-/// queries can quickly reject occludees.
+/// Each tile keeps the *nearest* (minimum) depth drawn into it, exactly like a
+/// z-buffer; a tile that nothing has been drawn into holds `f32::MAX` (the far
+/// plane) and never occludes anything.
+///
+/// An occludee is hidden only when it lies behind an occluder at **every** tile
+/// its screen rectangle covers, so [`is_occluded`](Self::is_occluded) compares
+/// its nearest depth with the *farthest* tile depth of that rectangle
+/// ([`query_max_depth`](Self::query_max_depth)).  Comparing against the nearest
+/// tile ([`query_min_depth`](Self::query_min_depth)) would let one near tile
+/// hide objects that are in plain view over the other, still empty, tiles.
 #[derive(Debug, Clone)]
 pub struct HiZBuffer {
     /// Width of the base level in tiles.
@@ -402,9 +409,41 @@ impl HiZBuffer {
         min_d
     }
 
-    /// Test whether a sphere at `depth_near` (NDC) is occluded.
+    /// Query the maximum depth in a rectangular region `[x0..x1) × [y0..y1)`.
     ///
-    /// Returns `true` if the object is *behind* existing occluders (can skip rendering).
+    /// The rectangle is clamped to the buffer.  This is the depth an occludee
+    /// has to lie behind to be hidden at every tile of the rectangle.  Returns
+    /// `f32::MAX` when the clamped rectangle is empty.
+    pub fn query_max_depth(&self, x0: usize, y0: usize, x1: usize, y1: usize) -> f32 {
+        let x1 = x1.min(self.width);
+        let y1 = y1.min(self.height);
+        if x0 >= x1 || y0 >= y1 {
+            return f32::MAX;
+        }
+        let mut max_d = f32::NEG_INFINITY;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let d = self
+                    .tiles
+                    .get(y * self.width + x)
+                    .copied()
+                    .unwrap_or(f32::MAX);
+                if d > max_d {
+                    max_d = d;
+                }
+            }
+        }
+        max_d
+    }
+
+    /// Test whether an object whose nearest point has depth `depth_near`
+    /// (NDC) and whose screen footprint is `[screen_x0..screen_x1) ×
+    /// [screen_y0..screen_y1)` (in tiles) is occluded.
+    ///
+    /// Returns `true` only if the object is *behind* the recorded occluder at
+    /// every tile of the footprint (can skip rendering).  A footprint that
+    /// touches a tile nothing was drawn into, or that is empty after clamping
+    /// to the buffer, is never reported as occluded.
     pub fn is_occluded(
         &self,
         screen_x0: usize,
@@ -413,8 +452,8 @@ impl HiZBuffer {
         screen_y1: usize,
         depth_near: f32,
     ) -> bool {
-        let min_d = self.query_min_depth(screen_x0, screen_y0, screen_x1, screen_y1);
-        depth_near > min_d
+        let max_d = self.query_max_depth(screen_x0, screen_y0, screen_x1, screen_y1);
+        max_d < f32::MAX && depth_near > max_d
     }
 
     /// Reset all tiles to `f32::MAX`.
@@ -1499,10 +1538,98 @@ mod tests {
     fn test_hiz_buffer_is_occluded() {
         let mut buf = HiZBuffer::new(4, 4);
         buf.update(1, 1, 0.3);
-        // depth_near=0.5 > stored 0.3 → occluded
-        assert!(buf.is_occluded(0, 0, 4, 4, 0.5));
-        // depth_near=0.1 < stored 0.3 → not occluded
+        // One near tile out of sixteen: the other fifteen are still empty, so
+        // an object spanning the whole buffer is visible whatever its depth.
+        assert!(!buf.is_occluded(0, 0, 4, 4, 0.5));
         assert!(!buf.is_occluded(0, 0, 4, 4, 0.1));
+        // An object confined to the covered tile is hidden behind it...
+        assert!(buf.is_occluded(1, 1, 2, 2, 0.5));
+        // ...unless it is in front of the occluder.
+        assert!(!buf.is_occluded(1, 1, 2, 2, 0.1));
+        // Once every tile holds an occluder at depth 0.3 the full-screen object
+        // is occluded exactly when it lies behind it.
+        for y in 0..4 {
+            for x in 0..4 {
+                buf.update(x, y, 0.3);
+            }
+        }
+        assert!(buf.is_occluded(0, 0, 4, 4, 0.5));
+        assert!(!buf.is_occluded(0, 0, 4, 4, 0.1));
+        assert!(
+            !buf.is_occluded(0, 0, 4, 4, 0.3),
+            "equal depth is not behind"
+        );
+    }
+
+    #[test]
+    fn test_hiz_buffer_occlusion_uses_the_farthest_tile() {
+        // Occluders at different depths: the object must clear the farthest.
+        let mut buf = HiZBuffer::new(2, 1);
+        buf.update(0, 0, 0.2);
+        buf.update(1, 0, 0.6);
+        assert!(
+            !buf.is_occluded(0, 0, 2, 1, 0.5),
+            "0.5 is in front of tile 1"
+        );
+        assert!(buf.is_occluded(0, 0, 2, 1, 0.7));
+        assert!(buf.is_occluded(0, 0, 1, 1, 0.5), "tile 0 alone is at 0.2");
+    }
+
+    #[test]
+    fn test_hiz_buffer_query_max_depth() {
+        let mut buf = HiZBuffer::new(4, 4);
+        assert_eq!(buf.query_max_depth(0, 0, 4, 4), f32::MAX);
+        buf.update(1, 1, 0.3);
+        buf.update(2, 1, 0.8);
+        assert!((buf.query_max_depth(1, 1, 3, 2) - 0.8).abs() < 1e-6);
+        assert!((buf.query_max_depth(1, 1, 2, 2) - 0.3).abs() < 1e-6);
+        // A rectangle that reaches an unwritten tile is as far as the far plane.
+        assert_eq!(buf.query_max_depth(1, 1, 3, 3), f32::MAX);
+        // The rectangle is clamped to the buffer.
+        let mut small = HiZBuffer::new(2, 2);
+        small.update(0, 0, 0.1);
+        small.update(1, 0, 0.4);
+        small.update(0, 1, 0.2);
+        small.update(1, 1, 0.3);
+        assert_eq!(small.query_max_depth(0, 0, 100, 100), 0.4);
+        assert_eq!(small.query_max_depth(1, 1, 100, 100), 0.3);
+        // Empty or out-of-range rectangles report the far plane.
+        assert_eq!(buf.query_max_depth(2, 2, 2, 3), f32::MAX);
+        assert_eq!(buf.query_max_depth(3, 0, 1, 4), f32::MAX);
+        assert_eq!(buf.query_max_depth(9, 9, 12, 12), f32::MAX);
+    }
+
+    #[test]
+    fn test_hiz_buffer_update_keeps_the_nearest_depth() {
+        let mut buf = HiZBuffer::new(2, 2);
+        buf.update(0, 0, 0.5);
+        buf.update(0, 0, 0.7);
+        buf.update(0, 0, f32::NAN);
+        assert!((buf.query_min_depth(0, 0, 1, 1) - 0.5).abs() < 1e-6);
+        buf.update(0, 0, 0.2);
+        assert!((buf.query_min_depth(0, 0, 1, 1) - 0.2).abs() < 1e-6);
+        // Writes outside the buffer are ignored.
+        buf.update(2, 0, 0.1);
+        buf.update(0, 2, 0.1);
+        assert_eq!(buf.query_min_depth(0, 0, 2, 2), 0.2);
+    }
+
+    #[test]
+    fn test_hiz_buffer_empty_footprints_are_never_occluded() {
+        let mut buf = HiZBuffer::new(2, 2);
+        for y in 0..2 {
+            for x in 0..2 {
+                buf.update(x, y, 0.1);
+            }
+        }
+        // Empty, reversed and out-of-range footprints, even for a far object.
+        assert!(!buf.is_occluded(1, 1, 1, 2, 0.9));
+        assert!(!buf.is_occluded(2, 0, 1, 2, 0.9));
+        assert!(!buf.is_occluded(5, 5, 9, 9, 0.9));
+        assert!(!buf.is_occluded(0, 0, 2, 2, f32::NAN));
+        // An unwritten tile never occludes, even for an object beyond the far plane.
+        let empty = HiZBuffer::new(2, 2);
+        assert!(!empty.is_occluded(0, 0, 2, 2, f32::INFINITY));
     }
 
     #[test]

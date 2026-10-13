@@ -612,7 +612,10 @@ class EventBus:
 class ProfilerSession:
     """Per-frame scope profiler.
 
-    Call begin_frame, then record_scope to inject timing data, then end_frame_json.
+    Call begin_frame, then end_frame_json / end_frame_csv / end_frame_folded_stacks
+    to retrieve the summary of the frame. Scopes are opened in Rust through RAII
+    guards that borrow the session, so this binding has no method to record scopes
+    from Python yet.
     """
     def __init__(self) -> None: ...
     def begin_frame(self) -> None: ...

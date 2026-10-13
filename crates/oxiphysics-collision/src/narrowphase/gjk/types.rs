@@ -63,7 +63,8 @@ impl Simplex {
 /// Result of a GJK ray-cast query.
 #[derive(Debug, Clone, Copy)]
 pub struct RayCastResult {
-    /// Hit parameter `t` along the ray: `origin + t * direction`.
+    /// Hit distance `t` along the normalised ray direction:
+    /// `origin + t * direction.normalize()`.
     pub t: f64,
     /// World-space hit point on the shape surface.
     pub point: Vec3,
@@ -525,10 +526,11 @@ impl Gjk {
             let new_point = support(shape_a, transform_a, shape_b, transform_b, &direction);
             if new_point.point.dot(&direction) < -TOLERANCE {
                 let (closest, bary) = simplex.closest_point_to_origin();
-                let _ = bary;
                 let dist = closest.norm();
-                let point_a = transform_a.position;
-                let point_b = transform_b.position;
+                // Witness points from the barycentric weights of the closest
+                // simplex feature (not the shape origins), so that
+                // `point_a - point_b` is the closest-point vector of length `dist`.
+                let (point_a, point_b) = barycentric_witnesses(&simplex, &bary);
                 return GjkResult::Separated {
                     point_a,
                     point_b,

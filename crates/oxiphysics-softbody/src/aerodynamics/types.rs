@@ -3,6 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::{biot_savart_filament, biot_savart_velocity};
+use crate::Error;
 use oxiphysics_core::math::{Real, Vec3};
 
 use super::helpers::*;
@@ -296,15 +297,38 @@ impl LiftingLineTheory {
         (lift, drag)
     }
 }
-/// A simple vortex lattice method (VLM) panel solver for rectangular wings.
+/// Spanwise length of the trailing vortex legs, in wing spans, standing in for
+/// "semi-infinite" legs.
+const VLM_TRAIL_LENGTH_IN_SPANS: f64 = 100.0;
+/// A vortex lattice method (VLM) solver for flat rectangular wings.
 ///
-/// Discretises the wing into `n_span × n_chord` panels, places a horseshoe
-/// vortex on each, and solves for the bound circulation strengths via a
-/// collocation-point boundary condition (no-penetration).
+/// # Axes
 ///
-/// The implementation uses an influence-coefficient matrix (AIC) approach:
-/// each panel's collocation point sees induced velocities from all panels'
-/// horseshoe vortices.  The system Γ = AIC⁻¹ * RHS is solved by Gaussian
+/// The wing lies in the `z = 0` plane: the span runs along X
+/// (`-span/2 ..= span/2`), the chord along Y (leading edge at `y = 0`,
+/// trailing edge at `y = chord`) and the wing normal is `+Z`.  Relative to the
+/// wing, the freestream of speed `V` flows from the leading edge to the
+/// trailing edge and is tilted out of the wing plane by the angle of attack
+/// `α`: `V∞ = V · (0, cos α, sin α)`.  A positive `α` therefore means the
+/// oncoming flow strikes the lower (`-Z`) face and produces positive lift
+/// along `+Z`.
+///
+/// # Discretisation
+///
+/// The wing is divided into `n_span × n_chord` panels, stored span-major:
+/// panel `(i, j)` (`i` spanwise, `j` chordwise) has index `i * n_chord + j`.
+/// Each panel carries one horseshoe vortex made of a bound segment at the
+/// panel's quarter chord and two trailing legs that run downstream (`+Y`)
+/// parallel to the wing plane.  The circulation `Γ` enters along the right
+/// trailing leg, crosses the bound segment from its right end (`+X`) to its
+/// left end (`-X`) and leaves along the left leg; this is the sense for which
+/// a positive `Γ` produces positive lift.
+///
+/// The no-penetration condition `(V∞ + v_induced) · n = 0` is imposed at one
+/// collocation point per panel, located at the panel's mid-span and 3/4 chord.
+/// With that placement a single chordwise panel reproduces the thin-airfoil
+/// lift slope `2π` in the two-dimensional limit.  The dense influence
+/// coefficient (AIC) system `AIC · Γ = -V∞ · n` is solved by Gaussian
 /// elimination.
 #[derive(Debug, Clone)]
 pub struct VortexLatticeMethod {
@@ -318,15 +342,19 @@ pub struct VortexLatticeMethod {
     pub chord: f64,
     /// Angle of attack (rad).
     pub angle_of_attack: f64,
-    /// Panel centroid positions (n_span × n_chord), world space.
+    /// Collocation points, one per panel in panel order: the panel's mid-span
+    /// position at 3/4 chord (world space, `z = 0`).
     pub panel_centers: Vec<[f64; 3]>,
-    /// Bound vortex quarter-chord points.
+    /// Bound vortex segment `(left end, right end)` of every panel, located at
+    /// the panel's quarter chord.
     pub bound_vortex_pts: Vec<([f64; 3], [f64; 3])>,
 }
 impl VortexLatticeMethod {
     /// Create a flat, rectangular wing centred at the origin.
     ///
-    /// Span is along X, chord along Y (freestream in +Y direction after AoA rotation).
+    /// The span runs along X, the chord along Y with the leading edge at
+    /// `y = 0`; see the type-level documentation for the axes and sign
+    /// conventions.  `n_span` and `n_chord` are clamped to at least 1.
     pub fn new(n_span: usize, n_chord: usize, span: f64, chord: f64, angle_of_attack: f64) -> Self {
         let n_span = n_span.max(1);
         let n_chord = n_chord.max(1);
@@ -337,7 +365,7 @@ impl VortexLatticeMethod {
         for i in 0..n_span {
             for j in 0..n_chord {
                 let x_c = -span * 0.5 + (i as f64 + 0.5) * dx;
-                let y_c = (j as f64 + 0.25) * dy;
+                let y_c = (j as f64 + 0.75) * dy;
                 panel_centers.push([x_c, y_c, 0.0]);
                 let x_l = -span * 0.5 + i as f64 * dx;
                 let x_r = x_l + dx;
@@ -359,53 +387,111 @@ impl VortexLatticeMethod {
     pub fn n_panels(&self) -> usize {
         self.n_span * self.n_chord
     }
-    /// Solve for bound circulation strengths Γ using the AIC matrix.
+    /// Velocity induced at `point` by the horseshoe vortex of a panel with
+    /// unit circulation.
     ///
-    /// Returns a vector of length `n_panels()` with each panel's Γ (m²/s).
-    pub fn solve_gammas(&self, velocity: f64, density: f64) -> Vec<f64> {
+    /// The vortex path is: far end of the right leg -> right end of the bound
+    /// segment -> left end of the bound segment -> far end of the left leg,
+    /// with both legs running `trail_len` downstream (`+Y`) in the wing plane.
+    fn horseshoe_unit_velocity(
+        bound_left: [f64; 3],
+        bound_right: [f64; 3],
+        trail_len: f64,
+        point: [f64; 3],
+    ) -> [f64; 3] {
+        let far_left = [bound_left[0], bound_left[1] + trail_len, bound_left[2]];
+        let far_right = [bound_right[0], bound_right[1] + trail_len, bound_right[2]];
+        let v_right_leg = biot_savart_velocity(far_right, bound_right, 1.0, point);
+        let v_bound = biot_savart_velocity(bound_right, bound_left, 1.0, point);
+        let v_left_leg = biot_savart_velocity(bound_left, far_left, 1.0, point);
+        v3_add(v_right_leg, v3_add(v_bound, v_left_leg))
+    }
+    /// Solve for the bound circulation strengths Γ of all panels.
+    ///
+    /// Returns one Γ (m²/s) per panel in panel order (`i * n_chord + j`).  Γ is
+    /// positive where the panel produces lift along `+Z` (positive angle of
+    /// attack).  `velocity` is the freestream speed (m/s).  The circulation
+    /// does not depend on the fluid density; `_density` is accepted so that
+    /// the signature mirrors [`Self::total_lift`].
+    ///
+    /// # Errors
+    ///
+    /// Fails when `velocity` is negative or not finite, when the angle of
+    /// attack, span or chord are not finite (or span/chord are not positive),
+    /// when the stored panel geometry does not match `n_span * n_chord`, or
+    /// when the influence-coefficient matrix is singular.
+    pub fn solve_gammas(&self, velocity: f64, _density: f64) -> crate::Result<Vec<f64>> {
+        if !velocity.is_finite() || velocity < 0.0 {
+            return Err(Error::InvalidParameter(format!(
+                "VLM freestream speed must be finite and non-negative, got {velocity}"
+            )));
+        }
+        let geometry_ok = self.angle_of_attack.is_finite()
+            && self.span.is_finite()
+            && self.chord.is_finite()
+            && self.span > 0.0
+            && self.chord > 0.0;
+        if !geometry_ok {
+            return Err(Error::InvalidParameter(format!(
+                "VLM needs finite angle of attack and positive finite span/chord, \
+                 got alpha={}, span={}, chord={}",
+                self.angle_of_attack, self.span, self.chord
+            )));
+        }
         let np = self.n_panels();
         if np == 0 {
-            return vec![];
+            return Ok(Vec::new());
         }
-        let _density = density;
+        if self.panel_centers.len() != np || self.bound_vortex_pts.len() != np {
+            return Err(Error::InvalidParameter(format!(
+                "VLM panel arrays ({} collocation points, {} bound vortices) do not match \
+                 n_span * n_chord = {np}",
+                self.panel_centers.len(),
+                self.bound_vortex_pts.len()
+            )));
+        }
         let aoa = self.angle_of_attack;
-        let wing_normal = [0.0_f64, -aoa.sin(), aoa.cos()];
-        let v_inf = [0.0_f64, velocity * aoa.cos(), -velocity * aoa.sin()];
+        // The wing is flat in z = 0, so every panel normal is +Z and only the
+        // freestream is tilted by the angle of attack.
+        let wing_normal = [0.0_f64, 0.0, 1.0];
+        let v_inf = [0.0_f64, velocity * aoa.cos(), velocity * aoa.sin()];
+        let trail_len = VLM_TRAIL_LENGTH_IN_SPANS * self.span;
         let mut aic = vec![0.0_f64; np * np];
-        let trail_len = 100.0 * self.span;
         for (row, &cp) in self.panel_centers.iter().enumerate() {
             for (col, &(bv_l, bv_r)) in self.bound_vortex_pts.iter().enumerate() {
-                let v_bound = biot_savart_velocity(bv_l, bv_r, 1.0, cp);
-                let trail_l_end = [bv_l[0], bv_l[1] + trail_len, bv_l[2]];
-                let v_trail_l = biot_savart_velocity(bv_r, trail_l_end, 1.0, cp);
-                let trail_r_start = [bv_r[0], bv_r[1] + trail_len, bv_r[2]];
-                let v_trail_r = biot_savart_velocity(trail_r_start, bv_l, 1.0, cp);
-                let v_tot = [
-                    v_bound[0] + v_trail_l[0] + v_trail_r[0],
-                    v_bound[1] + v_trail_l[1] + v_trail_r[1],
-                    v_bound[2] + v_trail_l[2] + v_trail_r[2],
-                ];
-                let w_n = v_tot[0] * wing_normal[0]
-                    + v_tot[1] * wing_normal[1]
-                    + v_tot[2] * wing_normal[2];
-                aic[row * np + col] = w_n;
+                let v_tot = Self::horseshoe_unit_velocity(bv_l, bv_r, trail_len, cp);
+                aic[row * np + col] = v3_dot(v_tot, wing_normal);
             }
         }
-        let rhs: Vec<f64> = (0..np)
-            .map(|_| {
-                -(v_inf[0] * wing_normal[0] + v_inf[1] * wing_normal[1] + v_inf[2] * wing_normal[2])
-            })
-            .collect();
-        gauss_solve_opt(np, &mut { aic }, &rhs).unwrap_or_else(|| vec![0.0; np])
+        let rhs = vec![-v3_dot(v_inf, wing_normal); np];
+        gauss_solve_opt(np, &mut aic, &rhs).ok_or_else(|| {
+            Error::General("VLM influence-coefficient matrix is singular".to_string())
+        })
     }
-    /// Compute total aerodynamic lift using Kutta-Joukowski (Γ-based).
+    /// Compute the total (signed) lift with the Kutta-Joukowski theorem.
     ///
-    /// `L = rho * V * sum(Gamma_i * span_i)`
-    pub fn total_lift(&self, velocity: f64, density: f64) -> f64 {
-        let gammas = self.solve_gammas(velocity, density);
-        let dx = self.span / self.n_span as f64;
-        let lift: f64 = gammas.iter().take(self.n_span).sum::<f64>() * dx;
-        density * velocity * lift.abs()
+    /// `L = rho * V * sum_i(Gamma_i * dx_i)` over **all** panels, where `dx_i`
+    /// is the length of panel `i`'s bound vortex segment.  The result is the
+    /// force perpendicular to the freestream, positive along `+Z`: a positive
+    /// angle of attack gives positive lift and a negative one negative lift.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the errors of [`Self::solve_gammas`] and fails when
+    /// `density` is not finite.
+    pub fn total_lift(&self, velocity: f64, density: f64) -> crate::Result<f64> {
+        if !density.is_finite() {
+            return Err(Error::InvalidParameter(format!(
+                "VLM air density must be finite, got {density}"
+            )));
+        }
+        let gammas = self.solve_gammas(velocity, density)?;
+        let circulation_span_sum: f64 = gammas
+            .iter()
+            .zip(self.bound_vortex_pts.iter())
+            .map(|(&gamma, &(bv_l, bv_r))| gamma * v3_norm(v3_sub(bv_r, bv_l)))
+            .sum();
+        Ok(density * velocity * circulation_span_sum)
     }
 }
 /// Standard drag polar: `CD = CD0 + k·CL²`

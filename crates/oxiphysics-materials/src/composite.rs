@@ -374,10 +374,11 @@ impl Laminate {
     fn ply_z_coords(&self) -> Vec<f64> {
         let h = self.total_thickness();
         let mut z = Vec::with_capacity(self.plies.len() + 1);
-        z.push(-h / 2.0);
+        let mut current = -h / 2.0;
+        z.push(current);
         for (ply, _) in &self.plies {
-            let last = *z.last().expect("collection should not be empty");
-            z.push(last + ply.thickness);
+            current += ply.thickness;
+            z.push(current);
         }
         z
     }
@@ -496,16 +497,18 @@ impl MoriTanaka {
 
     /// Effective shear modulus G* via Mori-Tanaka.
     ///
-    /// G* = G_m + V_i*(G_i - G_m) / (1 + (1 - V_i)*(G_i - G_m)/beta)
-    /// where beta = G_m*(9*K_m + 8*G_m)/(6*(K_m + 2*G_m))
+    /// G* = G_m + V_i*(G_i - G_m) / (1 + (1 - V_i)*(G_i - G_m)/(G_m + zeta_m))
+    /// where zeta_m = G_m*(9*K_m + 8*G_m)/(6*(K_m + 2*G_m)) is the Eshelby
+    /// constraint parameter of a spherical inclusion, so that
+    /// G_m + zeta_m = 5*G_m*(3*K_m + 4*G_m)/(6*(K_m + 2*G_m)).
     pub fn effective_shear_modulus(&self) -> f64 {
         let k_m = self.matrix.bulk_modulus();
         let g_m = self.matrix.shear_modulus();
         let g_i = self.inclusion.shear_modulus();
         let v_i = self.inclusion.volume_fraction;
 
-        let beta = g_m * (9.0 * k_m + 8.0 * g_m) / (6.0 * (k_m + 2.0 * g_m));
-        g_m + v_i * (g_i - g_m) / (1.0 + (1.0 - v_i) * (g_i - g_m) / beta)
+        let zeta_m = g_m * (9.0 * k_m + 8.0 * g_m) / (6.0 * (k_m + 2.0 * g_m));
+        g_m + v_i * (g_i - g_m) / (1.0 + (1.0 - v_i) * (g_i - g_m) / (g_m + zeta_m))
     }
 
     /// Effective Young's modulus E* derived from K* and G*.
@@ -714,7 +717,7 @@ pub fn hashin_failure(sigma: [f64; 3], strength: &PlyStrength) -> HashinResult {
 }
 
 // ---------------------------------------------------------------------------
-// Puck failure criterion (simplified)
+// Puck failure criterion (plane stress)
 // ---------------------------------------------------------------------------
 
 /// Puck inter-fiber failure result.
@@ -728,9 +731,74 @@ pub struct PuckResult {
     pub failed: bool,
 }
 
-/// Simplified Puck failure criterion.
+/// Default Puck inclination parameter p⊥∥⁻ (dimensionless) of the
+/// inter-fiber failure envelope under transverse compression.  The value 0.25
+/// is the usual recommendation for carbon- and glass-fibre/epoxy plies
+/// (Puck & Schürmann 2002, VDI 2014).
+const PUCK_P_PERP_PAR_MINUS: f64 = 0.25;
+
+/// Puck inter-fiber failure effort for transverse compression (`σ₂ < 0`) in
+/// the plane-stress formulation of Puck & Schürmann.
 ///
-/// Focuses on inter-fiber failure (IFF) and fiber failure (FF).
+/// Arguments are the transverse stress `sigma2` (negative), the in-plane
+/// shear stress `tau21`, the transverse compressive strength `yc` (positive),
+/// the in-plane shear strength `s21` and the inclination parameter
+/// `p_perp_par_minus` (p⊥∥⁻).
+///
+/// The criterion distinguishes two fracture modes, separated by the stress
+/// ratio `|σ₂/τ₂₁| = R⊥⊥ᴬ / τ₂₁c`:
+///
+/// * **Mode B** (shear dominated; the fracture plane is perpendicular to the
+///   ply plane, θ_fp = 0°):
+///   `f = (sqrt(τ₂₁² + (p⊥∥⁻·σ₂)²) + p⊥∥⁻·σ₂) / S₂₁`
+/// * **Mode C** (compression dominated; oblique fracture plane, θ_fp > 0°):
+///   `f = [(τ₂₁ / (2·(1 + p⊥⊥⁻)·S₂₁))² + (σ₂/Yc)²] · Yc / (−σ₂)`
+///
+/// with the fracture resistance of the action plane
+/// `R⊥⊥ᴬ = S₂₁/(2·p⊥∥⁻) · (sqrt(1 + 2·p⊥∥⁻·Yc/S₂₁) − 1)`, the derived
+/// parameter `p⊥⊥⁻ = p⊥∥⁻·R⊥⊥ᴬ/S₂₁` and the shear stress at the mode
+/// transition `τ₂₁c = S₂₁·sqrt(1 + 2·p⊥⊥⁻)`.  `R⊥⊥ᴬ` is evaluated in the
+/// algebraically identical, cancellation-free form
+/// `Yc / (1 + sqrt(1 + 2·p⊥∥⁻·Yc/S₂₁))`, which stays finite for `p⊥∥⁻ → 0`.
+///
+/// The two branches meet continuously at the mode boundary, and pure
+/// transverse compression `σ₂ = -Yc, τ₂₁ = 0` gives exactly `f = 1`.
+pub(crate) fn puck_iff_transverse_compression(
+    sigma2: f64,
+    tau21: f64,
+    yc: f64,
+    s21: f64,
+    p_perp_par_minus: f64,
+) -> f64 {
+    let p = p_perp_par_minus;
+    let tau = tau21.abs();
+    let compression = -sigma2;
+
+    let r_perp_perp_a = yc / (1.0 + (1.0 + 2.0 * p * yc / s21).sqrt());
+    let p_perp_perp_minus = p * r_perp_perp_a / s21;
+    let tau_21c = s21 * (1.0 + 2.0 * p_perp_perp_minus).sqrt();
+
+    // |σ₂/τ₂₁| <= R⊥⊥ᴬ/τ₂₁c written without a division so that τ₂₁ = 0
+    // (pure compression) falls into Mode C.
+    if compression * tau_21c <= r_perp_perp_a * tau {
+        // Mode B
+        let friction = p * sigma2;
+        ((tau * tau + friction * friction).sqrt() + friction) / s21
+    } else {
+        // Mode C
+        let shear_term = tau / (2.0 * (1.0 + p_perp_perp_minus) * s21);
+        (shear_term * shear_term + (sigma2 / yc).powi(2)) * yc / compression
+    }
+}
+
+/// Plane-stress Puck failure criterion.
+///
+/// Fiber failure (FF) is a maximum-stress check in the fiber direction.
+/// Inter-fiber failure (IFF) follows the action-plane concept: transverse
+/// tension (`σ₂ >= 0`, Mode A) uses the elliptical interaction of `σ₂/Yt`
+/// and `τ₁₂/S₁₂`, while transverse compression (`σ₂ < 0`) uses the Puck
+/// Mode B / Mode C formulation with the default inclination parameter
+/// `p⊥∥⁻ = 0.25`, so that `σ₂ = -Yc` gives an effort of exactly 1.
 pub fn puck_failure(sigma: [f64; 3], strength: &PlyStrength) -> PuckResult {
     let s1 = sigma[0];
     let s2 = sigma[1];
@@ -743,15 +811,13 @@ pub fn puck_failure(sigma: [f64; 3], strength: &PlyStrength) -> PuckResult {
         (-s1) / strength.xc
     };
 
-    // Inter-fiber failure (simplified Mode A / Mode B / Mode C)
+    // Inter-fiber failure
     let iff_effort = if s2 >= 0.0 {
         // Mode A: transverse tension
         ((s2 / strength.yt).powi(2) + (s12 / strength.s12).powi(2)).sqrt()
     } else {
-        // Mode B/C: transverse compression
-        let p_perp_minus = 0.25; // friction parameter
-        let tau_eff = (s12 * s12 + (p_perp_minus * s2).powi(2)).sqrt();
-        tau_eff / (strength.s12 - p_perp_minus * s2)
+        // Mode B / Mode C: transverse compression
+        puck_iff_transverse_compression(s2, s12, strength.yc, strength.s12, PUCK_P_PERP_PAR_MINUS)
     };
 
     PuckResult {
@@ -1034,56 +1100,13 @@ pub fn thermal_residual_stresses(
 }
 
 // ---------------------------------------------------------------------------
-// Interlaminar stresses (simplified)
+// Interlaminar stresses
 // ---------------------------------------------------------------------------
 
-/// Estimate interlaminar shear stress at the interface between ply k and k+1.
-///
-/// Uses equilibrium-based approach: tau_xz at interface is proportional
-/// to the jump in Q_bar * strain derivative.
-pub fn interlaminar_shear_estimate(
-    laminate: &Laminate,
-    midplane_strain: [f64; 3],
-    curvature: [f64; 3],
-) -> Vec<f64> {
-    let z_coords = laminate.ply_z_coords();
-    let n = laminate.plies.len();
-    if n < 2 {
-        return Vec::new();
-    }
+mod interlaminar;
 
-    let mut shear_stresses = Vec::with_capacity(n - 1);
-
-    // Accumulate stress resultant from bottom
-    let mut sum_sx = 0.0;
-
-    for k in 0..n - 1 {
-        let z_bot = z_coords[k];
-        let z_top = z_coords[k + 1];
-        let (ply, angle) = &laminate.plies[k];
-        let qbar = ply.q_bar_matrix(*angle);
-
-        // Integrate sigma_x through the ply thickness
-        // sigma_x = Q11*(eps_x0 + z*kappa_x) + Q12*(eps_y0 + z*kappa_y) + Q16*(gamma_xy0 + z*kappa_xy)
-        // Integral from z_bot to z_top:
-        let dz = z_top - z_bot;
-        let z_avg = (z_bot + z_top) / 2.0;
-
-        let eps_x_avg = midplane_strain[0] + z_avg * curvature[0];
-        let eps_y_avg = midplane_strain[1] + z_avg * curvature[1];
-        let gam_avg = midplane_strain[2] + z_avg * curvature[2];
-
-        let sigma_x = qbar[0][0] * eps_x_avg + qbar[0][1] * eps_y_avg + qbar[0][2] * gam_avg;
-        sum_sx += sigma_x * dz;
-
-        // Interlaminar shear ~ derivative of integrated sigma_x w.r.t. x
-        // Simplified: just report accumulated resultant / total thickness as a proxy
-        let total_h = laminate.total_thickness();
-        shear_stresses.push(sum_sx / total_h);
-    }
-
-    shear_stresses
-}
+pub use interlaminar::interlaminar_shear_estimate;
+pub(crate) use interlaminar::solve_linear_6;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1187,6 +1210,83 @@ mod tests {
             matrix.youngs_modulus,
             inclusion.youngs_modulus
         );
+    }
+
+    /// Glass spheres in epoxy at V = 0.3: the shear modulus must agree with the
+    /// independent closed form in `combination::mori_tanaka_homogenization`.
+    #[test]
+    fn test_mori_tanaka_shear_matches_combination_module() {
+        let matrix = IsotropicConstituent::new(3.5e9, 0.35, 1200.0, 0.7);
+        let inclusion = IsotropicConstituent::new(72.0e9, 0.22, 2500.0, 0.3);
+        let mt = MoriTanaka::new(matrix, inclusion);
+        let (k_ref, g_ref) = crate::combination::mori_tanaka_homogenization(
+            0.3,
+            inclusion.bulk_modulus(),
+            inclusion.shear_modulus(),
+            matrix.bulk_modulus(),
+            matrix.shear_modulus(),
+        );
+        let g_eff = mt.effective_shear_modulus();
+        assert!(
+            (g_eff - g_ref).abs() / g_ref < 1e-9,
+            "G* = {g_eff}, reference = {g_ref}"
+        );
+        let k_eff = mt.effective_bulk_modulus();
+        assert!(
+            (k_eff - k_ref).abs() / k_ref < 1e-9,
+            "K* = {k_eff}, reference = {k_ref}"
+        );
+    }
+
+    /// Mori-Tanaka limits: no inclusions returns the matrix, a pure inclusion
+    /// phase returns the inclusion, and a dilute suspension follows the
+    /// Eshelby dilute-limit slope dG/dV = (G_i - G_m)/(1 + (G_i - G_m)/(G_m + zeta_m)).
+    #[test]
+    fn test_mori_tanaka_shear_limits() {
+        let matrix = IsotropicConstituent::new(3.5e9, 0.35, 1200.0, 1.0);
+        let g_m = matrix.shear_modulus();
+        let k_m = matrix.bulk_modulus();
+        let inc = |v: f64| IsotropicConstituent::new(72.0e9, 0.22, 2500.0, v);
+
+        let empty = MoriTanaka::new(matrix, inc(0.0)).effective_shear_modulus();
+        assert!((empty - g_m).abs() / g_m < 1e-12, "V=0: {empty} vs {g_m}");
+
+        let full = MoriTanaka::new(matrix, inc(1.0)).effective_shear_modulus();
+        let g_i = inc(1.0).shear_modulus();
+        assert!((full - g_i).abs() / g_i < 1e-12, "V=1: {full} vs {g_i}");
+
+        let v = 1.0e-6;
+        let dilute = MoriTanaka::new(matrix, inc(v)).effective_shear_modulus();
+        let zeta_m = g_m * (9.0 * k_m + 8.0 * g_m) / (6.0 * (k_m + 2.0 * g_m));
+        let slope = (g_i - g_m) / (1.0 + (g_i - g_m) / (g_m + zeta_m));
+        let expected = g_m + v * slope;
+        assert!(
+            (dilute - expected).abs() / g_m < 1e-9,
+            "dilute limit: {dilute} vs {expected}"
+        );
+    }
+
+    /// Effective shear modulus lies between the Reuss and Voigt bounds and
+    /// grows monotonically with the inclusion volume fraction.
+    #[test]
+    fn test_mori_tanaka_shear_bounded_and_monotone() {
+        let matrix = IsotropicConstituent::new(3.5e9, 0.35, 1200.0, 1.0);
+        let g_m = matrix.shear_modulus();
+        let g_i = IsotropicConstituent::new(72.0e9, 0.22, 2500.0, 1.0).shear_modulus();
+        let mut previous = g_m;
+        for step in 1..=9 {
+            let v = f64::from(step) / 10.0;
+            let inclusion = IsotropicConstituent::new(72.0e9, 0.22, 2500.0, v);
+            let g = MoriTanaka::new(matrix, inclusion).effective_shear_modulus();
+            let voigt = (1.0 - v) * g_m + v * g_i;
+            let reuss = 1.0 / ((1.0 - v) / g_m + v / g_i);
+            assert!(
+                g > reuss && g < voigt,
+                "V={v}: Reuss {reuss} < G* {g} < Voigt {voigt}"
+            );
+            assert!(g > previous, "V={v}: not monotone ({g} <= {previous})");
+            previous = g;
+        }
     }
 
     #[test]
@@ -1359,8 +1459,131 @@ mod tests {
         let s = PlyStrength::cfrp_typical();
         let sigma = [0.0, -300.0e6, 50.0e6];
         let r = puck_failure(sigma, &s);
-        // Under heavy compression with shear, should eventually fail
-        assert!(r.iff_effort > 0.0);
+        // 300 MPa exceeds the 250 MPa transverse compressive strength, so the
+        // Mode C effort must exceed 1 and flag failure.
+        assert!(r.iff_effort > 1.0, "iff_effort = {}", r.iff_effort);
+        assert!(r.failed);
+    }
+
+    /// Textbook transcription of the Puck plane-stress IFF compression
+    /// branch, deliberately written with the un-rearranged formulas and an
+    /// explicit stress-ratio test so it is independent of the implementation.
+    fn puck_reference_compression(sigma2: f64, tau21: f64, yc: f64, s21: f64, p: f64) -> f64 {
+        let r_a = s21 / (2.0 * p) * ((1.0 + 2.0 * p * yc / s21).sqrt() - 1.0);
+        let p_pp = p * r_a / s21;
+        let tau_c = s21 * (1.0 + 2.0 * p_pp).sqrt();
+        if (sigma2 / tau21).abs() <= r_a / tau_c {
+            ((tau21.powi(2) + (p * sigma2).powi(2)).sqrt() + p * sigma2) / s21
+        } else {
+            ((tau21 / (2.0 * (1.0 + p_pp) * s21)).powi(2) + (sigma2 / yc).powi(2)) * yc / (-sigma2)
+        }
+    }
+
+    #[test]
+    fn test_puck_iff_pure_transverse_compression_reaches_one_at_yc() {
+        for s in [PlyStrength::cfrp_typical(), PlyStrength::gfrp_typical()] {
+            let r = puck_failure([0.0, -s.yc, 0.0], &s);
+            assert!(
+                (r.iff_effort - 1.0).abs() < 1e-12,
+                "iff_effort at sigma2 = -Yc must be 1, got {}",
+                r.iff_effort
+            );
+            assert!(r.failed, "transverse compressive failure must be flagged");
+        }
+    }
+
+    #[test]
+    fn test_puck_iff_pure_transverse_compression_is_linear_in_stress() {
+        let s = PlyStrength::cfrp_typical();
+        for &fraction in &[0.1, 0.5, 0.9, 1.2, 2.0] {
+            let r = puck_failure([0.0, -fraction * s.yc, 0.0], &s);
+            assert!(
+                (r.iff_effort - fraction).abs() < 1e-12,
+                "fraction {fraction}: effort {}",
+                r.iff_effort
+            );
+        }
+    }
+
+    #[test]
+    fn test_puck_iff_compression_matches_textbook_reference_grid() {
+        let s = PlyStrength::cfrp_typical();
+        let sigmas = [
+            -1.0e6, -10.0e6, -50.0e6, -100.0e6, -200.0e6, -250.0e6, -400.0e6,
+        ];
+        let taus = [5.0e6, 20.0e6, 45.0e6, 70.0e6, 90.0e6];
+        for &sigma2 in &sigmas {
+            for &tau in &taus {
+                let got = puck_failure([0.0, sigma2, tau], &s).iff_effort;
+                let want = puck_reference_compression(sigma2, tau, s.yc, s.s12, 0.25);
+                assert!(
+                    (got - want).abs() <= 1e-12 * want.abs().max(1.0),
+                    "sigma2 {sigma2}, tau {tau}: got {got}, want {want}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_puck_iff_modes_b_and_c_are_continuous_at_the_boundary() {
+        let s = PlyStrength::cfrp_typical();
+        let p = 0.25;
+        let r_a = s.s12 / (2.0 * p) * ((1.0 + 2.0 * p * s.yc / s.s12).sqrt() - 1.0);
+        let p_pp = p * r_a / s.s12;
+        let tau_c = s.s12 * (1.0 + 2.0 * p_pp).sqrt();
+        let tau = 40.0e6;
+        let sigma_boundary = -(r_a / tau_c) * tau;
+
+        // The two textbook branches agree exactly at the boundary.
+        let mode_b =
+            ((tau * tau + (p * sigma_boundary).powi(2)).sqrt() + p * sigma_boundary) / s.s12;
+        let mode_c =
+            ((tau / (2.0 * (1.0 + p_pp) * s.s12)).powi(2) + (sigma_boundary / s.yc).powi(2)) * s.yc
+                / (-sigma_boundary);
+        assert!(
+            (mode_b - mode_c).abs() < 1e-12,
+            "branch mismatch: B {mode_b}, C {mode_c}"
+        );
+
+        // The implementation is continuous across it.
+        let below = puck_failure([0.0, sigma_boundary * (1.0 - 1.0e-9), tau], &s).iff_effort;
+        let above = puck_failure([0.0, sigma_boundary * (1.0 + 1.0e-9), tau], &s).iff_effort;
+        assert!(
+            (below - above).abs() < 1e-7,
+            "discontinuity at the B/C boundary: {below} vs {above}"
+        );
+        assert!((below - mode_b).abs() < 1e-7 && (above - mode_b).abs() < 1e-7);
+    }
+
+    #[test]
+    fn test_puck_iff_transverse_compression_raises_shear_strength() {
+        // Mode B: friction on the action plane lets the ply carry the full
+        // in-plane shear strength plus a bit more when it is also compressed.
+        let s = PlyStrength::cfrp_typical();
+        let pure_shear = puck_failure([0.0, 0.0, s.s12], &s).iff_effort;
+        let compressed = puck_failure([0.0, -20.0e6, s.s12], &s).iff_effort;
+        assert!((pure_shear - 1.0).abs() < 1e-12);
+        assert!(
+            compressed < 1.0 && compressed > 0.8,
+            "compressed shear effort {compressed}"
+        );
+        // Vanishing compression recovers the pure-shear limit.
+        let limit = puck_failure([0.0, -1.0, s.s12], &s).iff_effort;
+        assert!((limit - 1.0).abs() < 1e-6, "limit {limit}");
+    }
+
+    #[test]
+    fn test_puck_iff_zero_friction_limit_is_finite() {
+        // p = 0 must not produce 0/0 in R_perp_perp_A.
+        let yc = 250.0e6;
+        let s21 = 70.0e6;
+        let shear = puck_iff_transverse_compression(-10.0e6, 35.0e6, yc, s21, 0.0);
+        assert!(
+            (shear - 0.5).abs() < 1e-12,
+            "p = 0 Mode B reduces to tau/S21 = 0.5, got {shear}"
+        );
+        let compression = puck_iff_transverse_compression(-125.0e6, 0.0, yc, s21, 0.0);
+        assert!((compression - 0.5).abs() < 1e-12, "got {compression}");
     }
 
     // --- Ply-by-ply stress ---
@@ -1502,47 +1725,6 @@ mod tests {
             .iter()
             .any(|s| s[0].abs() > 1.0 || s[1].abs() > 1.0);
         assert!(has_nonzero, "crossply should have residual stresses");
-    }
-
-    // --- Interlaminar shear ---
-
-    #[test]
-    fn test_interlaminar_shear_single_ply() {
-        let ply = OrthotropicPly::new(140.0e9, 10.0e9, 5.0e9, 0.3, 0.125e-3);
-        let mut lam = Laminate::new();
-        lam.add_ply(ply, 0.0);
-
-        let strain = [0.001, 0.0, 0.0];
-        let curv = [0.0, 0.0, 0.0];
-        let shear = interlaminar_shear_estimate(&lam, strain, curv);
-        assert!(shear.is_empty(), "single ply has no interfaces");
-    }
-
-    #[test]
-    fn test_interlaminar_shear_two_plies() {
-        let ply = OrthotropicPly::new(140.0e9, 10.0e9, 5.0e9, 0.3, 0.125e-3);
-        let mut lam = Laminate::new();
-        lam.add_ply(ply, 0.0);
-        lam.add_ply(ply, 90.0);
-
-        let strain = [0.001, 0.0, 0.0];
-        let curv = [0.0, 0.0, 0.0];
-        let shear = interlaminar_shear_estimate(&lam, strain, curv);
-        assert_eq!(shear.len(), 1);
-    }
-
-    #[test]
-    fn test_interlaminar_shear_three_plies() {
-        let ply = OrthotropicPly::new(140.0e9, 10.0e9, 5.0e9, 0.3, 0.125e-3);
-        let mut lam = Laminate::new();
-        lam.add_ply(ply, 0.0);
-        lam.add_ply(ply, 90.0);
-        lam.add_ply(ply, 0.0);
-
-        let strain = [0.001, 0.0, 0.0];
-        let curv = [10.0, 0.0, 0.0]; // bending
-        let shear = interlaminar_shear_estimate(&lam, strain, curv);
-        assert_eq!(shear.len(), 2);
     }
 
     // --- Ply strength constructors ---

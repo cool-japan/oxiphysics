@@ -31,9 +31,16 @@ pub struct RigidBody {
     pub body_type: BodyType,
     /// Activity state.
     pub state: BodyState,
-    /// Linear damping factor (0..1).
+    /// Linear damping rate in 1/s (default 0.0, i.e. undamped).
+    ///
+    /// Each integration step scales the linear velocity by
+    /// `1 / (1 + dt * linear_damping)`, so the decay per second does not depend
+    /// on the step size. Negative values are treated as zero.
     pub linear_damping: Real,
-    /// Angular damping factor (0..1).
+    /// Angular damping rate in 1/s (default 0.0, i.e. undamped).
+    ///
+    /// Each integration step scales the angular velocity by
+    /// `1 / (1 + dt * angular_damping)`. Negative values are treated as zero.
     pub angular_damping: Real,
     /// Time spent below sleep thresholds.
     pub sleep_timer: Real,

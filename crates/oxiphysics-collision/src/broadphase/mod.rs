@@ -7,6 +7,9 @@ pub mod functions_2;
 pub mod sweepandprune_traits;
 pub mod types;
 
+#[cfg(test)]
+mod bvh_pairs_tests;
+
 // Re-export all types
 pub use functions::*;
 pub use types::*;

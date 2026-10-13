@@ -690,129 +690,12 @@ pub fn petrov_galerkin_projection(
 }
 
 // ---------------------------------------------------------------------------
-// Balanced truncation
+// Balanced truncation (square-root method)
 // ---------------------------------------------------------------------------
 
-/// Result of balanced truncation.
-#[derive(Clone, Debug)]
-pub struct BalancedTruncation {
-    /// Hankel singular values (energy measures).
-    pub hankel_singular_values: Vec<f64>,
-    /// Left transformation matrix T_l (r × N).
-    pub transform_left: Vec<Vec<f64>>,
-    /// Right transformation matrix T_r (N × r).
-    pub transform_right: Vec<Vec<f64>>,
-    /// Reduced dimension.
-    pub reduced_dim: usize,
-}
+mod balanced;
 
-impl BalancedTruncation {
-    /// Project a full-order matrix A → T_l A T_r  (r × r).
-    pub fn project_matrix(&self, a: &[Vec<f64>]) -> Vec<Vec<f64>> {
-        let at_r = mat_mul(a, &mat_transpose(&self.transform_left));
-        // T_l * (A * T_r)
-        let t_r = &self.transform_right;
-        let m = self.transform_left.len();
-        let _p = t_r[0].len();
-        // at_r is N × r, multiply T_l (r × N) * at_r (N × r)
-        let mut out = vec![vec![0.0; self.reduced_dim]; m];
-        for (i, out_row) in out.iter_mut().enumerate().take(m) {
-            for (j, cell) in out_row.iter_mut().enumerate().take(self.reduced_dim) {
-                *cell = dot(
-                    &self.transform_left[i],
-                    &(0..a.len()).map(|k| at_r[k][j]).collect::<Vec<_>>(),
-                );
-            }
-        }
-        out
-    }
-
-    /// Project a full-order vector b → T_l b.
-    pub fn project_vector(&self, b: &[f64]) -> Vec<f64> {
-        mat_vec(&self.transform_left, b)
-    }
-}
-
-/// Compute approximate balanced truncation using randomised Gramian estimates.
-///
-/// For a state-space system (A, B, C), computes approximate Hankel singular
-/// values and transformation matrices by approximating the controllability
-/// and observability Gramians via the system matrices.
-///
-/// This is a simplified pedagogical implementation using dominant eigenvectors.
-///
-/// - `a`          – system matrix A (N × N).
-/// - `b_mat`      – input matrix B (N × n_inputs).
-/// - `c_mat`      – output matrix C (n_outputs × N).
-/// - `max_modes`  – number of balanced modes to retain.
-pub fn balanced_truncation(
-    a: &[Vec<f64>],
-    b_mat: &[Vec<f64>],
-    c_mat: &[Vec<f64>],
-    max_modes: usize,
-) -> BalancedTruncation {
-    let n = a.len();
-    // Approximate controllability Gramian W_c ≈ B Bᵀ
-    let bt = mat_transpose(b_mat);
-    let w_c = mat_mul(b_mat, &bt);
-    // Approximate observability Gramian W_o ≈ CᵀC
-    let ct = mat_transpose(c_mat);
-    let w_o = mat_mul(&ct, c_mat);
-
-    // Hankel matrix H ≈ W_c * W_o (simplified)
-    let h = mat_mul(&w_c, &w_o);
-
-    // Extract dominant eigenvectors of H via power iteration
-    let r = max_modes.min(n);
-    let mut t_l: Vec<Vec<f64>> = Vec::with_capacity(r);
-    let mut hsv: Vec<f64> = Vec::with_capacity(r);
-    let mut deflated = h.clone();
-
-    for _k in 0..r {
-        let mut v: Vec<f64> = (0..n).map(|i| if i == 0 { 1.0 } else { 0.0 }).collect();
-        let mut lambda = 0.0_f64;
-        for _iter in 0..300 {
-            let av = mat_vec(&deflated, &v);
-            let lambda_new = dot(&v, &av);
-            let vn = norm(&av);
-            if vn < 1e-14 {
-                break;
-            }
-            v = vec_scale(&av, 1.0 / vn);
-            let converged = (lambda_new - lambda).abs() < 1e-12;
-            lambda = lambda_new;
-            if converged {
-                break;
-            }
-        }
-        let _ = lambda;
-        let av = mat_vec(&deflated, &v);
-        let lam = dot(&v, &av).max(0.0);
-        let sigma = lam.sqrt();
-        if sigma < 1e-14 {
-            break;
-        }
-        hsv.push(sigma);
-        t_l.push(v.clone());
-        // Deflate
-        for i in 0..n {
-            for j in 0..n {
-                deflated[i][j] -= lam * v[i] * v[j];
-            }
-        }
-    }
-
-    // Right transform = left transform transposed (symmetric approximation)
-    let t_r = mat_transpose(&t_l);
-    let reduced_dim = t_l.len();
-
-    BalancedTruncation {
-        hankel_singular_values: hsv,
-        transform_left: t_l,
-        transform_right: t_r,
-        reduced_dim,
-    }
-}
+pub use balanced::{BalancedTruncation, balanced_truncation};
 
 // ---------------------------------------------------------------------------
 // Error Estimation
@@ -1808,31 +1691,6 @@ mod tests {
         let interp = ManifoldInterpolator::new(1.0);
         let q = interp.interpolate(0.5);
         assert!(q.is_empty());
-    }
-
-    // -----------------------------------------------------------------------
-    // Balanced truncation
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_balanced_truncation_returns_modes() {
-        let a = identity_matrix(4);
-        let b_mat = vec![vec![1.0], vec![0.5], vec![0.0], vec![0.0]];
-        let c_mat = vec![vec![1.0, 0.0, 0.5, 0.0]];
-        let bt = balanced_truncation(&a, &b_mat, &c_mat, 2);
-        assert!(bt.reduced_dim <= 2);
-        assert_eq!(bt.hankel_singular_values.len(), bt.reduced_dim);
-    }
-
-    #[test]
-    fn test_balanced_truncation_project_vector() {
-        let a = identity_matrix(3);
-        let b_mat = vec![vec![1.0], vec![1.0], vec![1.0]];
-        let c_mat = vec![vec![1.0, 1.0, 1.0]];
-        let bt = balanced_truncation(&a, &b_mat, &c_mat, 2);
-        let b_vec = vec![1.0, 0.0, 0.0];
-        let proj = bt.project_vector(&b_vec);
-        assert_eq!(proj.len(), bt.reduced_dim);
     }
 
     // -----------------------------------------------------------------------

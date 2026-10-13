@@ -4,8 +4,9 @@
 
 use super::functions::{
     bar_uncertainty, bootstrap_uncertainty, fep_bar, fep_convergence_trace, fep_zwanzig,
-    mbar_weights, natural_spline_second_deriv, thermodynamic_integration, ti_uncertainty,
+    natural_spline_second_deriv, thermodynamic_integration, ti_uncertainty,
 };
+pub use super::mbar_covariance::mbar_df_uncertainty;
 use super::types::{UmbrellaWindow, WhamWindow2D};
 
 /// Evaluate a natural cubic spline at position `xq` given nodes `x`, `y`, and
@@ -224,29 +225,6 @@ pub fn mbar_delta_u_matrix(u_kn: &[Vec<f64>], k_ref: usize) -> Vec<Vec<f64>> {
     (0..k_states)
         .map(|k| (0..n_samples).map(|n| u_kn[k][n] - ref_u[n]).collect())
         .collect()
-}
-/// MBAR uncertainty estimate via error propagation (asymptotic standard error).
-///
-/// Returns the variance in the free energy difference between states `k` and `l`.
-///
-/// # Arguments
-/// * `u_kn`  – K×N reduced potential matrix.
-/// * `n_k`   – samples per state.
-/// * `f`     – converged MBAR free energies.
-/// * `k`, `l` – state indices.
-pub fn mbar_df_uncertainty(u_kn: &[Vec<f64>], n_k: &[usize], f: &[f64], k: usize, l: usize) -> f64 {
-    let weights_k = mbar_weights(u_kn, n_k, f);
-    let weights_l = mbar_weights(u_kn, n_k, f);
-    let n = weights_k.len();
-    if n == 0 {
-        return 0.0;
-    }
-    let sum_wk: f64 = weights_k.iter().sum();
-    let sum_wl: f64 = weights_l.iter().sum();
-    let var = if sum_wk > 1e-300 { 1.0 / sum_wk } else { 0.0 }
-        + if sum_wl > 1e-300 { 1.0 / sum_wl } else { 0.0 };
-    let _ = (k, l);
-    var
 }
 /// Build a uniform umbrella-sampling schedule.
 ///

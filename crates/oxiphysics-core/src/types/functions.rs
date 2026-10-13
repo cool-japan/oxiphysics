@@ -769,3 +769,91 @@ mod types_expanded_tests {
         );
     }
 }
+#[cfg(test)]
+mod aabb_transformed_tests {
+    use crate::Aabb;
+    use crate::Transform;
+    use crate::Vec3;
+    use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
+
+    fn assert_vec_close(actual: &Vec3, expected: &Vec3) {
+        assert!(
+            (actual - expected).norm() < 1e-12,
+            "actual {actual:?} differs from expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn identity_transform_keeps_the_box() {
+        let local = Aabb::new(Vec3::new(-1.0, -2.0, -3.0), Vec3::new(4.0, 5.0, 6.0));
+        let world = local.transformed(&Transform::default());
+        assert_vec_close(&world.min, &local.min);
+        assert_vec_close(&world.max, &local.max);
+    }
+
+    #[test]
+    fn pure_translation_shifts_both_corners() {
+        let local = Aabb::new(Vec3::new(-1.0, -1.0, -1.0), Vec3::new(1.0, 1.0, 1.0));
+        let world = local.transformed(&Transform::from_position(Vec3::new(10.0, -4.0, 2.5)));
+        assert_vec_close(&world.min, &Vec3::new(9.0, -5.0, 1.5));
+        assert_vec_close(&world.max, &Vec3::new(11.0, -3.0, 3.5));
+    }
+
+    #[test]
+    fn rotating_a_cube_by_45_degrees_widens_it_by_sqrt_two() {
+        let local = Aabb::new(Vec3::new(-1.0, -1.0, -1.0), Vec3::new(1.0, 1.0, 1.0));
+        let transform = Transform::from_axis_angle(Vec3::zeros(), Vec3::y(), FRAC_PI_4);
+        let world = local.transformed(&transform);
+        let root_two = std::f64::consts::SQRT_2;
+        assert_vec_close(&world.min, &Vec3::new(-root_two, -1.0, -root_two));
+        assert_vec_close(&world.max, &Vec3::new(root_two, 1.0, root_two));
+    }
+
+    #[test]
+    fn off_centre_box_rotates_about_the_origin_of_its_frame() {
+        // Box centred at (2, 0, 0); a quarter turn about +Z carries the centre
+        // to (0, 2, 0) and swaps the (equal) x/y half-extents.
+        let local = Aabb::new(Vec3::new(1.0, -1.0, -1.0), Vec3::new(3.0, 1.0, 1.0));
+        let transform = Transform::from_axis_angle(Vec3::zeros(), Vec3::z(), FRAC_PI_2);
+        let world = local.transformed(&transform);
+        assert_vec_close(&world.min, &Vec3::new(-1.0, 1.0, -1.0));
+        assert_vec_close(&world.max, &Vec3::new(1.0, 3.0, 1.0));
+    }
+
+    #[test]
+    fn elongated_box_swaps_its_extents_when_turned_upright() {
+        // A 4 x 0.2 x 0.2 bar lying along X becomes a bar along Y after a
+        // quarter turn about Z: the broad-phase box must follow it.
+        let local = Aabb::new(Vec3::new(-2.0, -0.1, -0.1), Vec3::new(2.0, 0.1, 0.1));
+        let transform = Transform::from_axis_angle(Vec3::new(5.0, 0.0, 0.0), Vec3::z(), FRAC_PI_2);
+        let world = local.transformed(&transform);
+        assert_vec_close(&world.min, &Vec3::new(4.9, -2.0, -0.1));
+        assert_vec_close(&world.max, &Vec3::new(5.1, 2.0, 0.1));
+    }
+
+    #[test]
+    fn result_is_exactly_the_hull_of_the_transformed_corners() {
+        let local = Aabb::new(Vec3::new(-0.5, -1.5, 0.25), Vec3::new(2.0, 0.75, 1.0));
+        let corners: Vec<Vec3> = (0..8)
+            .map(|i| {
+                Vec3::new(
+                    if i & 1 == 0 { local.min.x } else { local.max.x },
+                    if i & 2 == 0 { local.min.y } else { local.max.y },
+                    if i & 4 == 0 { local.min.z } else { local.max.z },
+                )
+            })
+            .collect();
+        let poses = [
+            Transform::from_axis_angle(Vec3::new(1.0, 2.0, 3.0), Vec3::new(1.0, 1.0, 0.0), 0.7),
+            Transform::from_axis_angle(Vec3::new(-4.0, 0.5, 0.0), Vec3::new(0.0, 1.0, 1.0), 2.1),
+            Transform::from_axis_angle(Vec3::new(0.0, 0.0, -2.0), Vec3::new(1.0, -2.0, 0.5), -1.3),
+        ];
+        for pose in &poses {
+            let world = local.transformed(pose);
+            let moved: Vec<Vec3> = corners.iter().map(|c| pose.transform_point(c)).collect();
+            let hull = Aabb::from_points(&moved).expect("eight corners are never empty");
+            assert_vec_close(&world.min, &hull.min);
+            assert_vec_close(&world.max, &hull.max);
+        }
+    }
+}

@@ -165,7 +165,10 @@ mod tests {
         ];
         let diff = DiffusionSph::new(1e-6);
         let rates = diff.compute_dphidt(&particles);
-        assert!(rates[0] > 0.0 || rates[0].is_finite());
+        assert!(
+            rates[0] > 0.0 && rates[1] < 0.0,
+            "scalar must flow from the c = 1 particle to the c = 0 particle: {rates:?}"
+        );
     }
     #[test]
     fn test_diffusion_step_changes_concentration() {
@@ -175,9 +178,18 @@ mod tests {
         ];
         let diff = DiffusionSph::new(1e-5);
         let c0_before = particles[0].conc();
+        let c1_before = particles[1].conc();
         diff.step(&mut particles, 0.01);
         let c0_after = particles[0].conc();
-        assert!((c0_after - c0_before).abs() >= 0.0);
+        let c1_after = particles[1].conc();
+        assert!(
+            c0_after > c0_before,
+            "the c = 0 particle must gain scalar: {c0_before} -> {c0_after}"
+        );
+        assert!(
+            c1_after < c1_before,
+            "the c = 1 particle must lose scalar: {c1_before} -> {c1_after}"
+        );
     }
     #[test]
     fn test_reaction_diffusion_fisher_midpoint() {
@@ -230,10 +242,20 @@ mod tests {
             },
         ];
         let u_before = particles[0].concentration[0];
+        let v_before = particles[0].concentration[1];
+        let u_field: Vec<TransportParticle> = particles
+            .iter()
+            .map(|p| make_particle(p.position[0], 0.0, 0.0, p.concentration[0], 300.0))
+            .collect();
+        let lap_u = DiffusionSph::new(2e-5).compute_dphidt(&u_field)[0];
+        let expected_du = lap_u - u_before * v_before * v_before + 0.04 * (1.0 - u_before);
         gs.step(&mut particles, 0.1);
         let u_after = particles[0].concentration[0];
         assert!((0.0..=1.0).contains(&u_after));
-        let _ = u_before;
+        assert!(
+            (u_after - (u_before + 0.1 * expected_du)).abs() < 1e-12,
+            "u update must follow du/dt = Du lap(u) - u v^2 + f (1 - u): {u_after}"
+        );
     }
     #[test]
     fn test_gray_scott_bounds() {
@@ -278,7 +300,10 @@ mod tests {
         ];
         let tc = ThermalConduction::new(1.0, 1e6);
         let rates = tc.compute_dtdt(&particles);
-        assert!(rates[0] >= 0.0 || rates[0].is_finite());
+        assert!(
+            rates[0] > 0.0 && rates[1] < 0.0,
+            "heat must flow from the 400 K particle to the 200 K particle: {rates:?}"
+        );
     }
     #[test]
     fn test_thermal_total_energy() {
@@ -298,9 +323,18 @@ mod tests {
         ];
         let tc = ThermalConduction::new(1.0, 1000.0);
         let t0_before = particles[0].temperature;
+        let t1_before = particles[1].temperature;
         tc.step(&mut particles, 0.001);
         let t0_after = particles[0].temperature;
-        assert!((t0_after - t0_before).abs() >= 0.0);
+        let t1_after = particles[1].temperature;
+        assert!(
+            t0_after > t0_before,
+            "the 200 K particle must warm: {t0_before} -> {t0_after}"
+        );
+        assert!(
+            t1_after < t1_before,
+            "the 400 K particle must cool: {t1_before} -> {t1_after}"
+        );
     }
     #[test]
     fn test_solute_diagonal_diffusion_coefficients() {
@@ -325,10 +359,25 @@ mod tests {
             })
             .collect();
         let c0_before = particles[0].concentration[0];
+        let c2_before = particles[2].concentration[0];
         st.step(&mut particles, 0.01);
         let c0_after = particles[0].concentration[0];
-        assert!(c0_after.is_finite());
-        let _ = c0_before;
+        let c2_after = particles[2].concentration[0];
+        assert!(
+            c0_after > c0_before,
+            "species 0 must diffuse towards the c = 0 end: {c0_before} -> {c0_after}"
+        );
+        assert!(
+            c2_after < c2_before,
+            "species 0 must leave the c = 1 end: {c2_before} -> {c2_after}"
+        );
+        for p in &particles {
+            assert!(
+                (p.concentration[1] - 0.3).abs() < 1e-15,
+                "uniform species 1 must stay uniform: {}",
+                p.concentration[1]
+            );
+        }
     }
     #[test]
     fn test_advection_standard_rates_finite() {
@@ -341,6 +390,10 @@ mod tests {
         particles[1].velocity = [1.0, 0.0, 0.0];
         let rates = scheme.compute_all_rates(&particles);
         assert!(rates.iter().all(|r| r.is_finite()));
+        assert!(
+            rates[0] < 0.0 && rates[1] < 0.0,
+            "c rises in the flow direction, so +x advection lowers c at both particles: {rates:?}"
+        );
     }
     #[test]
     fn test_advection_upwind_rates_finite() {

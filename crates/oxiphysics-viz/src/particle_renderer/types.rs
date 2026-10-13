@@ -3,6 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
+use crate::postprocess::marching_cubes_cell;
 /// Configuration for point-sprite particle rendering.
 #[derive(Debug, Clone)]
 pub struct PointSpriteConfig {
@@ -445,9 +446,20 @@ impl MetaballField {
             })
             .sum()
     }
-    /// Extract an isosurface at `threshold` using a simple grid march.
+    /// Extract the isosurface `evaluate(p) == threshold` with marching cubes.
     ///
-    /// `grid_dims` is `[nx, ny, nz]`.  Returns `Vec<[[f32; 3\]; 3]>` triangles.
+    /// The box `[box_min, box_max]` is divided into `grid_dims = [nx, ny, nz]`
+    /// *cells* per axis, so the density is sampled exactly once at each of the
+    /// `(nx + 1) * (ny + 1) * (nz + 1)` grid vertices (the first vertex sits on
+    /// `box_min`, the last on `box_max`).  Every cell is triangulated with
+    /// [`marching_cubes_cell`] and the surface vertices are placed on the cell
+    /// edges by linear interpolation of the sampled densities.
+    ///
+    /// Points with `evaluate(p) >= threshold` count as inside.  The triangles
+    /// wind counter-clockwise when seen from outside, i.e. their normal
+    /// `(b - a) x (c - a)` points towards decreasing density.  Returns an
+    /// empty list when any dimension is zero, when `box_max` does not exceed
+    /// `box_min` on every axis, or when the surface does not intersect the box.
     pub fn extract_isosurface(
         &self,
         box_min: [f32; 3],
@@ -455,38 +467,82 @@ impl MetaballField {
         grid_dims: [usize; 3],
         threshold: f32,
     ) -> Vec<[[f32; 3]; 3]> {
+        /// Corner offsets (in cells) in the marching-cubes corner order 0..7.
+        const CORNER_OFFSETS: [[usize; 3]; 8] = [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+        ];
         let [nx, ny, nz] = grid_dims;
+        if nx == 0 || ny == 0 || nz == 0 {
+            return Vec::new();
+        }
         let sx = (box_max[0] - box_min[0]) / nx as f32;
         let sy = (box_max[1] - box_min[1]) / ny as f32;
         let sz = (box_max[2] - box_min[2]) / nz as f32;
+        let is_valid_step = |s: f32| s.is_finite() && s > 0.0;
+        if !(is_valid_step(sx) && is_valid_step(sy) && is_valid_step(sz)) {
+            return Vec::new();
+        }
+        // Vertices per axis; refuse (rather than overflow) on absurd grids.
+        let (Some(px), Some(py), Some(pz)) =
+            (nx.checked_add(1), ny.checked_add(1), nz.checked_add(1))
+        else {
+            return Vec::new();
+        };
+        let Some(vertex_count) = px.checked_mul(py).and_then(|n| n.checked_mul(pz)) else {
+            return Vec::new();
+        };
+
+        let vertex = |ix: usize, iy: usize, iz: usize| -> [f32; 3] {
+            [
+                box_min[0] + ix as f32 * sx,
+                box_min[1] + iy as f32 * sy,
+                box_min[2] + iz as f32 * sz,
+            ]
+        };
+        // One density sample per grid vertex, x varying fastest.
+        let mut samples = Vec::with_capacity(vertex_count);
+        for iz in 0..pz {
+            for iy in 0..py {
+                for ix in 0..px {
+                    samples.push(self.evaluate(vertex(ix, iy, iz)));
+                }
+            }
+        }
+
+        let level = f64::from(threshold);
         let mut tris = Vec::new();
-        for ix in 0..nx.saturating_sub(1) {
-            for iy in 0..ny.saturating_sub(1) {
-                for iz in 0..nz.saturating_sub(1) {
-                    let cx = box_min[0] + (ix as f32 + 0.5) * sx;
-                    let cy = box_min[1] + (iy as f32 + 0.5) * sy;
-                    let cz = box_min[2] + (iz as f32 + 0.5) * sz;
-                    let mut inside = 0u8;
-                    let corners = [
-                        [cx, cy, cz],
-                        [cx + sx, cy, cz],
-                        [cx + sx, cy + sy, cz],
-                        [cx, cy + sy, cz],
-                        [cx, cy, cz + sz],
-                        [cx + sx, cy, cz + sz],
-                        [cx + sx, cy + sy, cz + sz],
-                        [cx, cy + sy, cz + sz],
-                    ];
-                    for (k, &c) in corners.iter().enumerate() {
-                        if self.evaluate(c) >= threshold {
-                            inside |= 1 << k;
-                        }
+        for iz in 0..nz {
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    let mut values = [0.0_f64; 8];
+                    let mut corners = [[0.0_f64; 3]; 8];
+                    for (k, offset) in CORNER_OFFSETS.iter().enumerate() {
+                        let (cx, cy, cz) = (ix + offset[0], iy + offset[1], iz + offset[2]);
+                        values[k] = f64::from(samples[cx + px * (cy + py * cz)]);
+                        let p = vertex(cx, cy, cz);
+                        corners[k] = [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
                     }
-                    if inside == 0 || inside == 0xFF {
+                    let inside = values.iter().filter(|&&v| v >= level).count();
+                    if inside == 0 || inside == values.len() {
                         continue;
                     }
-                    let h = sx * 0.3;
-                    tris.push([[cx - h, cy, cz], [cx + h, cy, cz], [cx, cy + h, cz]]);
+                    for tri in marching_cubes_cell(values, level, corners).chunks_exact(3) {
+                        let [a, b, c] = tri else {
+                            continue;
+                        };
+                        let narrow = |p: &[f64; 3]| [p[0] as f32, p[1] as f32, p[2] as f32];
+                        // The cell table winds triangles towards the inside
+                        // (high density); swap two vertices so the normal
+                        // points out of the blob instead.
+                        tris.push([narrow(a), narrow(c), narrow(b)]);
+                    }
                 }
             }
         }
@@ -713,5 +769,234 @@ impl LodSystem {
     /// Level 0 → 1.0 (all), level 1 → 0.5, level 2 → 0.25, etc.
     pub fn particle_fraction(&self, level: usize) -> f32 {
         1.0 / (1u32 << level.min(8)) as f32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Unit-strength blob of radius 1 at the origin: density `(1 - r)^2`, so
+    /// the `0.25` level set is the sphere `r = 0.5`.
+    fn unit_blob() -> MetaballField {
+        let mut field = MetaballField::new();
+        field.add([0.0, 0.0, 0.0], 1.0, 1.0);
+        field
+    }
+
+    fn radius_of(p: [f32; 3]) -> f32 {
+        (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()
+    }
+
+    #[test]
+    fn test_extract_isosurface_lies_on_the_level_set() {
+        let field = unit_blob();
+        let tris = field.extract_isosurface([-1.2; 3], [1.2; 3], [16, 16, 16], 0.25);
+        assert!(tris.len() > 20, "expected a real mesh, got {}", tris.len());
+        for tri in &tris {
+            for &v in tri {
+                let density = field.evaluate(v);
+                assert!(
+                    (density - 0.25).abs() < 0.05,
+                    "vertex {v:?} has density {density}, not the 0.25 level"
+                );
+                assert!(
+                    (radius_of(v) - 0.5).abs() < 0.02,
+                    "vertex {v:?} is {} from the centre, expected the 0.5 sphere",
+                    radius_of(v)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_extract_isosurface_is_not_the_old_fixed_sliver() {
+        // The placeholder emitted one identical-shaped triangle per boundary
+        // cell; a sphere must yield triangles of varying orientation that
+        // reach all six poles of the 0.5 sphere.
+        let field = unit_blob();
+        let tris = field.extract_isosurface([-1.2; 3], [1.2; 3], [24, 24, 24], 0.25);
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        for tri in &tris {
+            for v in tri {
+                for k in 0..3 {
+                    min[k] = min[k].min(v[k]);
+                    max[k] = max[k].max(v[k]);
+                }
+            }
+        }
+        for k in 0..3 {
+            assert!(
+                (min[k] + 0.5).abs() < 0.02 && (max[k] - 0.5).abs() < 0.02,
+                "axis {k}: extent [{}, {}] should span the 0.5 sphere",
+                min[k],
+                max[k]
+            );
+        }
+    }
+
+    #[test]
+    fn test_extract_isosurface_winds_counter_clockwise_seen_from_outside() {
+        let field = unit_blob();
+        let tris = field.extract_isosurface([-1.2; 3], [1.2; 3], [16, 16, 16], 0.25);
+        assert!(!tris.is_empty());
+        for tri in &tris {
+            let [a, b, c] = *tri;
+            let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let normal = [
+                ab[1] * ac[2] - ab[2] * ac[1],
+                ab[2] * ac[0] - ab[0] * ac[2],
+                ab[0] * ac[1] - ab[1] * ac[0],
+            ];
+            // The blob is centred on the origin, so outward is the direction
+            // of the triangle's centroid.
+            let centroid = [
+                (a[0] + b[0] + c[0]) / 3.0,
+                (a[1] + b[1] + c[1]) / 3.0,
+                (a[2] + b[2] + c[2]) / 3.0,
+            ];
+            let outward =
+                normal[0] * centroid[0] + normal[1] * centroid[1] + normal[2] * centroid[2];
+            assert!(
+                outward > 0.0,
+                "triangle {tri:?} faces into the blob ({outward})"
+            );
+        }
+    }
+
+    #[test]
+    fn test_extract_isosurface_grid_origin_is_the_box_corner() {
+        // Shift the blob and the box together: the surface must follow.
+        let mut field = MetaballField::new();
+        field.add([10.0, -4.0, 2.0], 1.0, 1.0);
+        let tris =
+            field.extract_isosurface([8.8, -5.2, 0.8], [11.2, -2.8, 3.2], [16, 16, 16], 0.25);
+        assert!(!tris.is_empty());
+        for tri in &tris {
+            for v in tri {
+                let d = radius_of([v[0] - 10.0, v[1] + 4.0, v[2] - 2.0]);
+                assert!((d - 0.5).abs() < 0.02, "vertex {v:?} is {d} from the blob");
+            }
+        }
+    }
+
+    #[test]
+    fn test_extract_isosurface_no_surface_cases() {
+        let field = unit_blob();
+        // Level above the peak density: nothing is inside.
+        assert!(
+            field
+                .extract_isosurface([-1.2; 3], [1.2; 3], [8, 8, 8], 2.0)
+                .is_empty()
+        );
+        // Level at zero: every sample counts as inside.
+        assert!(
+            field
+                .extract_isosurface([-1.2; 3], [1.2; 3], [8, 8, 8], 0.0)
+                .is_empty()
+        );
+        // Box far away from the blob.
+        assert!(
+            field
+                .extract_isosurface([5.0; 3], [7.0; 3], [8, 8, 8], 0.25)
+                .is_empty()
+        );
+        // Empty field.
+        assert!(
+            MetaballField::new()
+                .extract_isosurface([-1.0; 3], [1.0; 3], [8, 8, 8], 0.25)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_extract_isosurface_degenerate_grids_are_empty() {
+        let field = unit_blob();
+        for dims in [[0, 8, 8], [8, 0, 8], [8, 8, 0], [0, 0, 0]] {
+            assert!(
+                field
+                    .extract_isosurface([-1.2; 3], [1.2; 3], dims, 0.25)
+                    .is_empty(),
+                "dims {dims:?}"
+            );
+        }
+        // Zero-extent, reversed and non-finite boxes.
+        assert!(
+            field
+                .extract_isosurface([1.0; 3], [1.0; 3], [8, 8, 8], 0.25)
+                .is_empty()
+        );
+        assert!(
+            field
+                .extract_isosurface([1.2; 3], [-1.2; 3], [8, 8, 8], 0.25)
+                .is_empty()
+        );
+        assert!(
+            field
+                .extract_isosurface([f32::NAN; 3], [1.0; 3], [8, 8, 8], 0.25)
+                .is_empty()
+        );
+        // Grids whose vertex count overflows usize are refused, not allocated.
+        assert!(
+            field
+                .extract_isosurface([-1.2; 3], [1.2; 3], [usize::MAX, 1, 1], 0.25)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_extract_isosurface_single_cell_grid() {
+        // One cell straddling the surface produces the marching-cubes patch
+        // for that corner configuration: here a single corner is inside.
+        let mut field = MetaballField::new();
+        field.add([0.0, 0.0, 0.0], 1.0, 1.0);
+        let tris = field.extract_isosurface([0.0; 3], [1.0; 3], [1, 1, 1], 0.25);
+        // Only the corner at the origin is above 0.25, so exactly one triangle
+        // cuts it off.
+        assert_eq!(tris.len(), 1);
+        for v in &tris[0] {
+            let on_edge = v.iter().filter(|c| c.abs() < 1e-6).count() == 2;
+            assert!(
+                on_edge,
+                "vertex {v:?} must lie on an edge through the origin"
+            );
+        }
+    }
+
+    #[test]
+    fn test_marching_cubes_cell_emits_whole_triangles_for_every_case() {
+        // The isosurface extractor relies on every one of the 256 corner
+        // configurations yielding complete triangles (at most five).
+        let corners = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ];
+        for case in 1u32..255 {
+            let mut values = [0.0_f64; 8];
+            for (k, value) in values.iter_mut().enumerate() {
+                *value = if case & (1 << k) != 0 { 1.0 } else { 0.0 };
+            }
+            let verts = marching_cubes_cell(values, 0.5, corners);
+            assert!(!verts.is_empty(), "case {case:#04x} must cross the surface");
+            assert_eq!(
+                verts.len() % 3,
+                0,
+                "case {case:#04x}: {} vertices",
+                verts.len()
+            );
+            assert!(
+                verts.len() <= 15,
+                "case {case:#04x}: {} vertices",
+                verts.len()
+            );
+        }
     }
 }

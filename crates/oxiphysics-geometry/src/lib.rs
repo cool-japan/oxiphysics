@@ -216,12 +216,16 @@ mod prop_tests {
     }
 }
 pub mod bspline;
+pub(crate) mod heat_method;
 pub mod implicit;
 pub mod implicit_surfaces;
 pub mod level_set;
+pub(crate) mod mc_tables;
 pub mod mesh_processing;
 pub mod origami;
 pub mod sphere_packing;
+#[cfg(test)]
+pub(crate) mod test_meshes;
 pub mod topology;
 
 pub mod architectural_geometry;
@@ -264,3 +268,9 @@ pub mod topology_geometry;
 pub use reconstruction::{
     OrientedPoint, PoissonError, PoissonSurface, screened_poisson_reconstruct,
 };
+
+// Compile-checks every Rust example of the crate README as a doctest, so the
+// documented API cannot drift from the real one.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;

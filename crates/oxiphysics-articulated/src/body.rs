@@ -16,10 +16,13 @@ pub struct RigidBody {
     pub inertia: SpatialInertia,
     /// Index of the parent body, or `None` for the root body.
     pub parent_id: Option<usize>,
-    /// Fixed transform from parent body frame to this body's joint frame (`X_T`).
+    /// Fixed pose of this body's joint frame relative to the parent body frame
+    /// (`X_T`; see [`SpatialTransform`] for the convention: `rot` maps joint-frame
+    /// coordinates to parent coordinates, `trans` is the joint-frame origin in
+    /// parent coordinates).
     ///
     /// This is the part of the transform that does not depend on joint coordinates.
-    /// The full parent-to-child transform is `X_T ∘ X_J(q)`.
+    /// The full pose of the body relative to its parent is `X_T ∘ X_J(q)`.
     pub parent_transform: SpatialTransform,
 }
 

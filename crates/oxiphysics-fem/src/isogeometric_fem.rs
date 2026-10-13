@@ -8,12 +8,20 @@
 //! - **NURBS curves** with weighted control points and knot vectors
 //! - **NURBS surfaces** (bivariate tensor-product NURBS)
 //! - **IGA elements** with NURBS shape functions, Jacobian, Gauss integration
-//! - **IGA assembler** for global stiffness matrix K and load vector f
+//! - **IGA assembler** for global stiffness matrix K and load vector f: local
+//!   `(p + 1)(q + 1)`-point connectivity per knot span, sparse CSR scatter and
+//!   a Jacobi-preconditioned CG solve (see [`IgaAssembler`], [`IgaSystem`])
 //! - **Boundary conditions** for IGA (Dirichlet and Neumann)
 //! - **Trimmed NURBS** with trimming curve support
 
 #[cfg(test)]
 use std::f64::consts::PI;
+
+mod assembly;
+pub use assembly::{ElementBasis, IgaAssembler, IgaBcType, IgaBoundaryCondition, IgaSystem};
+
+#[cfg(test)]
+mod assembly_tests;
 
 // ---------------------------------------------------------------------------
 // Helper math
@@ -684,32 +692,6 @@ impl IgaElement {
         }
     }
 
-    /// Compute NURBS shape functions at parametric point (u, v) for a surface.
-    pub fn shape_functions(&self, surface: &NurbsSurface, u: f64, v: f64) -> Vec<f64> {
-        let nu_vals: Vec<f64> = (0..surface.num_u)
-            .map(|i| surface.basis_u.evaluate(i, u))
-            .collect();
-        let nv_vals: Vec<f64> = (0..surface.num_v)
-            .map(|j| surface.basis_v.evaluate(j, v))
-            .collect();
-
-        let mut weighted = Vec::new();
-        let mut w_sum = 0.0;
-        for (j, &nv_j) in nv_vals.iter().enumerate().take(surface.num_v) {
-            for (i, &nu_i) in nu_vals.iter().enumerate().take(surface.num_u) {
-                let idx = j * surface.num_u + i;
-                let val = nu_i * nv_j * surface.control_points[idx].weight;
-                weighted.push(val);
-                w_sum += val;
-            }
-        }
-
-        if w_sum.abs() < 1e-14 {
-            return vec![0.0; weighted.len()];
-        }
-        weighted.iter().map(|v| v / w_sum).collect()
-    }
-
     /// Compute the Jacobian matrix at parametric point (u, v).
     ///
     /// Returns 2x2 Jacobian for a 2D surface embedded in 2D.
@@ -726,338 +708,6 @@ impl IgaElement {
     pub fn jacobian_det(&self, surface: &NurbsSurface, u: f64, v: f64) -> f64 {
         let j = self.jacobian_2d(surface, u, v);
         j[0][0] * j[1][1] - j[0][1] * j[1][0]
-    }
-
-    /// Compute the B-matrix (strain-displacement) at (u, v).
-    ///
-    /// Returns B as a flat vector of \[3 x (2*n_basis)\] entries for 2D plane stress.
-    pub fn b_matrix(&self, surface: &NurbsSurface, u: f64, v: f64) -> (Vec<f64>, f64) {
-        let jac = self.jacobian_2d(surface, u, v);
-        let det_j = jac[0][0] * jac[1][1] - jac[0][1] * jac[1][0];
-
-        if det_j.abs() < 1e-14 {
-            let n_total = surface.num_u * surface.num_v;
-            return (vec![0.0; 3 * 2 * n_total], det_j);
-        }
-
-        let inv_j = [
-            [jac[1][1] / det_j, -jac[0][1] / det_j],
-            [-jac[1][0] / det_j, jac[0][0] / det_j],
-        ];
-
-        // Compute dN/du and dN/dv for all basis functions
-        let nu_vals: Vec<f64> = (0..surface.num_u)
-            .map(|i| surface.basis_u.evaluate(i, u))
-            .collect();
-        let nv_vals: Vec<f64> = (0..surface.num_v)
-            .map(|j| surface.basis_v.evaluate(j, v))
-            .collect();
-        let dnu_vals: Vec<f64> = (0..surface.num_u)
-            .map(|i| surface.basis_u.derivative(i, u))
-            .collect();
-        let dnv_vals: Vec<f64> = (0..surface.num_v)
-            .map(|j| surface.basis_v.derivative(j, v))
-            .collect();
-
-        // Compute weighted derivatives
-        let n_total = surface.num_u * surface.num_v;
-        let mut nw = vec![0.0; n_total];
-        let mut dnw_du = vec![0.0; n_total];
-        let mut dnw_dv = vec![0.0; n_total];
-        let mut w_sum = 0.0;
-        let mut dw_du = 0.0;
-        let mut dw_dv = 0.0;
-
-        for j in 0..surface.num_v {
-            for i in 0..surface.num_u {
-                let idx = j * surface.num_u + i;
-                let wi = surface.control_points[idx].weight;
-                nw[idx] = nu_vals[i] * nv_vals[j] * wi;
-                dnw_du[idx] = dnu_vals[i] * nv_vals[j] * wi;
-                dnw_dv[idx] = nu_vals[i] * dnv_vals[j] * wi;
-                w_sum += nw[idx];
-                dw_du += dnw_du[idx];
-                dw_dv += dnw_dv[idx];
-            }
-        }
-
-        // Rational derivatives: dR/du = (dNw/du * W - Nw * dW/du) / W^2
-        let w2 = w_sum * w_sum;
-        let mut dr_du = vec![0.0; n_total];
-        let mut dr_dv = vec![0.0; n_total];
-        for idx in 0..n_total {
-            dr_du[idx] = (dnw_du[idx] * w_sum - nw[idx] * dw_du) / w2;
-            dr_dv[idx] = (dnw_dv[idx] * w_sum - nw[idx] * dw_dv) / w2;
-        }
-
-        // Physical derivatives via inverse Jacobian
-        let mut dn_dx = vec![0.0; n_total];
-        let mut dn_dy = vec![0.0; n_total];
-        for idx in 0..n_total {
-            dn_dx[idx] = inv_j[0][0] * dr_du[idx] + inv_j[0][1] * dr_dv[idx];
-            dn_dy[idx] = inv_j[1][0] * dr_du[idx] + inv_j[1][1] * dr_dv[idx];
-        }
-
-        // B-matrix: 3 rows x (2*n_total) columns
-        // B = [dN1/dx  0      dN2/dx  0     ...]
-        //     [0       dN1/dy 0       dN2/dy...]
-        //     [dN1/dy  dN1/dx dN2/dy  dN2/dx...]
-        let mut b = vec![0.0; 3 * 2 * n_total];
-        for idx in 0..n_total {
-            // Row 0
-            b[2 * idx] = dn_dx[idx];
-            // Row 1
-            b[(2 * n_total) + 2 * idx + 1] = dn_dy[idx];
-            // Row 2
-            b[2 * (2 * n_total) + 2 * idx] = dn_dy[idx];
-            b[2 * (2 * n_total) + 2 * idx + 1] = dn_dx[idx];
-        }
-
-        (b, det_j)
-    }
-
-    /// Compute element stiffness matrix using Gauss quadrature.
-    ///
-    /// Returns a dense matrix of size (2*n_dof) x (2*n_dof) flattened.
-    pub fn stiffness_matrix(&self, surface: &NurbsSurface, material: &IgaMaterial) -> Vec<f64> {
-        let n_total = surface.num_u * surface.num_v;
-        let ndof = 2 * n_total;
-        let mut k = vec![0.0; ndof * ndof];
-
-        let d_mat = material.plane_stress_matrix();
-
-        let (gp_ref, gw_ref) = gauss_legendre(self.num_gauss);
-        let (gp_u, gw_u) = gauss_map(&gp_ref, &gw_ref, self.param_domain[0], self.param_domain[1]);
-        let (gp_v, gw_v) = gauss_map(&gp_ref, &gw_ref, self.param_domain[2], self.param_domain[3]);
-
-        for (qu, wu) in gp_u.iter().zip(gw_u.iter()) {
-            for (qv, wv) in gp_v.iter().zip(gw_v.iter()) {
-                let (b_flat, det_j) = self.b_matrix(surface, *qu, *qv);
-                if det_j.abs() < 1e-14 {
-                    continue;
-                }
-                let weight = wu * wv * det_j.abs() * material.thickness;
-
-                // K += B^T * D * B * weight
-                // B is 3 x ndof, D is 3 x 3
-                for row in 0..ndof {
-                    for col in row..ndof {
-                        let mut val = 0.0;
-                        for s in 0..3 {
-                            let b_s_row = b_flat[s * ndof + row];
-                            for r in 0..3 {
-                                let b_r_col = b_flat[r * ndof + col];
-                                val += b_s_row * d_mat[s][r] * b_r_col;
-                            }
-                        }
-                        val *= weight;
-                        k[row * ndof + col] += val;
-                        if row != col {
-                            k[col * ndof + row] += val;
-                        }
-                    }
-                }
-            }
-        }
-
-        k
-    }
-}
-
-// ---------------------------------------------------------------------------
-// IGA Assembler
-// ---------------------------------------------------------------------------
-
-/// Assembled IGA system: stiffness matrix and load vector.
-#[derive(Debug, Clone)]
-pub struct IgaSystem {
-    /// Global stiffness matrix (dense, n x n).
-    pub stiffness: Vec<f64>,
-    /// Global load vector (n).
-    pub load: Vec<f64>,
-    /// Total DOFs.
-    pub ndof: usize,
-}
-
-/// Assembles the global IGA system from elements.
-#[derive(Debug, Clone)]
-pub struct IgaAssembler {
-    /// Total number of control points (DOFs / 2 for 2D).
-    pub num_control_points: usize,
-    /// Material properties.
-    pub material: IgaMaterial,
-    /// Number of Gauss points per direction.
-    pub num_gauss: usize,
-}
-
-impl IgaAssembler {
-    /// Create a new assembler.
-    pub fn new(num_control_points: usize, material: IgaMaterial, num_gauss: usize) -> Self {
-        Self {
-            num_control_points,
-            material,
-            num_gauss,
-        }
-    }
-
-    /// Assemble the global stiffness matrix and load vector.
-    ///
-    /// For a single-patch surface, the element stiffness is the global stiffness.
-    pub fn assemble(&self, surface: &NurbsSurface) -> IgaSystem {
-        let ndof = 2 * self.num_control_points;
-        let mut stiffness = vec![0.0; ndof * ndof];
-        let load = vec![0.0; ndof];
-
-        // Create elements from non-zero knot spans
-        let elements = self.create_elements(surface);
-
-        for elem in &elements {
-            let k_elem = elem.stiffness_matrix(surface, &self.material);
-            // For single-patch: element DOFs map directly to global DOFs
-            let n_elem_dof = 2 * surface.num_u * surface.num_v;
-            for i in 0..n_elem_dof {
-                for j in 0..n_elem_dof {
-                    stiffness[i * ndof + j] += k_elem[i * n_elem_dof + j];
-                }
-            }
-        }
-
-        IgaSystem {
-            stiffness,
-            load,
-            ndof,
-        }
-    }
-
-    /// Create IGA elements from non-zero knot spans.
-    pub fn create_elements(&self, surface: &NurbsSurface) -> Vec<IgaElement> {
-        let mut elements = Vec::new();
-        let knots_u = &surface.basis_u.knots;
-        let knots_v = &surface.basis_v.knots;
-
-        for i in 0..knots_u.len() - 1 {
-            if (knots_u[i + 1] - knots_u[i]).abs() < 1e-14 {
-                continue;
-            }
-            for j in 0..knots_v.len() - 1 {
-                if (knots_v[j + 1] - knots_v[j]).abs() < 1e-14 {
-                    continue;
-                }
-                let n_total = surface.num_u * surface.num_v;
-                let indices: Vec<usize> = (0..n_total).collect();
-                let domain = [knots_u[i], knots_u[i + 1], knots_v[j], knots_v[j + 1]];
-                elements.push(IgaElement::new(indices, domain, self.num_gauss));
-            }
-        }
-        elements
-    }
-
-    /// Apply a uniform body force (e.g., gravity) to the load vector.
-    pub fn apply_body_force(
-        &self,
-        surface: &NurbsSurface,
-        system: &mut IgaSystem,
-        force: [f64; 2],
-    ) {
-        let elements = self.create_elements(surface);
-        let (gp_ref, gw_ref) = gauss_legendre(self.num_gauss);
-
-        for elem in &elements {
-            let (gp_u, gw_u) =
-                gauss_map(&gp_ref, &gw_ref, elem.param_domain[0], elem.param_domain[1]);
-            let (gp_v, gw_v) =
-                gauss_map(&gp_ref, &gw_ref, elem.param_domain[2], elem.param_domain[3]);
-
-            for (qu, wu) in gp_u.iter().zip(gw_u.iter()) {
-                for (qv, wv) in gp_v.iter().zip(gw_v.iter()) {
-                    let shapes = elem.shape_functions(surface, *qu, *qv);
-                    let det_j = elem.jacobian_det(surface, *qu, *qv);
-                    let weight = wu * wv * det_j.abs() * self.material.thickness;
-
-                    for (idx, n_val) in shapes.iter().enumerate() {
-                        system.load[2 * idx] += n_val * force[0] * weight;
-                        system.load[2 * idx + 1] += n_val * force[1] * weight;
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// IGA Boundary Conditions
-// ---------------------------------------------------------------------------
-
-/// Type of boundary condition.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum IgaBcType {
-    /// Fixed displacement (Dirichlet).
-    Dirichlet,
-    /// Applied traction (Neumann).
-    Neumann,
-}
-
-/// A boundary condition for IGA.
-#[derive(Debug, Clone)]
-pub struct IgaBoundaryCondition {
-    /// DOF indices affected.
-    pub dof_indices: Vec<usize>,
-    /// Prescribed values.
-    pub values: Vec<f64>,
-    /// Type of BC.
-    pub bc_type: IgaBcType,
-}
-
-impl IgaBoundaryCondition {
-    /// Create a new boundary condition.
-    pub fn new(dof_indices: Vec<usize>, values: Vec<f64>, bc_type: IgaBcType) -> Self {
-        assert_eq!(dof_indices.len(), values.len());
-        Self {
-            dof_indices,
-            values,
-            bc_type,
-        }
-    }
-
-    /// Apply Dirichlet BC to the system using the penalty method.
-    pub fn apply_dirichlet(&self, system: &mut IgaSystem, penalty: f64) {
-        if self.bc_type != IgaBcType::Dirichlet {
-            return;
-        }
-        for (dof, val) in self.dof_indices.iter().zip(self.values.iter()) {
-            let d = *dof;
-            system.stiffness[d * system.ndof + d] += penalty;
-            system.load[d] += penalty * val;
-        }
-    }
-
-    /// Apply Neumann BC (add to load vector).
-    pub fn apply_neumann(&self, system: &mut IgaSystem) {
-        if self.bc_type != IgaBcType::Neumann {
-            return;
-        }
-        for (dof, val) in self.dof_indices.iter().zip(self.values.iter()) {
-            system.load[*dof] += val;
-        }
-    }
-
-    /// Apply this BC to the system (dispatches based on type).
-    pub fn apply(&self, system: &mut IgaSystem, penalty: f64) {
-        match self.bc_type {
-            IgaBcType::Dirichlet => self.apply_dirichlet(system, penalty),
-            IgaBcType::Neumann => self.apply_neumann(system),
-        }
-    }
-
-    /// Create a fixed boundary condition (zero displacement) for given DOFs.
-    pub fn fixed(dof_indices: Vec<usize>) -> Self {
-        let values = vec![0.0; dof_indices.len()];
-        Self::new(dof_indices, values, IgaBcType::Dirichlet)
-    }
-
-    /// Create a traction BC for given DOFs with specified forces.
-    pub fn traction(dof_indices: Vec<usize>, forces: Vec<f64>) -> Self {
-        Self::new(dof_indices, forces, IgaBcType::Neumann)
     }
 }
 
@@ -1584,19 +1234,26 @@ mod tests {
     fn test_stiffness_symmetry() {
         let surf = NurbsSurface::flat_rectangle(1.0, 1.0, 3, 3, 1);
         let mat = IgaMaterial::new(1e6, 0.3, 0.01);
-        let elem = IgaElement::new(vec![], [0.0, 0.5, 0.0, 0.5], 2);
-        let k = elem.stiffness_matrix(&surf, &mat);
-        let ndof = 2 * 9;
-        for i in 0..ndof {
-            for j in i + 1..ndof {
-                let diff = (k[i * ndof + j] - k[j * ndof + i]).abs();
-                let max_val = k[i * ndof + j].abs().max(k[j * ndof + i].abs()).max(1e-30);
-                assert!(
-                    diff / max_val < 1e-8 || diff < 1e-20,
-                    "K not symmetric at ({i},{j}): {} vs {}",
-                    k[i * ndof + j],
-                    k[j * ndof + i]
-                );
+        let assembler = IgaAssembler::new(9, mat, 2);
+        let elements = assembler.create_elements(&surf);
+        assert_eq!(elements.len(), 4);
+        for elem in &elements {
+            let k = elem.stiffness_matrix(&surf, &mat).unwrap();
+            // bilinear element: 4 active control points -> 8 local DOFs
+            let ndof = 2 * elem.basis_indices.len();
+            assert_eq!(ndof, 8);
+            assert_eq!(k.len(), ndof * ndof);
+            for i in 0..ndof {
+                for j in i + 1..ndof {
+                    let diff = (k[i * ndof + j] - k[j * ndof + i]).abs();
+                    let max_val = k[i * ndof + j].abs().max(k[j * ndof + i].abs()).max(1e-30);
+                    assert!(
+                        diff / max_val < 1e-8 || diff < 1e-20,
+                        "K not symmetric at ({i},{j}): {} vs {}",
+                        k[i * ndof + j],
+                        k[j * ndof + i]
+                    );
+                }
             }
         }
     }
@@ -1605,9 +1262,10 @@ mod tests {
     fn test_stiffness_positive_diagonal() {
         let surf = NurbsSurface::flat_rectangle(1.0, 1.0, 3, 3, 1);
         let mat = IgaMaterial::new(1e6, 0.3, 0.01);
-        let elem = IgaElement::new(vec![], [0.0, 0.5, 0.0, 0.5], 2);
-        let k = elem.stiffness_matrix(&surf, &mat);
-        let ndof = 2 * 9;
+        let assembler = IgaAssembler::new(9, mat, 2);
+        let elements = assembler.create_elements(&surf);
+        let k = elements[0].stiffness_matrix(&surf, &mat).unwrap();
+        let ndof = 2 * elements[0].basis_indices.len();
         let mut has_positive = false;
         for i in 0..ndof {
             assert!(k[i * ndof + i] >= -1e-14, "Negative diagonal at {i}");
@@ -1635,32 +1293,56 @@ mod tests {
         assert!((d[0][1] - d[1][0]).abs() < 1e-3);
     }
 
+    /// A diagonal CSR system for the boundary-condition tests.
+    fn diagonal_system(ndof: usize) -> IgaSystem {
+        let triplets: Vec<(usize, usize, f64)> = (0..ndof).map(|i| (i, i, 1.0)).collect();
+        IgaSystem {
+            stiffness: crate::sparse::CsrMatrix::from_triplets(ndof, ndof, &triplets),
+            load: vec![0.0; ndof],
+            ndof,
+        }
+    }
+
     #[test]
     fn test_bc_dirichlet_penalty() {
         let ndof = 4;
-        let mut system = IgaSystem {
-            stiffness: vec![0.0; ndof * ndof],
-            load: vec![0.0; ndof],
-            ndof,
-        };
+        let mut system = diagonal_system(ndof);
         let bc = IgaBoundaryCondition::fixed(vec![0, 1]);
-        bc.apply(&mut system, 1e10);
-        assert!(system.stiffness[0] > 1e9);
-        assert!(system.stiffness[ndof + 1] > 1e9);
+        bc.apply(&mut system, 1e10).unwrap();
+        assert!(system.stiffness.get(0, 0) > 1e9);
+        assert!(system.stiffness.get(1, 1) > 1e9);
+        // unconstrained DOFs keep their stiffness
+        assert!((system.stiffness.get(2, 2) - 1.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_bc_dirichlet_prescribed_value_enters_load() {
+        let mut system = diagonal_system(3);
+        let bc = IgaBoundaryCondition::new(vec![2], vec![0.25], IgaBcType::Dirichlet);
+        bc.apply(&mut system, 1e6).unwrap();
+        assert!((system.load[2] - 0.25e6).abs() < 1e-6);
     }
 
     #[test]
     fn test_bc_neumann() {
         let ndof = 4;
-        let mut system = IgaSystem {
-            stiffness: vec![0.0; ndof * ndof],
-            load: vec![0.0; ndof],
-            ndof,
-        };
+        let mut system = diagonal_system(ndof);
         let bc = IgaBoundaryCondition::traction(vec![2, 3], vec![100.0, -50.0]);
-        bc.apply(&mut system, 1e10);
+        bc.apply(&mut system, 1e10).unwrap();
         assert!((system.load[2] - 100.0).abs() < 1e-10);
         assert!((system.load[3] - (-50.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_bc_out_of_range_dof_is_an_error_and_leaves_system_untouched() {
+        let mut system = diagonal_system(4);
+        let bc = IgaBoundaryCondition::new(vec![1, 9], vec![0.0, 0.0], IgaBcType::Dirichlet);
+        let err = bc.apply(&mut system, 1e8).unwrap_err();
+        assert!(matches!(err, crate::Error::DofOutOfRange { dof: 9, n: 4 }));
+        assert!((system.stiffness.get(1, 1) - 1.0).abs() < 1e-14);
+        let bc = IgaBoundaryCondition::traction(vec![4], vec![1.0]);
+        assert!(bc.apply(&mut system, 1e8).is_err());
+        assert!(system.load.iter().all(|x| *x == 0.0));
     }
 
     #[test]
@@ -1724,7 +1406,12 @@ mod tests {
         let mat = IgaMaterial::new(1e6, 0.3, 0.01);
         let assembler = IgaAssembler::new(16, mat, 2);
         let elements = assembler.create_elements(&surf);
-        assert!(!elements.is_empty());
+        // one interior knot per direction -> 2 x 2 knot spans, 3 x 3 active
+        // control points on each (not all 16)
+        assert_eq!(elements.len(), 4);
+        for elem in &elements {
+            assert_eq!(elem.basis_indices.len(), 9);
+        }
     }
 
     #[test]

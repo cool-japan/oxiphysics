@@ -742,32 +742,46 @@ impl DiffusionColloidal {
         t
     }
 
-    /// Rotne-Prager-Yamakawa (RPY) correction to the Oseen tensor for finite-size particles.
-    /// Valid for r > 2a (non-overlapping).
+    /// Rotne-Prager-Yamakawa (RPY) pair diffusion tensor \[m²/s\] for two equal
+    /// spheres of radius `radius` whose centres are separated by `r_vec`.
+    ///
+    /// With D₀ = k_B T / (6π η a) the Stokes-Einstein coefficient:
+    ///
+    /// * non-overlapping (r ≥ 2a):
+    ///   D_ij = D₀ (3a / 4r) \[(1 + 2a²/3r²) δ_ij + (1 − 2a²/r²) r̂_i r̂_j\],
+    ///   which decays like the Oseen tensor, k_B T / (8π η r) (δ + r̂r̂), at large r;
+    /// * overlapping (r < 2a, Rotne-Prager regularisation):
+    ///   D_ij = D₀ \[(1 − 9r/32a) δ_ij + (3r/32a) r̂_i r̂_j\].
+    ///
+    /// Both branches take the value D₀ \[(7/16) δ + (3/16) r̂r̂\] at r = 2a, so the
+    /// tensor is continuous, and the two-particle mobility matrix built from it
+    /// stays positive definite for every separation.  Returns the zero tensor for
+    /// coincident centres or a non-positive radius.
     pub fn rpy_tensor(&self, r_vec: [f64; 3], radius: f64) -> [[f64; 3]; 3] {
         let r = mag3(r_vec);
-        if r < 1e-14 {
+        if r < 1e-14 || radius <= 0.0 {
             return [[0.0; 3]; 3];
         }
         let rhat = norm3(r_vec);
         let a = radius;
         let d0 = self.stokes_einstein(a);
-        let prefactor = if r > 2.0 * a {
-            let f1 = 1.0 + 2.0 * a * a / (3.0 * r * r);
-            let f2 = 1.0 - 2.0 * a * a / (r * r);
-            (f1, f2)
+        // Dimensionless coefficients of δ_ij and r̂_i r̂_j (relative to D₀).
+        let (coeff_delta, coeff_rr) = if r >= 2.0 * a {
+            let decay = 3.0 * a / (4.0 * r);
+            let a2_over_r2 = a * a / (r * r);
+            (
+                decay * (1.0 + 2.0 * a2_over_r2 / 3.0),
+                decay * (1.0 - 2.0 * a2_over_r2),
+            )
         } else {
-            // Overlapping: use approximate form
-            let xi = r / (2.0 * a);
-            let f1 = 1.0 - 9.0 * xi / 32.0;
-            let f2 = 3.0 * xi / 32.0;
-            (f1, f2)
+            let r_over_a = r / a;
+            (1.0 - 9.0 * r_over_a / 32.0, 3.0 * r_over_a / 32.0)
         };
         let mut t = [[0.0f64; 3]; 3];
         for i in 0..3 {
             for j in 0..3 {
                 let delta = if i == j { 1.0 } else { 0.0 };
-                t[i][j] = d0 * (prefactor.0 * delta + prefactor.1 * rhat[i] * rhat[j]);
+                t[i][j] = d0 * (coeff_delta * delta + coeff_rr * rhat[i] * rhat[j]);
             }
         }
         t
@@ -1311,6 +1325,146 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Diagonal and `r̂r̂` coefficients (in units of D₀) of an RPY tensor for a
+    /// separation along +x, read back from the full 3×3 tensor.
+    fn rpy_coefficients_along_x(diff: &DiffusionColloidal, r: f64, a: f64) -> (f64, f64) {
+        let d0 = diff.stokes_einstein(a);
+        let t = diff.rpy_tensor([r, 0.0, 0.0], a);
+        // Along x: t_yy = D₀·c_δ and t_xx = D₀·(c_δ + c_rr).
+        let c_delta = t[1][1] / d0;
+        let c_rr = t[0][0] / d0 - c_delta;
+        (c_delta, c_rr)
+    }
+
+    #[test]
+    fn test_rpy_branches_agree_at_contact() {
+        let diff = DiffusionColloidal::water_25c();
+        let a = 100e-9;
+        // Far branch exactly at r = 2a, near branch an ulp-scale distance inside.
+        for r in [2.0 * a, 2.0 * a * (1.0 - 1e-12)] {
+            let (c_delta, c_rr) = rpy_coefficients_along_x(&diff, r, a);
+            assert!(
+                (c_delta - 7.0 / 16.0).abs() < 1e-9,
+                "c_delta = {c_delta} at r = {r}"
+            );
+            assert!((c_rr - 3.0 / 16.0).abs() < 1e-9, "c_rr = {c_rr} at r = {r}");
+        }
+    }
+
+    #[test]
+    fn test_rpy_overlap_branch_matches_rotne_prager_coefficients() {
+        let diff = DiffusionColloidal::water_25c();
+        let a = 50e-9;
+        // r = a: 1 − 9/32 = 23/32 and 3/32.
+        let (c_delta, c_rr) = rpy_coefficients_along_x(&diff, a, a);
+        assert!((c_delta - 23.0 / 32.0).abs() < 1e-12, "c_delta = {c_delta}");
+        assert!((c_rr - 3.0 / 32.0).abs() < 1e-12, "c_rr = {c_rr}");
+        // r = a/2: 1 − 9/64 and 3/64.
+        let (c_delta, c_rr) = rpy_coefficients_along_x(&diff, 0.5 * a, a);
+        assert!(
+            (c_delta - (1.0 - 9.0 / 64.0)).abs() < 1e-12,
+            "c_delta = {c_delta}"
+        );
+        assert!((c_rr - 3.0 / 64.0).abs() < 1e-12, "c_rr = {c_rr}");
+    }
+
+    #[test]
+    fn test_rpy_far_field_matches_oseen() {
+        let diff = DiffusionColloidal::water_25c();
+        let a = 100e-9;
+        let r_vec = [60.0 * a, 80.0 * a, 0.0]; // |r| = 100 a
+        let rpy = diff.rpy_tensor(r_vec, a);
+        let oseen = diff.oseen_tensor(r_vec);
+        let kt = K_B * diff.temperature;
+        let d0 = diff.stokes_einstein(a);
+        // Relative to the self-diffusion scale the far-field coupling is tiny
+        // (largest eigenvalue ≈ 2 · (3/4)(a/r) D₀ = 0.015 D₀ at r = 100 a)...
+        for row in rpy.iter() {
+            for &v in row.iter() {
+                assert!(v.abs() < 0.02 * d0, "far-field coupling {v} not decayed");
+            }
+        }
+        // ...and equals kT · Oseen up to the O((a/r)²) finite-size correction.
+        for i in 0..3 {
+            for j in 0..3 {
+                let reference = kt * oseen[i][j];
+                let scale = kt * oseen[0][0].abs().max(oseen[1][1].abs());
+                assert!(
+                    (rpy[i][j] - reference).abs() < 1e-3 * scale,
+                    "rpy[{i}][{j}] = {} vs kT·Oseen = {reference}",
+                    rpy[i][j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_rpy_far_field_decays_monotonically() {
+        let diff = DiffusionColloidal::water_25c();
+        let a = 100e-9;
+        let d0 = diff.stokes_einstein(a);
+        let mut previous = f64::INFINITY;
+        for multiple in [2.5, 4.0, 8.0, 16.0, 64.0, 256.0] {
+            let t = diff.rpy_tensor([multiple * a, 0.0, 0.0], a);
+            assert!(
+                t[0][0] < previous,
+                "D_xx must decay with separation: {} !< {previous} at r = {multiple} a",
+                t[0][0]
+            );
+            previous = t[0][0];
+        }
+        // At r = 256 a the parallel coupling is ≈ 2 · (3/4)(a/r) D₀ = 0.00586 D₀.
+        assert!(previous < 0.01 * d0, "D_xx(256a) = {previous}");
+        // Exact closed form at r = 10 a (along x): (3/40)(2 − 4/300) D₀.
+        let t = diff.rpy_tensor([10.0 * a, 0.0, 0.0], a);
+        let expected = d0 * (3.0 / 40.0) * (2.0 - 4.0 / 300.0);
+        assert!(
+            ((t[0][0] - expected) / expected).abs() < 1e-12,
+            "D_xx(10a) = {} expected {expected}",
+            t[0][0]
+        );
+    }
+
+    #[test]
+    fn test_rpy_tensor_symmetric_and_pair_mobility_positive_definite() {
+        let diff = DiffusionColloidal::water_25c();
+        let a = 80e-9;
+        let d0 = diff.stokes_einstein(a);
+        for multiple in [0.3, 1.0, 1.9, 2.0, 2.1, 3.0, 7.0] {
+            let r_vec = [multiple * a * 0.6, multiple * a * 0.0, multiple * a * 0.8];
+            let t = diff.rpy_tensor(r_vec, a);
+            for (i, row) in t.iter().enumerate() {
+                for (j, &value) in row.iter().enumerate() {
+                    assert!((value - t[j][i]).abs() < 1e-25, "asymmetric at ({i},{j})");
+                }
+            }
+            // The 2-sphere mobility matrix [[D₀ I, T],[T, D₀ I]] is positive definite
+            // iff every eigenvalue of T lies strictly inside (−D₀, D₀).
+            let rhat = norm3(r_vec);
+            let parallel: f64 = (0..3)
+                .map(|i| (0..3).map(|j| rhat[i] * t[i][j] * rhat[j]).sum::<f64>())
+                .sum();
+            let trace = t[0][0] + t[1][1] + t[2][2];
+            let perpendicular = 0.5 * (trace - parallel);
+            assert!(
+                parallel.abs() < d0,
+                "parallel eigenvalue {parallel} vs D0 {d0}"
+            );
+            assert!(
+                perpendicular.abs() < d0,
+                "perpendicular eigenvalue {perpendicular} vs D0 {d0}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rpy_degenerate_inputs_return_zero_tensor() {
+        let diff = DiffusionColloidal::water_25c();
+        assert_eq!(diff.rpy_tensor([0.0; 3], 1e-7), [[0.0; 3]; 3]);
+        assert_eq!(diff.rpy_tensor([1e-6, 0.0, 0.0], 0.0), [[0.0; 3]; 3]);
+        assert_eq!(diff.rpy_tensor([1e-6, 0.0, 0.0], -1e-7), [[0.0; 3]; 3]);
     }
 
     #[test]

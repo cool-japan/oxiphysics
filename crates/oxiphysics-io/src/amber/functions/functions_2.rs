@@ -343,8 +343,9 @@ mod tests_amber_ext {
 }
 /// Validate that an `AmberTopology` is self-consistent.
 ///
-/// Checks include: atom indices in bonds are in range, bond force constants
-/// are non-negative, and angle equilibrium values are in [0, π].
+/// Checks include: atom indices in bonds and angles (all three atoms) are in
+/// range, bond force constants are non-negative, and angle equilibrium values
+/// are in [0, π].
 pub fn validate_topology(topo: &AmberTopology) -> Vec<String> {
     let mut issues = Vec::new();
     let n = topo.atoms.len();
@@ -366,8 +367,11 @@ pub fn validate_topology(topo: &AmberTopology) -> Vec<String> {
         }
     }
     for (idx, angle) in topo.angles.iter().enumerate() {
-        if angle.i >= n || angle.j >= n {
-            issues.push(format!("Angle {}: atom index out of range", idx));
+        if angle.i >= n || angle.j >= n || angle.atom_k >= n {
+            issues.push(format!(
+                "Angle {}: atom index out of range (i={}, j={}, k={}, n_atoms={})",
+                idx, angle.i, angle.j, angle.atom_k, n
+            ));
         }
         if angle.theta0 < 0.0 || angle.theta0 > std::f64::consts::PI {
             issues.push(format!(

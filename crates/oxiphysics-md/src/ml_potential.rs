@@ -17,8 +17,11 @@
 //! - [`BpNeuralNetworkPotential`]: a complete BP neural network potential.
 //! - Activation functions: [`tanh_activation`], [`relu_activation`], [`identity_activation`].
 
+use crate::error::MdError;
 use oxiphysics_core::math::Vec3;
+use oxiphysics_core::numerical_methods::cholesky;
 use std::f64::consts::PI;
+use std::sync::OnceLock;
 
 // ---------------------------------------------------------------------------
 // ML potential trait
@@ -54,6 +57,20 @@ pub trait MlPotential: Send + Sync {
 pub fn cutoff_function(r: f64, rc: f64) -> f64 {
     if r < rc {
         0.5 * (1.0 + (PI * r / rc).cos())
+    } else {
+        0.0
+    }
+}
+
+/// Derivative of [`cutoff_function`] with respect to `r`.
+///
+/// Returns `-0.5 * (pi / rc) * sin(pi * r / rc)` when `r < rc`, and `0`
+/// otherwise.  The taper has zero slope at `rc`, so the derivative is
+/// continuous there.
+#[inline]
+pub fn cutoff_function_derivative(r: f64, rc: f64) -> f64 {
+    if r < rc {
+        -0.5 * (PI / rc) * (PI * r / rc).sin()
     } else {
         0.0
     }
@@ -173,7 +190,10 @@ impl SymmetryFunctionSet {
                             if rjk >= rc_use {
                                 continue;
                             }
-                            let cos_theta = rij_vec.dot(&rik_vec) / (rij * rik);
+                            // Rounding can push |cos θ| a hair above 1 for (anti)parallel
+                            // bonds; clamp so `1 + λ cos θ` never becomes slightly negative
+                            // (a NaN under a fractional exponent).
+                            let cos_theta = (rij_vec.dot(&rik_vec) / (rij * rik)).clamp(-1.0, 1.0);
                             let angular = (1.0 + lambda * cos_theta).powf(*zeta);
                             let radial = (-eta * (rij.powi(2) + rik.powi(2) + rjk.powi(2))).exp();
                             let fc = cutoff_function(rij, rc_use)
@@ -615,11 +635,22 @@ impl GapKernel {
 // Kernel Ridge Regression (KRR) ML potential
 // ---------------------------------------------------------------------------
 
-/// Kernel Ridge Regression potential.
+/// Kernel Ridge Regression potential (the posterior mean of a Gaussian process).
 ///
 /// Fits: E(x) = Σ_i α_i k(x, x_i)
 /// where α are the regression coefficients solved via
 /// (K + λI) α = y.
+///
+/// `K + λI` is symmetric positive definite for a positive-definite kernel and
+/// `λ > 0`; it is factorised once as `L Lᵀ` (Cholesky), which gives both the
+/// coefficients α and the posterior variance of
+/// [`KrrPotential::predict_uncertainty`].
+///
+/// The Cholesky factor is computed from the hyper-parameters in effect when it
+/// is first needed ([`KrrPotential::fit`] computes it eagerly,
+/// [`KrrPotential::new`] lazily on the first uncertainty query).  Build a new
+/// potential instead of mutating `kernel`, `lambda` or `training_descriptors`
+/// of an existing one.
 pub struct KrrPotential {
     /// Training descriptors.
     pub training_descriptors: Vec<Vec<f64>>,
@@ -629,10 +660,17 @@ pub struct KrrPotential {
     pub kernel: GapKernel,
     /// Regularisation parameter λ.
     pub lambda: f64,
+    /// Lower-triangular Cholesky factor `L` of `K + λI`, `None` when the matrix
+    /// is not (numerically) symmetric positive definite.  Filled on first use.
+    chol: OnceLock<Option<Vec<Vec<f64>>>>,
 }
 
 impl KrrPotential {
     /// Create a new KRR potential with pre-computed α coefficients.
+    ///
+    /// The Cholesky factor of `K + λI` needed for
+    /// [`KrrPotential::predict_uncertainty`] is computed lazily on the first
+    /// uncertainty query.
     pub fn new(
         training_descriptors: Vec<Vec<f64>>,
         alpha: Vec<f64>,
@@ -644,21 +682,66 @@ impl KrrPotential {
             alpha,
             kernel,
             lambda,
+            chol: OnceLock::new(),
         }
     }
 
     /// Fit a KRR potential to descriptors and energies.
     ///
-    /// Solves (K + λI) α = y using Cholesky-like Gaussian elimination
-    /// (naïve O(n³) solver for small training sets).
+    /// Solves (K + λI) α = y with a Cholesky factorisation
+    /// (O(n³), intended for small training sets) and keeps the factor for
+    /// uncertainty predictions.
+    ///
+    /// # Errors
+    /// Returns an error if the number of descriptors and energies differ, the
+    /// descriptors have different lengths, the energies, `lambda` or the
+    /// kernel hyper-parameters are not finite (or `lambda < 0`, or the kernel
+    /// parameters are not positive), or if `K + λI` is not numerically
+    /// symmetric positive definite (for example duplicate descriptors with
+    /// `lambda = 0`; increase `lambda`).
     pub fn fit(
         descriptors: Vec<Vec<f64>>,
         energies: &[f64],
         kernel: GapKernel,
         lambda: f64,
-    ) -> Self {
+    ) -> Result<Self, MdError> {
         let n = descriptors.len();
-        assert_eq!(n, energies.len());
+        if n != energies.len() {
+            return Err(MdError::General(format!(
+                "KRR fit: {n} descriptors but {} energies",
+                energies.len()
+            )));
+        }
+        if let Some(first) = descriptors.first()
+            && let Some(bad) = descriptors.iter().position(|d| d.len() != first.len())
+        {
+            return Err(MdError::General(format!(
+                "KRR fit: descriptor {bad} has length {} but descriptor 0 has length {}",
+                descriptors[bad].len(),
+                first.len()
+            )));
+        }
+        if !lambda.is_finite() || lambda < 0.0 {
+            return Err(MdError::General(format!(
+                "KRR fit: lambda must be finite and non-negative, got {lambda}"
+            )));
+        }
+        let kernel_ok = kernel.signal_variance.is_finite()
+            && kernel.signal_variance > 0.0
+            && kernel.length_scale.is_finite()
+            && kernel.length_scale > 0.0;
+        if !kernel_ok {
+            return Err(MdError::General(format!(
+                "KRR fit: kernel signal variance and length scale must be finite and positive, \
+                 got {} and {}",
+                kernel.signal_variance, kernel.length_scale
+            )));
+        }
+        if energies.iter().any(|e| !e.is_finite()) {
+            return Err(MdError::General(
+                "KRR fit: training energies must be finite".to_string(),
+            ));
+        }
 
         // Build (K + λI)
         let mut km = kernel.kernel_matrix(&descriptors);
@@ -666,15 +749,25 @@ impl KrrPotential {
             row[i] += lambda;
         }
 
-        // Solve via Gaussian elimination with partial pivoting
-        let alpha = gaussian_elimination(&km, energies);
+        let factor = factorise_spd(&km).ok_or_else(|| {
+            MdError::General(
+                "KRR fit: K + lambda*I is not symmetric positive definite \
+                 (duplicate descriptors or lambda too small); increase lambda"
+                    .to_string(),
+            )
+        })?;
 
-        Self {
+        // (K + λI) α = y  <=>  L z = y, Lᵀ α = z
+        let z = forward_substitution(&factor, energies);
+        let alpha = backward_substitution_transposed(&factor, &z);
+
+        Ok(Self {
             training_descriptors: descriptors,
             alpha,
             kernel,
             lambda,
-        }
+            chol: OnceLock::from(Some(factor)),
+        })
     }
 
     /// Predict energy for a new descriptor.
@@ -685,68 +778,94 @@ impl KrrPotential {
         kv.iter().zip(self.alpha.iter()).map(|(k, a)| k * a).sum()
     }
 
-    /// Predict uncertainty (posterior variance).
+    /// Cholesky factor of `K + λI`, factorised on first use.
+    fn cholesky_factor(&self) -> Option<&Vec<Vec<f64>>> {
+        self.chol
+            .get_or_init(|| {
+                let mut km = self.kernel.kernel_matrix(&self.training_descriptors);
+                for (i, row) in km.iter_mut().enumerate() {
+                    row[i] += self.lambda;
+                }
+                factorise_spd(&km)
+            })
+            .as_ref()
+    }
+
+    /// Predict uncertainty (posterior variance of the latent energy).
     ///
-    /// σ²(x*) = k(x*, x*) - k*(K + λI)^{-1} k*^T
+    /// σ²(x*) = k(x*,x*) - k*(K + λI)^{-1} k*^T
+    ///
+    /// evaluated through the Cholesky factor `K + λI = L Lᵀ` as
+    /// `k(x*,x*) - ‖v‖²` with `L v = k*`.  The variance does not depend on the
+    /// training energies: it equals the signal variance far from the data and
+    /// shrinks towards `σ_f² λ / (σ_f² + λ)` at a training point.
+    ///
+    /// If `K + λI` cannot be factorised (only possible for a potential built
+    /// with [`KrrPotential::new`] from inconsistent parameters) nothing can be
+    /// learned from the data and the prior variance `k(x*,x*)` is returned.
     pub fn predict_uncertainty(&self, descriptor: &[f64]) -> f64 {
         let k_star_star = self.kernel.evaluate(descriptor, descriptor);
         let kv = self
             .kernel
             .kernel_vector(descriptor, &self.training_descriptors);
-        // Approximate: σ² ≈ k** - kv · α (scaled)
-        let cross: f64 = kv.iter().zip(self.alpha.iter()).map(|(k, a)| k * a).sum();
-        (k_star_star - cross.abs()).max(0.0)
+        match self.cholesky_factor() {
+            Some(factor) if factor.len() == kv.len() => {
+                let v = forward_substitution(factor, &kv);
+                let explained: f64 = v.iter().map(|x| x * x).sum();
+                (k_star_star - explained).max(0.0)
+            }
+            _ => k_star_star.max(0.0),
+        }
     }
 }
 
-/// Simple Gaussian elimination solver for A x = b (square A).
-fn gaussian_elimination(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
-    let n = b.len();
-    let mut aug: Vec<Vec<f64>> = (0..n)
-        .map(|i| {
-            let mut row = a[i].clone();
-            row.push(b[i]);
-            row
-        })
-        .collect();
+/// Cholesky factor `L` (`A = L Lᵀ`) of a symmetric positive definite matrix.
+///
+/// Returns `None` if `a` is not numerically positive definite: the core
+/// factorisation fails, or a pivot `L_ii²` is not larger than
+/// `n · ε · max_i A_ii` (a pivot at rounding level means the matrix is
+/// singular to working precision, and dividing by it would amplify noise),
+/// or the factor contains non-finite entries.
+fn factorise_spd(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
+    let n = a.len();
+    let factor = cholesky(a)?;
+    let largest_diagonal = a
+        .iter()
+        .enumerate()
+        .map(|(i, row)| row[i])
+        .fold(0.0_f64, f64::max);
+    let pivot_floor = n as f64 * f64::EPSILON * largest_diagonal;
+    let sound = factor
+        .iter()
+        .enumerate()
+        .all(|(i, row)| row[..=i].iter().all(|x| x.is_finite()) && row[i] * row[i] > pivot_floor);
+    sound.then_some(factor)
+}
 
-    // Forward elimination
-    for col in 0..n {
-        // Partial pivot
-        let mut max_row = col;
-        let mut max_val = aug[col][col].abs();
-        for (row, aug_row) in aug.iter().enumerate().take(n).skip(col + 1) {
-            if aug_row[col].abs() > max_val {
-                max_val = aug_row[col].abs();
-                max_row = row;
-            }
+/// Solve `L x = b` for lower-triangular `L` by forward substitution.
+fn forward_substitution(l: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
+    let n = l.len();
+    let mut x = vec![0.0; n];
+    for i in 0..n {
+        let mut sum = b[i];
+        for j in 0..i {
+            sum -= l[i][j] * x[j];
         }
-        aug.swap(col, max_row);
-
-        let pivot = aug[col][col];
-        if pivot.abs() < 1e-15 {
-            continue;
-        }
-
-        for row in (col + 1)..n {
-            let factor = aug[row][col] / pivot;
-            let pivot_row: Vec<f64> = aug[col][col..=n].to_vec();
-            for (aug_row_c, &pv) in aug[row][col..=n].iter_mut().zip(pivot_row.iter()) {
-                *aug_row_c -= factor * pv;
-            }
-        }
+        x[i] = sum / l[i][i];
     }
+    x
+}
 
-    // Back substitution
+/// Solve `Lᵀ x = b` for lower-triangular `L` by backward substitution.
+fn backward_substitution_transposed(l: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
+    let n = l.len();
     let mut x = vec![0.0; n];
     for i in (0..n).rev() {
-        let mut sum = aug[i][n];
+        let mut sum = b[i];
         for j in (i + 1)..n {
-            sum -= aug[i][j] * x[j];
+            sum -= l[j][i] * x[j];
         }
-        if aug[i][i].abs() > 1e-15 {
-            x[i] = sum / aug[i][i];
-        }
+        x[i] = sum / l[i][i];
     }
     x
 }
@@ -975,6 +1094,36 @@ mod tests {
         assert_eq!(desc.len(), 3);
     }
 
+    #[test]
+    fn test_g4_descriptor_is_finite_for_collinear_atoms_with_fractional_zeta() {
+        // Atoms on a skew line: about a quarter of the computed cos θ values exceed 1 by
+        // rounding, which made `1 - cos θ` slightly negative and `powf(1.5)` NaN.
+        let direction = Vec3::new(1.0, 2.0, 3.0).normalize();
+        let positions: Vec<Vec3> = (0..12)
+            .map(|k| direction * (0.5 + 0.37 * k as f64))
+            .collect();
+        let species = vec![1; positions.len()];
+        let mut set = SymmetryFunctionSet::new();
+        set.push(SymmetryFunction::G4 {
+            eta: 0.1,
+            zeta: 1.5,
+            lambda: -1.0,
+            rc: 6.0,
+        });
+        set.push(SymmetryFunction::G4 {
+            eta: 0.1,
+            zeta: 1.5,
+            lambda: 1.0,
+            rc: 6.0,
+        });
+        let desc = set.compute_descriptor(&positions, 0, &species, 6.0);
+        assert!(desc.iter().all(|x| x.is_finite()), "descriptor = {desc:?}");
+        // All neighbors lie on one side: cos θ = 1, so the λ = -1 term vanishes and the
+        // λ = +1 term is strictly positive.
+        assert!(desc[0].abs() < 1e-12, "lambda = -1 term = {}", desc[0]);
+        assert!(desc[1] > 0.0, "lambda = +1 term = {}", desc[1]);
+    }
+
     // ── compute_g2 / compute_g4 standalone tests ───────────────────────────
 
     #[test]
@@ -1137,7 +1286,7 @@ mod tests {
         let descriptors = vec![vec![0.0f64], vec![1.0], vec![2.0]];
         let energies = vec![1.0, 1.0, 1.0];
         let kernel = GapKernel::new(1.0, 1.0);
-        let krr = KrrPotential::fit(descriptors, &energies, kernel, 1e-6);
+        let krr = KrrPotential::fit(descriptors, &energies, kernel, 1e-6).unwrap();
         let pred = krr.predict_energy(&[1.5]);
         assert!((pred - 1.0).abs() < 0.5, "constant fit prediction = {pred}");
     }
@@ -1146,7 +1295,8 @@ mod tests {
     fn test_krr_alpha_length() {
         let descriptors = vec![vec![0.0f64], vec![1.0]];
         let energies = vec![-1.0, -2.0];
-        let krr = KrrPotential::fit(descriptors, &energies, GapKernel::new(1.0, 1.0), 1e-3);
+        let krr =
+            KrrPotential::fit(descriptors, &energies, GapKernel::new(1.0, 1.0), 1e-3).unwrap();
         assert_eq!(krr.alpha.len(), 2);
     }
 
@@ -1154,9 +1304,224 @@ mod tests {
     fn test_krr_uncertainty_non_negative() {
         let descriptors = vec![vec![0.0f64], vec![1.0], vec![2.0]];
         let energies = vec![-1.0, -2.0, -1.5];
-        let krr = KrrPotential::fit(descriptors, &energies, GapKernel::new(1.0, 1.0), 1e-3);
+        let krr =
+            KrrPotential::fit(descriptors, &energies, GapKernel::new(1.0, 1.0), 1e-3).unwrap();
         let unc = krr.predict_uncertainty(&[1.5]);
         assert!(unc >= 0.0, "uncertainty should be non-negative, got {unc}");
+    }
+
+    /// Training set on a 1-D grid with smooth, deterministic energies.
+    fn grid_training_set(n: usize) -> (Vec<Vec<f64>>, Vec<f64>) {
+        let descriptors: Vec<Vec<f64>> = (0..n).map(|i| vec![0.6 * i as f64]).collect();
+        let energies: Vec<f64> = descriptors
+            .iter()
+            .map(|d| d[0].sin() - 0.3 * d[0])
+            .collect();
+        (descriptors, energies)
+    }
+
+    #[test]
+    fn test_krr_fit_solves_the_regularised_normal_equations() {
+        let (descriptors, energies) = grid_training_set(8);
+        let kernel = GapKernel::new(1.7, 0.9);
+        let lambda = 1e-3;
+        let km = kernel.kernel_matrix(&descriptors);
+        let krr = KrrPotential::fit(descriptors, &energies, kernel, lambda).unwrap();
+        for (i, row) in km.iter().enumerate() {
+            let lhs: f64 =
+                row.iter().zip(&krr.alpha).map(|(k, a)| k * a).sum::<f64>() + lambda * krr.alpha[i];
+            assert!(
+                (lhs - energies[i]).abs() < 1e-9,
+                "row {i}: (K + lambda I) alpha = {lhs}, y = {}",
+                energies[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_krr_fit_interpolates_training_energies_for_tiny_lambda() {
+        let (descriptors, energies) = grid_training_set(6);
+        let krr = KrrPotential::fit(
+            descriptors.clone(),
+            &energies,
+            GapKernel::new(1.0, 1.0),
+            1e-12,
+        )
+        .unwrap();
+        for (d, e) in descriptors.iter().zip(&energies) {
+            let p = krr.predict_energy(d);
+            assert!(
+                (p - e).abs() < 1e-5,
+                "prediction {p} vs training energy {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_krr_uncertainty_matches_closed_form_for_one_training_point() {
+        // One training point x0 = 0: σ²(x*) = k** - k(x*,x0)² / (k00 + λ).
+        let kernel = GapKernel::new(2.0, 1.0);
+        let lambda = 0.5;
+        let krr = KrrPotential::fit(vec![vec![0.0]], &[3.0], kernel, lambda).unwrap();
+        let reference = GapKernel::new(2.0, 1.0);
+        let k_star = reference.evaluate(&[1.0], &[0.0]);
+        let expected = 2.0 - k_star * k_star / (2.0 + lambda);
+        let got = krr.predict_uncertainty(&[1.0]);
+        assert!(
+            (got - expected).abs() < 1e-12,
+            "got {got}, expected {expected}"
+        );
+        // At the training point itself: σ_f² λ / (σ_f² + λ) = 0.4.
+        let at_data = krr.predict_uncertainty(&[0.0]);
+        assert!((at_data - 0.4).abs() < 1e-12, "at the data: {at_data}");
+    }
+
+    #[test]
+    fn test_krr_uncertainty_is_independent_of_the_energy_scale() {
+        // Regression: the "variance" was k** - |k*·alpha| = k** - |predicted energy|, which
+        // scales with the training targets.  The GP posterior variance does not depend on y.
+        let (descriptors, energies) = grid_training_set(7);
+        let scaled: Vec<f64> = energies.iter().map(|e| 10.0 * e).collect();
+        let kernel = || GapKernel::new(1.3, 0.8);
+        let a = KrrPotential::fit(descriptors.clone(), &energies, kernel(), 1e-3).unwrap();
+        let b = KrrPotential::fit(descriptors, &scaled, kernel(), 1e-3).unwrap();
+        for &x in &[-0.7, 0.3, 1.1, 2.9, 4.4] {
+            let ua = a.predict_uncertainty(&[x]);
+            let ub = b.predict_uncertainty(&[x]);
+            assert!((ua - ub).abs() < 1e-12, "x = {x}: {ua} vs {ub}");
+            let ea = a.predict_energy(&[x]);
+            let eb = b.predict_energy(&[x]);
+            assert!(
+                (eb - 10.0 * ea).abs() < 1e-8,
+                "predicted energies must scale with the targets"
+            );
+        }
+    }
+
+    #[test]
+    fn test_krr_uncertainty_far_from_data_is_the_signal_variance() {
+        let (descriptors, energies) = grid_training_set(5);
+        let krr =
+            KrrPotential::fit(descriptors, &energies, GapKernel::new(2.5, 0.7), 1e-4).unwrap();
+        let far = krr.predict_uncertainty(&[1.0e3]);
+        assert!((far - 2.5).abs() < 1e-12, "far-field variance = {far}");
+    }
+
+    #[test]
+    fn test_krr_uncertainty_is_small_near_data_and_grows_away_from_it() {
+        let (descriptors, energies) = grid_training_set(6);
+        let krr =
+            KrrPotential::fit(descriptors, &energies, GapKernel::new(1.0, 0.5), 1e-6).unwrap();
+        let on_data = krr.predict_uncertainty(&[0.6]);
+        let between = krr.predict_uncertainty(&[0.9]);
+        let outside = krr.predict_uncertainty(&[6.5]);
+        assert!(on_data < 1e-5, "variance at a training point = {on_data}");
+        assert!(between > on_data, "{between} should exceed {on_data}");
+        assert!(outside > between, "{outside} should exceed {between}");
+        assert!(outside <= 1.0 + 1e-12);
+    }
+
+    #[test]
+    fn test_krr_new_computes_the_same_uncertainty_lazily() {
+        let (descriptors, energies) = grid_training_set(6);
+        let fitted = KrrPotential::fit(
+            descriptors.clone(),
+            &energies,
+            GapKernel::new(1.1, 0.9),
+            1e-3,
+        )
+        .unwrap();
+        let rebuilt = KrrPotential::new(
+            descriptors,
+            fitted.alpha.clone(),
+            GapKernel::new(1.1, 0.9),
+            1e-3,
+        );
+        for &x in &[0.2, 1.7, 3.3, 9.0] {
+            let a = fitted.predict_uncertainty(&[x]);
+            let b = rebuilt.predict_uncertainty(&[x]);
+            assert!((a - b).abs() < 1e-14, "x = {x}: {a} vs {b}");
+            assert!((fitted.predict_energy(&[x]) - rebuilt.predict_energy(&[x])).abs() < 1e-14);
+        }
+    }
+
+    #[test]
+    fn test_krr_unfactorisable_model_reports_the_prior_variance() {
+        // Duplicate descriptors with lambda = 0: K is singular, so nothing can be conditioned.
+        let krr = KrrPotential::new(
+            vec![vec![0.0], vec![0.0]],
+            vec![0.0, 0.0],
+            GapKernel::new(1.5, 1.0),
+            0.0,
+        );
+        assert!((krr.predict_uncertainty(&[0.3]) - 1.5).abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_krr_fit_rejects_inconsistent_input() {
+        let kernel = || GapKernel::new(1.0, 1.0);
+        let d = || vec![vec![0.0], vec![1.0]];
+        // length mismatch
+        assert!(KrrPotential::fit(d(), &[1.0], kernel(), 1e-3).is_err());
+        // ragged descriptors
+        assert!(
+            KrrPotential::fit(vec![vec![0.0], vec![1.0, 2.0]], &[1.0, 2.0], kernel(), 1e-3)
+                .is_err()
+        );
+        // non-finite energy / lambda
+        assert!(KrrPotential::fit(d(), &[1.0, f64::NAN], kernel(), 1e-3).is_err());
+        assert!(KrrPotential::fit(d(), &[1.0, 2.0], kernel(), f64::NAN).is_err());
+        assert!(KrrPotential::fit(d(), &[1.0, 2.0], kernel(), -1.0).is_err());
+        // degenerate kernel hyper-parameters
+        assert!(KrrPotential::fit(d(), &[1.0, 2.0], GapKernel::new(1.0, 0.0), 1e-3).is_err());
+        assert!(KrrPotential::fit(d(), &[1.0, 2.0], GapKernel::new(-1.0, 1.0), 1e-3).is_err());
+    }
+
+    #[test]
+    fn test_krr_fit_rejects_singular_kernel_matrix() {
+        // Two identical descriptors and no regularisation: K + 0*I is singular.
+        let result = KrrPotential::fit(
+            vec![vec![0.5], vec![0.5], vec![1.5]],
+            &[1.0, 1.0, 2.0],
+            GapKernel::new(1.0, 1.0),
+            0.0,
+        );
+        assert!(result.is_err());
+        // The same data with a ridge term is fine.
+        let result = KrrPotential::fit(
+            vec![vec![0.5], vec![0.5], vec![1.5]],
+            &[1.0, 1.0, 2.0],
+            GapKernel::new(1.0, 1.0),
+            1e-3,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_krr_fit_empty_training_set_is_the_prior() {
+        let krr = KrrPotential::fit(Vec::new(), &[], GapKernel::new(1.2, 1.0), 1e-3).unwrap();
+        assert!(krr.alpha.is_empty());
+        assert_eq!(krr.predict_energy(&[0.4]), 0.0);
+        assert!((krr.predict_uncertainty(&[0.4]) - 1.2).abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_cholesky_triangular_solves_recover_the_solution() {
+        let a = vec![
+            vec![4.0, 1.0, 0.5],
+            vec![1.0, 3.0, 0.2],
+            vec![0.5, 0.2, 2.0],
+        ];
+        let factor = factorise_spd(&a).unwrap();
+        let b = [1.0, -2.0, 0.5];
+        let z = forward_substitution(&factor, &b);
+        let x = backward_substitution_transposed(&factor, &z);
+        for (i, row) in a.iter().enumerate() {
+            let lhs: f64 = row.iter().zip(&x).map(|(aij, xj)| aij * xj).sum();
+            assert!((lhs - b[i]).abs() < 1e-12, "row {i}: {lhs} vs {}", b[i]);
+        }
+        assert!(factorise_spd(&[vec![1.0, 2.0], vec![2.0, 1.0]]).is_none());
+        assert!(factorise_spd(&[vec![1.0, 1.0], vec![1.0, 1.0]]).is_none());
     }
 
     // ── ActiveLearningSampler tests ───────────────────────────────────────
@@ -1234,18 +1599,6 @@ mod tests {
     fn test_soap_n_features() {
         let soap = SoapDescriptor::default_descriptor(3.0, 5);
         assert_eq!(soap.n_features(), 5);
-    }
-
-    // ── Gaussian elimination helper ───────────────────────────────────────
-
-    #[test]
-    fn test_gaussian_elimination_2x2() {
-        // 2x + y = 5, x + 3y = 10 → x=1, y=3
-        let a = vec![vec![2.0, 1.0], vec![1.0, 3.0]];
-        let b = vec![5.0, 10.0];
-        let x = gaussian_elimination(&a, &b);
-        assert!((x[0] - 1.0).abs() < 1e-8, "x[0] = {}", x[0]);
-        assert!((x[1] - 3.0).abs() < 1e-8, "x[1] = {}", x[1]);
     }
 
     // ── BpNeuralNetworkPotential tests ────────────────────────────────────

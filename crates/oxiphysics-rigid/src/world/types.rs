@@ -1,13 +1,15 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
+use super::contact_detection::ConcaveCache;
+use super::contact_solver::{CachedContact, ContactImpulseCache, solve_friction_accumulated};
 use super::functions::*;
 use crate::body::{BodyState, BodyType, RigidBody};
 use crate::collider::Collider;
-use crate::impulse::SubStepRestitutionCorrector;
 use crate::pipeline::BodySnapshot;
 use crate::sets::{ColliderSet, RigidBodySet};
 use crate::solver::soft::SoftParams;
+use oxiphysics_collision::NarrowPhaseDispatcher;
 use oxiphysics_core::math::{Mat3, Vec3};
 use oxiphysics_core::{BodyHandle, ColliderHandle};
 
@@ -197,8 +199,9 @@ impl RigidWorld {
     /// Cast a ray through the world and collect **all** hit bodies, sorted by
     /// ascending `t`.
     ///
-    /// Bodies are treated as spheres; the radius is `1.0 / inv_mass.cbrt() * 0.3`
-    /// (the same heuristic used in the broadphase), clamped to at least 0.1 m.
+    /// `RigidWorld` bodies carry no shape, so each is queried as a heuristic
+    /// bounding sphere of radius `(1 / inv_mass)^(1/3) * 0.3`, clamped to at
+    /// least 0.1 m (static bodies use 0.5 m).
     pub fn raycast_all(&self, ray: &Ray) -> Vec<RaycastResult> {
         let mut hits = Vec::new();
         for body in &self.bodies {
@@ -488,31 +491,28 @@ pub struct SphereCastResult {
     /// Parametric distance `t` (in ray-space units).
     pub t: f64,
 }
-/// A detected contact between two bodies stored by their [`BodyHandle`]s.
+/// A detected contact point between the colliders of two bodies.
 #[derive(Debug, Clone)]
 pub struct ContactPair {
     /// Handle of the first body.
     pub body_a: BodyHandle,
     /// Handle of the second body.
     pub body_b: BodyHandle,
-    /// World-space contact normal (points from B toward A).
+    /// Collider of `body_a` that produced the contact.
+    pub collider_a: ColliderHandle,
+    /// Collider of `body_b` that produced the contact.
+    pub collider_b: ColliderHandle,
+    /// World-space unit contact normal (points from B toward A).
     pub normal: [f64; 3],
-    /// Penetration depth in metres (positive = overlap).
+    /// Penetration depth in metres (positive = overlap; negative = speculative
+    /// gap, only produced when [`SolverConfig::use_speculative`] is enabled).
     pub depth: f64,
     /// World-space contact point.
     pub contact_point: [f64; 3],
-}
-/// A contact cached at frame start for the small-steps solver. Stores the body
-/// handles, the frame-start normal (from B toward A), and the two sphere radii
-/// so penetration depth can be RE-PROJECTED from current body transforms each
-/// substep without re-running broad/narrowphase.
-#[derive(Debug, Clone)]
-struct CachedContact {
-    body_a: BodyHandle,
-    body_b: BodyHandle,
-    normal: [f64; 3],
-    radius_a: f64,
-    radius_b: f64,
+    /// Combined Coulomb friction coefficient `sqrt(μ_a · μ_b)`.
+    pub friction: f64,
+    /// Combined coefficient of restitution `max(e_a, e_b)`.
+    pub restitution: f64,
 }
 /// Result of a raycast query against the world.
 #[derive(Debug, Clone)]
@@ -570,13 +570,15 @@ pub struct SolverConfig {
     pub position_iterations: usize,
     /// Baumgarte stabilization factor (0..1).
     pub baumgarte_factor: f64,
-    /// Minimum restitution threshold — below this value restitution is treated
-    /// as zero to avoid jitter.
+    /// Approach-speed threshold (m/s): contacts closing slower than this get
+    /// no restitution bounce, which suppresses resting jitter. The coefficient
+    /// of restitution itself comes from the colliders (`max(e_a, e_b)`).
     pub restitution_threshold: f64,
+    /// Allowed penetration (metres) left uncorrected by the position-correction
+    /// stage, so resting contacts persist from one step to the next.
+    pub linear_slop: f64,
     /// Number of velocity sub-steps per frame for the small-steps solver (default 1 = legacy single-step behaviour).
     pub substeps: usize,
-    /// Coefficient of restitution used by the small-steps solver normal response.
-    pub restitution: f64,
     /// Natural frequency (Hz) for soft contacts. `0.0` selects a rigid contact
     /// (the soft path then reduces to a Baumgarte-free accumulated-impulse
     /// projection). Only consulted when [`use_soft_contacts`](Self::use_soft_contacts)
@@ -742,13 +744,19 @@ impl GravityRegion {
 /// simulation pipeline on each [`PhysicsWorld::step`] call.
 ///
 /// Pipeline order per step:
-/// 1. Gravity integration (velocity += g * dt)
-/// 2. Force/torque accumulator integration
-/// 3. Broadphase AABB overlap detection
-/// 4. Narrowphase contact generation (sphere–sphere)
-/// 5. Sequential-impulse constraint solver
-/// 6. Position integration
-/// 7. Sleep check / island deactivation
+/// 1. Gravity and force/torque accumulator integration
+/// 2. Broadphase: sweep-and-prune over the world AABBs of every non-sensor
+///    collider attached to a body (compound shapes contribute one AABB per child)
+/// 3. Narrowphase: contact manifolds from the collision crate's dispatcher
+///    (analytic primitives, convex face-clip manifolds, GJK/EPA; concave
+///    meshes / height fields per triangle)
+/// 4. Sequential-impulse velocity solver (normal + Coulomb friction, collider
+///    restitution)
+/// 5. Position integration
+/// 6. Non-linear Gauss–Seidel position correction
+/// 7. Sleep check
+///
+/// Only colliders produce contacts: a body without a collider never collides.
 pub struct PhysicsWorld {
     /// Arena storage for all rigid bodies.
     pub bodies: RigidBodySet,
@@ -770,6 +778,12 @@ pub struct PhysicsWorld {
     pub time_before_sleep: f64,
     /// Contact pairs from the last step.
     pub last_contacts: Vec<ContactPair>,
+    /// Narrowphase dispatcher (sphere/box/capsule/convex algorithms + GJK/EPA).
+    pub(super) narrowphase: NarrowPhaseDispatcher,
+    /// Triangle decompositions of the concave collider shapes.
+    pub(super) concave_cache: ConcaveCache,
+    /// Converged contact impulses of the previous step (warm starting).
+    pub(super) impulse_cache: ContactImpulseCache,
 }
 impl PhysicsWorld {
     /// Creates a new [`PhysicsWorld`] with the given gravity and fixed time-step.
@@ -785,6 +799,9 @@ impl PhysicsWorld {
             angular_sleep_threshold: 0.01,
             time_before_sleep: 0.5,
             last_contacts: Vec::new(),
+            narrowphase: NarrowPhaseDispatcher::default(),
+            concave_cache: ConcaveCache::default(),
+            impulse_cache: ContactImpulseCache::default(),
         }
     }
     /// Creates a new [`PhysicsWorld`] with standard Earth gravity (0, -9.81, 0)
@@ -881,10 +898,11 @@ impl PhysicsWorld {
     ///
     /// Full pipeline:
     /// 1. Apply gravity + force accumulators → update velocities.
-    /// 2. Broadphase: collect AABB overlap pairs.
-    /// 3. Narrowphase: generate contacts for overlapping pairs.
-    /// 4. Sequential-impulse solver: resolve velocity constraints.
-    /// 5. Integrate positions.
+    /// 2. Detect contacts from the colliders (broadphase + narrowphase).
+    /// 3. Solve the contact velocity constraints (sequential impulses with
+    ///    friction and collider restitution, or the soft TGS path).
+    /// 4. Integrate positions.
+    /// 5. Correct residual penetration (rigid path only).
     /// 6. Sleep check.
     pub fn step(&mut self) {
         let dt = self.dt;
@@ -893,33 +911,29 @@ impl PhysicsWorld {
         for (_, body) in self.bodies.iter_mut() {
             body.integrate_forces(dt, &g_vec);
         }
-        let candidate_pairs = self.broadphase_pairs();
-        let contacts = self.narrowphase_contacts(&candidate_pairs);
-        self.last_contacts = contacts.clone();
+        let contacts = self.detect_world_contacts();
         let iters = self.solver_config.velocity_iterations;
-        if self.solver_config.use_soft_contacts {
+        let position_constraints = if self.solver_config.use_soft_contacts {
             // Soft (TGS-Soft / Catto) contact response. Build the soft
             // coefficients once for this step (`h == dt`, no sub-stepping in the
-            // legacy `step` entry point), warm-start a per-contact accumulated
-            // normal impulse across the velocity iterations, and route every
-            // contact through the soft solver.
+            // legacy `step` entry point), warm-start the per-contact accumulated
+            // normal and friction impulses across the velocity iterations, and
+            // route every contact through the soft solver.
             let h = dt;
             let hz_eff = self.soft_contact_hertz(h);
             let zeta = self.solver_config.contact_damping_ratio;
             let soft = SoftParams::from_frequency(hz_eff, zeta, h);
-            let mut lambda_acc = vec![0.0_f64; contacts.len()];
+            let mut lambda_acc = vec![[0.0_f64; 3]; contacts.len()];
             for _ in 0..iters {
-                for (i, cp) in contacts.iter().enumerate() {
-                    self.solve_contact_velocity_soft(cp, &soft, &mut lambda_acc[i], dt);
+                for (cp, lambda) in contacts.iter().zip(lambda_acc.iter_mut()) {
+                    self.solve_contact_velocity_soft(cp, &soft, lambda, dt);
                 }
             }
+            Vec::new()
         } else {
-            for _ in 0..iters {
-                for cp in &contacts {
-                    self.solve_contact_velocity(cp);
-                }
-            }
-        }
+            self.solve_contacts_velocity(&contacts, dt)
+        };
+        self.last_contacts = contacts;
         // Implicit gyroscopic angular-velocity correction (Catto, GDC 2015).
         // Runs after constraint impulses are applied, before position integration.
         // Skipped entirely when the flag is off — byte-identical to prior behaviour.
@@ -953,6 +967,9 @@ impl PhysicsWorld {
         for (_, body) in self.bodies.iter_mut() {
             body.integrate_velocity(dt);
         }
+        if !position_constraints.is_empty() {
+            self.solve_contacts_position(&position_constraints);
+        }
         let lin_thr = self.linear_sleep_threshold;
         let ang_thr = self.angular_sleep_threshold;
         let tbs = self.time_before_sleep;
@@ -960,160 +977,6 @@ impl PhysicsWorld {
             body.check_sleep(dt, lin_thr, ang_thr, tbs);
         }
         self.time += dt;
-    }
-    /// Returns candidate overlapping body pairs using AABB sphere-bound tests.
-    ///
-    /// Each body is represented by a sphere of radius `body.mass.cbrt() * 0.5`
-    /// (heuristic) centred at `body.transform.position`.  Pairs whose bounding
-    /// spheres overlap are returned.
-    fn broadphase_pairs(&self) -> Vec<(BodyHandle, BodyHandle)> {
-        let entries: Vec<(BodyHandle, [f64; 3], f64)> = self
-            .bodies
-            .iter()
-            .map(|(h, b)| {
-                let pos = [
-                    b.transform.position.x,
-                    b.transform.position.y,
-                    b.transform.position.z,
-                ];
-                let r = if b.mass > 0.0 {
-                    b.mass.cbrt() * 0.5
-                } else {
-                    0.5_f64
-                };
-                let r = r.max(0.1);
-                (h, pos, r)
-            })
-            .collect();
-        let mut pairs = Vec::new();
-        let n = entries.len();
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let (ha, pa, ra) = entries[i];
-                let (hb, pb, rb) = entries[j];
-                let dx = pa[0] - pb[0];
-                let dy = pa[1] - pb[1];
-                let dz = pa[2] - pb[2];
-                let dist_sq = dx * dx + dy * dy + dz * dz;
-                let sum_r = ra + rb;
-                if dist_sq <= sum_r * sum_r {
-                    pairs.push((ha, hb));
-                }
-            }
-        }
-        pairs
-    }
-    /// Generates [`ContactPair`]s from the given broadphase candidate pairs.
-    fn narrowphase_contacts(&self, pairs: &[(BodyHandle, BodyHandle)]) -> Vec<ContactPair> {
-        let mut contacts = Vec::new();
-        for &(ha, hb) in pairs {
-            if let (Some(ba), Some(bb)) = (self.bodies.get(ha), self.bodies.get(hb)) {
-                let pa = [
-                    ba.transform.position.x,
-                    ba.transform.position.y,
-                    ba.transform.position.z,
-                ];
-                let pb = [
-                    bb.transform.position.x,
-                    bb.transform.position.y,
-                    bb.transform.position.z,
-                ];
-                let ra = if ba.mass > 0.0 {
-                    ba.mass.cbrt() * 0.5
-                } else {
-                    0.5_f64
-                }
-                .max(0.1);
-                let rb = if bb.mass > 0.0 {
-                    bb.mass.cbrt() * 0.5
-                } else {
-                    0.5_f64
-                }
-                .max(0.1);
-                let dx = pa[0] - pb[0];
-                let dy = pa[1] - pb[1];
-                let dz = pa[2] - pb[2];
-                let dist_sq = dx * dx + dy * dy + dz * dz;
-                let sum_r = ra + rb;
-                if dist_sq < sum_r * sum_r {
-                    let dist = dist_sq.sqrt();
-                    let depth = sum_r - dist;
-                    let (nx, ny, nz) = if dist > 1e-12 {
-                        (dx / dist, dy / dist, dz / dist)
-                    } else {
-                        (0.0, 1.0, 0.0)
-                    };
-                    let contact_point = [pb[0] + nx * rb, pb[1] + ny * rb, pb[2] + nz * rb];
-                    contacts.push(ContactPair {
-                        body_a: ha,
-                        body_b: hb,
-                        normal: [nx, ny, nz],
-                        depth,
-                        contact_point,
-                    });
-                }
-            }
-        }
-        contacts
-    }
-    /// Applies a single velocity-level impulse for one contact pair.
-    fn solve_contact_velocity(&mut self, cp: &ContactPair) {
-        let (va, inv_ma, ang_va) = match self.bodies.get(cp.body_a) {
-            Some(b) if b.body_type == BodyType::Dynamic => {
-                let v = [b.velocity.x, b.velocity.y, b.velocity.z];
-                let av = [
-                    b.angular_velocity.x,
-                    b.angular_velocity.y,
-                    b.angular_velocity.z,
-                ];
-                (v, b.inverse_mass, av)
-            }
-            _ => return,
-        };
-        let (vb, inv_mb, ang_vb) = match self.bodies.get(cp.body_b) {
-            Some(b) => {
-                let v = [b.velocity.x, b.velocity.y, b.velocity.z];
-                let av = [
-                    b.angular_velocity.x,
-                    b.angular_velocity.y,
-                    b.angular_velocity.z,
-                ];
-                let im = if b.body_type == BodyType::Dynamic {
-                    b.inverse_mass
-                } else {
-                    0.0
-                };
-                (v, im, av)
-            }
-            _ => return,
-        };
-        let _ = ang_va;
-        let _ = ang_vb;
-        let n = cp.normal;
-        let rel_vn = (va[0] - vb[0]) * n[0] + (va[1] - vb[1]) * n[1] + (va[2] - vb[2]) * n[2];
-        if rel_vn <= 0.0 {
-            return;
-        }
-        let denom = inv_ma + inv_mb;
-        if denom < 1e-30 {
-            return;
-        }
-        let restitution = 0.3_f64;
-        let j = -(1.0 + restitution) * rel_vn / denom;
-        if let Some(ba) = self.bodies.get_mut(cp.body_a)
-            && ba.body_type == BodyType::Dynamic
-        {
-            ba.velocity.x += j * n[0] * inv_ma;
-            ba.velocity.y += j * n[1] * inv_ma;
-            ba.velocity.z += j * n[2] * inv_ma;
-        }
-        if let Some(bb) = self.bodies.get_mut(cp.body_b)
-            && bb.body_type == BodyType::Dynamic
-        {
-            bb.velocity.x -= j * n[0] * inv_mb;
-            bb.velocity.y -= j * n[1] * inv_mb;
-            bb.velocity.z -= j * n[2] * inv_mb;
-        }
     }
     /// Effective soft-contact frequency for sub-step size `h`, capped to Catto's
     /// stability limit of a quarter of the sub-step rate (`0.25 / h`). A
@@ -1150,7 +1013,7 @@ impl PhysicsWorld {
     /// inertia and is never written, so the solve is symmetric in `body_a` /
     /// `body_b` (either may be static). Restitution and its threshold are passed
     /// explicitly so the small-steps path can supply a per-sub-step value.
-    fn apply_soft_normal_constraint(
+    pub(super) fn apply_soft_normal_constraint(
         &mut self,
         cp: &ContactPair,
         soft: &SoftParams,
@@ -1278,84 +1141,34 @@ impl PhysicsWorld {
         }
     }
     /// Soft (TGS-Soft) velocity solve for one contact pair, used by the per-step
-    /// [`step`](Self::step) entry point. Restitution and its threshold come from
-    /// [`SolverConfig`] (the threshold is clamped to `0.5` to match the
-    /// small-steps rule); `lambda_acc` is the caller-owned accumulated normal
-    /// impulse for this contact, warm-started across velocity iterations.
-    /// `dt` is the current step size, passed to the speculative contact path.
+    /// [`step`](Self::step) entry point. The restitution comes from the
+    /// contact's colliders and its velocity threshold from [`SolverConfig`]
+    /// (clamped to `0.5` to match the small-steps rule). `lambda` holds the
+    /// caller-owned accumulated `[normal, tangent₁, tangent₂]` impulses of this
+    /// contact, warm-started across velocity iterations; Coulomb friction is
+    /// solved after the soft normal response. `dt` is the current step size,
+    /// passed to the speculative contact path.
     fn solve_contact_velocity_soft(
         &mut self,
         cp: &ContactPair,
         soft: &SoftParams,
-        lambda_acc: &mut f64,
+        lambda: &mut [f64; 3],
         dt: f64,
     ) {
-        let restitution = self.solver_config.restitution;
         let restitution_threshold = self.solver_config.restitution_threshold.min(0.5);
+        let [lambda_n, tangent_1, tangent_2] = lambda;
         self.apply_soft_normal_constraint(
             cp,
             soft,
-            restitution,
+            cp.restitution,
             restitution_threshold,
-            lambda_acc,
+            lambda_n,
             dt,
         );
-    }
-    /// Soft (TGS-Soft) velocity solve for one cached small-steps contact.
-    ///
-    /// Re-projects penetration depth from the CURRENT body transforms (the
-    /// normal is held at its cached frame-start value, exactly like
-    /// [`solve_cached_contact_velocity`](Self::solve_cached_contact_velocity));
-    /// separated contacts (negative re-projected depth) are skipped. The
-    /// sphere-sphere contact point lies on the line of centres, so the angular
-    /// Jacobian terms vanish and the solve reduces to the linear soft normal
-    /// response. `e_sub` is the per-sub-step restitution; `lambda_acc` is
-    /// warm-started across the frame.
-    fn solve_cached_contact_velocity_soft(
-        &mut self,
-        c: &CachedContact,
-        soft: &SoftParams,
-        e_sub: f64,
-        lambda_acc: &mut f64,
-        dt: f64,
-    ) {
-        let pa = match self.bodies.get(c.body_a) {
-            Some(b) => b.transform.position,
-            None => return,
-        };
-        let pb = match self.bodies.get(c.body_b) {
-            Some(b) => b.transform.position,
-            None => return,
-        };
-        let delta = pa - pb;
-        let dist = delta.norm();
-        let depth = (c.radius_a + c.radius_b) - dist;
-        // SPECULATIVE: admit contacts within the speculative margin even when
-        // depth < 0 (gap exists). The apply_soft_normal_constraint function
-        // handles the admission check and target velocity, so we gate here only
-        // on the non-speculative rejection path.
-        let is_speculative_candidate = self.solver_config.use_speculative
-            && depth < 0.0
-            && depth >= -self.solver_config.speculative_margin;
-        if depth < 0.0 && !is_speculative_candidate {
-            return;
-        }
-        // Sphere-sphere contact point: on A's surface toward B. The normal
-        // points from B toward A, so step back along -n by radius_a from A.
-        let contact_point = [
-            pa.x - c.normal[0] * c.radius_a,
-            pa.y - c.normal[1] * c.radius_a,
-            pa.z - c.normal[2] * c.radius_a,
-        ];
-        let cp = ContactPair {
-            body_a: c.body_a,
-            body_b: c.body_b,
-            normal: c.normal,
-            depth,
-            contact_point,
-        };
-        let restitution_threshold = self.solver_config.restitution_threshold.min(0.5);
-        self.apply_soft_normal_constraint(&cp, soft, e_sub, restitution_threshold, lambda_acc, dt);
+        let mut lambda_t = [*tangent_1, *tangent_2];
+        solve_friction_accumulated(&mut self.bodies, cp, *lambda_n, &mut lambda_t);
+        *tangent_1 = lambda_t[0];
+        *tangent_2 = lambda_t[1];
     }
 }
 impl PhysicsWorld {
@@ -1604,9 +1417,10 @@ impl PhysicsWorld {
     /// frame) and unlike the naive [`step_substep`](Self::step_substep) (which
     /// re-runs the *entire* broad/narrowphase + solve pipeline for every
     /// sub-`dt`), this method performs collision **detection exactly ONCE per
-    /// frame on the frame-start state**. The detected contacts are cached
-    /// together with their frame-start normal (which points from B toward A)
-    /// and the two sphere radii. The frame is then advanced over `N =
+    /// frame on the frame-start state**. Every detected contact is cached with
+    /// its frame-start normal (which points from B toward A), its depth and the
+    /// contact point expressed as an anchor in each body's local frame. The
+    /// frame is then advanced over `N =
     /// self.solver_config.substeps` sub-steps of size `h = dt / N`, where
     /// `dt = self.dt`.
     ///
@@ -1634,18 +1448,16 @@ impl PhysicsWorld {
     /// `self.dt` controls the frame step and `self.solver_config.substeps`
     /// controls the sub-step count (default `1`, i.e. a single small step).
     ///
-    /// # Restitution threshold clamping
+    /// # Restitution
     ///
-    /// The [`SubStepRestitutionCorrector`] is constructed with its velocity
-    /// threshold clamped to `restitution_threshold.min(0.5)`. The default
-    /// `restitution_threshold` is `1.0` m/s, which would erroneously suppress a
-    /// genuine `0.5` m/s bounce; clamping to `0.5` keeps resting-jitter
-    /// suppression while still allowing real bounces through. (The per-sub-step
-    /// restitution `e_sub` does not currently consume the velocity threshold —
-    /// the corrector is constructed exactly as specified for documentation and
-    /// forward-compatibility, and `e_sub` is its
-    /// [`per_substep_restitution`](SubStepRestitutionCorrector::per_substep_restitution)
-    /// output.)
+    /// Each cached contact converts its collider restitution `max(e_a, e_b)` to
+    /// a per-sub-step coefficient with
+    /// [`SubStepRestitutionCorrector`](crate::impulse::SubStepRestitutionCorrector),
+    /// constructed with the velocity threshold clamped to
+    /// `restitution_threshold.min(0.5)`. The default `restitution_threshold` is
+    /// `1.0` m/s, which would erroneously suppress a genuine `0.5` m/s bounce;
+    /// clamping to `0.5` keeps resting-jitter suppression while still allowing
+    /// real bounces through.
     pub fn step_small_steps(&mut self) {
         let dt = self.dt;
         let substeps = self.solver_config.substeps.max(1);
@@ -1654,54 +1466,13 @@ impl PhysicsWorld {
         let g_vec = Vec3::new(gravity[0], gravity[1], gravity[2]);
 
         // Detect ONCE on frame-start state.
-        let pairs = self.broadphase_pairs();
-        let contacts = self.narrowphase_contacts(&pairs);
-        self.last_contacts = contacts.clone();
-
-        let mut cached: Vec<CachedContact> = Vec::with_capacity(contacts.len());
-        for cp in &contacts {
-            let (ra, rb) = {
-                let ba = match self.bodies.get(cp.body_a) {
-                    Some(b) => b,
-                    None => continue,
-                };
-                let bb = match self.bodies.get(cp.body_b) {
-                    Some(b) => b,
-                    None => continue,
-                };
-                let ra = if ba.mass > 0.0 {
-                    ba.mass.cbrt() * 0.5
-                } else {
-                    0.5_f64
-                };
-                let ra = ra.max(0.1);
-                let rb = if bb.mass > 0.0 {
-                    bb.mass.cbrt() * 0.5
-                } else {
-                    0.5_f64
-                };
-                let rb = rb.max(0.1);
-                (ra, rb)
-            };
-            cached.push(CachedContact {
-                body_a: cp.body_a,
-                body_b: cp.body_b,
-                normal: cp.normal,
-                radius_a: ra,
-                radius_b: rb,
-            });
-        }
-
-        let corrector = SubStepRestitutionCorrector::new(
-            self.solver_config.restitution,
-            self.solver_config.restitution_threshold.min(0.5),
-            substeps,
-        );
-        let e_sub = corrector.per_substep_restitution();
-
-        // Move (not clone) into the vec iterated by the solve loops so we never
-        // hold a borrow of `self.bodies` across the position/velocity writes.
-        let cached_clone = cached;
+        let contacts = self.detect_world_contacts();
+        let threshold = self.solver_config.restitution_threshold.min(0.5);
+        let cached: Vec<CachedContact> = contacts
+            .iter()
+            .filter_map(|cp| CachedContact::from_pair(cp, &self.bodies, threshold, substeps))
+            .collect();
+        self.last_contacts = contacts;
 
         if self.solver_config.use_soft_contacts {
             // Soft (TGS-Soft / Catto) small-steps path. The soft coefficients
@@ -1712,13 +1483,14 @@ impl PhysicsWorld {
             let hz_eff = self.soft_contact_hertz(h);
             let zeta = self.solver_config.contact_damping_ratio;
             let soft = SoftParams::from_frequency(hz_eff, zeta, h);
-            let mut lambda_acc = vec![0.0_f64; cached_clone.len()];
+            let mut lambda_acc = vec![[0.0_f64; 3]; cached.len()];
             for _ in 0..substeps {
                 for (_, body) in self.bodies.iter_mut() {
                     body.integrate_forces(h, &g_vec);
                 }
-                for (i, c) in cached_clone.iter().enumerate() {
-                    self.solve_cached_contact_velocity_soft(c, &soft, e_sub, &mut lambda_acc[i], h);
+                for (c, lambda) in cached.iter().zip(lambda_acc.iter_mut()) {
+                    let e_sub = c.per_substep_restitution();
+                    self.solve_cached_contact_velocity_soft(c, &soft, e_sub, lambda, h);
                 }
                 for (_, body) in self.bodies.iter_mut() {
                     body.integrate_velocity(h);
@@ -1728,10 +1500,10 @@ impl PhysicsWorld {
             // params disable both bias and restitution), warm-started.
             let relax = SoftParams::rigid();
             for _ in 0..2 {
-                for (i, c) in cached_clone.iter().enumerate() {
+                for (c, lambda) in cached.iter().zip(lambda_acc.iter_mut()) {
                     // Relax pass uses rigid params; speculative target velocity
                     // uses dt=h so the solver knows the current sub-step size.
-                    self.solve_cached_contact_velocity_soft(c, &relax, 0.0, &mut lambda_acc[i], h);
+                    self.solve_cached_contact_velocity_soft(c, &relax, 0.0, lambda, h);
                 }
             }
         } else {
@@ -1739,8 +1511,8 @@ impl PhysicsWorld {
                 for (_, body) in self.bodies.iter_mut() {
                     body.integrate_forces(h, &g_vec);
                 }
-                for c in &cached_clone {
-                    self.solve_cached_contact_velocity(c, e_sub, h, true);
+                for c in &cached {
+                    self.solve_cached_contact_velocity(c, c.per_substep_restitution(), h, true);
                 }
                 for (_, body) in self.bodies.iter_mut() {
                     body.integrate_velocity(h);
@@ -1750,127 +1522,12 @@ impl PhysicsWorld {
             // Final relax pass: settle residual approach velocity for stack
             // stability (Baumgarte bias and restitution disabled).
             for _ in 0..2 {
-                for c in &cached_clone {
+                for c in &cached {
                     self.solve_cached_contact_velocity(c, 0.0, h, false);
                 }
             }
         }
 
         self.time += dt;
-    }
-    /// One velocity-level solve for a single cached small-steps contact.
-    ///
-    /// The penetration depth is **re-projected from the CURRENT body
-    /// transforms** (`depth = (radius_a + radius_b) - |pa - pb|`) while the
-    /// contact normal is held **fixed** at its cached frame-start value; if the
-    /// re-projected depth is negative the bodies have separated and the contact
-    /// is skipped.
-    ///
-    /// Sign convention: the normal points from B toward A. A resting /
-    /// penetrating contact has `rel_vn` slightly negative and (in bias mode)
-    /// `bias > 0`, so the solved impulse `j > 0` pushes A along `+n` and B along
-    /// `-n` (apart). A fast impact has `rel_vn` strongly negative and
-    /// `restitution_term = -e_sub * rel_vn > 0`, producing a large `j` and hence
-    /// a bounce. `j` is clamped `>= 0` so bodies are never pulled together. The
-    /// solve target is `max(bias, restitution_term)` — the *larger* of the
-    /// Baumgarte position-correction bias and the restitution bias, never their
-    /// sum — so the penetration push cannot inflate the bounce. Energy stays
-    /// bounded because `j` is bounded by `|rel_vn|` plus the larger of
-    /// `e_sub * |rel_vn|` (with `e_sub < 1`) and the position-correction bias.
-    ///
-    /// When `with_bias` is `false` (the relax/settle pass) both the Baumgarte
-    /// position-correction bias and the restitution term are disabled, leaving a
-    /// pure non-penetration velocity projection.
-    fn solve_cached_contact_velocity(
-        &mut self,
-        c: &CachedContact,
-        e_sub: f64,
-        h: f64,
-        with_bias: bool,
-    ) {
-        let pa = match self.bodies.get(c.body_a) {
-            Some(b) => [
-                b.transform.position.x,
-                b.transform.position.y,
-                b.transform.position.z,
-            ],
-            None => return,
-        };
-        let pb = match self.bodies.get(c.body_b) {
-            Some(b) => [
-                b.transform.position.x,
-                b.transform.position.y,
-                b.transform.position.z,
-            ],
-            None => return,
-        };
-        let dx = pa[0] - pb[0];
-        let dy = pa[1] - pb[1];
-        let dz = pa[2] - pb[2];
-        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-        let depth = (c.radius_a + c.radius_b) - dist;
-        if depth < 0.0 {
-            return;
-        }
-        let (va, inv_ma) = match self.bodies.get(c.body_a) {
-            Some(b) => {
-                let im = if b.body_type == BodyType::Dynamic {
-                    b.inverse_mass
-                } else {
-                    0.0
-                };
-                ([b.velocity.x, b.velocity.y, b.velocity.z], im)
-            }
-            None => return,
-        };
-        let (vb, inv_mb) = match self.bodies.get(c.body_b) {
-            Some(b) => {
-                let im = if b.body_type == BodyType::Dynamic {
-                    b.inverse_mass
-                } else {
-                    0.0
-                };
-                ([b.velocity.x, b.velocity.y, b.velocity.z], im)
-            }
-            None => return,
-        };
-        let n = c.normal;
-        let rel_vn = (va[0] - vb[0]) * n[0] + (va[1] - vb[1]) * n[1] + (va[2] - vb[2]) * n[2];
-        let denom = inv_ma + inv_mb;
-        if denom < 1e-30 {
-            return;
-        }
-        let bias = if with_bias {
-            let slop = 0.005;
-            let beta = self.solver_config.baumgarte_factor;
-            (beta / h) * (depth - slop).max(0.0)
-        } else {
-            0.0
-        };
-        let restitution_term = if rel_vn < 0.0 { -e_sub * rel_vn } else { 0.0 };
-        // Post-solve target separation speed: the LARGER of the Baumgarte
-        // position-correction bias and the restitution bias, NOT their sum.
-        // Summing double-counts (the penetration push would inflate the bounce
-        // and inject energy); taking the maximum is the standard Catto/Box2D
-        // rule and keeps a real bounce while bounding energy.
-        let target = bias.max(restitution_term);
-        let mut j = (target - rel_vn) / denom;
-        if j < 0.0 {
-            j = 0.0;
-        }
-        if let Some(ba) = self.bodies.get_mut(c.body_a)
-            && ba.body_type == BodyType::Dynamic
-        {
-            ba.velocity.x += j * n[0] * inv_ma;
-            ba.velocity.y += j * n[1] * inv_ma;
-            ba.velocity.z += j * n[2] * inv_ma;
-        }
-        if let Some(bb) = self.bodies.get_mut(c.body_b)
-            && bb.body_type == BodyType::Dynamic
-        {
-            bb.velocity.x -= j * n[0] * inv_mb;
-            bb.velocity.y -= j * n[1] * inv_mb;
-            bb.velocity.z -= j * n[2] * inv_mb;
-        }
     }
 }

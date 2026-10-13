@@ -1395,15 +1395,26 @@ mod amber99sb_tests {
         };
         let pos = [[0.0_f64, 0.0, 0.0]];
         let e = ff.compute_generalized_born(&[atom], &pos);
-        let p = &ff.gb_params;
-        let expected = -0.5 * p.coulomb_k * (1.0 / p.eps_solvent - 1.0 / p.eps_solute) * 1.0 / 0.2;
+        // Born self energy of a unit ion of radius 0.2 nm transferred from a
+        // eps=1 interior into eps=78.5 water, written out with literal
+        // constants so it does not share code with the implementation:
+        // -0.5 * 138.935485 * (1 - 1/78.5) / 0.2 = -342.914 kJ/mol.
+        let expected: f64 = -0.5 * 138.935_485 * (1.0 - 1.0 / 78.5) / 0.2;
         assert!(
-            (e - expected).abs() < 1e-6,
+            (expected + 342.914_015).abs() < 1e-4,
+            "reference Born energy changed: {expected}"
+        );
+        assert!(
+            e < 0.0,
+            "Born solvation energy of an ion must be negative, got {e}"
+        );
+        assert!(
+            (e - expected).abs() < 1e-3,
             "Single atom GB: {e} vs {expected}"
         );
     }
     #[test]
-    fn test_gb_neutral_system_positive_solvation() {
+    fn test_gb_ion_pair_solvation_is_negative_and_finite() {
         let ff = AmberFF::new();
         let atoms = vec![
             GbAtom {
@@ -1419,7 +1430,61 @@ mod amber99sb_tests {
         ];
         let pos = [[0.0_f64, 0.0, 0.0], [0.5, 0.0, 0.0]];
         let e = ff.compute_generalized_born(&atoms, &pos);
-        let _ = e;
+        assert!(e.is_finite(), "GB energy must be finite, got {e}");
+        assert!(
+            e < 0.0,
+            "polar solvation must stabilise the ion pair, got {e}"
+        );
+        // Hand evaluation of the Still sum for +1/-1 charges, R = 0.2 nm,
+        // r = 0.5 nm:  f_GB = sqrt(r^2 + R^2 exp(-r^2 / (4 R^2))) = 0.508315,
+        // sum_ij q_i q_j / f_GB = 2/0.2 - 2/0.508315 = 6.065434 and the
+        // prefactor is -0.5 * 138.935485 * (1 - 1/78.5) = -68.582803.
+        let f12 = (0.25_f64 + 0.04 * (-0.25_f64 / 0.16).exp()).sqrt();
+        let sum = 2.0 / 0.2 - 2.0 / f12;
+        let expected = -0.5 * 138.935_485 * (1.0 - 1.0 / 78.5) * sum;
+        assert!(
+            (expected + 415.984_485).abs() < 1e-3,
+            "reference ion pair energy changed: {expected}"
+        );
+        assert!(
+            (e - expected).abs() < 1e-6,
+            "ion pair GB energy {e} vs hand value {expected}"
+        );
+    }
+    #[test]
+    fn test_gb_energy_vanishes_without_dielectric_contrast() {
+        let mut ff = AmberFF::new();
+        ff.gb_params.eps_solvent = ff.gb_params.eps_solute;
+        let atom = GbAtom {
+            charge: 1.0,
+            born_radius: 0.2,
+            vdw_radius: 0.17,
+        };
+        let e = ff.compute_generalized_born(&[atom], &[[0.0, 0.0, 0.0]]);
+        assert!(
+            e.abs() < 1e-12,
+            "no dielectric contrast means no GB energy, got {e}"
+        );
+    }
+    #[test]
+    fn test_gb_energy_more_negative_in_higher_dielectric_solvent() {
+        let atoms = [GbAtom {
+            charge: 1.0,
+            born_radius: 0.2,
+            vdw_radius: 0.17,
+        }];
+        let pos = [[0.0_f64, 0.0, 0.0]];
+        let mut previous = 0.0_f64;
+        for eps_solvent in [2.0_f64, 10.0, 40.0, 78.5] {
+            let mut ff = AmberFF::new();
+            ff.gb_params.eps_solvent = eps_solvent;
+            let e = ff.compute_generalized_born(&atoms, &pos);
+            assert!(
+                e < previous,
+                "eps_solvent={eps_solvent}: energy {e} must be below {previous}"
+            );
+            previous = e;
+        }
     }
     #[test]
     fn test_sa_term_empty_atoms_is_offset() {
@@ -1492,7 +1557,24 @@ mod amber99sb_tests {
         ];
         let pos = [[0.0_f64, 0.0, 0.0], [0.1, 0.0, 0.0]];
         let e = ff.compute_neck_correction(&atoms, &pos);
-        let _ = e;
+        // Equal radii: d_neck = 0, delta = r = 0.1 nm,
+        // neck = 0.3516 / (1 + 2.909 * 0.01) = 0.341661, and the like-charge
+        // pair is stabilised by the (negative) GB prefactor
+        // -0.5 * 138.935485 * (1 - 1/78.5) = -68.582803.
+        let neck = 0.3516_f64 / (1.0 + 2.909 * 0.1 * 0.1);
+        let expected = -0.5 * 138.935_485 * (1.0 - 1.0 / 78.5) * neck;
+        assert!(
+            (expected + 23.432_075).abs() < 1e-4,
+            "reference neck energy changed: {expected}"
+        );
+        assert!(
+            e < 0.0,
+            "neck correction of a like-charge pair must be negative, got {e}"
+        );
+        assert!(
+            (e - expected).abs() < 1e-9,
+            "neck correction {e} vs hand value {expected}"
+        );
     }
     #[test]
     fn test_neck_correction_single_atom_zero() {

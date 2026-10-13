@@ -43,4 +43,8 @@ impl SoftConstraint for BalloonPressureConstraint {
         particles[i1].position += correction * ws[1];
         particles[i2].position += correction * ws[2];
     }
+
+    fn reset_lambda(&mut self) {
+        Self::reset_lambda(self);
+    }
 }

@@ -529,7 +529,9 @@ mod tests {
     #[test]
     fn test_update_instanced_mesh_one_body() {
         let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-        engine.add_dynamic_body(1.0, 3.0, 5.0, 0.0);
+        engine
+            .add_dynamic_body(1.0, 3.0, 5.0, 0.0)
+            .expect("add dynamic body");
         let hints = RendererHints::from_engine(&engine, true, false, false);
         let mut renderer = WasmRenderer::new(800.0, 600.0);
         renderer.update_instanced_mesh(&hints);
@@ -542,8 +544,12 @@ mod tests {
     #[test]
     fn test_instance_buffer_flat_length() {
         let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-        engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
-        engine.add_dynamic_body(2.0, 1.0, 0.0, 0.0);
+        engine
+            .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+            .expect("add dynamic body");
+        engine
+            .add_dynamic_body(2.0, 1.0, 0.0, 0.0)
+            .expect("add dynamic body");
         let hints = RendererHints::from_engine(&engine, true, false, false);
         let mut renderer = WasmRenderer::new(800.0, 600.0);
         renderer.update_instanced_mesh(&hints);
@@ -592,7 +598,9 @@ mod tests {
     #[test]
     fn test_compute_screen_space_bounding_box_one_body() {
         let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-        engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
+        engine
+            .add_dynamic_body(1.0, 0.0, 0.0, 0.0)
+            .expect("add dynamic body");
         let hints = RendererHints::from_engine(&engine, true, false, false);
         let renderer = WasmRenderer::new(800.0, 600.0);
         let boxes = renderer.compute_screen_space_bounding_box(&hints, 100.0, [0.0, 0.0]);
@@ -619,7 +627,9 @@ mod tests {
     #[test]
     fn test_update_instanced_mesh_idempotent() {
         let mut engine = WasmPhysicsEngine::new(0.0, 0.0, 0.0);
-        engine.add_dynamic_body(1.0, 1.0, 2.0, 3.0);
+        engine
+            .add_dynamic_body(1.0, 1.0, 2.0, 3.0)
+            .expect("add dynamic body");
         let hints = RendererHints::from_engine(&engine, true, false, false);
         let mut renderer = WasmRenderer::new(800.0, 600.0);
         renderer.update_instanced_mesh(&hints);

@@ -12,7 +12,9 @@ pub mod oplsforcefield_traits;
 pub mod pairforcefield_traits;
 pub mod pairinteraction_traits;
 pub mod types;
+pub mod virial;
 
 // Re-export all types
 pub use functions::*;
 pub use types::*;
+pub use virial::*;

@@ -37,6 +37,14 @@ fn sph_cell_list_wgsl_compiles() {
 }
 
 #[test]
+fn sph_cell_histogram_wgsl_compiles() {
+    validate_wgsl(
+        "SPH_CELL_HISTOGRAM_WGSL",
+        oxiphysics_gpu::kernels_wgsl::SPH_CELL_HISTOGRAM_WGSL,
+    );
+}
+
+#[test]
 fn sph_density_grid_wgsl_compiles() {
     validate_wgsl(
         "SPH_DENSITY_GRID_WGSL",

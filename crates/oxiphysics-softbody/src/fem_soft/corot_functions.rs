@@ -128,14 +128,19 @@ pub fn tet_stiffness_matrix(
     let vol = det.abs() / 6.0;
     let dm_inv = inv3x3(dm);
 
-    // Shape-function gradients (4x3): each row = [dN/dx, dN/dy, dN/dz]
-    // dN1..dN3 come from dm_inv columns; dN0 = -(dN1+dN2+dN3)
+    // Shape-function gradients (4x3): each row = [dN/dx, dN/dy, dN/dz].
+    //
+    // The deformation gradient is F = Ds * Dm^-1 = sum_a (x_a - x_0) (x) grad N_a,
+    // so grad N_a (a = 1..3) is ROW (a - 1) of Dm^-1 -- not a column.  The two only
+    // coincide when Dm^-1 is symmetric (e.g. the unit corner tetrahedron), which is
+    // why a translation or an axis-aligned test cannot tell them apart.  By the
+    // partition of unity, grad N_0 = -(grad N_1 + grad N_2 + grad N_3).
     let mut grad = [[0.0_f64; 3]; 4];
     for d in 0..3 {
-        grad[1][d] = dm_inv[d][0];
-        grad[2][d] = dm_inv[d][1];
-        grad[3][d] = dm_inv[d][2];
-        grad[0][d] -= dm_inv[d][0] + dm_inv[d][1] + dm_inv[d][2];
+        for a in 0..3 {
+            grad[a + 1][d] = dm_inv[a][d];
+            grad[0][d] -= dm_inv[a][d];
+        }
     }
 
     // 6x12 B matrix (Voigt engineering notation: [exx,eyy,ezz,2eyz,2exz,2exy])

@@ -79,3 +79,6 @@ wheels/
 **/.hypothesis/
 
 target
+
+# Orchestration build lanes (per-agent cargo target dirs)
+/target-lane-*/

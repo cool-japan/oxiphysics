@@ -4,6 +4,8 @@
 
 use std::collections::{BinaryHeap, HashMap};
 
+use crate::heat_method;
+
 use super::types::{
     DijkEntry, GeoMesh, GeoVoronoiCell, HeatGeodesicResult, IntrinsicDelaunay, IsolineSegment,
 };
@@ -182,151 +184,78 @@ pub fn path_to_polyline(mesh: &GeoMesh, path: &[usize]) -> Vec<[f64; 3]> {
 pub fn polyline_length(polyline: &[[f64; 3]]) -> f64 {
     polyline.windows(2).map(|w| dist3(w[0], w[1])).sum()
 }
-/// Compute geodesic distances using a simplified heat method.
+/// Compute geodesic distances from `source` with the heat method (Crane,
+/// Weischedel & Wardetzky 2013).
 ///
 /// # Algorithm overview
 ///
-/// 1. Diffuse a unit heat source at `source` for time `t` using explicit Euler.
-/// 2. Compute the normalised gradient of the heat field on each face.
-/// 3. Solve a Poisson equation whose right-hand side is the divergence of the
-///    negated normalised gradient (computed here via vertex divergence accumulation).
-/// 4. Subtract the minimum value so distances are non-negative.
+/// 1. Diffuse a unit heat impulse at `source` for time `t` with backward Euler on
+///    the cotangent Laplacian, `(M + dt·L) u⁺ = M u`, where `L` is the cotangent
+///    stiffness matrix and `M` the lumped mixed-Voronoi vertex area matrix.
+/// 2. On every face take `X = -∇u / |∇u|` with the exact gradient of the
+///    piecewise-linear heat field, `∇u = (1 / 2A) Σᵢ uᵢ (N × eᵢ)`.
+/// 3. Solve the Poisson equation `L φ = ∇·X`, the divergence of `X` integrated over
+///    both triangles at each edge, with a Jacobi-preconditioned conjugate-gradient
+///    solver.
+/// 4. Subtract the value at the source so that its distance is exactly zero
+///    (the tiny negative values that can remain next to the source are clamped
+///    to zero).
 ///
 /// # Parameters
 /// - `mesh`: the input triangle mesh.
 /// - `source`: the source vertex index.
-/// - `t`: the heat diffusion time step; use a small multiple of mean edge length².
-/// - `n_diffusion_steps`: number of explicit Euler diffusion steps (typically 1–5).
+/// - `t`: the heat diffusion time; use a small multiple of mean edge length².
+///   A non-positive or non-finite `t` selects the mean squared edge length.
+/// - `n_diffusion_steps`: number of equal backward-Euler sub-steps the diffusion
+///   time is split into (at least one; one is the scheme of the original paper).
 ///
-/// # Notes
-/// This is a simplified, self-contained implementation that avoids sparse linear
-/// solvers.  It is not as accurate as a full conjugate-gradient solve but gives
-/// useful approximate distances for convex or near-convex meshes.
+/// Vertices in connected components that do not contain `source` are unreachable
+/// and get `f64::INFINITY`.  [`HeatGeodesicResult::gradient`] holds the unit
+/// direction field `X` of every face.
+///
+/// # Errors
+/// - [`crate::Error::IndexOutOfBounds`] if `source` is not a vertex of the mesh;
+/// - [`crate::Error::InvalidMesh`] for a non-finite vertex or a face that references
+///   a missing vertex;
+/// - [`crate::Error::ConvergenceFailure`] if an iterative solve does not converge.
 pub fn heat_geodesic(
     mesh: &GeoMesh,
     source: usize,
     t: f64,
     n_diffusion_steps: usize,
-) -> HeatGeodesicResult {
-    let n = mesh.n_vertices();
-    if n == 0 {
-        return HeatGeodesicResult {
-            distances: Vec::new(),
-            gradient: Vec::new(),
-        };
-    }
-    let mut heat = vec![0.0_f64; n];
-    heat[source] = 1.0;
-    let adj = mesh.build_adjacency();
-    let mean_edge_len_sq = {
-        let mut total = 0.0_f64;
-        let mut count = 0usize;
-        for face in &mesh.faces {
-            for k in 0..3 {
-                let a = face[k];
-                let b = face[(k + 1) % 3];
-                let d = dist3(mesh.vertices[a], mesh.vertices[b]);
-                total += d * d;
-                count += 1;
-            }
-        }
-        if count == 0 {
-            1.0
-        } else {
-            total / count as f64
-        }
+) -> crate::Result<HeatGeodesicResult> {
+    let usable_time = t.is_finite() && t > 0.0;
+    let eff_t = if usable_time {
+        t
+    } else {
+        heat_method::edge_length_statistics(&mesh.vertices, &mesh.faces)
+            .map_or(1.0, |(_, mean_square)| mean_square)
     };
-    let eff_t = if t <= 0.0 { mean_edge_len_sq } else { t };
-    let dt = eff_t / n_diffusion_steps.max(1) as f64;
-    for _ in 0..n_diffusion_steps {
-        let old = heat.clone();
-        for v in 0..n {
-            if adj[v].is_empty() {
-                continue;
+    let solution = heat_method::solve(
+        &mesh.vertices,
+        &mesh.faces,
+        &[source],
+        eff_t,
+        n_diffusion_steps,
+    )?;
+    let source_component = solution.component[source];
+    let source_potential = solution.potential[source];
+    let distances: Vec<f64> = solution
+        .potential
+        .iter()
+        .zip(solution.component.iter())
+        .map(|(&phi, &component)| {
+            if component == source_component {
+                (phi - source_potential).max(0.0)
+            } else {
+                f64::INFINITY
             }
-            let laplacian: f64 =
-                adj[v].iter().map(|&(u, _)| old[u] - old[v]).sum::<f64>() / adj[v].len() as f64;
-            heat[v] = old[v] + dt * laplacian;
-        }
-    }
-    let nf = mesh.faces.len();
-    let mut gradient = vec![[0.0_f64; 3]; nf];
-    for (fi, face) in mesh.faces.iter().enumerate() {
-        let [i0, i1, i2] = *face;
-        let p0 = mesh.vertices[i0];
-        let p1 = mesh.vertices[i1];
-        let p2 = mesh.vertices[i2];
-        let u0 = heat[i0];
-        let u1 = heat[i1];
-        let u2 = heat[i2];
-        let ab = sub3(p1, p0);
-        let ac = sub3(p2, p0);
-        let normal = cross3(ab, ac);
-        let area2 = len3(normal);
-        if area2 < 1e-15 {
-            continue;
-        }
-        let area = area2 * 0.5;
-        let grad = [
-            (u0 * (p2[0] - p1[0]) + u1 * (p0[0] - p2[0]) + u2 * (p1[0] - p0[0])) / (2.0 * area),
-            (u0 * (p2[1] - p1[1]) + u1 * (p0[1] - p2[1]) + u2 * (p1[1] - p0[1])) / (2.0 * area),
-            (u0 * (p2[2] - p1[2]) + u1 * (p0[2] - p2[2]) + u2 * (p1[2] - p0[2])) / (2.0 * area),
-        ];
-        gradient[fi] = grad;
-    }
-    let mut normalised_grad = vec![[0.0_f64; 3]; nf];
-    for fi in 0..nf {
-        let g = gradient[fi];
-        let l = len3(g);
-        if l > 1e-15 {
-            normalised_grad[fi] = scale3(g, -1.0 / l);
-        }
-    }
-    let mut div = vec![0.0_f64; n];
-    for (fi, face) in mesh.faces.iter().enumerate() {
-        let [i0, i1, i2] = *face;
-        let p0 = mesh.vertices[i0];
-        let p1 = mesh.vertices[i1];
-        let p2 = mesh.vertices[i2];
-        let x = normalised_grad[fi];
-        let edges = [
-            (i0, i1, i2, p0, p1, p2),
-            (i1, i2, i0, p1, p2, p0),
-            (i2, i0, i1, p2, p0, p1),
-        ];
-        for (vi, vj, _vk, pi, pj, pk) in edges {
-            let eki = sub3(pi, pk);
-            let ekj = sub3(pj, pk);
-            let cos_k = dot3(eki, ekj);
-            let sin_k = len3(cross3(eki, ekj));
-            let cot_k = if sin_k > 1e-15 { cos_k / sin_k } else { 0.0 };
-            let eij = sub3(pj, pi);
-            div[vi] += cot_k * dot3(x, eij);
-            let _ = vj;
-        }
-    }
-    let mut phi = vec![0.0_f64; n];
-    let mut visited = vec![false; n];
-    let mut queue = std::collections::VecDeque::new();
-    queue.push_back(source);
-    visited[source] = true;
-    phi[source] = 0.0;
-    while let Some(u) = queue.pop_front() {
-        for &(v, w) in &adj[u] {
-            if !visited[v] {
-                phi[v] = phi[u] + w.abs();
-                visited[v] = true;
-                queue.push_back(v);
-            }
-        }
-    }
-    let min_phi = phi.iter().cloned().fold(f64::INFINITY, f64::min);
-    let min_phi = if min_phi.is_finite() { min_phi } else { 0.0 };
-    let distances: Vec<f64> = phi.iter().map(|&p| (p - min_phi).max(0.0)).collect();
-    HeatGeodesicResult {
+        })
+        .collect();
+    Ok(HeatGeodesicResult {
         distances,
-        gradient: normalised_grad,
-    }
+        gradient: solution.directions,
+    })
 }
 /// Extract geodesic isolines at the given distance values.
 ///
@@ -823,8 +752,6 @@ pub fn varadhan_distances(mesh: &GeoMesh, source: usize, t: f64) -> Vec<f64> {
         return Vec::new();
     }
     let eff_t = if t <= 0.0 { 1e-3 } else { t };
-    let result = heat_geodesic(mesh, source, eff_t, 5);
-    let max_heat = result.distances.iter().cloned().fold(0.0f64, f64::max);
     let adj = mesh.build_adjacency();
     let mut heat = vec![0.0_f64; n];
     heat[source] = 1.0;
@@ -849,7 +776,6 @@ pub fn varadhan_distances(mesh: &GeoMesh, source: usize, t: f64) -> Vec<f64> {
             (-4.0 * eff_t * ratio.ln()).max(0.0).sqrt()
         })
         .collect();
-    let _ = (max_heat, result);
     distances
 }
 /// Compute geodesic Voronoi cells on the mesh surface.

@@ -8,6 +8,8 @@
 //! kinetic energy tracking, and energy spectrum estimation for use
 //! with smoothed-particle hydrodynamics.
 
+use crate::turbulence::singular_values::{sigma_operator, singular_values_3x3};
+
 // ---------------------------------------------------------------------------
 // Math helpers
 // ---------------------------------------------------------------------------
@@ -42,6 +44,8 @@ pub struct TurbulentParticle {
     pub pos: [f64; 3],
     /// Velocity.
     pub vel: [f64; 3],
+    /// Particle mass m (kg).
+    pub mass: f64,
     /// Mass density (kg/m³).
     pub density: f64,
     /// Pressure (Pa).
@@ -118,7 +122,7 @@ pub fn velocity_gradient_sph(
 ) -> [[f64; 3]; 3] {
     let mut l = [[0.0f64; 3]; 3];
     for (p_j, grad_w) in neighbors {
-        let m_j = p_j.density * p_j.smoothing_length.powi(3); // approximate mass
+        let m_j = p_j.mass;
         let rho_j = p_j.density;
         if rho_j < 1e-12 {
             continue;
@@ -552,10 +556,20 @@ impl VremanModel {
     }
 }
 
-/// Sigma model for LES.
+/// Sigma model for LES (Nicoud et al., 2011).
 ///
-/// Uses singular values of the velocity gradient tensor.
-/// ν_t = (C_σ h)² * σ₃(σ₁ - σ₂)(σ₂ - σ₃) / σ₁²
+/// Uses the singular values `σ1 ≥ σ2 ≥ σ3 ≥ 0` of the velocity-gradient
+/// tensor `g`:
+///
+/// ```text
+/// ν_t = (C_σ h)² · σ3 (σ1 − σ2)(σ2 − σ3) / σ1²
+/// ```
+///
+/// The operator vanishes for a vanishing gradient, for two-dimensional or
+/// two-component flow, for pure shear, in solid-body rotation and for
+/// isotropic expansion.  The singular values are computed directly from `g`
+/// (no Gram matrix and no characteristic cubic) with the one-sided Jacobi
+/// solver shared with [`crate::turbulence::SigmaModel`].
 pub struct SigmaModel {
     /// Sigma model constant (typical value ~1.35).
     pub c_sigma: f64,
@@ -567,48 +581,12 @@ impl SigmaModel {
         Self { c_sigma }
     }
 
-    /// Compute eddy viscosity using a simplified approach based on the
-    /// invariants of the velocity gradient tensor.
+    /// Compute the eddy viscosity from the velocity-gradient tensor
+    /// `grad_v[i][j] = ∂u_i/∂x_j` and the filter width `h`.
     pub fn eddy_viscosity(&self, grad_v: &[[f64; 3]; 3], h: f64) -> f64 {
-        // Use G = L^T L (Gram matrix)
-        let mut g = [[0.0f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                for gv_k in grad_v.iter() {
-                    g[i][j] += gv_k[i] * gv_k[j];
-                }
-            }
-        }
-
-        // Eigenvalues of G = squared singular values
-        // Use trace/det/cofactor invariants
-        let i1 = g[0][0] + g[1][1] + g[2][2];
-        let i2 = g[0][0] * g[1][1] + g[1][1] * g[2][2] + g[0][0] * g[2][2]
-            - g[0][1] * g[0][1]
-            - g[1][2] * g[1][2]
-            - g[0][2] * g[0][2];
-        let i3 = g[0][0] * (g[1][1] * g[2][2] - g[1][2] * g[1][2])
-            - g[0][1] * (g[0][1] * g[2][2] - g[1][2] * g[0][2])
-            + g[0][2] * (g[0][1] * g[1][2] - g[1][1] * g[0][2]);
-
-        // For simplicity, approximate singular values from invariants
-        if i1 < 1e-30 {
-            return 0.0;
-        }
-
-        // sigma_1^2 ≈ I1/3, approximate
-        let sigma1_sq = i1 / 3.0;
-        let sigma1 = sigma1_sq.sqrt();
-
-        if sigma1 < 1e-15 {
-            return 0.0;
-        }
-
-        // Use simplified Sigma model: ν_t ∝ |S| based on invariants
-        let s_mag = strain_rate_magnitude(&strain_rate_tensor(grad_v));
-        let ls = self.c_sigma * h;
-        let _ = (i2, i3); // invariants used conceptually
-        ls * ls * s_mag * 0.1 // dampened for stability
+        let d_sigma = sigma_operator(singular_values_3x3(grad_v));
+        let length = self.c_sigma * h;
+        length * length * d_sigma
     }
 }
 
@@ -853,61 +831,153 @@ impl DynamicSmagorinskyModel {
 // Turbulent viscosity force
 // ---------------------------------------------------------------------------
 
-/// Snapshot entry: (position, velocity, density, eddy_viscosity, smoothing_length).
-type TurbParticleSnapshot = ([f64; 3], [f64; 3], f64, f64, f64);
+/// State of one particle as seen by [`TurbulentViscosityForce`]: the data of
+/// a neighbour `j` needed to evaluate its pair contribution.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TurbParticleSnapshot {
+    /// Position (m).
+    pub pos: [f64; 3],
+    /// Velocity (m/s).
+    pub vel: [f64; 3],
+    /// Mass density (kg/m³).
+    pub density: f64,
+    /// Eddy (turbulent) kinematic viscosity ν_t (m²/s).
+    pub eddy_viscosity: f64,
+    /// Particle mass (kg).
+    pub mass: f64,
+}
+
+impl From<&TurbulentParticle> for TurbParticleSnapshot {
+    fn from(p: &TurbulentParticle) -> Self {
+        Self {
+            pos: p.pos,
+            vel: p.vel,
+            density: p.density,
+            eddy_viscosity: p.eddy_viscosity,
+            mass: p.mass,
+        }
+    }
+}
+
+/// Fraction of `h²` that regularises the pair denominator `r² + η²`
+/// (Morris et al., 1997) so the term stays bounded as `r → 0`.
+const MORRIS_ETA_SQ_FACTOR: f64 = 0.01;
+
+/// Acceleration of particle `i` caused by the turbulent viscosity shared with
+/// neighbour `j` (Morris et al., 1997, with the kinematic viscosity `ν_i + ν_j`):
+///
+/// ```text
+/// a_i|j = m_j (ν_i + ν_j) (v_i − v_j) (r_ij · ∇_iW_ij) / (ρ̄_ij (r_ij² + η²)),
+/// r_ij = x_i − x_j,   ρ̄_ij = (ρ_i + ρ_j)/2,   η² = 0.01 h²
+/// ```
+///
+/// Because `r_ij · ∇_iW_ij < 0` for a decreasing kernel, the term pulls `v_i`
+/// towards `v_j`.  Pairs beyond the kernel support `2h` do not interact.
+fn pair_acceleration(
+    pos_i: [f64; 3],
+    vel_i: [f64; 3],
+    rho_i: f64,
+    nut_i: f64,
+    j: &TurbParticleSnapshot,
+    h: f64,
+) -> [f64; 3] {
+    let r_ij = sub(pos_i, j.pos);
+    let r = length(r_ij);
+    if r > 2.0 * h || r < 1e-12 {
+        return [0.0; 3];
+    }
+    let rho_avg = 0.5 * (rho_i + j.density);
+    if rho_avg < 1e-12 {
+        return [0.0; 3];
+    }
+    let grad_w = kernel_gradient(r_ij, h);
+    let r_dot_grad_w = dot(r_ij, grad_w);
+    let fac = j.mass * (nut_i + j.eddy_viscosity) * r_dot_grad_w
+        / (rho_avg * (r * r + MORRIS_ETA_SQ_FACTOR * h * h));
+    scale(sub(vel_i, j.vel), fac)
+}
+
+/// Sum of [`pair_acceleration`] over the `candidates` of particle `i`.
+/// Indices that are out of range or equal to `i` are ignored.
+fn accumulated_acceleration(
+    snapshot: &[TurbParticleSnapshot],
+    i: usize,
+    candidates: impl Iterator<Item = usize>,
+    h: f64,
+) -> [f64; 3] {
+    let Some(p_i) = snapshot.get(i) else {
+        return [0.0; 3];
+    };
+    let mut acc = [0.0f64; 3];
+    for j in candidates {
+        if j == i {
+            continue;
+        }
+        if let Some(p_j) = snapshot.get(j) {
+            acc = add(
+                acc,
+                pair_acceleration(p_i.pos, p_i.vel, p_i.density, p_i.eddy_viscosity, p_j, h),
+            );
+        }
+    }
+    acc
+}
 
 /// Applies a turbulent viscosity inter-particle force to all particles.
+///
+/// The force is the Morris et al. (1997) SPH form of the eddy-viscous
+/// diffusion `a = ∇·(ν_t ∇v)`; for a uniform `ν_t` it reduces to
+/// `ν_t ∇²v`.  It is pairwise antisymmetric in `m·a`, so the total momentum
+/// `Σ m v` is conserved, and it dissipates kinetic energy.
 pub struct TurbulentViscosityForce;
 
 impl TurbulentViscosityForce {
-    /// Applies the turbulent viscosity force.
+    /// Applies the turbulent viscosity force with a brute-force `O(N²)` pair search.
     ///
-    /// F_turb_i = Σ_j m_j (ν_t_i + ν_t_j) (v_j − v_i) / (ρ_ij r_ij) · ∇W
+    /// ```text
+    /// Δv_i = Δt Σ_j m_j (ν_t,i + ν_t,j) (v_i − v_j) (r_ij · ∇_iW_ij) / (ρ̄_ij (r_ij² + η²))
+    /// ```
     ///
-    /// Updates particle velocities in-place.
+    /// `h` is the kernel smoothing length (support radius `2h`); `dt` the step.
+    /// All accelerations are evaluated from the velocities at the start of the
+    /// call (explicit update), and particle velocities are updated in place.
     pub fn apply(particles: &mut [TurbulentParticle], h: f64, dt: f64) {
         let n = particles.len();
-        // Collect data first to avoid borrow issues
-        let snapshot: Vec<TurbParticleSnapshot> = particles
-            .iter()
-            .map(|p| {
-                (
-                    p.pos,
-                    p.vel,
-                    p.density,
-                    p.eddy_viscosity,
-                    p.smoothing_length,
-                )
+        let snapshot: Vec<TurbParticleSnapshot> =
+            particles.iter().map(TurbParticleSnapshot::from).collect();
+        let delta_vel: Vec<[f64; 3]> = (0..n)
+            .map(|i| scale(accumulated_acceleration(&snapshot, i, 0..n, h), dt))
+            .collect();
+        for (p, dv) in particles.iter_mut().zip(delta_vel.iter()) {
+            p.vel = add(p.vel, *dv);
+        }
+    }
+
+    /// Same as [`TurbulentViscosityForce::apply`] but only visits the supplied
+    /// neighbour lists (`O(N k)` instead of `O(N²)`).
+    ///
+    /// `neighbors[i]` lists the particles that may lie within `2h` of particle
+    /// `i`.  The lists should be symmetric (`j ∈ neighbors[i] ⟺ i ∈ neighbors[j]`),
+    /// otherwise momentum is no longer conserved.  Entries equal to `i` or out
+    /// of range are skipped, and a particle without a list does not interact.
+    pub fn apply_with_neighbors(
+        particles: &mut [TurbulentParticle],
+        neighbors: &[Vec<usize>],
+        h: f64,
+        dt: f64,
+    ) {
+        let snapshot: Vec<TurbParticleSnapshot> =
+            particles.iter().map(TurbParticleSnapshot::from).collect();
+        let delta_vel: Vec<[f64; 3]> = (0..snapshot.len())
+            .map(|i| {
+                neighbors.get(i).map_or([0.0; 3], |list| {
+                    scale(
+                        accumulated_acceleration(&snapshot, i, list.iter().copied(), h),
+                        dt,
+                    )
+                })
             })
             .collect();
-
-        let mut delta_vel = vec![[0.0f64; 3]; n];
-
-        for i in 0..n {
-            let (pos_i, vel_i, rho_i, nut_i, _) = snapshot[i];
-            for (j, &(pos_j, vel_j, rho_j, nut_j, h_j)) in snapshot.iter().enumerate().take(n) {
-                if i == j {
-                    continue;
-                }
-                let r_ij = sub(pos_i, pos_j);
-                let r = length(r_ij);
-                if r > 2.0 * h || r < 1e-12 {
-                    continue;
-                }
-                let grad_w = kernel_gradient(r_ij, h);
-                let rho_avg = 0.5 * (rho_i + rho_j);
-                if rho_avg < 1e-12 {
-                    continue;
-                }
-                let m_j = rho_j * h_j.powi(3);
-                let nu_sum = nut_i + nut_j;
-                let dv = sub(vel_j, vel_i);
-                let dw_dot_rij = dot(grad_w, r_ij);
-                let fac = m_j * nu_sum * dw_dot_rij / (rho_avg * r * r);
-                delta_vel[i] = add(delta_vel[i], scale(dv, fac * dt));
-            }
-        }
-
         for (p, dv) in particles.iter_mut().zip(delta_vel.iter()) {
             p.vel = add(p.vel, *dv);
         }
@@ -915,7 +985,9 @@ impl TurbulentViscosityForce {
 
     /// Compute turbulent viscosity force on a single particle (diagnostic).
     ///
-    /// Returns the acceleration due to turbulent viscosity.
+    /// Returns the acceleration of the particle at `pos_i` (velocity `vel_i`,
+    /// density `rho_i`, eddy viscosity `nut_i`) due to the turbulent viscosity
+    /// shared with each of the `neighbors`.
     pub fn single_particle_force(
         pos_i: [f64; 3],
         vel_i: [f64; 3],
@@ -924,26 +996,9 @@ impl TurbulentViscosityForce {
         neighbors: &[TurbParticleSnapshot],
         h: f64,
     ) -> [f64; 3] {
-        let mut acc = [0.0f64; 3];
-        for &(pos_j, vel_j, rho_j, nut_j, h_j) in neighbors {
-            let r_ij = sub(pos_i, pos_j);
-            let r = length(r_ij);
-            if r > 2.0 * h || r < 1e-12 {
-                continue;
-            }
-            let grad_w = kernel_gradient(r_ij, h);
-            let rho_avg = 0.5 * (rho_i + rho_j);
-            if rho_avg < 1e-12 {
-                continue;
-            }
-            let m_j = rho_j * h_j.powi(3);
-            let nu_sum = nut_i + nut_j;
-            let dv = sub(vel_j, vel_i);
-            let dw_dot_rij = dot(grad_w, r_ij);
-            let fac = m_j * nu_sum * dw_dot_rij / (rho_avg * r * r);
-            acc = add(acc, scale(dv, fac));
-        }
-        acc
+        neighbors.iter().fold([0.0f64; 3], |acc, p_j| {
+            add(acc, pair_acceleration(pos_i, vel_i, rho_i, nut_i, p_j, h))
+        })
     }
 }
 
@@ -1033,6 +1088,7 @@ mod tests {
         TurbulentParticle {
             pos,
             vel,
+            mass: 1.0,
             density: 1000.0,
             pressure: 0.0,
             turbulent_ke: 0.1,
@@ -1483,3 +1539,6 @@ mod tests {
         assert!((mean[0] - 3.0).abs() < 1e-12, "mean x vel should be 3.0");
     }
 }
+
+#[cfg(test)]
+mod force_tests;

@@ -270,8 +270,16 @@ mod tests_specialized_extended {
         ];
         let t1 = Transform::from_position(Vec3::new(0.0, 0.0, 0.0));
         let t2 = Transform::from_position(Vec3::new(1.5, 0.0, 0.0));
-        let contact = convex_hull_vs_convex_hull(&cube, &t1, &cube, &t2);
-        assert!(contact.is_some(), "overlapping convex hulls should contact");
+        let contact = convex_hull_vs_convex_hull(&cube, &t1, &cube, &t2)
+            .expect("overlapping convex hulls should contact");
+        // Cubes of half-extent 1 whose centres are 1.5 apart overlap by 0.5; the
+        // normal points from B (at +x) towards A.
+        assert!(
+            (contact.depth - 0.5).abs() < 1e-6,
+            "depth {}",
+            contact.depth
+        );
+        assert!(contact.normal.x < -0.99, "normal {:?}", contact.normal);
     }
     #[test]
     fn test_convex_hull_vs_hull_separated() {
@@ -303,9 +311,20 @@ mod tests_specialized_extended {
         ];
         let t1 = Transform::from_position(Vec3::new(0.0, 0.0, 0.0));
         let t2 = Transform::from_position(Vec3::new(0.3, 0.3, 0.0));
-        if let Some(c) = convex_hull_vs_convex_hull(&tet, &t1, &tet, &t2) {
-            assert!(c.depth > 0.0, "depth must be positive: {}", c.depth);
-        }
+        let c = convex_hull_vs_convex_hull(&tet, &t1, &tet, &t2)
+            .expect("tetrahedra shifted by (0.3, 0.3, 0) overlap");
+        assert!(c.depth > 0.0, "depth must be positive: {}", c.depth);
+        // The shift is smaller than the tetrahedron, so the penetration is too.
+        assert!(c.depth < 0.5, "depth must stay below 0.5: {}", c.depth);
+        assert!(
+            (c.normal.norm() - 1.0).abs() < 1e-6,
+            "normal {:?}",
+            c.normal
+        );
+        assert!(
+            ((c.point_b - c.point_a).dot(&c.normal) - c.depth).abs() < 1e-6,
+            "witness points must be one depth apart along the normal"
+        );
     }
     #[test]
     fn test_sphere_sphere_gap_separated() {

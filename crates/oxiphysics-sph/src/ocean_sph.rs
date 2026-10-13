@@ -18,6 +18,8 @@
 
 use std::f64::consts::PI;
 
+use crate::neighbor::SpatialHash3D;
+
 /// Gravitational acceleration (m s⁻²).
 const G: f64 = 9.80665;
 /// Seawater reference density (kg m⁻³).
@@ -680,7 +682,11 @@ pub fn wendland_c2(r: f64, h: f64) -> f64 {
     sigma * t.powi(4) * (2.0 * q + 1.0)
 }
 
-/// Gradient magnitude dW/dr of the Wendland C2 kernel.
+/// Gradient magnitude dW/dr of the Wendland C2 kernel [`wendland_c2`].
+///
+/// With `t = 1 − q/2` and the same normalisation `σ = 21/(16 π h³)` as the
+/// kernel itself,
+/// `dW/dr = (σ/h) · (2 t⁴ − 2 t³ (2q + 1))`, which is `≤ 0` on the support.
 ///
 /// # Arguments
 /// * `r` – particle separation (m)
@@ -693,7 +699,9 @@ pub fn wendland_c2_grad(r: f64, h: f64) -> f64 {
     if q >= 2.0 {
         return 0.0;
     }
-    let sigma = 7.0 / (4.0 * PI * h * h * h);
+    // Same 3-D normalisation constant as `wendland_c2`, so that this is the
+    // exact derivative of the kernel.
+    let sigma = 21.0 / (16.0 * PI * h * h * h);
     let t = 1.0 - 0.5 * q;
     // dW/dq * dq/dr
     sigma * (-2.0 * t.powi(3) * (2.0 * q + 1.0) + t.powi(4) * 2.0) / h
@@ -777,6 +785,122 @@ pub fn sph_pressure_acc(
         }
         let pj_rho2 = if *rho_j > 0.0 {
             pj / (rho_j * rho_j)
+        } else {
+            0.0
+        };
+        let dw = wendland_c2_grad(r, h_i);
+        let coeff = -mass_j * (pi_rho2 + pj_rho2) * dw / r;
+        acc[0] += coeff * dx;
+        acc[1] += coeff * dy;
+        acc[2] += coeff * dz;
+    }
+    acc
+}
+
+/// Density of particle `i` from a precomputed neighbour list.
+///
+/// `ρᵢ = mᵢ W(0, hᵢ) + Σ_{j ∈ N(i)} mⱼ W(|rᵢ − rⱼ|, hᵢ)`
+///
+/// This is [`sph_density_sum`] restricted to the particles listed in
+/// `neighbours`; because the Wendland kernel vanishes beyond `2 hᵢ`, the result
+/// is identical to the all-pairs sum as long as `neighbours` contains every
+/// particle within `2 hᵢ`.  The list is expected to exclude `i` itself (the
+/// self contribution is added explicitly); an `i` that does appear in it is
+/// skipped.  Indices outside `positions` / `masses` are ignored, and an
+/// out-of-range `i` yields `0`.
+///
+/// # Arguments
+/// * `i`          – index of the particle
+/// * `positions`  – positions of all particles
+/// * `masses`     – masses of all particles
+/// * `h_i`        – smoothing length of particle `i`
+/// * `neighbours` – indices of the particles near `i` (excluding `i`)
+pub fn sph_density_sum_nl(
+    i: usize,
+    positions: &[[f64; 3]],
+    masses: &[f64],
+    h_i: f64,
+    neighbours: &[usize],
+) -> f64 {
+    let (Some(pos_i), Some(mass_i)) = (positions.get(i), masses.get(i)) else {
+        return 0.0;
+    };
+    let mut rho = mass_i * wendland_c2(0.0, h_i);
+    for &j in neighbours {
+        if j == i {
+            continue;
+        }
+        let (Some(pos_j), Some(mass_j)) = (positions.get(j), masses.get(j)) else {
+            continue;
+        };
+        let dx = pos_i[0] - pos_j[0];
+        let dy = pos_i[1] - pos_j[1];
+        let dz = pos_i[2] - pos_j[2];
+        let r = (dx * dx + dy * dy + dz * dz).sqrt();
+        rho += mass_j * wendland_c2(r, h_i);
+    }
+    rho
+}
+
+/// Symmetric SPH pressure acceleration of particle `i` from a precomputed
+/// neighbour list.
+///
+/// `aᵢ = −Σ_{j ∈ N(i)} mⱼ (pᵢ/ρᵢ² + pⱼ/ρⱼ²) ∇Wᵢⱼ`
+///
+/// This is [`sph_pressure_acc`] restricted to the particles listed in
+/// `neighbours`, with the same equivalence to the all-pairs sum as
+/// [`sph_density_sum_nl`].  Indices outside the property slices and `i` itself
+/// are skipped, and an out-of-range `i` yields a zero acceleration.
+///
+/// # Arguments
+/// * `i`          – index of the particle
+/// * `positions`  – positions of all particles
+/// * `masses`     – masses of all particles
+/// * `pressures`  – pressures of all particles
+/// * `densities`  – densities of all particles
+/// * `h_i`        – smoothing length of particle `i`
+/// * `neighbours` – indices of the particles near `i` (excluding `i`)
+pub fn sph_pressure_acc_nl(
+    i: usize,
+    positions: &[[f64; 3]],
+    masses: &[f64],
+    pressures: &[f64],
+    densities: &[f64],
+    h_i: f64,
+    neighbours: &[usize],
+) -> [f64; 3] {
+    let mut acc = [0.0_f64; 3];
+    let (Some(pos_i), Some(&p_i), Some(&rho_i)) =
+        (positions.get(i), pressures.get(i), densities.get(i))
+    else {
+        return acc;
+    };
+    let pi_rho2 = if rho_i > 0.0 {
+        p_i / (rho_i * rho_i)
+    } else {
+        0.0
+    };
+    for &j in neighbours {
+        if j == i {
+            continue;
+        }
+        let (Some(pos_j), Some(&mass_j), Some(&p_j), Some(&rho_j)) = (
+            positions.get(j),
+            masses.get(j),
+            pressures.get(j),
+            densities.get(j),
+        ) else {
+            continue;
+        };
+        let dx = pos_i[0] - pos_j[0];
+        let dy = pos_i[1] - pos_j[1];
+        let dz = pos_i[2] - pos_j[2];
+        let r = (dx * dx + dy * dy + dz * dz).sqrt();
+        if r < 1e-14 {
+            continue;
+        }
+        let pj_rho2 = if rho_j > 0.0 {
+            p_j / (rho_j * rho_j)
         } else {
             0.0
         };
@@ -961,35 +1085,47 @@ impl OceanSimulation {
     }
 
     /// Advance the simulation by one time step.
+    ///
+    /// The neighbour lists are built once per step with a spatial hash of cell
+    /// size `2 h_max` (the Wendland support radius of the largest smoothing
+    /// length), so the density and pressure-force sums cost `O(N · k)` for `k`
+    /// neighbours per particle instead of `O(N²)`.
     pub fn step(&mut self) {
         let dt = self.config.dt;
         let t = self.time;
 
-        // Build neighbour list (O(n²) for clarity)
         let n = self.particles.len();
         let positions: Vec<[f64; 3]> = self.particles.iter().map(|p| p.pos).collect();
         let masses: Vec<f64> = self.particles.iter().map(|p| p.mass).collect();
-        let _pressures: Vec<f64> = self.particles.iter().map(|p| p.pressure).collect();
-        let _densities: Vec<f64> = self.particles.iter().map(|p| p.rho).collect();
 
-        // Update densities
-        for i in 0..n {
+        // Neighbour lists within the support radius 2 h_max (self excluded).
+        let h_max = self
+            .particles
+            .iter()
+            .map(|p| p.h)
+            .filter(|h| h.is_finite() && *h > 0.0)
+            .fold(0.0_f64, f64::max);
+        let neighbours: Vec<Vec<usize>> = if h_max > 0.0 {
+            SpatialHash3D::all_neighbors(&positions, 2.0 * h_max)
+        } else {
+            vec![Vec::new(); n]
+        };
+
+        // Update densities and Tait pressures
+        for (i, list) in neighbours.iter().enumerate() {
             let h_i = self.particles[i].h;
-            let neigh: Vec<([f64; 3], f64)> = (0..n).map(|j| (positions[j], masses[j])).collect();
-            self.particles[i].rho = sph_density_sum(positions[i], h_i, &neigh);
-            self.particles[i].pressure =
-                tait_pressure(self.particles[i].rho, self.config.rho0, self.config.cs, 7.0);
+            let rho = sph_density_sum_nl(i, &positions, &masses, h_i, list);
+            self.particles[i].rho = rho;
+            self.particles[i].pressure = tait_pressure(rho, self.config.rho0, self.config.cs, 7.0);
         }
 
         // Update accelerations
-        let pressures2: Vec<f64> = self.particles.iter().map(|p| p.pressure).collect();
-        let densities2: Vec<f64> = self.particles.iter().map(|p| p.rho).collect();
-        for i in 0..n {
+        let pressures: Vec<f64> = self.particles.iter().map(|p| p.pressure).collect();
+        let densities: Vec<f64> = self.particles.iter().map(|p| p.rho).collect();
+        for (i, list) in neighbours.iter().enumerate() {
             let h_i = self.particles[i].h;
-            let neigh: Vec<([f64; 3], f64, f64, f64)> = (0..n)
-                .map(|j| (positions[j], masses[j], pressures2[j], densities2[j]))
-                .collect();
-            let p_acc = sph_pressure_acc(positions[i], pressures2[i], densities2[i], h_i, &neigh);
+            let p_acc =
+                sph_pressure_acc_nl(i, &positions, &masses, &pressures, &densities, h_i, list);
             // Gravity
             let mut acc = [p_acc[0], p_acc[1], p_acc[2] - G];
 
@@ -1013,7 +1149,11 @@ impl OceanSimulation {
             self.particles[i].acc = acc;
         }
 
-        // Leap-frog integration
+        // Leap-frog integration.  The peak-frequency wavenumber depends only on
+        // the water depth below the particle, so it is solved once per distinct
+        // depth instead of once per particle.
+        let omega_peak = self.jonswap.omega_peak;
+        let mut wavenumber_cache: Option<(f64, f64)> = None;
         for p in &mut self.particles {
             p.vel = vec3_add(p.vel, vec3_scale(p.acc, dt));
             p.pos = vec3_add(p.pos, vec3_scale(p.vel, dt));
@@ -1037,13 +1177,16 @@ impl OceanSimulation {
 
             // Stokes drift (surface layer)
             if self.config.enable_stokes && p.pos[2] > -1.0 {
-                let sd = stokes_drift_deep(
-                    0.5,
-                    self.jonswap.omega_peak,
-                    dispersion_wavenumber(self.jonswap.omega_peak, p.depth.max(0.1)),
-                    p.pos[2],
-                    [1.0, 0.0],
-                );
+                let depth = p.depth.max(0.1);
+                let wavenumber = match wavenumber_cache {
+                    Some((cached_depth, k)) if cached_depth == depth => k,
+                    _ => {
+                        let k = dispersion_wavenumber(omega_peak, depth);
+                        wavenumber_cache = Some((depth, k));
+                        k
+                    }
+                };
+                let sd = stokes_drift_deep(0.5, omega_peak, wavenumber, p.pos[2], [1.0, 0.0]);
                 p.stokes_drift = sd;
             }
         }
@@ -1536,3 +1679,6 @@ mod tests {
         assert!(a > 0.0, "Expected positive tidal acceleration, got {a}");
     }
 }
+
+#[cfg(test)]
+mod sph_sum_tests;

@@ -172,4 +172,66 @@ mod gpu_tests {
             "two elements should be sorted"
         );
     }
+
+    #[test]
+    fn test_radix_repeated_calls_stay_correct() {
+        let _backend = skip_if_no_gpu!();
+        // Many consecutive sorts of different sizes on the shared device: no call may
+        // see state left behind by an earlier one.
+        for round in 0..24usize {
+            let n = 100 + 397 * round;
+            let keys: Vec<u32> = lcg_keys(n).into_iter().map(|k| k >> (round % 24)).collect();
+            let expected = cpu_sorted(&keys);
+            if round % 2 == 0 {
+                assert_eq!(
+                    gpu_radix::radix_sort_u32_gpu(&keys),
+                    expected,
+                    "round {round}"
+                );
+            } else {
+                let payload: Vec<u32> = (0..n as u32).collect();
+                let (sorted_keys, sorted_payload) =
+                    gpu_radix::radix_sort_pairs_gpu(&keys, &payload);
+                assert_eq!(sorted_keys, expected, "round {round}");
+                // Stable: equal keys keep their original (ascending) payload order.
+                for pair in sorted_keys.windows(2).zip(sorted_payload.windows(2)) {
+                    if pair.0[0] == pair.0[1] {
+                        assert!(pair.1[0] < pair.1[1], "round {round}: unstable order");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_radix_concurrent_callers_get_correct_results() {
+        let _backend = skip_if_no_gpu!();
+        let workers: Vec<_> = (0..4usize)
+            .map(|t| {
+                std::thread::spawn(move || {
+                    for round in 0..4usize {
+                        let n = 2000 + 509 * t + 97 * round;
+                        let keys: Vec<u32> =
+                            lcg_keys(n).into_iter().map(|k| k % (64 << t)).collect();
+                        let expected = cpu_sorted(&keys);
+                        assert_eq!(
+                            gpu_radix::radix_sort_u32_gpu(&keys),
+                            expected,
+                            "thread {t} round {round}"
+                        );
+                        let payload: Vec<u32> = (0..n as u32).collect();
+                        let (sorted_keys, sorted_payload) =
+                            gpu_radix::radix_sort_pairs_gpu(&keys, &payload);
+                        assert_eq!(sorted_keys, expected, "thread {t} round {round}");
+                        for (key, original) in sorted_keys.iter().zip(sorted_payload.iter()) {
+                            assert_eq!(*key, keys[*original as usize], "payload misaligned");
+                        }
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().expect("worker thread panicked");
+        }
+    }
 }

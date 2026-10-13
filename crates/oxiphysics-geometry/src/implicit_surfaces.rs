@@ -18,6 +18,11 @@
 //! assert!(sphere.eval([2.0, 0.0, 0.0]) > 0.0); // outside
 //! ```
 
+use crate::mc_tables::{
+    MC_CORNER_OFFSETS, MC_EDGE_ASCENDING, MC_EDGE_ORIGIN_AXIS, MC_EDGE_TABLE, case_index,
+    case_triangles,
+};
+
 // ---------------------------------------------------------------------------
 // Math helpers (private)
 // ---------------------------------------------------------------------------
@@ -387,74 +392,18 @@ impl<S: ImplicitSurface> ImplicitSurface for OffsetSDF<S> {
 // § 6  Marching Cubes
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Marching cubes lookup tables (edge table and tri table)
-// ---------------------------------------------------------------------------
-
-/// Edge table for marching cubes (256 entries).
-const EDGE_TABLE: [u16; 256] = [
-    0x000, 0x109, 0x203, 0x30a, 0x406, 0x50f, 0x605, 0x70c, 0x80c, 0x905, 0xa0f, 0xb06, 0xc0a,
-    0xd03, 0xe09, 0xf00, 0x190, 0x099, 0x393, 0x29a, 0x596, 0x49f, 0x795, 0x69c, 0x99c, 0x895,
-    0xb9f, 0xa96, 0xd9a, 0xc93, 0xf99, 0xe90, 0x230, 0x339, 0x033, 0x13a, 0x636, 0x73f, 0x435,
-    0x53c, 0xa3c, 0xb35, 0x83f, 0x936, 0xe3a, 0xf33, 0xc39, 0xd30, 0x3a0, 0x2a9, 0x1a3, 0x0aa,
-    0x7a6, 0x6af, 0x5a5, 0x4ac, 0xbac, 0xaa5, 0x9af, 0x8a6, 0xfaa, 0xea3, 0xda9, 0xca0, 0x460,
-    0x569, 0x663, 0x76a, 0x066, 0x16f, 0x265, 0x36c, 0xc6c, 0xd65, 0xe6f, 0xf66, 0x86a, 0x963,
-    0xa69, 0xb60, 0x5f0, 0x4f9, 0x7f3, 0x6fa, 0x1f6, 0x0ff, 0x3f5, 0x2fc, 0xdfc, 0xcf5, 0xfff,
-    0xef6, 0x9fa, 0x8f3, 0xbf9, 0xaf0, 0x650, 0x759, 0x453, 0x55a, 0x256, 0x35f, 0x055, 0x15c,
-    0xe5c, 0xf55, 0xc5f, 0xd56, 0xa5a, 0xb53, 0x859, 0x950, 0x7c0, 0x6c9, 0x5c3, 0x4ca, 0x3c6,
-    0x2cf, 0x1c5, 0x0cc, 0xfcc, 0xec5, 0xdcf, 0xcc6, 0xbca, 0xac3, 0x9c9, 0x8c0, 0x8c0, 0x9c9,
-    0xac3, 0xbca, 0xcc6, 0xdcf, 0xec5, 0xfcc, 0x0cc, 0x1c5, 0x2cf, 0x3c6, 0x4ca, 0x5c3, 0x6c9,
-    0x7c0, 0x950, 0x859, 0xb53, 0xa5a, 0xd56, 0xc5f, 0xf55, 0xe5c, 0x15c, 0x055, 0x35f, 0x256,
-    0x55a, 0x453, 0x759, 0x650, 0xaf0, 0xbf9, 0x8f3, 0x9fa, 0xef6, 0xfff, 0xcf5, 0xdfc, 0x2fc,
-    0x3f5, 0x0ff, 0x1f6, 0x6fa, 0x7f3, 0x4f9, 0x5f0, 0xb60, 0xa69, 0x963, 0x86a, 0xf66, 0xe6f,
-    0xd65, 0xc6c, 0x36c, 0x265, 0x16f, 0x066, 0x76a, 0x663, 0x569, 0x460, 0xca0, 0xda9, 0xea3,
-    0xfaa, 0x8a6, 0x9af, 0xaa5, 0xbac, 0x4ac, 0x5a5, 0x6af, 0x7a6, 0x0aa, 0x1a3, 0x2a9, 0x3a0,
-    0xd30, 0xc39, 0xf33, 0xe3a, 0x936, 0x835, 0xb3f, 0xa36, // fixed 0x83f→0x835
-    0x53c, 0x435, 0x73f, 0x636, 0x13a, 0x033, 0x339, 0x230, 0xe90, 0xf99, 0xc93, 0xd9a, 0xa96,
-    0xb9f, 0x895, 0x99c, 0x69c, 0x795, 0x49f, 0x596, 0x29a, 0x393, 0x099, 0x190, 0xf00, 0xe09,
-    0xd03, 0xc0a, 0xb06, 0xa0f, 0x905, 0x80c, 0x70c, 0x605, 0x50f, 0x406, 0x30a, 0x203, 0x109,
-    0x000,
-];
-
-/// Cube corner positions in unit cube (index → \[xi, yi, zi\]).
-const CUBE_CORNERS: [[f64; 3]; 8] = [
-    [0.0, 0.0, 0.0],
-    [1.0, 0.0, 0.0],
-    [1.0, 1.0, 0.0],
-    [0.0, 1.0, 0.0],
-    [0.0, 0.0, 1.0],
-    [1.0, 0.0, 1.0],
-    [1.0, 1.0, 1.0],
-    [0.0, 1.0, 1.0],
-];
-
-/// Cube edge pairs (each edge connects two corners).
-const CUBE_EDGES: [[usize; 2]; 12] = [
-    [0, 1],
-    [1, 2],
-    [2, 3],
-    [3, 0],
-    [4, 5],
-    [5, 6],
-    [6, 7],
-    [7, 4],
-    [0, 4],
-    [1, 5],
-    [2, 6],
-    [3, 7],
-];
-
-/// Interpolate a vertex on an edge where the SDF crosses zero.
+/// Interpolate the zero crossing of the field between two grid nodes.
+///
+/// `p0`/`v0` and `p1`/`v1` are the position and field value at the two end points
+/// of a grid edge.  The crossing parameter is clamped to the edge and a constant
+/// field along the edge yields the midpoint.
 fn interp_edge(p0: [f64; 3], v0: f64, p1: [f64; 3], v1: f64) -> [f64; 3] {
     let dv = v1 - v0;
-    if dv.abs() < 1e-30 {
-        return [
-            (p0[0] + p1[0]) / 2.0,
-            (p0[1] + p1[1]) / 2.0,
-            (p0[2] + p1[2]) / 2.0,
-        ];
-    }
-    let t = -v0 / dv;
+    let t = if dv.abs() < 1e-30 {
+        0.5
+    } else {
+        (-v0 / dv).clamp(0.0, 1.0)
+    };
     [
         p0[0] + t * (p1[0] - p0[0]),
         p0[1] + t * (p1[1] - p0[1]),
@@ -464,6 +413,15 @@ fn interp_edge(p0: [f64; 3], v0: f64, p1: [f64; 3], v1: f64) -> [f64; 3] {
 
 /// Extract an isosurface from an implicit SDF using the Marching Cubes algorithm.
 ///
+/// The field is sampled exactly once per grid node (`(resolution + 1)³` calls to
+/// [`ImplicitSurface::eval`]).  Triangles come from the standard 256-case
+/// Lorensen & Cline table shared with the other marching-cubes extractors of this
+/// crate.  Vertices are welded: every grid edge that crosses the surface yields
+/// exactly one vertex, shared by all triangles around it, so a closed surface
+/// gives a watertight indexed mesh in which every edge belongs to two triangles.
+/// A node is *inside* when `f < 0`; triangles are wound counter-clockwise when
+/// seen from outside, so their normals point towards increasing `f`.
+///
 /// # Arguments
 /// * `sdf` — any type implementing [`ImplicitSurface`]
 /// * `bounds` — axis-aligned bounding box as `[[xmin,xmax\], [ymin,ymax], [zmin,zmax]]`
@@ -471,75 +429,94 @@ fn interp_edge(p0: [f64; 3], v0: f64, p1: [f64; 3], v1: f64) -> [f64; 3] {
 ///
 /// # Returns
 /// A tuple `(vertices, triangles)` where each vertex is `[x, y, z]` and
-/// each triangle is `[i0, i1, i2]` (indices into `vertices`).
+/// each triangle is `[i0, i1, i2]` (indices into `vertices`).  The mesh is empty
+/// when the surface does not cross the box, or when the resolution is so large
+/// that the edge-id table would not fit 32-bit vertex ids.
 pub fn marching_cubes(
     sdf: &dyn ImplicitSurface,
     bounds: [[f64; 2]; 3],
     resolution: usize,
 ) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
     let n = resolution.max(1);
+    let nodes = n + 1;
+    // One slot per lattice edge (three per node: the +x, +y and +z edges).
+    let slot_count = nodes
+        .checked_mul(nodes)
+        .and_then(|v| v.checked_mul(nodes))
+        .and_then(|v| v.checked_mul(3));
+    let Some(slot_count) = slot_count.filter(|&c| c < u32::MAX as usize) else {
+        return (Vec::new(), Vec::new());
+    };
+
+    let step: [f64; 3] = std::array::from_fn(|k| (bounds[k][1] - bounds[k][0]) / n as f64);
+    let node_index = |ix: usize, iy: usize, iz: usize| ix + nodes * (iy + nodes * iz);
+    let node_pos = |ix: usize, iy: usize, iz: usize| -> [f64; 3] {
+        [
+            bounds[0][0] + ix as f64 * step[0],
+            bounds[1][0] + iy as f64 * step[1],
+            bounds[2][0] + iz as f64 * step[2],
+        ]
+    };
+
+    // Sample every node exactly once.
+    let mut values: Vec<f64> = Vec::with_capacity(slot_count / 3);
+    for iz in 0..nodes {
+        for iy in 0..nodes {
+            for ix in 0..nodes {
+                values.push(sdf.eval(node_pos(ix, iy, iz)));
+            }
+        }
+    }
+
     let mut vertices: Vec<[f64; 3]> = Vec::new();
     let mut triangles: Vec<[usize; 3]> = Vec::new();
-
-    let dx = (bounds[0][1] - bounds[0][0]) / n as f64;
-    let dy = (bounds[1][1] - bounds[1][0]) / n as f64;
-    let dz = (bounds[2][1] - bounds[2][0]) / n as f64;
+    // Dense global edge id -> vertex index (`u32::MAX` = not created yet).
+    let mut edge_vertex: Vec<u32> = vec![u32::MAX; slot_count];
 
     for iz in 0..n {
         for iy in 0..n {
             for ix in 0..n {
-                let ox = bounds[0][0] + ix as f64 * dx;
-                let oy = bounds[1][0] + iy as f64 * dy;
-                let oz = bounds[2][0] + iz as f64 * dz;
-
-                // Evaluate SDF at 8 corners
-                let corner_pts: [[f64; 3]; 8] = std::array::from_fn(|c| {
-                    [
-                        ox + CUBE_CORNERS[c][0] * dx,
-                        oy + CUBE_CORNERS[c][1] * dy,
-                        oz + CUBE_CORNERS[c][2] * dz,
-                    ]
+                let vals: [f64; 8] = std::array::from_fn(|c| {
+                    let [di, dj, dk] = MC_CORNER_OFFSETS[c];
+                    values[node_index(ix + di, iy + dj, iz + dk)]
                 });
-                let vals: [f64; 8] = std::array::from_fn(|c| sdf.eval(corner_pts[c]));
-
-                // Compute cube index
-                let mut cube_idx: usize = 0;
-                for (c, &val) in vals.iter().enumerate() {
-                    if val < 0.0 {
-                        cube_idx |= 1 << c;
-                    }
-                }
-
-                let edge_flags = EDGE_TABLE[cube_idx];
-                if edge_flags == 0 {
+                let case = case_index(&vals, 0.0);
+                if case == 0 || case == 255 {
                     continue;
                 }
 
-                // Compute intersection vertices for active edges
-                let mut edge_verts: [Option<[f64; 3]>; 12] = [None; 12];
-                for e in 0..12 {
-                    if edge_flags & (1 << e) != 0 {
-                        let [i0, i1] = CUBE_EDGES[e];
-                        edge_verts[e] = Some(interp_edge(
-                            corner_pts[i0],
-                            vals[i0],
-                            corner_pts[i1],
-                            vals[i1],
-                        ));
+                // Vertex index of every crossed edge of this cell.
+                let edge_flags = MC_EDGE_TABLE[case];
+                let mut cell_vertex = [0usize; 12];
+                for (e, &(origin, axis)) in MC_EDGE_ORIGIN_AXIS.iter().enumerate() {
+                    if edge_flags & (1 << e) == 0 {
+                        continue;
                     }
+                    let slot =
+                        3 * node_index(ix + origin[0], iy + origin[1], iz + origin[2]) + axis;
+                    if edge_vertex[slot] == u32::MAX {
+                        // Interpolate from the lower to the upper end of the edge.
+                        let [lo, hi] = MC_EDGE_ASCENDING[e];
+                        let [lo_i, lo_j, lo_k] = MC_CORNER_OFFSETS[lo];
+                        let [hi_i, hi_j, hi_k] = MC_CORNER_OFFSETS[hi];
+                        let Ok(id) = u32::try_from(vertices.len()) else {
+                            return (Vec::new(), Vec::new());
+                        };
+                        vertices.push(interp_edge(
+                            node_pos(ix + lo_i, iy + lo_j, iz + lo_k),
+                            vals[lo],
+                            node_pos(ix + hi_i, iy + hi_j, iz + hi_k),
+                            vals[hi],
+                        ));
+                        edge_vertex[slot] = id;
+                    }
+                    cell_vertex[e] = edge_vertex[slot] as usize;
                 }
 
-                // Tessellate using a simple fan from the first active edge vertex
-                // (simplified triangulation — not full marching-cubes tri table)
-                let active: Vec<[f64; 3]> = (0..12).filter_map(|e| edge_verts[e]).collect();
-                if active.len() >= 3 {
-                    let base = vertices.len();
-                    for v in &active {
-                        vertices.push(*v);
-                    }
-                    for k in 1..(active.len() - 1) {
-                        triangles.push([base, base + k, base + k + 1]);
-                    }
+                for [a, b, c] in case_triangles(case) {
+                    // The table winds into the solid; swap two vertices so the
+                    // triangle faces out of it.
+                    triangles.push([cell_vertex[a], cell_vertex[c], cell_vertex[b]]);
                 }
             }
         }
@@ -1094,5 +1071,195 @@ mod tests {
         if let Some(t) = hit {
             assert!(t > 0.0, "distance must be positive, got {t}");
         }
+    }
+}
+
+#[cfg(test)]
+mod marching_cubes_tests {
+    use super::*;
+    use crate::mc_tables::test_support::{
+        area_and_volume, degenerate_triangle_count, edge_valence_histogram,
+        is_closed_and_consistently_oriented,
+    };
+    use std::cell::Cell;
+    use std::f64::consts::PI;
+
+    /// Wraps an SDF and counts how often it is evaluated.
+    struct Counting<S> {
+        inner: S,
+        calls: Cell<usize>,
+    }
+
+    impl<S: ImplicitSurface> ImplicitSurface for Counting<S> {
+        fn eval(&self, p: [f64; 3]) -> f64 {
+            self.calls.set(self.calls.get() + 1);
+            self.inner.eval(p)
+        }
+    }
+
+    /// Half-space `z < height`.
+    struct HalfSpaceZ {
+        height: f64,
+    }
+
+    impl ImplicitSurface for HalfSpaceZ {
+        fn eval(&self, p: [f64; 3]) -> f64 {
+            p[2] - self.height
+        }
+    }
+
+    fn unit_sphere_mesh(resolution: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+        let s = SphereSDF::new([0.0, 0.0, 0.0], 1.0);
+        marching_cubes(&s, [[-1.25, 1.25]; 3], resolution)
+    }
+
+    #[test]
+    fn sphere_mesh_is_watertight_outward_and_accurate() {
+        let (vertices, triangles) = unit_sphere_mesh(32);
+        assert!(triangles.len() > 2000, "{} triangles", triangles.len());
+        assert_eq!(
+            edge_valence_histogram(&triangles),
+            vec![(2, triangles.len() * 3 / 2)],
+            "every edge must be shared by exactly two triangles"
+        );
+        assert!(is_closed_and_consistently_oriented(&triangles));
+        assert_eq!(degenerate_triangle_count(&vertices, &triangles), 0);
+        let (area, volume) = area_and_volume(&vertices, &triangles);
+        assert!(
+            (area / (4.0 * PI) - 1.0).abs() < 0.02,
+            "area {area} vs {}",
+            4.0 * PI
+        );
+        assert!(
+            volume > 0.0,
+            "triangles must face outwards, volume {volume}"
+        );
+        assert!(
+            (volume / (4.0 / 3.0 * PI) - 1.0).abs() < 0.02,
+            "volume {volume} vs {}",
+            4.0 / 3.0 * PI
+        );
+        for v in &vertices {
+            let r = len3(*v);
+            assert!((r - 1.0).abs() < 2e-3, "vertex off the sphere: r = {r}");
+        }
+    }
+
+    #[test]
+    fn vertices_are_welded_one_per_crossed_grid_edge() {
+        let resolution = 20;
+        let (vertices, _) = unit_sphere_mesh(resolution);
+        let nodes = resolution + 1;
+        let step = 2.5 / resolution as f64;
+        let inside = |ix: usize, iy: usize, iz: usize| {
+            let p = [
+                -1.25 + ix as f64 * step,
+                -1.25 + iy as f64 * step,
+                -1.25 + iz as f64 * step,
+            ];
+            len3(p) - 1.0 < 0.0
+        };
+        let mut crossed = 0usize;
+        for iz in 0..nodes {
+            for iy in 0..nodes {
+                for ix in 0..nodes {
+                    if ix + 1 < nodes && inside(ix, iy, iz) != inside(ix + 1, iy, iz) {
+                        crossed += 1;
+                    }
+                    if iy + 1 < nodes && inside(ix, iy, iz) != inside(ix, iy + 1, iz) {
+                        crossed += 1;
+                    }
+                    if iz + 1 < nodes && inside(ix, iy, iz) != inside(ix, iy, iz + 1) {
+                        crossed += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(vertices.len(), crossed);
+    }
+
+    #[test]
+    fn every_node_is_evaluated_exactly_once() {
+        let resolution = 12;
+        let counting = Counting {
+            inner: SphereSDF::new([0.1, -0.05, 0.02], 0.8),
+            calls: Cell::new(0),
+        };
+        let (_, triangles) = marching_cubes(&counting, [[-1.0, 1.0]; 3], resolution);
+        assert!(!triangles.is_empty());
+        assert_eq!(counting.calls.get(), (resolution + 1).pow(3));
+    }
+
+    #[test]
+    fn plane_mesh_is_exact_and_faces_the_increasing_field() {
+        // Non-cubic bounds, with a plane that never touches a grid node row.
+        let bounds = [[-1.5, 1.5], [-1.0, 1.0], [-0.8, 0.8]];
+        let plane = HalfSpaceZ { height: 0.05 };
+        let (vertices, triangles) = marching_cubes(&plane, bounds, 8);
+        assert!(!triangles.is_empty());
+        for v in &vertices {
+            assert!((v[2] - 0.05).abs() < 1e-12, "vertex off the plane: {v:?}");
+        }
+        let (area, _) = area_and_volume(&vertices, &triangles);
+        assert!((area - 3.0 * 2.0).abs() < 1e-9, "area {area}");
+        // Every triangle normal must point along +z (towards increasing field).
+        for t in &triangles {
+            let (a, b, c) = (vertices[t[0]], vertices[t[1]], vertices[t[2]]);
+            let u = [b[0] - a[0], b[1] - a[1]];
+            let w = [c[0] - a[0], c[1] - a[1]];
+            let nz = u[0] * w[1] - u[1] * w[0];
+            assert!(nz > 0.0, "triangle {t:?} faces downwards");
+        }
+        // The plane is an open patch: boundary edges have valence 1.
+        let histogram = edge_valence_histogram(&triangles);
+        assert!(histogram.iter().any(|&(valence, _)| valence == 1));
+        assert!(histogram.iter().all(|&(valence, _)| valence <= 2));
+    }
+
+    #[test]
+    fn empty_when_the_surface_misses_the_box() {
+        let s = SphereSDF::new([100.0, 100.0, 100.0], 0.1);
+        let (vertices, triangles) = marching_cubes(&s, [[-1.0, 1.0]; 3], 6);
+        assert!(vertices.is_empty());
+        assert!(triangles.is_empty());
+    }
+
+    #[test]
+    fn resolution_zero_is_clamped_to_one_cell() {
+        let s = SphereSDF::new([0.0, 0.0, 0.0], 0.5);
+        let (vertices, triangles) = marching_cubes(&s, [[-1.0, 1.0]; 3], 0);
+        // A 2x2x2 node lattice whose corners are all outside the sphere.
+        assert!(vertices.is_empty());
+        assert!(triangles.is_empty());
+    }
+
+    #[test]
+    fn single_inside_corner_gives_one_triangle() {
+        // Only the corner at (-1,-1,-1) lies inside the small sphere around it.
+        let s = SphereSDF::new([-1.0, -1.0, -1.0], 0.5);
+        let (vertices, triangles) = marching_cubes(&s, [[-1.0, 1.0]; 3], 1);
+        assert_eq!(triangles.len(), 1);
+        assert_eq!(vertices.len(), 3);
+        let t = triangles[0];
+        let (a, b, c) = (vertices[t[0]], vertices[t[1]], vertices[t[2]]);
+        // Each crossing sits at distance 0.5 from the corner along one axis.
+        for v in [a, b, c] {
+            let d = len3(sub3(v, [-1.0, -1.0, -1.0]));
+            assert!((d - 0.5).abs() < 1e-12, "d = {d}");
+        }
+        // The normal faces away from the inside corner.
+        let u = sub3(b, a);
+        let w = sub3(c, a);
+        let n = [
+            u[1] * w[2] - u[2] * w[1],
+            u[2] * w[0] - u[0] * w[2],
+            u[0] * w[1] - u[1] * w[0],
+        ];
+        let centroid = [
+            (a[0] + b[0] + c[0]) / 3.0 + 1.0,
+            (a[1] + b[1] + c[1]) / 3.0 + 1.0,
+            (a[2] + b[2] + c[2]) / 3.0 + 1.0,
+        ];
+        assert!(n[0] * centroid[0] + n[1] * centroid[1] + n[2] * centroid[2] > 0.0);
     }
 }

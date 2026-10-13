@@ -65,6 +65,14 @@ pub fn find_knot_span(n: usize, p: usize, t: f64, knot: &[f64]) -> usize {
     if (t - knot[n + 1]).abs() < 1e-14 {
         return n;
     }
+    // Parameters outside the domain clamp to the first / last span (the binary
+    // search below would never terminate for them).
+    if t < knot[p] {
+        return p;
+    }
+    if t > knot[n + 1] {
+        return n;
+    }
     let mut low = p;
     let mut high = n + 1;
     let mut mid = (low + high) / 2;
@@ -321,6 +329,15 @@ mod tests {
         assert_eq!(span, n);
     }
     #[test]
+    fn test_find_knot_span_out_of_range_clamps_instead_of_hanging() {
+        let knot = vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0];
+        // n = 3 (four basis functions), p = 2: valid spans are 2 and 3
+        assert_eq!(find_knot_span(3, 2, -0.25, &knot), 2);
+        assert_eq!(find_knot_span(3, 2, 1.25, &knot), 3);
+        assert_eq!(find_knot_span(3, 2, 0.25, &knot), 2);
+        assert_eq!(find_knot_span(3, 2, 0.75, &knot), 3);
+    }
+    #[test]
     fn test_basis_functions_partition_of_unity() {
         let knot = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
         let p = 2;
@@ -419,6 +436,30 @@ mod tests {
                 (orig_i - new_i).abs() < 1e-10,
                 "geometry changed after knot insert"
             );
+        }
+    }
+    #[test]
+    fn test_nurbs_curve_insert_knot_keeps_conic_exact() {
+        // Quarter circle (rational quadratic): knot insertion must act on the
+        // homogeneous control points, otherwise the curve leaves the circle.
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let circle = NurbsCurve::new(
+            vec![[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![1.0, w, 1.0],
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        );
+        let refined = circle.insert_knot(0.3).insert_knot(0.7).insert_knot(0.7);
+        assert_eq!(refined.control_points.len(), 6);
+        for i in 0..=100 {
+            let t = i as f64 / 100.0;
+            let a = circle.point_at(t);
+            let b = refined.point_at(t);
+            for d in 0..3 {
+                assert!((a[d] - b[d]).abs() < 1e-13, "t = {t}: {a:?} vs {b:?}");
+            }
+            let radius = (b[0] * b[0] + b[1] * b[1]).sqrt();
+            assert!((radius - 1.0).abs() < 1e-13, "radius {radius} at t = {t}");
         }
     }
     #[test]
@@ -574,15 +615,75 @@ mod tests {
     }
     #[test]
     fn test_knot_refinement_p_refine() {
+        // Single span: end multiplicities p + 1 -> p + 2.
         let knot = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
         let new_knot = KnotRefinement::p_refine_knot(&knot, 2);
-        assert!(!new_knot.is_empty());
+        assert_eq!(new_knot, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]);
+        // Interior knot of multiplicity 1 becomes multiplicity 2 (the continuity
+        // C^(p-m) of the basis is unchanged), not p + 2 copies (which would make
+        // the basis discontinuous there).
+        let knot = vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0];
+        let new_knot = KnotRefinement::p_refine_knot(&knot, 2);
+        assert_eq!(
+            new_knot,
+            vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0]
+        );
+        // A repeated interior knot keeps its relative multiplicity.
+        let knot = vec![0.0, 0.0, 0.0, 0.0, 0.4, 0.4, 0.7, 1.0, 1.0, 1.0, 1.0];
+        let new_knot = KnotRefinement::p_refine_knot(&knot, 3);
+        assert_eq!(
+            new_knot,
+            vec![
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.4, 0.4, 0.4, 0.7, 0.7, 1.0, 1.0, 1.0, 1.0, 1.0
+            ]
+        );
+    }
+    #[test]
+    fn test_knot_refinement_p_refine_keeps_continuity() {
+        // C^1 quadratic basis (interior knot of multiplicity 1) elevated to
+        // cubic must stay C^1 across the interior knot.
+        let knot = vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0];
+        let elevated = KnotRefinement::p_refine_knot(&knot, 2);
+        let basis = BsplineBasis::new(3, elevated);
+        let eps = 1e-9;
+        let (span_left, v_left, d_left) = basis.evaluate_deriv(0.5 - eps);
+        let (span_right, v_right, d_right) = basis.evaluate_deriv(0.5 + eps);
+        assert_eq!(v_left.len(), 4);
+        // Compare the full set of basis functions by global index: the active
+        // window shifts by one across the knot.
+        let n = basis.num_basis;
+        let mut full_left = vec![0.0; n];
+        let mut full_right = vec![0.0; n];
+        let mut dfull_left = vec![0.0; n];
+        let mut dfull_right = vec![0.0; n];
+        for j in 0..=3 {
+            full_left[span_left - 3 + j] = v_left[j];
+            dfull_left[span_left - 3 + j] = d_left[j];
+            full_right[span_right - 3 + j] = v_right[j];
+            dfull_right[span_right - 3 + j] = d_right[j];
+        }
+        for i in 0..n {
+            assert!((full_left[i] - full_right[i]).abs() < 1e-6, "N_{i} jumps");
+            assert!(
+                (dfull_left[i] - dfull_right[i]).abs() < 1e-6,
+                "N_{i}' jumps: {} vs {}",
+                dfull_left[i],
+                dfull_right[i]
+            );
+        }
+        let sum: f64 = full_right.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-12, "partition of unity: {sum}");
     }
     #[test]
     fn test_knot_refinement_k_refine() {
         let knot = vec![0.0, 0.0, 1.0, 1.0];
         let new_knot = KnotRefinement::k_refine(&knot, 1, 2);
-        assert!(new_knot.len() > knot.len());
+        // elevate to p = 2: [0,0,0,1,1,1], then insert 1/3 and 2/3 once each
+        assert_eq!(new_knot.len(), 8);
+        let expected = [0.0, 0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0];
+        for (a, b) in new_knot.iter().zip(expected.iter()) {
+            assert!((a - b).abs() < 1e-14, "{new_knot:?}");
+        }
     }
     #[test]
     fn test_iga_contact_gap_frictionless() {
@@ -897,14 +998,42 @@ mod tests_extended {
     fn degree_elevation_geometry_preserved() {
         let curve = make_line_curve();
         let elevated = DegreeElevation::elevate_once(&curve);
-        let p_orig = curve.point_at(0.5);
-        let p_elev = elevated.point_at(0.5);
-        assert!(
-            (p_orig[0] - p_elev[0]).abs() < 0.5,
-            "x should be close: orig={}, elev={}",
-            p_orig[0],
-            p_elev[0]
+        for i in 0..=100 {
+            let t = i as f64 / 100.0;
+            let p_orig = curve.point_at(t);
+            let p_elev = elevated.point_at(t);
+            for d in 0..3 {
+                assert!(
+                    (p_orig[d] - p_elev[d]).abs() < 1e-12,
+                    "t = {t}, axis {d}: orig = {}, elevated = {}",
+                    p_orig[d],
+                    p_elev[d]
+                );
+            }
+        }
+    }
+    #[test]
+    fn degree_elevation_quarter_circle_to_cubic_is_exact() {
+        // Rational quadratic quarter circle -> degree 3: every sample must agree
+        // with the original curve to rounding (the old implementation sampled
+        // the curve at uniform parameters and moved the circle by ~1e-2).
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let circle = NurbsCurve::new(
+            vec![[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![1.0, w, 1.0],
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
         );
+        let elevated = DegreeElevation::elevate(&circle, 1);
+        assert_eq!(elevated.basis.degree, 3);
+        for i in 0..=100 {
+            let t = i as f64 / 100.0;
+            let a = circle.point_at(t);
+            let b = elevated.point_at(t);
+            for d in 0..3 {
+                assert!((a[d] - b[d]).abs() < 1e-12, "t = {t}: {a:?} vs {b:?}");
+            }
+        }
     }
     #[test]
     fn volume_mass_matrix_size() {
@@ -938,6 +1067,22 @@ mod tests_extended {
         assert!(
             new_knot.len() > knot.len(),
             "k-refinement should grow knot vector"
+        );
+        // degree 1 -> 2 gives [0,0,0,1,1,1]; one uniform insertion adds 0.5 once.
+        assert_eq!(new_knot, vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]);
+    }
+    #[test]
+    fn k_refinement_strategy_multi_step_keeps_interior_continuity() {
+        // Linear basis (p = 1) with one interior knot of multiplicity 1 (C^0).
+        // Two degree elevations to p = 3 must give that knot multiplicity 3
+        // (still C^0), the end knots multiplicity 4 -- never p + 2 copies of the
+        // interior knot, which would make the basis discontinuous.
+        let knot = vec![0.0, 0.0, 0.5, 1.0, 1.0];
+        let strategy = KRefinementStrategy::new(3, 0, true, 0.01);
+        let new_knot = strategy.apply(&knot, 1);
+        assert_eq!(
+            new_knot,
+            vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0]
         );
     }
     #[test]
@@ -1082,6 +1227,33 @@ mod tests_nurbs_basis_and_assembly {
             b2.num_basis() > b.num_basis(),
             "knot insertion increases num_basis"
         );
+    }
+    #[test]
+    fn nurbs_basis_insert_knot_preserves_weight_function() {
+        // The denominator W(t) = sum w_i N_i(t) must not change under knot
+        // insertion, which fixes the refined weights uniquely.
+        let knot = vec![0.0, 0.0, 0.0, 0.4, 1.0, 1.0, 1.0];
+        let weights = vec![1.0, 2.5, 0.6, 1.7];
+        let basis = NurbsBasis::new(2, knot, weights);
+        let refined = basis.insert_knot(0.7);
+        assert_eq!(refined.num_basis(), basis.num_basis() + 1);
+        let weight_function = |b: &NurbsBasis, t: f64| -> f64 {
+            let p = b.degree();
+            let n = b.num_basis() - 1;
+            let span = find_knot_span(n, p, t, &b.bspline.knot);
+            let values = basis_functions(span, p, t, &b.bspline.knot);
+            values
+                .iter()
+                .enumerate()
+                .map(|(j, v)| v * b.weights[span - p + j])
+                .sum()
+        };
+        for i in 0..=50 {
+            let t = i as f64 / 50.0;
+            let w_old = weight_function(&basis, t);
+            let w_new = weight_function(&refined, t);
+            assert!((w_old - w_new).abs() < 1e-12, "W({t}): {w_old} vs {w_new}");
+        }
     }
     #[test]
     fn nurbs_basis_uniform_open_knot_length() {

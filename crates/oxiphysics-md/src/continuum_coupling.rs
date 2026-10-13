@@ -29,6 +29,21 @@
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
+// Unit conversion constants (amu / Å / ps / eV unit system)
+// ---------------------------------------------------------------------------
+
+/// Energy of one `amu·(Å/ps)²` expressed in electron-volts.
+///
+/// 1 Å/ps = 100 m/s, so 1 amu·(Å/ps)² = 1.66054e-27 kg · 1e4 m²/s² = 1.66054e-23 J
+/// = 1.036427e-4 eV (taking 1 amu = 1 g/mol exactly, as MD codes do).  This is
+/// the `mvv2e` factor of the "metal" unit system.
+pub const AMU_A2_PS2_TO_EV: f64 = 1.036_426_965_626_239_8e-4;
+
+/// Boltzmann constant in `amu·Å²/ps²` per kelvin (= 8.617333e-5 eV/K divided by
+/// [`AMU_A2_PS2_TO_EV`]).
+pub const K_B_AMU_A2_PS2: f64 = 0.831_446_261_8;
+
+// ---------------------------------------------------------------------------
 // BoundaryType
 // ---------------------------------------------------------------------------
 
@@ -578,11 +593,13 @@ impl AtomisticToContin {
     ///
     /// σ_kin = − (1/V) Σ_i m_i v_i ⊗ v_i
     ///
+    /// Masses are in amu and velocities in Å/ps; the `amu·(Å/ps)²` sums are
+    /// converted to eV with [`AMU_A2_PS2_TO_EV`] before the division by the
+    /// volume (Å³).
+    ///
     /// Returns 6-component Voigt stress (eV/Å³).
     pub fn kinetic_stress(&self, velocities: &[[f64; 3]], masses: &[f64], volume: f64) -> [f64; 6] {
         let mut s = [0.0_f64; 6];
-        // mass unit: amu, velocity: Å/ps → eV conversion factor ≈ 1.03643e-4
-        // Here we leave in amu·Å²/ps² units; caller converts as needed.
         for (&v, &m) in velocities.iter().zip(masses.iter()) {
             s[0] -= m * v[0] * v[0]; // xx
             s[1] -= m * v[1] * v[1]; // yy
@@ -590,6 +607,9 @@ impl AtomisticToContin {
             s[3] -= m * v[0] * v[1]; // xy
             s[4] -= m * v[1] * v[2]; // yz
             s[5] -= m * v[2] * v[0]; // zx
+        }
+        for si in s.iter_mut() {
+            *si *= AMU_A2_PS2_TO_EV;
         }
         if volume > 1e-30_f64 {
             for si in s.iter_mut() {
@@ -782,14 +802,13 @@ impl FluctuatingHydrodynamics {
     ///
     /// T = (2 / (3 N k_B)) Σ_i (1/2) m_i v_i²
     pub fn update_temperature_from_md(&mut self, velocities: &[[f64; 3]], masses: &[f64]) {
-        const K_B_AMU: f64 = 8.314462618e-3_f64; // kJ/(mol·K) ≈ units for amu·Å²/ps²
         let mut ke = 0.0_f64;
         for (&v, &m) in velocities.iter().zip(masses.iter()) {
             ke += 0.5_f64 * m * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
         }
         let n = velocities.len() as f64;
         if n > 0.0_f64 {
-            self.temperature = 2.0_f64 * ke / (3.0_f64 * n * K_B_AMU);
+            self.temperature = 2.0_f64 * ke / (3.0_f64 * n * K_B_AMU_A2_PS2);
         }
     }
 }
@@ -835,14 +854,14 @@ impl CoupleEnergy {
 
     /// Update MD kinetic energy from velocities and masses.
     ///
-    /// Uses conversion: 1 amu·(Å/ps)² = 0.01036443 eV.
+    /// Masses are in amu and velocities in Å/ps, converted with
+    /// 1 amu·(Å/ps)² = 1.036427e-4 eV ([`AMU_A2_PS2_TO_EV`]).
     pub fn update_md_kinetic(&mut self, velocities: &[[f64; 3]], masses: &[f64]) {
-        const CONV: f64 = 0.010364269656262398_f64; // amu·(Å/ps)² → eV
         let mut ke = 0.0_f64;
         for (&v, &m) in velocities.iter().zip(masses.iter()) {
             ke += 0.5_f64 * m * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
         }
-        self.md_kinetic = ke * CONV;
+        self.md_kinetic = ke * AMU_A2_PS2_TO_EV;
     }
 
     /// Update continuum kinetic energy from nodal velocities and masses.
@@ -878,13 +897,12 @@ impl CoupleEnergy {
         masses: &[f64],
         delta_e: f64,
     ) {
-        const CONV: f64 = 0.010364269656262398_f64;
         // Current KE in eV
         let mut ke = 0.0_f64;
         for (&v, &m) in velocities.iter().zip(masses.iter()) {
             ke += 0.5_f64 * m * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
         }
-        let ke_ev = ke * CONV;
+        let ke_ev = ke * AMU_A2_PS2_TO_EV;
         if ke_ev < 1e-30_f64 {
             return;
         }
@@ -1498,6 +1516,28 @@ mod tests {
     }
 
     #[test]
+    fn fluctuating_hydro_temperature_from_md_matches_equipartition() {
+        // Argon at 300 K: <v_x²> = k_B T / m with k_B = 1.380649e-23 J/K,
+        // m = 39.948 amu; v in Å/ps is (m/s) / 100.
+        let amu_kg = 1.660_539_066_60e-27_f64;
+        let mass_amu = 39.948_f64;
+        let target_t = 300.0_f64;
+        let v_si = (1.380_649e-23_f64 * target_t / (mass_amu * amu_kg)).sqrt();
+        let v = v_si / 100.0_f64;
+        let vel = vec![[v, v, v]; 64];
+        let masses = vec![mass_amu; 64];
+        let mut fh = FluctuatingHydrodynamics::new(
+            0.0_f64, 1e-3_f64, 0.0_f64, 0.6_f64, 1e-27_f64, 1e-15_f64, 0,
+        );
+        fh.update_temperature_from_md(&vel, &masses);
+        assert!(
+            (fh.temperature - target_t).abs() < 1e-3,
+            "T={} expected {target_t} K",
+            fh.temperature
+        );
+    }
+
+    #[test]
     fn fluctuating_hydro_zero_amplitude_when_zero_volume() {
         let fh = FluctuatingHydrodynamics::new(
             300.0_f64, 1e-3_f64, 0.0_f64, 0.6_f64, 0.0_f64, 1e-15_f64, 0,
@@ -1513,14 +1553,132 @@ mod tests {
         assert_eq!(ce.total_energy(), 0.0_f64);
     }
 
+    /// Independent SI-derived value of 1 amu·(Å/ps)² in eV (CODATA 2018 amu, exact e).
+    fn amu_a2_ps2_in_ev_from_si() -> f64 {
+        let amu_kg = 1.660_539_066_60e-27_f64;
+        let angstrom_per_ps_in_m_per_s = 100.0_f64;
+        let ev_in_joule = 1.602_176_634e-19_f64;
+        amu_kg * angstrom_per_ps_in_m_per_s * angstrom_per_ps_in_m_per_s / ev_in_joule
+    }
+
+    #[test]
+    fn amu_a2_ps2_constant_matches_si_derivation() {
+        let reference = amu_a2_ps2_in_ev_from_si();
+        assert!(
+            ((AMU_A2_PS2_TO_EV - reference) / reference).abs() < 1e-8,
+            "AMU_A2_PS2_TO_EV = {AMU_A2_PS2_TO_EV}, SI reference = {reference}"
+        );
+        // 1 amu·(Å/ps)² is 1.0364e-4 eV, not the 1.0364e-2 eV of kJ/mol.
+        assert!((AMU_A2_PS2_TO_EV - 1.0364e-4_f64).abs() < 1e-7);
+    }
+
     #[test]
     fn couple_energy_update_md_kinetic() {
         let mut ce = CoupleEnergy::new();
         let vel = vec![[1.0_f64, 0.0_f64, 0.0_f64]];
         let masses = vec![1.0_f64]; // 1 amu at 1 Å/ps
         ce.update_md_kinetic(&vel, &masses);
-        // KE = 0.5 * 1 * 1 * CONV ≈ 0.00518 eV
-        assert!(ce.md_kinetic > 0.0_f64, "md_kinetic={}", ce.md_kinetic);
+        // KE = 0.5 · 1 amu · (1 Å/ps)² = 0.5 · 1.0364e-4 eV.
+        let expected = 0.5_f64 * amu_a2_ps2_in_ev_from_si();
+        assert!(
+            ((ce.md_kinetic - expected) / expected).abs() < 1e-6,
+            "md_kinetic={} expected={expected}",
+            ce.md_kinetic
+        );
+    }
+
+    #[test]
+    fn couple_energy_md_kinetic_argon_matches_si() {
+        // Argon (39.948 amu) moving at |v| = 1 Å/ps: KE = 0.5 · 39.948 · 1.0364e-4 eV.
+        let mut ce = CoupleEnergy::new();
+        let vel = vec![[0.0_f64, 0.6_f64, 0.8_f64]];
+        let masses = vec![39.948_f64];
+        ce.update_md_kinetic(&vel, &masses);
+        let expected = 0.5_f64 * 39.948_f64 * amu_a2_ps2_in_ev_from_si();
+        assert!(
+            ((ce.md_kinetic - expected) / expected).abs() < 1e-6,
+            "md_kinetic={} expected={expected}",
+            ce.md_kinetic
+        );
+        // ≈ 2.0702e-3 eV (the old constant gave 0.207 eV, a factor of 100 too much).
+        assert!(
+            (ce.md_kinetic - 2.0702e-3_f64).abs() < 1e-6,
+            "{}",
+            ce.md_kinetic
+        );
+    }
+
+    #[test]
+    fn couple_energy_kinetic_correction_adds_exact_energy() {
+        let mut ce = CoupleEnergy::new();
+        let mut vel = vec![[1.0_f64, 0.5, -0.25], [0.3, -0.7, 0.9], [-1.1, 0.2, 0.4]];
+        let masses = vec![39.948_f64, 12.011, 1.008];
+        ce.update_md_kinetic(&vel, &masses);
+        let ke_before = ce.md_kinetic;
+        let delta_e = 1.0e-3_f64;
+        ce.apply_kinetic_correction(&mut vel, &masses, delta_e);
+        ce.update_md_kinetic(&vel, &masses);
+        let gained = ce.md_kinetic - ke_before;
+        assert!(
+            (gained - delta_e).abs() < 1e-12,
+            "kinetic energy must change by exactly {delta_e} eV, changed by {gained}"
+        );
+    }
+
+    #[test]
+    fn couple_energy_kinetic_correction_removes_exact_energy() {
+        let mut ce = CoupleEnergy::new();
+        let mut vel = vec![[2.0_f64, 0.0, 0.0], [0.0, -3.0, 1.0]];
+        let masses = vec![20.0_f64, 40.0];
+        ce.update_md_kinetic(&vel, &masses);
+        let ke_before = ce.md_kinetic;
+        ce.apply_kinetic_correction(&mut vel, &masses, -5.0e-4);
+        ce.update_md_kinetic(&vel, &masses);
+        assert!(
+            (ke_before - ce.md_kinetic - 5.0e-4).abs() < 1e-12,
+            "before={ke_before} after={}",
+            ce.md_kinetic
+        );
+    }
+
+    #[test]
+    fn stress_kinetic_is_in_ev_per_cubic_angstrom() {
+        // Ideal-gas check: with Σ m v_x² = N k_B T the kinetic stress must be
+        // σ_xx = −N k_B T / V, expressed in eV/Å³.
+        let extractor = AtomisticToContin::new(10.0_f64);
+        let n = 500_usize;
+        let mass = 39.948_f64;
+        let temperature = 300.0_f64;
+        let v_thermal = (K_B_AMU_A2_PS2 * temperature / mass).sqrt();
+        let vel = vec![[v_thermal, 0.0_f64, 0.0_f64]; n];
+        let masses = vec![mass; n];
+        let volume = 1.0e5_f64;
+        let s = extractor.kinetic_stress(&vel, &masses, volume);
+        let k_b_ev_per_k = 8.617_333_262e-5_f64;
+        let expected = -(n as f64) * k_b_ev_per_k * temperature / volume;
+        assert!(
+            ((s[0] - expected) / expected).abs() < 1e-6,
+            "sigma_xx={} expected={expected}",
+            s[0]
+        );
+        assert!(s[1].abs() < 1e-18 && s[2].abs() < 1e-18);
+    }
+
+    #[test]
+    fn total_stress_combines_kinetic_and_potential_in_ev_per_cubic_angstrom() {
+        let mut extractor = AtomisticToContin::new(10.0_f64);
+        let vel = vec![[3.0_f64, 0.0_f64, 0.0_f64]];
+        let masses = vec![40.0_f64];
+        let pos = vec![[0.0_f64; 3]];
+        let forces = vec![[0.0_f64; 3]];
+        let volume = 50.0_f64;
+        let total = extractor.total_stress(&pos, &forces, &vel, &masses, volume);
+        let expected = -40.0_f64 * 9.0_f64 * AMU_A2_PS2_TO_EV / volume;
+        assert!(
+            (total[0] - expected).abs() < 1e-18,
+            "{} vs {expected}",
+            total[0]
+        );
     }
 
     #[test]

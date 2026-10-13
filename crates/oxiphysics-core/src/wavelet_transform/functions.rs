@@ -131,25 +131,44 @@ pub(super) const DB6_HI: [f64; 12] = [
     -0.1115407433501095,
 ];
 /// Convolve `signal` with `filter` and downsample by 2 (periodic extension).
+///
+/// A signal of `n` samples yields exactly `n / 2` coefficients when `n` is
+/// even, so the low-pass and high-pass halves together are as long as the
+/// signal and the (orthonormal) transform is non-redundant: its matrix is
+/// square and orthogonal, and [`upsample_convolve`] with the time-reversed
+/// filter applies its transpose. An odd-length signal is first extended by
+/// repeating its last sample and then yields `(n + 1) / 2` coefficients.
+/// An empty signal (or filter) yields an empty result.
 pub fn convolve_downsample(signal: &[f64], filter: &[f64]) -> Vec<f64> {
     let n = signal.len();
     let flen = filter.len();
-    let out_len = (n + flen - 1) / 2;
+    if n == 0 || flen == 0 {
+        return Vec::new();
+    }
+    let padded_len = n + n % 2;
+    let out_len = padded_len / 2;
     let mut result = Vec::with_capacity(out_len);
     for i in 0..out_len {
         let mut sum = 0.0;
         for (j, &h) in filter.iter().enumerate() {
-            let idx = (2 * i + flen - 1).wrapping_sub(j) % n;
-            sum += h * signal[idx];
+            let idx = (2 * i + flen - 1 - j) % padded_len;
+            let sample = if idx < n { signal[idx] } else { signal[n - 1] };
+            sum += h * sample;
         }
         result.push(sum);
     }
     result
 }
 /// Upsample by 2 (zero-insertion) and convolve with `filter` (periodic extension).
+///
+/// With the time-reversed analysis filter this is exactly the transpose of
+/// [`convolve_downsample`] on a signal of `target_len` samples; for the
+/// orthonormal wavelet filters used here the transpose is the inverse.
 pub fn upsample_convolve(coeffs: &[f64], filter: &[f64], target_len: usize) -> Vec<f64> {
-    let _flen = filter.len();
     let mut result = vec![0.0; target_len];
+    if target_len == 0 {
+        return result;
+    }
     for (k, &c) in coeffs.iter().enumerate() {
         for (j, &h) in filter.iter().enumerate() {
             let idx = (2 * k + j) % target_len;
@@ -159,6 +178,9 @@ pub fn upsample_convolve(coeffs: &[f64], filter: &[f64], target_len: usize) -> V
     result
 }
 /// Perform a single-level forward DWT.
+///
+/// Both coefficient bands have `n / 2` entries for an even-length signal and
+/// `(n + 1) / 2` for an odd-length one (see [`convolve_downsample`]).
 pub fn dwt_single(signal: &[f64], wavelet: WaveletFamily) -> DwtLevel {
     let lo = wavelet.lo_dec();
     let hi = wavelet.hi_dec();
@@ -168,12 +190,21 @@ pub fn dwt_single(signal: &[f64], wavelet: WaveletFamily) -> DwtLevel {
     }
 }
 /// Perform a single-level inverse DWT.
+///
+/// `target_len` is the length of the signal that was transformed. The
+/// synthesis runs on the even padded length `2 * approx.len()` that the
+/// analysis worked on and is then cut (or zero-extended) to `target_len`, so
+/// `idwt_single(&dwt_single(x, w), w, x.len())` reproduces `x` for every
+/// signal length.
 pub fn idwt_single(level: &DwtLevel, wavelet: WaveletFamily, target_len: usize) -> Vec<f64> {
     let lo_r = wavelet.lo_rec();
     let hi_r = wavelet.hi_rec();
-    let a = upsample_convolve(&level.approx, &lo_r, target_len);
-    let d = upsample_convolve(&level.detail, &hi_r, target_len);
-    a.iter().zip(d.iter()).map(|(&x, &y)| x + y).collect()
+    let padded_len = 2 * level.approx.len().max(level.detail.len());
+    let a = upsample_convolve(&level.approx, &lo_r, padded_len);
+    let d = upsample_convolve(&level.detail, &hi_r, padded_len);
+    let mut out: Vec<f64> = a.iter().zip(d.iter()).map(|(&x, &y)| x + y).collect();
+    out.resize(target_len, 0.0);
+    out
 }
 /// Perform multi-level forward DWT decomposition.
 ///

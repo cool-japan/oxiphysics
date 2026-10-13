@@ -59,11 +59,15 @@ fn main() {
     );
 
     // ── Rigid body pipeline ─────────────────────────────────────────
-    // Configure a coupling region that covers the fluid pool.
+    // Configure a coupling region that matches the fluid pool: it spans
+    // y in [0, 0.4] (the surface of the pool is the top of the region), x in
+    // [-0.3, 0.7] around the pool and z in [-0.5, 0.5] around its one layer
+    // of particles. The pipeline applies the buoyancy of this fluid to the
+    // collider volume of every rigid body that dips into the region.
     let coupling = SphRigidCouplingParams {
         fluid_density: 1000.0,
         coupling_alpha: 1.0,
-        region_half_extents: Vec3::new(1.0, 1.0, 1.0),
+        region_half_extents: Vec3::new(0.5, 0.2, 0.5),
         region_centre: Vec3::new(0.2, 0.2, 0.0),
     };
 
@@ -134,21 +138,16 @@ fn main() {
             }
         }
 
-        // Rigid body step (includes gravity + contact solving).
+        // Rigid body step (gravity, the pipeline's SPH-rigid buoyancy for the
+        // coupling region above, and contact solving).
         pipeline.step(dt, &mut bodies, &colliders);
 
-        // Manual buoyancy: compute approximate submerged volume and apply.
+        // Quadratic fluid drag while the sphere is in the pool. The pipeline
+        // supplies the buoyancy itself, so it is not applied here again.
         if let Some(body) = bodies.get_mut(sphere_h) {
             let p = body.transform.position;
-            // If sphere centre is below the fluid top (~0.4 m), apply buoyancy.
             let fluid_top = 0.4_f64;
             if p.y < fluid_top {
-                let submersion = ((fluid_top - p.y) / (2.0 * sphere_radius)).clamp(0.0, 1.0);
-                let submerged_vol =
-                    submersion * (4.0 / 3.0) * std::f64::consts::PI * sphere_radius.powi(3);
-                let buoyancy = 1000.0 * 9.81 * submerged_vol;
-                body.velocity.y += buoyancy * dt * body.inverse_mass;
-                // Fluid drag.
                 let drag_coeff = 0.5 * 1000.0 * 0.47 * std::f64::consts::PI * sphere_radius.powi(2);
                 let drag = -drag_coeff * body.velocity.y * body.velocity.y.abs();
                 body.velocity.y += drag * dt * body.inverse_mass;

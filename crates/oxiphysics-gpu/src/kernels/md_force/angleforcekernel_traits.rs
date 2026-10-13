@@ -56,7 +56,8 @@ impl ComputeKernel for AngleForceKernel {
             let delta = theta - theta0;
             energies[b] = 0.5 * k_theta * delta * delta;
             let sin_theta = (1.0 - cos_theta * cos_theta).sqrt().max(1e-12);
-            let d_prefactor = -k_theta * delta / sin_theta;
+            // F_i = -dV/dr_i = +(k·δ / sinθ) · dcosθ/dr_i (since dθ/dcosθ = -1/sinθ).
+            let d_prefactor = k_theta * delta / sin_theta;
             for dim in 0..3 {
                 let d_cos_d_ri =
                     rjk[dim] / (len_ji * len_jk) - cos_theta * rji[dim] / (len_ji * len_ji);

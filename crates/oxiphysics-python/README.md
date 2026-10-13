@@ -104,8 +104,14 @@ pip install maturin
 # Build the extension in-place (fast iteration)
 cd crates/oxiphysics-python && make dev
 
-# Run the test harness
+# Run the pytest harness
 make test
+
+# Run the Rust unit tests (also part of `cargo nextest run --workspace`).
+# The test binary links libpython, so PyO3 must find a Python installation
+# (e.g. PYO3_PYTHON=python3). `maturin` adds `pyo3/extension-module` for wheels
+# only, which is why the crate itself does not enable that feature.
+make rust-test
 
 # Build a release wheel
 make build

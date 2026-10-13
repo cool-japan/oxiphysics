@@ -5,6 +5,7 @@
 use crate::particle::SoftParticle;
 use oxiphysics_core::math::Vec3;
 
+use super::self_collision::SelfCollisionGrid;
 use super::types::{ClothEdge, ClothVertex, RigidSphere};
 
 /// Apply aerodynamic wind force to particles based on triangle normals and
@@ -75,35 +76,17 @@ pub(super) fn normalize(a: [f64; 3]) -> [f64; 3] {
 /// Resolve self-collision for cloth vertices using a simple repulsion sphere.
 ///
 /// For every pair of vertices closer than `min_dist`, applies a positional
-/// correction that pushes them apart to `min_dist`.  Only non-fixed vertices
-/// are corrected.
+/// correction that pushes them apart to `min_dist`, split by inverse mass.
+/// Only non-fixed vertices are corrected.
+///
+/// Candidate pairs come from a uniform-grid broadphase
+/// ([`SelfCollisionGrid`]) rebuilt on every call, so the cost is linear in the
+/// vertex count for a cloth of bounded vertex density instead of quadratic.
+/// Callers that resolve self-collision every step can keep a
+/// [`SelfCollisionGrid`] and call [`SelfCollisionGrid::resolve`] to reuse its
+/// scratch buffers.
 pub fn resolve_self_collision(vertices: &mut [ClothVertex], min_dist: f64) {
-    let n = vertices.len();
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let pi = vertices[i].pos;
-            let pj = vertices[j].pos;
-            let d = sub(pj, pi);
-            let dist = length(d);
-            if dist < min_dist && dist > 1e-14 {
-                let overlap = min_dist - dist;
-                let dir = scale(d, 1.0 / dist);
-                let wi = vertices[i].inv_mass;
-                let wj = vertices[j].inv_mass;
-                let w_sum = wi + wj;
-                if w_sum < 1e-30 {
-                    continue;
-                }
-                let corr = scale(dir, overlap / w_sum);
-                if !vertices[i].fixed {
-                    vertices[i].pos = sub(vertices[i].pos, scale(corr, wi));
-                }
-                if !vertices[j].fixed {
-                    vertices[j].pos = add(vertices[j].pos, scale(corr, wj));
-                }
-            }
-        }
-    }
+    SelfCollisionGrid::new().resolve(vertices, min_dist);
 }
 /// Resolve collision between all cloth vertices and a rigid sphere.
 ///

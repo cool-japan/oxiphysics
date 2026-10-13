@@ -250,6 +250,10 @@ impl SoftConstraint for IsometricBendingConstraint {
             particles[i].position += grads[k] * (w[k] * d_lambda);
         }
     }
+
+    fn reset_lambda(&mut self) {
+        Self::reset_lambda(self);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -383,6 +387,10 @@ impl SoftConstraint for CSTStrainConstraint {
         particles[i0].position += g0 * (w[0] * d_lambda);
         particles[i1].position += g1 * (w[1] * d_lambda);
         particles[i2].position += g2 * (w[2] * d_lambda);
+    }
+
+    fn reset_lambda(&mut self) {
+        Self::reset_lambda(self);
     }
 }
 
@@ -523,6 +531,10 @@ impl SoftConstraint for NeoHookeanConstraint {
             particles[i].position += grads[k] * (w[k] * d_lambda);
         }
     }
+
+    fn reset_lambda(&mut self) {
+        Self::reset_lambda(self);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -610,6 +622,10 @@ impl SoftConstraint for VolumeConservationConstraint {
             particles[i].position += grads[i] * (w * d_lambda);
         }
     }
+
+    fn reset_lambda(&mut self) {
+        Self::reset_lambda(self);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -688,6 +704,10 @@ impl SoftConstraint for CableConstraint {
         particles[self.i].position += n * (wi * d_lambda);
         particles[self.j].position -= n * (wj * d_lambda);
     }
+
+    fn reset_lambda(&mut self) {
+        Self::reset_lambda(self);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -765,6 +785,10 @@ impl SoftConstraint for RigidBodyConstraint {
         self.lambda += d_lambda;
         particles[self.particle_idx].position += n * (w * d_lambda);
     }
+
+    fn reset_lambda(&mut self) {
+        Self::reset_lambda(self);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -828,6 +852,10 @@ impl SoftConstraint for SewingConstraint {
             particles[ia].position += n * (wa * d_lambda);
             particles[ib].position -= n * (wb * d_lambda);
         }
+    }
+
+    fn reset_lambda(&mut self) {
+        Self::reset_lambda(self);
     }
 }
 
@@ -913,6 +941,10 @@ impl SoftConstraint for PressureConstraint {
             particles[i].position += grads[i] * (w * d_lambda);
         }
     }
+
+    fn reset_lambda(&mut self) {
+        Self::reset_lambda(self);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -972,6 +1004,10 @@ impl SoftConstraint for AnchorConstraint {
         self.lambda += d_lambda;
         particles[self.particle_idx].position += n * (w * d_lambda);
     }
+
+    fn reset_lambda(&mut self) {
+        Self::reset_lambda(self);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1020,6 +1056,10 @@ impl ConstraintSolver {
                     p.position += p.velocity * sub_dt;
                 }
             }
+            // XPBD: the Lagrange multipliers restart from zero every sub-step.
+            for c in constraints.iter_mut() {
+                c.reset_lambda();
+            }
             // Constraint projection (Gauss-Seidel)
             for _iter in 0..self.iterations {
                 for c in constraints.iter_mut() {
@@ -1036,12 +1076,19 @@ impl ConstraintSolver {
     }
 
     /// Run only the constraint projection phase (no integration).
+    ///
+    /// One call is the projection phase of a single sub-step of length
+    /// `dt_sub`, so the constraints' Lagrange multipliers are reset first and
+    /// then accumulated over the `iterations` Gauss-Seidel sweeps.
     pub fn project_only(
         &self,
         particles: &mut [SoftParticle],
         constraints: &mut [Box<dyn SoftConstraint>],
         dt_sub: Real,
     ) {
+        for c in constraints.iter_mut() {
+            c.reset_lambda();
+        }
         for _iter in 0..self.iterations {
             for c in constraints.iter_mut() {
                 c.project(particles, dt_sub);

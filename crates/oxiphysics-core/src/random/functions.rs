@@ -5,6 +5,7 @@
 use std::f64::consts::PI;
 
 use super::types::Xoshiro256;
+use crate::numerics::{inc_beta, inc_beta_xy};
 
 /// Box-Muller transform: return two independent N(0,1) values.
 pub fn box_muller(rng: &mut Xoshiro256) -> (f64, f64) {
@@ -360,13 +361,13 @@ mod tests {
     }
     #[test]
     fn sobol_dimensions() {
-        let samples = RandomSampler::sobol(50, 4);
+        let samples = RandomSampler::sobol(50, 4).unwrap();
         assert_eq!(samples.len(), 50);
         assert_eq!(samples[0].len(), 4);
     }
     #[test]
     fn sobol_range() {
-        let samples = RandomSampler::sobol(100, 2);
+        let samples = RandomSampler::sobol(100, 2).unwrap();
         for row in &samples {
             for &v in row {
                 assert!((0.0..=1.0).contains(&v), "v={v}");
@@ -582,41 +583,153 @@ pub fn normal_ppf(p: f64) -> f64 {
             / (1.0 + q * (D[3] + q * (D[2] + q * (D[1] + q * D[0]))))
     }
 }
-/// Approximate Student-t CDF using numerical integration.
+/// Degrees of freedom from which [`student_t_cdf`] prefers the large-`nu` expansion.
+const STUDENT_T_EXPANSION_MIN_NU: f64 = 1.0e4;
+/// From this many degrees of freedom on, every `x` outside the expansion region
+/// `|x| <= nu^(1/4) / 2` has a tail probability far below `1e-300`.
+const STUDENT_T_EXPANSION_ONLY_NU: f64 = 1.0e8;
+
+/// Upper tail `P(Z > a)` of the standard normal distribution.
 ///
-/// Uses Simpson's rule for moderate ν; accurate to ~1e-6.
-pub fn student_t_cdf(x: f64, nu: f64) -> f64 {
-    if nu > 100.0 {
-        return normal_cdf(x);
+/// With `z = a / sqrt(2)` the tail is `erfc(z) / 2`.  For `z < 1` it is computed
+/// as `1 - erf(z)` from the Maclaurin series
+/// `erf(z) = 2/sqrt(pi) exp(-z²) Σ 2^n z^(2n+1) / (2n+1)!!` (all terms positive, so
+/// there is no cancellation); for `z >= 1` Lentz's continued fraction
+/// `erfc(z) = exp(-z²)/sqrt(pi) / (z + (1/2)/(z + 1/(z + (3/2)/(z + ...))))`
+/// keeps a relative accuracy of about `1e-13` far into the tail.  The result is
+/// accurate to a few ulp for moderate `a`, unlike the `7.5e-8` approximation of
+/// [`normal_cdf`].
+fn standard_normal_upper_tail(a: f64) -> f64 {
+    const MAX_TERMS: usize = 2000;
+    const TINY: f64 = 1.0e-300;
+    if a.is_nan() {
+        return f64::NAN;
     }
-    let t_sq = x * x;
-    let z = nu / (nu + t_sq);
-    let ib = regularized_incomplete_beta(nu / 2.0, 0.5, z);
+    if a < 0.0 {
+        return 1.0 - standard_normal_upper_tail(-a);
+    }
+    let z = a / std::f64::consts::SQRT_2;
+    if z == 0.0 {
+        return 0.5;
+    }
+    if z < 1.0 {
+        let z_sq = z * z;
+        let mut term = z;
+        let mut sum = z;
+        for n in 1..=200_u32 {
+            term *= 2.0 * z_sq / f64::from(2 * n + 1);
+            sum += term;
+            if term < 1.0e-17 * sum {
+                break;
+            }
+        }
+        return 0.5 * (1.0 - 2.0 / PI.sqrt() * (-z_sq).exp() * sum);
+    }
+    let mut fraction = z;
+    let mut c = z;
+    let mut d = 0.0_f64;
+    for k in 1..=MAX_TERMS {
+        let a_k = k as f64 / 2.0;
+        d = z + a_k * d;
+        if d == 0.0 {
+            d = TINY;
+        }
+        c = z + a_k / c;
+        if c == 0.0 {
+            c = TINY;
+        }
+        d = d.recip();
+        let delta = c * d;
+        fraction *= delta;
+        if (delta - 1.0).abs() < 1.0e-16 {
+            break;
+        }
+    }
+    0.5 * (-z * z).exp() / (PI.sqrt() * fraction)
+}
+/// The correction `Σ_{k=1..4} g_k(x) / nu^k` in the large-`nu` expansion
+/// `P(T <= x) = Φ(x) - φ(x) Σ_k g_k(x) / nu^k` of the Student-t CDF about the
+/// normal law (Abramowitz & Stegun 26.7.8, carried to the fourth order), with
+/// `g_1 = x (x² + 1) / 4`, `g_2 = x (x² - 3) (3 x⁴ + 2 x² + 1) / 96`, ...
+fn student_t_expansion_correction(x: f64, nu: f64) -> f64 {
+    let x2 = x * x;
+    let inv_nu = nu.recip();
+    let g1 = x * (x2 + 1.0) / 4.0;
+    let g2 = x * (x2 - 3.0) * (3.0 * x2 * x2 + 2.0 * x2 + 1.0) / 96.0;
+    let g3 = x * (((((x2 - 11.0) * x2 + 14.0) * x2 + 6.0) * x2 - 3.0) * x2 - 15.0) / 384.0;
+    let g4 = x
+        * (((((((15.0 * x2 - 375.0) * x2 + 2225.0) * x2 - 2141.0) * x2 - 939.0) * x2 - 213.0)
+            * x2
+            + 915.0)
+            * x2
+            + 945.0)
+        / 92160.0;
+    (((g4 * inv_nu + g3) * inv_nu + g2) * inv_nu + g1) * inv_nu
+}
+/// Upper tail `P(T > ax)` for `ax >= 0` from the large-`nu` expansion: the exactly
+/// evaluated normal tail plus `φ(ax)` times the expansion correction.
+fn student_t_upper_tail_expansion(ax: f64, nu: f64) -> f64 {
+    let pdf = (-0.5 * ax * ax).exp() / (2.0 * PI).sqrt();
+    (standard_normal_upper_tail(ax) + pdf * student_t_expansion_correction(ax, nu)).clamp(0.0, 1.0)
+}
+/// Student-t cumulative distribution function `P(T <= x)` with `nu` degrees of freedom.
+///
+/// * In general the CDF is evaluated exactly through the regularized incomplete
+///   beta function: for `x >= 0`, `P(T <= x) = 1 - I_z(nu/2, 1/2) / 2` with
+///   `z = nu / (nu + x²)`; the lower tail follows from the symmetry of the
+///   density.  The complement `1 - z = x² / (nu + x²)` is formed directly, so the
+///   tails keep their full relative accuracy.  The absolute error is about
+///   `1e-15 * nu` (the cancellation in `ln B(nu/2, 1/2)`), below `1e-11` for
+///   `nu < 1e4`.
+/// * For very many degrees of freedom the incomplete beta function loses digits
+///   (its argument `z` rounds to 1).  From `nu = 1e4` on and for
+///   `|x| <= nu^(1/4) / 2` the CDF is therefore computed from the expansion
+///   about the normal law, `Φ(x) - φ(x) Σ g_k(x) / nu^k` through the fourth
+///   order (Abramowitz & Stegun 26.7.8), applied to the exactly evaluated normal
+///   tail.  It is accurate to about `1e-16` absolute and `1e-12` relative in the
+///   tails for every larger `nu`.
+///
+/// `nu = +inf` returns the normal CDF; `NaN` input or `nu <= 0` returns `NaN`.
+pub fn student_t_cdf(x: f64, nu: f64) -> f64 {
+    if x.is_nan() || nu.is_nan() || nu <= 0.0 {
+        return f64::NAN;
+    }
+    if x.is_infinite() {
+        return if x > 0.0 { 1.0 } else { 0.0 };
+    }
+    let ax = x.abs();
+    if nu == f64::INFINITY {
+        let tail = standard_normal_upper_tail(ax);
+        return if x >= 0.0 { 1.0 - tail } else { tail };
+    }
+    if nu >= STUDENT_T_EXPANSION_MIN_NU {
+        if ax <= 0.5 * nu.powf(0.25) {
+            let tail = student_t_upper_tail_expansion(ax, nu);
+            return if x >= 0.0 { 1.0 - tail } else { tail };
+        }
+        if nu >= STUDENT_T_EXPANSION_ONLY_NU {
+            return if x >= 0.0 { 1.0 } else { 0.0 };
+        }
+    }
+    let t_sq = ax * ax;
+    let (z, one_minus_z) = if t_sq.is_finite() {
+        let denom = nu + t_sq;
+        (nu / denom, t_sq / denom)
+    } else {
+        // x² overflows: use nu / x² instead, which is finite and tiny.
+        let ratio = nu / ax / ax;
+        (ratio / (1.0 + ratio), 1.0 / (1.0 + ratio))
+    };
+    let ib = inc_beta_xy(z, one_minus_z, nu / 2.0, 0.5);
     if x >= 0.0 { 1.0 - 0.5 * ib } else { 0.5 * ib }
 }
-/// Regularized incomplete beta function I_x(a, b).
+/// Regularized incomplete beta function `I_x(a, b)`.
 ///
-/// Uses a continued fraction expansion (Lentz's method).
+/// Evaluates the Beta(`a`, `b`) CDF with the continued fraction of
+/// [`crate::numerics::inc_beta`], whose argument order is `(x, a, b)`; note that
+/// this function takes the shape parameters first: `(a, b, x)`.
 pub fn regularized_incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
-    if x <= 0.0 {
-        return 0.0;
-    }
-    if x >= 1.0 {
-        return 1.0;
-    }
-    if x > (a + 1.0) / (a + b + 2.0) {
-        return 1.0 - regularized_incomplete_beta(b, a, 1.0 - x);
-    }
-    let ln_beta = log_gamma(a) + log_gamma(b) - log_gamma(a + b);
-    let front = (a * x.ln() + b * (1.0 - x).ln() - ln_beta - a.ln()).exp();
-    let mut cf = 1.0f64;
-    for m in (1..=20).rev() {
-        let mf = m as f64;
-        let d1 = mf * (b - mf) * x / ((a + 2.0 * mf - 1.0) * (a + 2.0 * mf));
-        let d2 = -(a + mf) * (a + b + mf) * x / ((a + 2.0 * mf) * (a + 2.0 * mf + 1.0));
-        cf = 1.0 + d1 / (1.0 + d2 / cf);
-    }
-    front / (a * cf.max(1e-300))
+    inc_beta(x, a, b)
 }
 #[cfg(test)]
 mod extended_tests {
@@ -647,6 +760,7 @@ mod extended_tests {
 
     use crate::random::OrnsteinUhlenbeck;
 
+    use crate::random::RandomSampler;
     use crate::random::RejectionSampler;
     use crate::random::ScrambledHalton;
     use crate::random::SobolSequence;
@@ -655,13 +769,19 @@ mod extended_tests {
     use crate::random::StudentTDist;
     use crate::random::TCopula;
 
+    use crate::error::PhysicsError;
+    use crate::optimization::cholesky_lower;
+    use crate::random::SOBOL_MAX_DIM;
     use crate::random::WeibullDist;
     use crate::random::WishartMatrix;
     use crate::random::Xoshiro256;
     use crate::random::ZigguratNormal;
+    use crate::random::box_muller;
     use crate::random::functions::PI;
     use crate::random::normal_ppf;
+    use crate::random::regularized_incomplete_beta;
     use crate::random::sample_truncated_normal;
+    use crate::random::student_t_cdf;
     #[test]
     fn gamma_dist_positive_samples() {
         let dist = GammaDist::new(2.0, 1.0);
@@ -991,7 +1111,7 @@ mod extended_tests {
     }
     #[test]
     fn sobol_sequence_range() {
-        let mut sobol = SobolSequence::new(3);
+        let mut sobol = SobolSequence::new(3).unwrap();
         for _ in 0..100 {
             let pt = sobol.next_point();
             for &v in &pt {
@@ -1001,7 +1121,7 @@ mod extended_tests {
     }
     #[test]
     fn sobol_sequence_generate_count() {
-        let mut sobol = SobolSequence::new(2);
+        let mut sobol = SobolSequence::new(2).unwrap();
         let pts = sobol.generate(50);
         assert_eq!(pts.len(), 50);
     }
@@ -1172,6 +1292,589 @@ mod extended_tests {
         for _ in 0..50 {
             let v = rs.sample(&mut rng, &mut propose, &target);
             assert!((0.0..=1.0).contains(&v));
+        }
+    }
+    /// `(x, nu, P(T <= x))` evaluated with 50-digit arithmetic (mpmath, cross-checked with SciPy).
+    const STUDENT_T_REFERENCE: [(f64, f64, f64); 14] = [
+        (1.0, 1.0, 0.75),
+        (2.0, 10.0, 0.9633059826146299),
+        (2.0, 5.0, 0.9490302605850708),
+        (0.0, 3.0, 0.5),
+        (-1.5, 4.0, 0.104),
+        (3.0, 2.0, 0.9522670168666454),
+        (-0.5, 30.0, 0.31036150244256366),
+        (2.0, 100.0, 0.9758939106344332),
+        (2.0, 101.0, 0.9759073943963047),
+        (1.96, 1000.0, 0.9748634075221256),
+        (-2.5, 7.5, 0.019410129136812778),
+        (10.0, 3.0, 0.9989358004707929),
+        (0.1, 1.0, 0.5317255174305535),
+        (1.5, 0.5, 0.7460491046759458),
+    ];
+    #[test]
+    fn regularized_incomplete_beta_known_values() {
+        assert!((regularized_incomplete_beta(1.0, 1.0, 0.3) - 0.3).abs() < 1e-12);
+        assert!((regularized_incomplete_beta(2.0, 3.0, 0.2) - 0.1808).abs() < 1e-12);
+        assert!((regularized_incomplete_beta(2.0, 3.0, 0.6) - 0.8208).abs() < 1e-12);
+        assert!((regularized_incomplete_beta(0.5, 0.5, 0.5) - 0.5).abs() < 1e-12);
+        assert_eq!(regularized_incomplete_beta(2.0, 3.0, 0.0), 0.0);
+        assert_eq!(regularized_incomplete_beta(2.0, 3.0, 1.0), 1.0);
+    }
+    #[test]
+    fn regularized_incomplete_beta_argument_order_is_shape_first() {
+        // (a, b, x) here, (x, a, b) in `numerics::inc_beta`.
+        for &(a, b, x) in &[
+            (2.0_f64, 5.0_f64, 0.3_f64),
+            (0.5, 3.0, 0.8),
+            (7.0, 0.5, 0.95),
+        ] {
+            let direct = regularized_incomplete_beta(a, b, x);
+            let numerics = crate::numerics::inc_beta(x, a, b);
+            assert!((direct - numerics).abs() < 1e-15);
+        }
+    }
+    #[test]
+    fn student_t_cdf_matches_high_precision_reference() {
+        for (x, nu, expected) in STUDENT_T_REFERENCE.iter() {
+            let got = student_t_cdf(*x, *nu);
+            assert!(
+                (got - expected).abs() < 1e-10,
+                "t-cdf({x}, nu={nu}): got {got}, expected {expected}"
+            );
+        }
+    }
+    #[test]
+    fn student_t_cdf_regression_values_from_audit() {
+        // The old implementation returned 0.653, 0.9975 and a wrong value here.
+        assert!((student_t_cdf(1.0, 1.0) - 0.75).abs() < 1e-6);
+        assert!((student_t_cdf(2.0, 10.0) - 0.963306).abs() < 1e-6);
+        assert!((student_t_cdf(2.0, 5.0) - 0.949030).abs() < 1e-6);
+    }
+    #[test]
+    fn student_t_cdf_is_symmetric_and_monotone() {
+        for &nu in &[0.7_f64, 1.0, 3.0, 12.0, 80.0, 400.0] {
+            assert!((student_t_cdf(0.0, nu) - 0.5).abs() < 1e-14);
+            let mut previous = 0.0_f64;
+            for i in -60..=60 {
+                let x = i as f64 / 10.0;
+                let upper = student_t_cdf(x, nu);
+                let lower = student_t_cdf(-x, nu);
+                assert!(
+                    (upper + lower - 1.0).abs() < 1e-13,
+                    "symmetry at x={x}, nu={nu}"
+                );
+                assert!(upper >= previous, "monotone at x={x}, nu={nu}");
+                previous = upper;
+            }
+        }
+    }
+    #[test]
+    fn student_t_cdf_converges_to_normal_for_large_nu() {
+        // Phi(1.96) = 0.9750021048517795
+        let huge_nu = student_t_cdf(1.96, 1.0e8);
+        assert!(
+            (huge_nu - 0.9750021048517795).abs() < 1e-7,
+            "nu=1e8: {huge_nu}"
+        );
+        let infinite = student_t_cdf(1.96, f64::INFINITY);
+        assert!(
+            (infinite - 0.9750021048517795).abs() < 1e-6,
+            "nu=inf: {infinite}"
+        );
+    }
+    #[test]
+    fn student_t_cdf_special_inputs() {
+        assert!(student_t_cdf(f64::NAN, 5.0).is_nan());
+        assert!(student_t_cdf(1.0, f64::NAN).is_nan());
+        assert!(student_t_cdf(1.0, 0.0).is_nan());
+        assert!(student_t_cdf(1.0, -2.0).is_nan());
+        assert_eq!(student_t_cdf(f64::INFINITY, 4.0), 1.0);
+        assert_eq!(student_t_cdf(f64::NEG_INFINITY, 4.0), 0.0);
+        let deep_tail = student_t_cdf(-50.0, 3.0);
+        assert!(
+            deep_tail > 0.0 && deep_tail < 1e-4,
+            "deep tail = {deep_tail}"
+        );
+    }
+    /// `(x, nu, P(T <= x))` for very many degrees of freedom, evaluated with 60-digit
+    /// arithmetic (mpmath incomplete beta function).  The old implementation and a
+    /// plain incomplete-beta evaluation lose 4 digits at nu = 1e8, 10 at nu = 1e12
+    /// and all of them at nu = 1e15.
+    const STUDENT_T_LARGE_NU_REFERENCE: [(f64, f64, f64); 45] = [
+        (-3.0, 10000.0, 0.0013532240949988331),
+        (-1.5, 10000.0, 0.06682298591180981),
+        (0.5, 10000.0, 0.6914569603383833),
+        (1.96, 10000.0, 0.9749882398840835),
+        (4.0, 10000.0, 0.9999681006655884),
+        (-3.0, 30000.0, 0.0013510062356349663),
+        (-1.5, 30000.0, 0.06681246288629299),
+        (0.5, 30000.0, 0.6914606276098914),
+        (1.96, 30000.0, 0.9749974833139915),
+        (4.0, 30000.0, 0.9999682528565017),
+        (-3.0, 100000.0, 0.0013502304420323595),
+        (-1.5, 100000.0, 0.0668087797614153),
+        (0.5, 100000.0, 0.691461911172791),
+        (1.96, 100000.0, 0.9750007184028492),
+        (4.0, 100000.0, 0.9999683060012214),
+        (-3.0, 1000000.0, 0.0013499312707108985),
+        (-1.5, 1000000.0, 0.06680735911839639),
+        (0.5, 1000000.0, 0.6914624062638143),
+        (1.96, 1000000.0, 0.9750019662073651),
+        (4.0, 1000000.0, 0.9999683264829949),
+        (-3.0, 100000000.0, 0.0013498983640187472),
+        (-1.5, 100000000.0, 0.06680720284735377),
+        (0.5, 100000000.0, 0.691462460723911),
+        (1.96, 100000000.0, 0.975002103465336),
+        (4.0, 100000000.0, 0.9999683287354157),
+        (-3.0, 10000000000.0, 0.0013498980349539809),
+        (-1.5, 10000000000.0, 0.06680720128464303),
+        (0.5, 10000000000.0, 0.6914624612685121),
+        (1.96, 10000000000.0, 0.9750021048379152),
+        (4.0, 10000000000.0, 0.9999683287579394),
+        (-3.0, 1000000000000.0, 0.0013498980316633334),
+        (-1.5, 1000000000000.0, 0.06680720126901592),
+        (0.5, 1000000000000.0, 0.691462461273958),
+        (1.96, 1000000000000.0, 0.975002104851641),
+        (4.0, 1000000000000.0, 0.9999683287581647),
+        (-3.0, 1000000000000000.0, 0.0013498980316301278),
+        (-1.5, 1000000000000000.0, 0.06680720126885822),
+        (0.5, 1000000000000000.0, 0.691462461274013),
+        (1.96, 1000000000000000.0, 0.9750021048517794),
+        (4.0, 1000000000000000.0, 0.9999683287581669),
+        (-3.0, 1e+30, 0.0013498980316300946),
+        (-1.5, 1e+30, 0.06680720126885807),
+        (0.5, 1e+30, 0.6914624612740131),
+        (1.96, 1e+30, 0.9750021048517795),
+        (4.0, 1e+30, 0.9999683287581669),
+    ];
+    /// `(x, nu, P(T <= x))` in the far lower tail, where only a relative error test is meaningful.
+    const STUDENT_T_DEEP_TAIL_REFERENCE: [(f64, f64, f64); 6] = [
+        (-5.0, 10000.0, 2.9151633068313237e-07),
+        (-5.0, 1000000.0, 2.866998935445371e-07),
+        (-8.0, 1000000.0, 6.22753171660126e-16),
+        (-12.0, 100000000.0, 1.7765754821344812e-33),
+        (-20.0, 10000000000.0, 2.7536351881296547e-89),
+        (-30.0, 1000000000000000.0, 4.9067139281440034e-198),
+    ];
+    /// `(a, P(Z > a))` for the standard normal, 40-digit reference values.
+    const NORMAL_UPPER_TAIL_REFERENCE: [(f64, f64); 13] = [
+        (0.0, 0.5),
+        (0.1, 0.460172162722971),
+        (0.5, 0.3085375387259869),
+        (1.0, 0.15865525393145705),
+        (1.4, 0.08075665923377107),
+        (1.5, 0.06680720126885807),
+        (2.0, 0.02275013194817921),
+        (3.0, 0.0013498980316300946),
+        (5.0, 2.866515718791939e-07),
+        (8.0, 6.220960574271784e-16),
+        (12.0, 1.776482112077679e-33),
+        (20.0, 2.7536241186062337e-89),
+        (37.0, 5.725571222524577e-300),
+    ];
+    #[test]
+    fn standard_normal_upper_tail_matches_high_precision_reference() {
+        for (a, expected) in NORMAL_UPPER_TAIL_REFERENCE.iter() {
+            let got = super::standard_normal_upper_tail(*a);
+            assert!(
+                (got - expected).abs() <= 5e-13 * expected,
+                "Q({a}): got {got:e}, expected {expected:e}"
+            );
+        }
+        assert!(
+            (super::standard_normal_upper_tail(-1.0) - (1.0 - 0.15865525393145705)).abs() < 1e-15
+        );
+        assert!(super::standard_normal_upper_tail(f64::NAN).is_nan());
+    }
+    #[test]
+    fn student_t_cdf_stays_accurate_for_very_many_degrees_of_freedom() {
+        for (x, nu, expected) in STUDENT_T_LARGE_NU_REFERENCE.iter() {
+            let got = student_t_cdf(*x, *nu);
+            assert!(
+                (got - expected).abs() < 1e-14,
+                "t-cdf({x}, nu={nu:e}): got {got}, expected {expected}"
+            );
+        }
+    }
+    #[test]
+    fn student_t_cdf_keeps_relative_accuracy_in_the_far_tails() {
+        for (x, nu, expected) in STUDENT_T_DEEP_TAIL_REFERENCE.iter() {
+            let got = student_t_cdf(*x, *nu);
+            assert!(
+                (got - expected).abs() <= 1e-9 * expected,
+                "t-cdf({x}, nu={nu:e}): got {got:e}, expected {expected:e}"
+            );
+        }
+    }
+    #[test]
+    fn student_t_cdf_is_continuous_across_the_expansion_threshold() {
+        // nu = 1e4 is where the evaluation switches from the incomplete beta function to
+        // the large-nu expansion; both must agree to ~1e-11 (the incomplete beta route
+        // loses about nu * 1e-15 to the cancellation in ln B) on either side.
+        for &x in &[-4.0_f64, -1.0, 0.3, 2.5, 4.5] {
+            let below = student_t_cdf(x, 9999.999999);
+            let above = student_t_cdf(x, 10000.0);
+            assert!((below - above).abs() < 5e-11, "x={x}: {below} vs {above}");
+        }
+        // Across the |x| = nu^(1/4)/2 border of the expansion region at nu = 1e4 (x = 5).
+        for &nu in &[1.0e4_f64, 1.0e5] {
+            let border = 0.5 * nu.powf(0.25);
+            let inside = student_t_cdf(-border, nu);
+            let outside = student_t_cdf(-border * (1.0 + 1e-12), nu);
+            assert!(
+                (inside - outside).abs() <= 1e-9 * inside,
+                "nu={nu:e}: {inside:e} vs {outside:e}"
+            );
+        }
+    }
+    #[test]
+    fn student_t_cdf_infinite_nu_is_the_exact_normal_cdf() {
+        for (a, tail) in NORMAL_UPPER_TAIL_REFERENCE.iter().take(12) {
+            let lower = student_t_cdf(-*a, f64::INFINITY);
+            assert!(
+                (lower - tail).abs() <= 5e-13 * tail,
+                "a={a}: {lower:e} vs {tail:e}"
+            );
+            let upper = student_t_cdf(*a, f64::INFINITY);
+            assert!((upper - (1.0 - tail)).abs() < 1e-15, "a={a}: {upper}");
+        }
+    }
+    #[test]
+    fn student_t_cdf_never_returns_nan_for_huge_arguments() {
+        for &nu in &[0.5_f64, 3.0, 50.0, 2.0e4, 1.0e9, 1.0e300] {
+            for &x in &[1.0e100_f64, 1.0e200, 1.0e300, f64::MAX] {
+                let upper = student_t_cdf(x, nu);
+                let lower = student_t_cdf(-x, nu);
+                assert!(
+                    (0.0..=1.0).contains(&upper) && (0.0..=1.0).contains(&lower),
+                    "nu={nu:e}, x={x:e}: upper={upper}, lower={lower}"
+                );
+                assert!(upper > 0.999 && lower < 1e-3, "nu={nu:e}, x={x:e}");
+            }
+        }
+    }
+    #[test]
+    fn t_copula_margins_are_uniform() {
+        // U = F_nu(T) must be Uniform(0, 1): mean 1/2, variance 1/12.
+        let cop = TCopula::new(0.6, 5.0);
+        let mut rng = Xoshiro256::new(361);
+        let samples = cop.sample_n(&mut rng, 6000);
+        let n = samples.len() as f64;
+        let mean_u = samples.iter().map(|s| s.0).sum::<f64>() / n;
+        let var_u = samples.iter().map(|s| (s.0 - mean_u).powi(2)).sum::<f64>() / n;
+        let low_fraction = samples.iter().filter(|s| s.1 < 0.1).count() as f64 / n;
+        assert!((mean_u - 0.5).abs() < 0.02, "mean of U = {mean_u}");
+        assert!(
+            (var_u - 1.0 / 12.0).abs() < 0.008,
+            "variance of U = {var_u}"
+        );
+        assert!(
+            (low_fraction - 0.1).abs() < 0.02,
+            "P(V < 0.1) = {low_fraction}"
+        );
+    }
+    /// First 16 points of the 6-dimensional Sobol sequence (Joe-Kuo direction numbers),
+    /// generated with SciPy's `qmc.Sobol(d=6, scramble=False, bits=32)`.
+    const SOBOL_REFERENCE_6D: [[f64; 6]; 16] = [
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+        [0.75, 0.25, 0.25, 0.25, 0.75, 0.75],
+        [0.25, 0.75, 0.75, 0.75, 0.25, 0.25],
+        [0.375, 0.375, 0.625, 0.875, 0.375, 0.125],
+        [0.875, 0.875, 0.125, 0.375, 0.875, 0.625],
+        [0.625, 0.125, 0.875, 0.625, 0.625, 0.875],
+        [0.125, 0.625, 0.375, 0.125, 0.125, 0.375],
+        [0.1875, 0.3125, 0.9375, 0.4375, 0.5625, 0.3125],
+        [0.6875, 0.8125, 0.4375, 0.9375, 0.0625, 0.8125],
+        [0.9375, 0.0625, 0.6875, 0.1875, 0.3125, 0.5625],
+        [0.4375, 0.5625, 0.1875, 0.6875, 0.8125, 0.0625],
+        [0.3125, 0.1875, 0.3125, 0.5625, 0.9375, 0.4375],
+        [0.8125, 0.6875, 0.8125, 0.0625, 0.4375, 0.9375],
+        [0.5625, 0.4375, 0.0625, 0.8125, 0.1875, 0.6875],
+        [0.0625, 0.9375, 0.5625, 0.3125, 0.6875, 0.1875],
+    ];
+    #[test]
+    fn sobol_first_two_dimensional_points_are_the_published_ones() {
+        let pts = RandomSampler::sobol(4, 2).unwrap();
+        let expected = [[0.0, 0.0], [0.5, 0.5], [0.75, 0.25], [0.25, 0.75]];
+        for (point, want) in pts.iter().zip(expected.iter()) {
+            assert_eq!(point.as_slice(), want.as_slice());
+        }
+    }
+    #[test]
+    fn sobol_six_dimensional_prefix_matches_reference_implementation() {
+        let pts = RandomSampler::sobol(16, 6).unwrap();
+        for (i, (point, want)) in pts.iter().zip(SOBOL_REFERENCE_6D.iter()).enumerate() {
+            assert_eq!(point.as_slice(), want.as_slice(), "point {i}");
+        }
+    }
+    #[test]
+    fn sobol_columns_are_pairwise_distinct() {
+        // The old tables made dimension 1 identical to dimension 0 (all points on x = y).
+        let dims = 21;
+        let pts = RandomSampler::sobol(64, dims).unwrap();
+        for a in 0..dims {
+            for b in (a + 1)..dims {
+                let differing = pts.iter().filter(|p| p[a] != p[b]).count();
+                assert!(differing > 32, "columns {a} and {b} nearly coincide");
+            }
+        }
+    }
+    #[test]
+    fn sobol_first_two_columns_do_not_lie_on_the_diagonal() {
+        let pts = RandomSampler::sobol(256, 2).unwrap();
+        let off_diagonal = pts.iter().filter(|p| (p[0] - p[1]).abs() > 1e-12).count();
+        assert!(
+            off_diagonal > 128,
+            "only {off_diagonal} of 256 points off the diagonal"
+        );
+    }
+    #[test]
+    fn sobol_one_dimensional_projections_are_permutations_of_the_dyadic_grid() {
+        let n = 256;
+        let pts = RandomSampler::sobol(n, SOBOL_MAX_DIM).unwrap();
+        for dim in 0..SOBOL_MAX_DIM {
+            let mut cells: Vec<usize> = pts.iter().map(|p| (p[dim] * n as f64) as usize).collect();
+            cells.sort_unstable();
+            let expected: Vec<usize> = (0..n).collect();
+            assert_eq!(
+                cells, expected,
+                "dimension {dim} is not a (0,1)-sequence prefix"
+            );
+        }
+    }
+    #[test]
+    fn sobol_first_two_dimensions_form_a_zero_net() {
+        // The first 2^m points of the first two Sobol coordinates put exactly one
+        // point into every dyadic rectangle of area 2^-m.
+        let m = 8usize;
+        let pts = RandomSampler::sobol(1 << m, 2).unwrap();
+        for a in 0..=m {
+            let b = m - a;
+            let mut counts = vec![0usize; 1 << m];
+            for p in &pts {
+                let cx = (p[0] * (1u64 << a) as f64) as usize;
+                let cy = (p[1] * (1u64 << b) as f64) as usize;
+                counts[cx * (1 << b) + cy] += 1;
+            }
+            assert!(counts.iter().all(|&c| c == 1), "rectangles 2^-{a} x 2^-{b}");
+        }
+    }
+    #[test]
+    fn sobol_dimension_limit_is_an_error_not_a_truncation() {
+        assert!(matches!(
+            SobolSequence::new(SOBOL_MAX_DIM + 1),
+            Err(PhysicsError::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            RandomSampler::sobol(10, 200),
+            Err(PhysicsError::InvalidInput { .. })
+        ));
+        let mut full = SobolSequence::new(SOBOL_MAX_DIM).unwrap();
+        assert_eq!(full.next_point().len(), SOBOL_MAX_DIM);
+        let five = RandomSampler::sobol(3, 5).unwrap();
+        assert!(five.iter().all(|p| p.len() == 5));
+    }
+    #[test]
+    fn sobol_skip_to_matches_sequential_generation() {
+        let mut sequential = SobolSequence::new(9).unwrap();
+        let points = sequential.generate(300);
+        for &start in &[0usize, 1, 2, 7, 64, 255, 299] {
+            let mut jumped = SobolSequence::new(9).unwrap();
+            jumped.skip_to(start);
+            for (offset, want) in points[start..].iter().enumerate().take(20) {
+                assert_eq!(&jumped.next_point(), want, "start {start}, offset {offset}");
+            }
+        }
+    }
+    #[test]
+    fn sobol_sequence_restarts_after_two_to_the_32_points() {
+        if let Ok(period) = usize::try_from(1u64 << 32) {
+            let mut sobol = SobolSequence::new(4).unwrap();
+            sobol.skip_to(period);
+            assert!(sobol.next_point().iter().all(|&v| v == 0.0));
+            assert_eq!(sobol.next_point(), vec![0.5; 4]);
+        }
+    }
+    #[test]
+    fn sobol_integrates_a_product_integrand_with_low_error() {
+        // Integral of prod_i (1 + (x_i - 1/2)) over the unit cube is exactly 1.  Identical or
+        // correlated columns bias the product terms (E[(x - 1/2)^2] = 1/12 per pair).
+        let dims = 8;
+        let n = 4096;
+        let pts = RandomSampler::sobol(n, dims).unwrap();
+        let estimate: f64 = pts
+            .iter()
+            .map(|p| p.iter().map(|&x| 1.0 + (x - 0.5)).product::<f64>())
+            .sum::<f64>()
+            / n as f64;
+        assert!((estimate - 1.0).abs() < 2e-3, "estimate = {estimate}");
+    }
+    /// Lag-1 correlation of consecutive increments and mean-square terminal value
+    /// of `n_paths` simulated fBm paths.
+    fn fbm_statistics(
+        hurst: f64,
+        dt: f64,
+        n_steps: usize,
+        n_paths: usize,
+        seed: u64,
+    ) -> (f64, f64) {
+        let fbm = FractionalBrownianMotion::new(hurst, n_steps, dt);
+        let mut rng = Xoshiro256::new(seed);
+        let (mut sum_xy, mut sum_xx, mut sum_yy, mut terminal) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for _ in 0..n_paths {
+            let path = fbm.generate_path(&mut rng);
+            let increments: Vec<f64> = path.windows(2).map(|w| w[1] - w[0]).collect();
+            for pair in increments.windows(2) {
+                sum_xy += pair[0] * pair[1];
+                sum_xx += pair[0] * pair[0];
+                sum_yy += pair[1] * pair[1];
+            }
+            terminal += path[n_steps] * path[n_steps];
+        }
+        (sum_xy / (sum_xx * sum_yy).sqrt(), terminal / n_paths as f64)
+    }
+    #[test]
+    fn fbm_increment_correlation_follows_the_hurst_exponent() {
+        // Corr(dB_k, dB_{k+1}) = 2^(2H-1) - 1: positive (persistent) for H > 1/2,
+        // negative (anti-persistent) for H < 1/2, zero for plain Brownian motion.
+        for &(hurst, seed) in &[(0.8_f64, 41_u64), (0.3, 42), (0.5, 43), (0.65, 44)] {
+            let expected = 2.0_f64.powf(2.0 * hurst - 1.0) - 1.0;
+            let (rho, _) = fbm_statistics(hurst, 0.1, 64, 2000, seed);
+            assert!(
+                (rho - expected).abs() < 0.05,
+                "H={hurst}: lag-1 correlation {rho}, expected {expected}"
+            );
+        }
+    }
+    #[test]
+    fn fbm_terminal_variance_matches_theory() {
+        // Var[B_H(n dt)] = (n dt)^(2H); independent increments would give n dt^(2H).
+        for &(hurst, seed) in &[(0.8_f64, 51_u64), (0.3, 52), (0.5, 53)] {
+            let (n_steps, dt) = (64usize, 0.1_f64);
+            let fbm = FractionalBrownianMotion::new(hurst, n_steps, dt);
+            let expected = fbm.theoretical_variance(n_steps as f64 * dt);
+            let (_, mean_square) = fbm_statistics(hurst, dt, n_steps, 4000, seed);
+            assert!(
+                (mean_square / expected - 1.0).abs() < 0.1,
+                "H={hurst}: E[B^2] = {mean_square}, expected {expected}"
+            );
+        }
+    }
+    #[test]
+    fn fbm_variance_grows_like_t_to_the_2h() {
+        let hurst = 0.8;
+        let (n_steps, dt) = (64usize, 1.0_f64);
+        let fbm = FractionalBrownianMotion::new(hurst, n_steps, dt);
+        let mut rng = Xoshiro256::new(61);
+        let (mut quarter, mut full) = (0.0f64, 0.0f64);
+        let n_paths = 4000;
+        for _ in 0..n_paths {
+            let path = fbm.generate_path(&mut rng);
+            quarter += path[n_steps / 4].powi(2);
+            full += path[n_steps].powi(2);
+        }
+        // (t_end / t_quarter)^(2H) = 4^1.6 = 9.19; independent increments would give 4.
+        let ratio = full / quarter;
+        let expected = 4.0_f64.powf(2.0 * hurst);
+        assert!(
+            (ratio / expected - 1.0).abs() < 0.15,
+            "ratio {ratio}, expected {expected}"
+        );
+    }
+    #[test]
+    fn fbm_increments_have_fgn_autocovariance() {
+        let (hurst, n_steps, dt) = (0.7_f64, 32usize, 0.5_f64);
+        let fbm = FractionalBrownianMotion::new(hurst, n_steps, dt);
+        let mut rng = Xoshiro256::new(71);
+        let n_paths = 4000;
+        let lags = [0usize, 1, 2, 5];
+        let mut acc = [0.0f64; 4];
+        let mut counts = [0usize; 4];
+        for _ in 0..n_paths {
+            let incr = fbm.generate_increments(&mut rng);
+            for (slot, &lag) in lags.iter().enumerate() {
+                for k in 0..(n_steps - lag) {
+                    acc[slot] += incr[k] * incr[k + lag];
+                    counts[slot] += 1;
+                }
+            }
+        }
+        for (slot, &lag) in lags.iter().enumerate() {
+            let sample = acc[slot] / counts[slot] as f64;
+            let expected =
+                dt.powf(2.0 * hurst) * FractionalBrownianMotion::fgn_autocovariance(hurst, lag);
+            assert!(
+                (sample - expected).abs() < 0.06 * dt.powf(2.0 * hurst),
+                "lag {lag}: sample {sample}, expected {expected}"
+            );
+        }
+    }
+    #[test]
+    fn fbm_hosking_is_the_cholesky_transform_of_the_exact_covariance() {
+        let m = 24usize;
+        for &hurst in &[0.2_f64, 0.5, 0.65, 0.8, 0.95] {
+            let mut rng = Xoshiro256::new(900 + (hurst * 100.0) as u64);
+            let normals: Vec<f64> = (0..m).map(|_| box_muller(&mut rng).0).collect();
+            let hosking = FractionalBrownianMotion::hosking_fgn(hurst, &normals);
+            let mut cov = vec![0.0f64; m * m];
+            for i in 0..m {
+                for j in 0..m {
+                    cov[i * m + j] =
+                        FractionalBrownianMotion::fgn_autocovariance(hurst, i.abs_diff(j));
+                }
+            }
+            let l = cholesky_lower(&cov, m);
+            for i in 0..m {
+                let expected: f64 = (0..=i).map(|j| l[i * m + j] * normals[j]).sum();
+                assert!(
+                    (hosking[i] - expected).abs() < 1e-9,
+                    "H={hurst}, i={i}: Hosking {} vs Cholesky {expected}",
+                    hosking[i]
+                );
+            }
+        }
+    }
+    #[test]
+    fn fbm_autocovariance_known_values() {
+        assert_eq!(FractionalBrownianMotion::fgn_autocovariance(0.7, 0), 1.0);
+        for &hurst in &[0.3_f64, 0.5, 0.8] {
+            let gamma1 = FractionalBrownianMotion::fgn_autocovariance(hurst, 1);
+            assert!((gamma1 - (2.0_f64.powf(2.0 * hurst - 1.0) - 1.0)).abs() < 1e-14);
+        }
+        // Brownian motion has uncorrelated increments.
+        for lag in 1..6 {
+            assert!(FractionalBrownianMotion::fgn_autocovariance(0.5, lag).abs() < 1e-14);
+        }
+    }
+    #[test]
+    fn fbm_path_is_deterministic_for_a_fixed_seed_and_scales_with_dt() {
+        let fbm = FractionalBrownianMotion::new(0.7, 40, 0.25);
+        let a = fbm.generate_path(&mut Xoshiro256::new(5));
+        let b = fbm.generate_path(&mut Xoshiro256::new(5));
+        let c = fbm.generate_path(&mut Xoshiro256::new(6));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        // Same normals, dt scaled by 4: the path scales by 4^H.
+        let wide = FractionalBrownianMotion::new(0.7, 40, 1.0);
+        let d = wide.generate_path(&mut Xoshiro256::new(5));
+        for (x, y) in a.iter().zip(d.iter()) {
+            assert!((y - x * 4.0_f64.powf(0.7)).abs() < 1e-9);
+        }
+    }
+    #[test]
+    fn fbm_degenerate_step_counts_and_out_of_range_hurst() {
+        let zero = FractionalBrownianMotion::new(0.6, 0, 0.1);
+        assert_eq!(zero.generate_path(&mut Xoshiro256::new(1)), vec![0.0]);
+        let one = FractionalBrownianMotion::new(0.6, 1, 0.1);
+        assert_eq!(one.generate_path(&mut Xoshiro256::new(1)).len(), 2);
+        for &hurst in &[-0.5_f64, 0.0, 1.0, 2.5] {
+            let path = FractionalBrownianMotion::new(hurst, 50, 0.1)
+                .generate_path(&mut Xoshiro256::new(2));
+            assert!(
+                path.iter().all(|v| v.is_finite()),
+                "H={hurst} produced non-finite values"
+            );
         }
     }
 }

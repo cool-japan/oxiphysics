@@ -84,12 +84,17 @@ impl AdaptiveParticle {
 // ---------------------------------------------------------------------------
 
 /// Wendland C2 kernel with individual smoothing length support.
+///
+/// `W(r, h) = α(h) (1 − q/2)⁴ (2q + 1)` with `q = r / h` and compact support
+/// `r < 2h`.  The 3-D normalisation `α(h) = 21 / (16 π h³)` makes the kernel
+/// integrate to one over its support.
 pub struct VariableHKernel;
 
 impl VariableHKernel {
-    /// Normalisation constant in 3D: (21 / (2 pi h^3)).
+    /// Normalisation constant in 3D for the support radius `2h`:
+    /// `21 / (16 π h³)`, so that `∫ W dV = 1`.
     fn alpha(h: f64) -> f64 {
-        21.0 / (2.0 * std::f64::consts::PI * h * h * h)
+        21.0 / (16.0 * std::f64::consts::PI * h * h * h)
     }
 
     /// Evaluate W(r, h).  Support radius = 2h.
@@ -103,38 +108,22 @@ impl VariableHKernel {
     }
 
     /// Derivative dW/dr.
+    ///
+    /// With `W = α t⁴ (2q + 1)`, `t = 1 − q/2` and `q = r / h`:
+    ///
+    /// ```text
+    /// dW/dq = α [ 4 t³ (−1/2)(2q + 1) + 2 t⁴ ] = α t³ [ −2(2q + 1) + 2t ] = −5 α q t³
+    /// dW/dr = (dW/dq) / h
+    /// ```
+    ///
+    /// The derivative vanishes at the origin and is non-positive everywhere.
     pub fn dw_dr(r: f64, h: f64) -> f64 {
         let q = r / h;
         if q >= 2.0 {
             return 0.0;
         }
         let t = 1.0 - 0.5 * q;
-        // d/dr [ alpha * t^4 * (2q+1) ] where q = r/h
-        // = alpha * [ 4 t^3 * (-1/(2h)) * (2q+1) + t^4 * (2/h) ]
-        Self::alpha(h)
-            * (1.0 / h)
-            * t
-            * t
-            * t
-            * (-4.0 * q + 2.0 * (2.0 * q + 1.0) * (-0.5) * 4.0 / 4.0)
-        // cleaner derivation below:
-    }
-
-    /// Derivative dW/dr — clean derivation.
-    fn dw_dr_clean(r: f64, h: f64) -> f64 {
-        let q = r / h;
-        if q >= 2.0 {
-            return 0.0;
-        }
-        let t = 1.0 - 0.5 * q;
-        // W = alpha * t^4 * (2q + 1)
-        // dW/dq = alpha * [4 t^3 * (-1/2) * (2q+1) + t^4 * 2]
-        //       = alpha * t^3 * [-2(2q+1) + 2t] ... wait, let's be precise:
-        // dW/dq = alpha * [4 t^3 * (-1/2) * (2q+1)  +  t^4 * 2]
-        //       = alpha * t^3 * [ -2(2q+1) + 2t ]
-        // dW/dr = dW/dq * dq/dr = dW/dq * (1/h)
-        let dw_dq = Self::alpha(h) * t * t * t * (-2.0 * (2.0 * q + 1.0) + 2.0 * t);
-        dw_dq / h
+        -5.0 * Self::alpha(h) * q * t * t * t / h
     }
 
     /// Derivative dW/dh (needed for grad-h / omega computation).
@@ -144,7 +133,7 @@ impl VariableHKernel {
             return 0.0;
         }
         let t = 1.0 - 0.5 * q;
-        // W = (21/(2 pi h^3)) * t^4 * (2q+1),  q = r/h
+        // W = (21/(16 pi h^3)) * t^4 * (2q+1),  q = r/h
         // Differentiate w.r.t. h treating r fixed:
         //   d(alpha)/dh = -3 alpha / h
         //   dq/dh       = -r/h^2 = -q/h
@@ -815,7 +804,7 @@ impl DensityGradientEstimator {
             if r < 1e-15 {
                 continue;
             }
-            let dw = VariableHKernel::dw_dr_clean(r, particle.h);
+            let dw = VariableHKernel::dw_dr(r, particle.h);
             let rij_hat = scale(rij, 1.0 / r);
             // grad W = dW/dr * r_hat
             let grad_w = scale(rij_hat, dw);
@@ -986,7 +975,7 @@ mod tests {
         // dW/dr should be negative for r > 0 inside support
         for i in 1..19 {
             let r = (i as f64) * 0.05;
-            let dw = VariableHKernel::dw_dr_clean(r, h);
+            let dw = VariableHKernel::dw_dr(r, h);
             assert!(dw <= 0.0, "dW/dr should be <= 0 at r={r}, got {dw}");
         }
     }
@@ -997,6 +986,159 @@ mod tests {
         let dw = VariableHKernel::dw_dh(0.0, h);
         // At r=0: as h increases, W(0,h) decreases => dW/dh < 0
         assert!(dw < 0.0, "dW/dh(0, h) should be negative, got {dw}");
+    }
+
+    /// Midpoint-rule value of ∫ W(r, h) 4π r² dr over the support [0, 2h].
+    fn kernel_volume_integral(h: f64) -> f64 {
+        let n = 20_000;
+        let dr = 2.0 * h / n as f64;
+        (0..n)
+            .map(|i| {
+                let r = (i as f64 + 0.5) * dr;
+                VariableHKernel::w(r, h) * 4.0 * std::f64::consts::PI * r * r * dr
+            })
+            .sum()
+    }
+
+    #[test]
+    fn test_wendland_kernel_is_unit_normalised() {
+        // The 3-D normalisation must make the kernel integrate to exactly one;
+        // the former 21/(2 pi h^3) constant gave 8.
+        for &h in &[0.05, 0.5, 1.3] {
+            let integral = kernel_volume_integral(h);
+            assert!(
+                (integral - 1.0).abs() < 1.0e-4,
+                "h = {h}: ∫W dV = {integral}, expected 1"
+            );
+        }
+    }
+
+    #[test]
+    fn test_wendland_kernel_value_at_origin() {
+        // W(0, h) = alpha(h) = 21 / (16 pi h^3).
+        let h = 0.4;
+        let expected = 21.0 / (16.0 * std::f64::consts::PI * h * h * h);
+        assert!((VariableHKernel::w(0.0, h) - expected).abs() < 1.0e-12 * expected);
+    }
+
+    #[test]
+    fn test_dw_dr_matches_central_difference() {
+        let h = 0.6;
+        for i in 1..24 {
+            let r = i as f64 * 0.05;
+            let eps = 1.0e-6;
+            let numeric =
+                (VariableHKernel::w(r + eps, h) - VariableHKernel::w(r - eps, h)) / (2.0 * eps);
+            let analytic = VariableHKernel::dw_dr(r, h);
+            assert!(
+                (analytic - numeric).abs() <= 1.0e-6 * numeric.abs().max(1.0e-9),
+                "r = {r}: analytic = {analytic}, numeric = {numeric}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dw_dr_vanishes_at_origin_and_outside_support() {
+        let h = 0.5;
+        assert_eq!(VariableHKernel::dw_dr(0.0, h), 0.0);
+        assert_eq!(VariableHKernel::dw_dr(2.0 * h, h), 0.0);
+        assert_eq!(VariableHKernel::dw_dr(3.0 * h, h), 0.0);
+    }
+
+    #[test]
+    fn test_dw_dh_matches_central_difference() {
+        let r = 0.37;
+        for &h in &[0.2, 0.3, 0.5, 0.9] {
+            let eps = 1.0e-6 * h;
+            let numeric =
+                (VariableHKernel::w(r, h + eps) - VariableHKernel::w(r, h - eps)) / (2.0 * eps);
+            let analytic = VariableHKernel::dw_dh(r, h);
+            assert!(
+                (analytic - numeric).abs() <= 1.0e-6 * numeric.abs().max(1.0e-9),
+                "h = {h}: analytic = {analytic}, numeric = {numeric}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dw_dh_obeys_scaling_identity() {
+        // W(r, h) = h^-3 f(r / h)  =>  dW/dh = -(3 W + r dW/dr) / h.
+        let h = 0.45;
+        for i in 0..18 {
+            let r = i as f64 * 0.05;
+            let lhs = VariableHKernel::dw_dh(r, h);
+            let rhs = -(3.0 * VariableHKernel::w(r, h) + r * VariableHKernel::dw_dr(r, h)) / h;
+            assert!((lhs - rhs).abs() <= 1.0e-10 * rhs.abs().max(1.0));
+        }
+    }
+
+    #[test]
+    fn test_compute_density_reproduces_rest_density_on_lattice() {
+        // 7³ lattice, dx = 0.1, rest density 1000, h = 1.5 dx: the support
+        // (3 dx) lies inside the lattice for the centre particle, whose
+        // summation density must be ≈ 1000 (and not 8000 as with the old
+        // over-normalised kernel).
+        let dx = 0.1;
+        let rho0 = 1000.0;
+        let mass = rho0 * dx * dx * dx;
+        let mut sys = AdaptiveSphSystem::new(0.01, 10.0);
+        for i in 0..7 {
+            for j in 0..7 {
+                for k in 0..7 {
+                    let pos = [i as f64 * dx, j as f64 * dx, k as f64 * dx];
+                    sys.add_particle(pos, [0.0; 3], mass, 1.5 * dx);
+                }
+            }
+        }
+        sys.compute_density();
+        let centre = 3 * 49 + 3 * 7 + 3;
+        let rho = sys.particles[centre].density;
+        assert!(
+            (rho - rho0).abs() / rho0 < 0.01,
+            "centre density {rho} should be within 1% of {rho0}"
+        );
+    }
+
+    #[test]
+    fn test_density_gradient_estimator_recovers_linear_density_gradient() {
+        // 7³ lattice (dx = 0.1, h = 1.5 dx) carrying the linear density field
+        // rho(x) = rho0 + g x.  The SPH gradient estimator at the centre must
+        // return ≈ (g, 0, 0); this only holds for a unit-normalised kernel
+        // with the exact derivative dW/dr.
+        let dx = 0.1;
+        let h = 1.5 * dx;
+        let rho0 = 1000.0;
+        let slope = 500.0;
+        let mass = rho0 * dx * dx * dx;
+        let mut particles = Vec::new();
+        for i in 0..7 {
+            for j in 0..7 {
+                for k in 0..7 {
+                    let pos = [
+                        (i as f64 - 3.0) * dx,
+                        (j as f64 - 3.0) * dx,
+                        (k as f64 - 3.0) * dx,
+                    ];
+                    let mut p = AdaptiveParticle::new(pos, [0.0; 3], mass, h, 0);
+                    p.density = rho0 + slope * pos[0];
+                    particles.push(p);
+                }
+            }
+        }
+        let centre = 3 * 49 + 3 * 7 + 3;
+        let neighbours: Vec<&AdaptiveParticle> = particles
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx != centre)
+            .map(|(_, p)| p)
+            .collect();
+        let grad = DensityGradientEstimator::estimate(&particles[centre], &neighbours);
+        assert!(
+            (grad[0] - slope).abs() < 0.01 * slope,
+            "∂ρ/∂x = {}, expected {slope}",
+            grad[0]
+        );
+        assert!(grad[1].abs() < 1.0e-6 && grad[2].abs() < 1.0e-6);
     }
 
     #[test]

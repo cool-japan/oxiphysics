@@ -79,9 +79,12 @@ impl GpuMdBuffer {
 
 // ── LJ kernel functions ───────────────────────────────────────────────────────
 
-/// Lennard-Jones 12-6 force magnitude dU/dr (negative of force along r̂).
+/// Lennard-Jones 12-6 radial force `F(r) = -dU/dr` (positive = repulsive).
 ///
-/// Returns `dU/dr = 4ε [ -12σ¹²/r¹³ + 6σ⁶/r⁷ ]`.
+/// Returns `F(r) = 4ε [ 12σ¹²/r¹³ − 6σ⁶/r⁷ ]`, the component along the unit
+/// vector pointing *away* from the partner atom: positive (pushing the pair
+/// apart) for `r < 2^(1/6) σ`, zero at the potential minimum and negative
+/// (attractive) beyond it.
 /// Returns zero for `r >= cutoff` or `r < 1e-10`.
 pub fn lj_force_gpu(r: f32, params: &GpuMdParams) -> f32 {
     if r >= params.cutoff || r < 1e-10 {
@@ -161,10 +164,11 @@ pub fn compute_forces_gpu(buf: &mut GpuMdBuffer, params: &GpuMdParams) {
             if r < 1e-10 || r >= params.cutoff {
                 continue;
             }
+            // `lj_force_gpu` returns F(r) = -dU/dr (positive = repulsive) and
+            // `disp = r_i - r_j` points from j to i, so the force on atom i is
+            // F_i = F(r) * disp / r; Newton's third law gives F_j = -F_i.
             let f_mag = lj_force_gpu(r, params);
-            // Force on i from j: F = f_mag * (disp / r) — but lj_force is dU/dr
-            // F_i = -(dU/dr) * r̂ = -(dU/dr) * disp/r
-            let scale = -f_mag / r;
+            let scale = f_mag / r;
             buf.atoms[i].force[0] += scale * disp[0];
             buf.atoms[i].force[1] += scale * disp[1];
             buf.atoms[i].force[2] += scale * disp[2];
@@ -338,7 +342,7 @@ mod tests {
     #[test]
     fn test_lj_force_repulsive_close() {
         let params = default_params();
-        // At r < sigma the force is repulsive (dU/dr > 0)
+        // For r < 2^(1/6)*sigma the pair repels: F = -dU/dr > 0.
         let f = lj_force_gpu(0.8, &params);
         assert!(f > 0.0);
     }
@@ -346,9 +350,16 @@ mod tests {
     #[test]
     fn test_lj_force_attractive_far() {
         let params = default_params();
-        // At r between sigma and 2^(1/6)*sigma force is attractive (dU/dr < 0)
+        // Beyond 2^(1/6)*sigma ~ 1.122 sigma the pair attracts: F = -dU/dr < 0.
         let f = lj_force_gpu(1.2, &params);
         assert!(f < 0.0);
+    }
+
+    #[test]
+    fn test_lj_force_vanishes_at_potential_minimum() {
+        let params = default_params();
+        let r_min = 2.0_f32.powf(1.0 / 6.0) * params.sigma;
+        assert!(lj_force_gpu(r_min, &params).abs() < 1e-3);
     }
 
     #[test]
@@ -395,6 +406,146 @@ mod tests {
         compute_forces_gpu(&mut buf, &params);
         // Newton's third law
         assert!((buf.atoms[0].force[0] + buf.atoms[1].force[0]).abs() < 1e-5);
+    }
+
+    /// Two atoms on the x axis at `x0` and `x1` in the default box.
+    fn pair_buf(x0: f32, x1: f32) -> GpuMdBuffer {
+        let mut buf = GpuMdBuffer::new(2);
+        buf.atoms[0].pos = [x0, 0.0, 0.0];
+        buf.atoms[1].pos = [x1, 0.0, 0.0];
+        buf
+    }
+
+    /// Regression: the pair force used to have the wrong sign, so repulsion
+    /// pulled the atoms together.  At 0.9 sigma the pair must push apart.
+    #[test]
+    fn test_pair_force_repulsive_pushes_atoms_apart() {
+        let params = default_params();
+        let mut buf = pair_buf(0.0, 0.9);
+        compute_forces_gpu(&mut buf, &params);
+        let expected = lj_force_gpu(0.9, &params);
+        assert!(expected > 0.0);
+        assert!(
+            buf.atoms[0].force[0] < 0.0,
+            "atom 0 must be pushed toward -x, got {}",
+            buf.atoms[0].force[0]
+        );
+        assert!(
+            buf.atoms[1].force[0] > 0.0,
+            "atom 1 must be pushed toward +x, got {}",
+            buf.atoms[1].force[0]
+        );
+        assert!((buf.atoms[1].force[0] - expected).abs() <= 1e-4 * expected);
+        assert!((buf.atoms[0].force[0] + expected).abs() <= 1e-4 * expected);
+        assert!(buf.atoms[0].force[1].abs() < 1e-6 && buf.atoms[0].force[2].abs() < 1e-6);
+    }
+
+    /// Beyond the potential minimum the same pair attracts.
+    #[test]
+    fn test_pair_force_attractive_pulls_atoms_together() {
+        let params = default_params();
+        let mut buf = pair_buf(0.0, 1.5);
+        compute_forces_gpu(&mut buf, &params);
+        assert!(
+            buf.atoms[0].force[0] > 0.0,
+            "atom 0 must be pulled toward +x, got {}",
+            buf.atoms[0].force[0]
+        );
+        assert!(
+            buf.atoms[1].force[0] < 0.0,
+            "atom 1 must be pulled toward -x, got {}",
+            buf.atoms[1].force[0]
+        );
+        let expected = lj_force_gpu(1.5, &params);
+        assert!((buf.atoms[1].force[0] - expected).abs() <= 1e-4 * expected.abs());
+    }
+
+    /// The minimum-image path must orient the force across the periodic
+    /// boundary: atoms at x = 0 and x = 9.1 (box 10) are 0.9 apart through the
+    /// boundary, so atom 0 is pushed toward +x and atom 1 toward -x.
+    #[test]
+    fn test_pair_force_orientation_across_periodic_boundary() {
+        let params = default_params();
+        let mut buf = pair_buf(0.0, 9.1);
+        compute_forces_gpu(&mut buf, &params);
+        assert!(buf.atoms[0].force[0] > 0.0, "{:?}", buf.atoms[0].force);
+        assert!(buf.atoms[1].force[0] < 0.0, "{:?}", buf.atoms[1].force);
+        let expected = lj_force_gpu(0.9, &params);
+        assert!((buf.atoms[0].force[0] - expected).abs() <= 1e-3 * expected);
+    }
+
+    /// Central finite difference of the pair potential energy for atom `atom`
+    /// along `axis` (step `h`), i.e. `-dU/dx`.
+    fn fd_force(buf: &GpuMdBuffer, params: &GpuMdParams, atom: usize, axis: usize, h: f32) -> f32 {
+        let mut plus = buf.clone();
+        plus.atoms[atom].pos[axis] += h;
+        let mut minus = buf.clone();
+        minus.atoms[atom].pos[axis] -= h;
+        -(potential_energy_gpu(&plus, params) - potential_energy_gpu(&minus, params)) / (2.0 * h)
+    }
+
+    /// The accumulated forces must equal `-grad U` of `potential_energy_gpu`.
+    #[test]
+    fn test_pair_force_matches_negative_potential_gradient() {
+        let params = default_params();
+        for &r in &[1.15_f32, 1.3, 1.5, 2.2] {
+            let mut buf = pair_buf(0.0, r);
+            compute_forces_gpu(&mut buf, &params);
+            let fd = fd_force(&buf, &params, 0, 0, 1e-3);
+            assert!(
+                (fd - buf.atoms[0].force[0]).abs() < 1e-3,
+                "r={r}: finite difference {fd} vs analytic {}",
+                buf.atoms[0].force[0]
+            );
+        }
+    }
+
+    /// Three atoms in a generic (non-axis-aligned) arrangement: every force
+    /// component equals the negative potential gradient.
+    #[test]
+    fn test_three_atom_forces_match_negative_potential_gradient() {
+        let params = default_params();
+        let mut buf = GpuMdBuffer::new(3);
+        buf.atoms[0].pos = [1.0, 1.0, 1.0];
+        buf.atoms[1].pos = [2.2, 1.1, 0.9];
+        buf.atoms[2].pos = [1.5, 2.3, 1.4];
+        compute_forces_gpu(&mut buf, &params);
+        for atom in 0..3 {
+            for axis in 0..3 {
+                let fd = fd_force(&buf, &params, atom, axis, 1e-3);
+                let analytic = buf.atoms[atom].force[axis];
+                assert!(
+                    (fd - analytic).abs() < 2e-3,
+                    "atom {atom} axis {axis}: finite difference {fd} vs analytic {analytic}"
+                );
+            }
+        }
+    }
+
+    /// Dynamics: a compressed pair released from rest separates, a stretched
+    /// pair (inside the cutoff) approaches.
+    #[test]
+    fn test_pair_dynamics_repel_then_attract() {
+        let params = default_params();
+
+        let mut close = pair_buf(0.0, 0.9);
+        for _ in 0..10 {
+            compute_forces_gpu(&mut close, &params);
+            verlet_integrate_gpu(&mut close, 1e-3);
+        }
+        let sep_close = close.atoms[1].pos[0] - close.atoms[0].pos[0];
+        assert!(
+            sep_close > 0.9,
+            "compressed pair must separate: {sep_close}"
+        );
+
+        let mut far = pair_buf(0.0, 1.5);
+        for _ in 0..10 {
+            compute_forces_gpu(&mut far, &params);
+            verlet_integrate_gpu(&mut far, 1e-3);
+        }
+        let sep_far = far.atoms[1].pos[0] - far.atoms[0].pos[0];
+        assert!(sep_far < 1.5, "stretched pair must approach: {sep_far}");
     }
 
     #[test]

@@ -638,10 +638,100 @@ pub fn roe_flux_scalar(u_l: f64, u_r: f64, a_roe: f64) -> f64 {
     0.5 * (f_l + f_r) - 0.5 * a_roe.abs() * (u_r - u_l)
 }
 
+/// Fraction of the Roe sound speed that sets the width `δ = 0.1 ã` of
+/// Harten's entropy fix in [`roe_flux_euler_1d`].
+pub const ROE_ENTROPY_FIX_FRACTION: f64 = 0.1;
+
+/// Roe-averaged state and characteristic decomposition of the 1-D Euler
+/// equations across one interface (Toro, *Riemann Solvers and Numerical
+/// Methods for Fluid Dynamics*, 3rd ed., section 11.2).
+#[derive(Debug, Clone, Copy)]
+struct RoeDecomposition {
+    /// Roe-averaged sound speed `ã`.
+    sound_speed: f64,
+    /// Eigenvalues `[ũ - ã, ũ, ũ + ã]`.
+    lambda: [f64; 3],
+    /// Wave strengths `α_k`; they satisfy `Σ α_k K_k = U_R - U_L`.
+    alpha: [f64; 3],
+    /// Right eigenvectors: `eigenvectors[k]` is `K_k`.
+    eigenvectors: [[f64; 3]; 3],
+}
+
+/// Roe average and wave decomposition of the jump between the primitive
+/// states `left = [ρ, u, p]` and `right = [ρ, u, p]`.
+///
+/// The wave strengths follow Toro (2009), eqs. 11.68-11.70, with
+/// `ΔU = (Δρ, Δ(ρu), ΔE)`:
+///
+/// ```text
+/// α₂ = (γ - 1)/ã² · [ΔU₀ (H̃ - ũ²) + ũ ΔU₁ - ΔU₂]
+/// α₁ = [ΔU₀ (ũ + ã) - ΔU₁ - ã α₂] / (2 ã)
+/// α₃ = ΔU₀ - (α₁ + α₂)
+/// ```
+///
+/// Returns `None` when the Roe average is not a valid state (non-positive or
+/// non-finite density average, or `ã² <= 0`).
+fn roe_decomposition(left: [f64; 3], right: [f64; 3], gamma: f64) -> Option<RoeDecomposition> {
+    let [rho_l, u_l, p_l] = left;
+    let [rho_r, u_r, p_r] = right;
+    let sqrt_rl = rho_l.sqrt();
+    let sqrt_rr = rho_r.sqrt();
+    let denom = sqrt_rl + sqrt_rr;
+    if !denom.is_finite() || denom <= 0.0 {
+        return None;
+    }
+
+    let u_roe = (sqrt_rl * u_l + sqrt_rr * u_r) / denom;
+    // Specific total enthalpy H = (E + p) / ρ.
+    let h_l = (p_l / (rho_l * (gamma - 1.0)) + p_l / rho_l) + 0.5 * u_l * u_l;
+    let h_r = (p_r / (rho_r * (gamma - 1.0)) + p_r / rho_r) + 0.5 * u_r * u_r;
+    let h_roe = (sqrt_rl * h_l + sqrt_rr * h_r) / denom;
+
+    let a2 = (gamma - 1.0) * (h_roe - 0.5 * u_roe * u_roe);
+    if !a2.is_finite() || a2 <= 0.0 {
+        return None;
+    }
+    let a_roe = a2.sqrt();
+
+    // Jump of the conserved variables (ρ, ρu, E).
+    let e_l = p_l / (gamma - 1.0) + 0.5 * rho_l * u_l * u_l;
+    let e_r = p_r / (gamma - 1.0) + 0.5 * rho_r * u_r * u_r;
+    let du = [rho_r - rho_l, rho_r * u_r - rho_l * u_l, e_r - e_l];
+
+    let alpha2 = (gamma - 1.0) / a2 * (du[0] * (h_roe - u_roe * u_roe) + u_roe * du[1] - du[2]);
+    let alpha1 = (du[0] * (u_roe + a_roe) - du[1] - a_roe * alpha2) / (2.0 * a_roe);
+    let alpha3 = du[0] - (alpha1 + alpha2);
+
+    Some(RoeDecomposition {
+        sound_speed: a_roe,
+        lambda: [u_roe - a_roe, u_roe, u_roe + a_roe],
+        alpha: [alpha1, alpha2, alpha3],
+        eigenvectors: [
+            [1.0, u_roe - a_roe, h_roe - u_roe * a_roe],
+            [1.0, u_roe, 0.5 * u_roe * u_roe],
+            [1.0, u_roe + a_roe, h_roe + u_roe * a_roe],
+        ],
+    })
+}
+
 /// Roe flux for 1-D Euler equations (x-direction).
 ///
-/// Returns the interface flux `[F_rho, F_rhou, F_e]` using the Roe-average state.
+/// Returns the interface flux `[F_rho, F_rhou, F_e]`
+/// `F = ½ (F_L + F_R) - ½ Σ |λ̃_k| α_k K_k` built from the Roe-average state.
 /// `gamma` is the ratio of specific heats (1.4 for air).
+///
+/// The nonlinear acoustic waves (`k = 1, 3`) use Harten's entropy fix with
+/// `δ = 0.1 ã` ([`ROE_ENTROPY_FIX_FRACTION`]): `|λ| < δ` is replaced by
+/// `(λ² + δ²) / (2δ)`, which prevents expansion shocks at sonic rarefactions.
+/// The fix also adds a little dissipation to a stationary shock; use
+/// [`roe_flux_euler_1d_with_entropy_fix`] with `delta_fraction = 0.0` to switch
+/// it off.
+///
+/// If the Roe average is not a valid state (non-positive densities or
+/// `ã² <= 0`) the robust [`hll_flux_euler_1d`] flux is returned instead.  Like
+/// every linearised Riemann solver it can still produce non-physical
+/// intermediate states for strong double rarefactions (Toro test 2); use the
+/// HLL/HLLC fluxes for such flows.
 pub fn roe_flux_euler_1d(
     rho_l: f64,
     u_l: f64,
@@ -651,63 +741,56 @@ pub fn roe_flux_euler_1d(
     p_r: f64,
     gamma: f64,
 ) -> [f64; 3] {
-    // Roe averages
-    let sqrt_rl = rho_l.sqrt();
-    let sqrt_rr = rho_r.sqrt();
-    let denom = sqrt_rl + sqrt_rr;
+    roe_flux_euler_1d_with_entropy_fix(
+        [rho_l, u_l, p_l],
+        [rho_r, u_r, p_r],
+        gamma,
+        ROE_ENTROPY_FIX_FRACTION,
+    )
+}
 
-    let u_roe = (sqrt_rl * u_l + sqrt_rr * u_r) / denom;
-    let h_l = (p_l / (rho_l * (gamma - 1.0)) + p_l / rho_l) + 0.5 * u_l * u_l;
-    let h_r = (p_r / (rho_r * (gamma - 1.0)) + p_r / rho_r) + 0.5 * u_r * u_r;
-    let h_roe = (sqrt_rl * h_l + sqrt_rr * h_r) / denom;
+/// [`roe_flux_euler_1d`] with an explicit entropy-fix width.
+///
+/// `left` and `right` are the primitive states `[ρ, u, p]`.  The acoustic
+/// eigenvalues with `|λ| < δ = delta_fraction · ã` are smoothed by Harten's
+/// fix `|λ| → (λ² + δ²) / (2δ)`; `delta_fraction <= 0.0` disables the fix.
+pub fn roe_flux_euler_1d_with_entropy_fix(
+    left: [f64; 3],
+    right: [f64; 3],
+    gamma: f64,
+    delta_fraction: f64,
+) -> [f64; 3] {
+    let [rho_l, u_l, p_l] = left;
+    let [rho_r, u_r, p_r] = right;
+    let Some(roe) = roe_decomposition(left, right, gamma) else {
+        return hll_flux_euler_1d(rho_l, u_l, p_l, rho_r, u_r, p_r, gamma);
+    };
 
-    let a2 = (gamma - 1.0) * (h_roe - 0.5 * u_roe * u_roe);
-    let a_roe = if a2 > 0.0 { a2.sqrt() } else { 0.0 };
-
-    // Conservative variables
+    // Physical fluxes.
     let e_l = p_l / (gamma - 1.0) + 0.5 * rho_l * u_l * u_l;
     let e_r = p_r / (gamma - 1.0) + 0.5 * rho_r * u_r * u_r;
-
-    // Physical fluxes
     let fl = [rho_l * u_l, rho_l * u_l * u_l + p_l, (e_l + p_l) * u_l];
     let fr = [rho_r * u_r, rho_r * u_r * u_r + p_r, (e_r + p_r) * u_r];
 
-    // Delta conserved variables
-    let du = [rho_r - rho_l, rho_r * u_r - rho_l * u_l, e_r - e_l];
-
-    // Eigenvalues
-    let lam = [u_roe - a_roe, u_roe, u_roe + a_roe];
-
-    // Roe dissipation matrix applied to du (simplified diagonal form)
-    let r_inv_du = [
-        (du[0] * u_roe - du[1]) / (2.0 * a_roe.max(1e-30)),
-        du[0] - (du[0] * u_roe - du[1]) / (a_roe.max(1e-30)),
-        (du[0] * u_roe + du[1]) / (2.0 * a_roe.max(1e-30)),
-    ];
-
-    // Right eigenvectors (simplified form)
-    let r_mat = [
-        [1.0, 1.0, 1.0],
-        [u_roe - a_roe, u_roe, u_roe + a_roe],
-        [
-            h_roe - u_roe * a_roe,
-            0.5 * u_roe * u_roe,
-            h_roe + u_roe * a_roe,
-        ],
-    ];
-
-    let mut dissipation = [0.0f64; 3];
-    for i in 0..3 {
-        for k in 0..3 {
-            dissipation[i] += lam[k].abs() * r_inv_du[k] * r_mat[i][k];
+    // |λ_k| with Harten's entropy fix on the genuinely nonlinear waves.
+    let delta = delta_fraction * roe.sound_speed;
+    let mut abs_lambda = roe.lambda.map(f64::abs);
+    if delta > 0.0 {
+        for k in [0_usize, 2] {
+            if abs_lambda[k] < delta {
+                abs_lambda[k] = (roe.lambda[k] * roe.lambda[k] + delta * delta) / (2.0 * delta);
+            }
         }
     }
 
-    [
-        0.5 * (fl[0] + fr[0]) - 0.5 * dissipation[0],
-        0.5 * (fl[1] + fr[1]) - 0.5 * dissipation[1],
-        0.5 * (fl[2] + fr[2]) - 0.5 * dissipation[2],
-    ]
+    let mut flux = [0.0_f64; 3];
+    for (i, f) in flux.iter_mut().enumerate() {
+        let dissipation: f64 = (0..3)
+            .map(|k| abs_lambda[k] * roe.alpha[k] * roe.eigenvectors[k][i])
+            .sum();
+        *f = 0.5 * (fl[i] + fr[i]) - 0.5 * dissipation;
+    }
+    flux
 }
 
 // ---------------------------------------------------------------------------
@@ -1751,3 +1834,6 @@ mod flux_compute_tests {
         assert!(v2 <= v3 + 1e-12, "van_leer not monotone: {v2} > {v3}");
     }
 }
+
+#[cfg(test)]
+mod roe_tests;

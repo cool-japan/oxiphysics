@@ -3,6 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::types::{VtuAnnotation, VtuCellQuality, VtuWriter};
+use crate::small_sym_eigen::symmetric_eigen;
 
 /// VTK cell type: vertex (1 point).
 pub const VTK_VERTEX: u8 = 1;
@@ -65,64 +66,367 @@ pub fn higher_order_cell_num_nodes(cell_type: u8) -> usize {
         other => cell_type_num_nodes(other),
     }
 }
-/// Compute per-cell quality metrics for all cells in a `VtuWriter`.
-pub fn compute_cell_quality(writer: &VtuWriter) -> Vec<VtuCellQuality> {
-    let mut result = Vec::new();
-    let pts = writer.points();
-    let types = writer.cell_types();
-    let cells = writer.cells_per_cell();
-    for (ci, (&ct, node_ids)) in types.iter().zip(cells.iter()).enumerate() {
-        let positions: Vec<[f64; 3]> = node_ids
-            .iter()
-            .filter_map(|&ni| if ni < pts.len() { Some(pts[ni]) } else { None })
-            .collect();
-        if positions.len() < 2 {
-            result.push(VtuCellQuality {
-                cell_index: ci,
-                cell_type: ct,
-                aspect_ratio: 0.0,
-                min_edge: 0.0,
-                max_edge: 0.0,
-                scaled_jacobian: 0.0,
-            });
-            continue;
+/// Local node pairs of the edges of a VTK line cell.
+const LINE_EDGES: [(usize, usize); 1] = [(0, 1)];
+/// Local node pairs of the 3 edges of a VTK triangle.
+const TRIANGLE_EDGES: [(usize, usize); 3] = [(0, 1), (1, 2), (2, 0)];
+/// Local node pairs of the 4 edges of a VTK quadrilateral.
+const QUAD_EDGES: [(usize, usize); 4] = [(0, 1), (1, 2), (2, 3), (3, 0)];
+/// Local node pairs of the 6 edges of a VTK tetrahedron.
+const TET_EDGES: [(usize, usize); 6] = [(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)];
+/// Local node pairs of the 8 edges of a VTK pyramid (quadrilateral base
+/// `0..4`, apex `4`).
+const PYRAMID_EDGES: [(usize, usize); 8] = [
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 0),
+    (0, 4),
+    (1, 4),
+    (2, 4),
+    (3, 4),
+];
+/// Local node pairs of the 9 edges of a VTK wedge (triangles `0..3` and
+/// `3..6`, joined by the edges `i -> i + 3`).
+const WEDGE_EDGES: [(usize, usize); 9] = [
+    (0, 1),
+    (1, 2),
+    (2, 0),
+    (3, 4),
+    (4, 5),
+    (5, 3),
+    (0, 3),
+    (1, 4),
+    (2, 5),
+];
+/// Local node pairs of the 12 edges of a VTK hexahedron.
+const HEX_EDGES: [(usize, usize); 12] = [
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 0),
+    (4, 5),
+    (5, 6),
+    (6, 7),
+    (7, 4),
+    (0, 4),
+    (1, 5),
+    (2, 6),
+    (3, 7),
+];
+/// For every corner of a VTK hexahedron the three neighbouring nodes whose
+/// edge vectors form a right-handed triple (`det = +1` for a unit cube).
+const HEX_CORNER_NEIGHBOURS: [[usize; 3]; 8] = [
+    [1, 3, 4],
+    [2, 0, 5],
+    [3, 1, 6],
+    [0, 2, 7],
+    [7, 5, 0],
+    [4, 6, 1],
+    [5, 7, 2],
+    [6, 4, 3],
+];
+/// Right-handed corner triples of the four base corners of a VTK pyramid; the
+/// third neighbour is always the apex.
+const PYRAMID_BASE_CORNER_NEIGHBOURS: [[usize; 3]; 4] =
+    [[1, 3, 4], [2, 0, 4], [3, 1, 4], [0, 2, 4]];
+/// Corner triples of a VTK wedge.  VTK orders the base triangle `(0, 1, 2)` so
+/// that its right-hand normal points *away* from the opposite triangle
+/// `(3, 4, 5)`; the triples are arranged such that a valid (non-inverted) wedge
+/// has positive corner determinants.
+const WEDGE_CORNER_NEIGHBOURS: [[usize; 3]; 6] = [
+    [2, 1, 3],
+    [0, 2, 4],
+    [1, 0, 5],
+    [4, 5, 0],
+    [5, 3, 1],
+    [3, 4, 2],
+];
+/// Permutation that turns the node order of a `VTK_VOXEL` (x varies fastest)
+/// into the node order of a `VTK_HEX`.
+const VOXEL_TO_HEX: [usize; 8] = [0, 1, 3, 2, 4, 5, 7, 6];
+
+/// The linear cell shapes whose quality can be measured.
+#[derive(Clone, Copy)]
+enum QualityShape {
+    Line,
+    Triangle,
+    Quad,
+    Tet,
+    Hex,
+    Wedge,
+    Pyramid,
+}
+
+impl QualityShape {
+    /// Shape used to measure a VTK cell type.  Quadratic cells are measured on
+    /// their corner nodes, which come first in VTK ordering.
+    fn from_cell_type(cell_type: u8) -> Option<Self> {
+        match cell_type {
+            VTK_LINE => Some(Self::Line),
+            VTK_TRIANGLE | VTK_QUADRATIC_TRIANGLE => Some(Self::Triangle),
+            VTK_QUAD | VTK_QUADRATIC_QUAD => Some(Self::Quad),
+            VTK_TET | VTK_QUADRATIC_TET => Some(Self::Tet),
+            VTK_HEX | VTK_VOXEL | VTK_QUADRATIC_HEX => Some(Self::Hex),
+            VTK_WEDGE => Some(Self::Wedge),
+            VTK_PYRAMID => Some(Self::Pyramid),
+            _ => None,
         }
-        let mut edges = Vec::new();
-        for i in 0..positions.len() {
-            let j = (i + 1) % positions.len();
-            let p = positions[i];
-            let q = positions[j];
-            let d = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
-            edges.push(d);
-        }
-        let min_e = edges.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max_e = edges.iter().cloned().fold(0.0_f64, f64::max);
-        let ar = if max_e > 1e-30 { min_e / max_e } else { 0.0 };
-        let sj = if positions.len() >= 4 {
-            let e1 = sub3(positions[1], positions[0]);
-            let e2 = sub3(positions[2], positions[0]);
-            let e3 = sub3(positions[3], positions[0]);
-            let jdet = e1[0] * (e2[1] * e3[2] - e2[2] * e3[1])
-                - e1[1] * (e2[0] * e3[2] - e2[2] * e3[0])
-                + e1[2] * (e2[0] * e3[1] - e2[1] * e3[0]);
-            let l1 = norm3(e1);
-            let l2 = norm3(e2);
-            let l3 = norm3(e3);
-            let den = l1 * l2 * l3;
-            if den > 1e-30 { jdet / den } else { 0.0 }
-        } else {
-            ar
-        };
-        result.push(VtuCellQuality {
-            cell_index: ci,
-            cell_type: ct,
-            aspect_ratio: ar,
-            min_edge: min_e,
-            max_edge: max_e,
-            scaled_jacobian: sj,
-        });
     }
-    result
+
+    /// Number of corner nodes of the shape.
+    fn corner_count(self) -> usize {
+        match self {
+            Self::Line => 2,
+            Self::Triangle => 3,
+            Self::Quad | Self::Tet => 4,
+            Self::Pyramid => 5,
+            Self::Wedge => 6,
+            Self::Hex => 8,
+        }
+    }
+
+    /// Edge table of the shape.
+    fn edges(self) -> &'static [(usize, usize)] {
+        match self {
+            Self::Line => &LINE_EDGES,
+            Self::Triangle => &TRIANGLE_EDGES,
+            Self::Quad => &QUAD_EDGES,
+            Self::Tet => &TET_EDGES,
+            Self::Pyramid => &PYRAMID_EDGES,
+            Self::Wedge => &WEDGE_EDGES,
+            Self::Hex => &HEX_EDGES,
+        }
+    }
+}
+
+#[inline]
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+#[inline]
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Jacobian of the corner spanned by the edge vectors `a`, `b`, `c`,
+/// normalised by the edge lengths: `det(a, b, c) / (|a| |b| |c|)`.  It is `+1`
+/// for three orthogonal edges in right-handed order and `0` for a degenerate
+/// corner (a zero-length edge).
+fn scaled_corner_jacobian(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
+    let (la, lb, lc) = (norm3(a), norm3(b), norm3(c));
+    if la == 0.0 || lb == 0.0 || lc == 0.0 {
+        return 0.0;
+    }
+    dot3(a, cross3(b, c)) / (la * lb * lc)
+}
+
+/// Minimum of the scaled corner Jacobians over a table of corner triples:
+/// `triples[k]` lists the three neighbours of node `k` whose edge vectors from
+/// node `k` form a right-handed triple.
+fn min_corner_jacobian(p: &[[f64; 3]], triples: &[[usize; 3]]) -> f64 {
+    let mut worst = f64::INFINITY;
+    for (corner, &[a, b, c]) in triples.iter().enumerate() {
+        let origin = p[corner];
+        let value =
+            scaled_corner_jacobian(sub3(p[a], origin), sub3(p[b], origin), sub3(p[c], origin));
+        worst = worst.min(value);
+    }
+    worst
+}
+
+/// Scaled Jacobian of a tetrahedron (Verdict definition):
+/// `sqrt(2) * det(p1 - p0, p2 - p0, p3 - p0)` divided by the largest product of
+/// the three edge lengths meeting at a vertex.  A regular tetrahedron gives
+/// `1`, an inverted one a negative value.
+fn tet_scaled_jacobian(p: &[[f64; 3]]) -> f64 {
+    let det = dot3(sub3(p[1], p[0]), cross3(sub3(p[2], p[0]), sub3(p[3], p[0])));
+    let length = |i: usize, j: usize| norm3(sub3(p[i], p[j]));
+    let products = [
+        length(0, 1) * length(0, 2) * length(0, 3),
+        length(1, 0) * length(1, 2) * length(1, 3),
+        length(2, 0) * length(2, 1) * length(2, 3),
+        length(3, 0) * length(3, 1) * length(3, 2),
+    ];
+    let largest = products.iter().copied().fold(0.0_f64, f64::max);
+    if largest > 0.0 {
+        std::f64::consts::SQRT_2 * det / largest
+    } else {
+        0.0
+    }
+}
+
+/// Scaled Jacobian of a planar polygon (triangle or quadrilateral): the
+/// minimum over the corners of the sine of the signed corner angle, measured
+/// against the element normal (Newell's normal of the vertex loop).  A
+/// reflex corner or an inverted element yields a negative value, a degenerate
+/// element `0`.
+fn polygon_scaled_jacobian(p: &[[f64; 3]]) -> f64 {
+    let n = p.len();
+    let mut normal = [0.0_f64; 3];
+    for i in 0..n {
+        let c = cross3(sub3(p[i], p[0]), sub3(p[(i + 1) % n], p[0]));
+        for (acc, v) in normal.iter_mut().zip(c) {
+            *acc += v;
+        }
+    }
+    let len = norm3(normal);
+    if len == 0.0 {
+        return 0.0;
+    }
+    let unit = [normal[0] / len, normal[1] / len, normal[2] / len];
+    let mut worst = f64::INFINITY;
+    for i in 0..n {
+        let next = sub3(p[(i + 1) % n], p[i]);
+        let prev = sub3(p[(i + n - 1) % n], p[i]);
+        let (ln, lp) = (norm3(next), norm3(prev));
+        let value = if ln == 0.0 || lp == 0.0 {
+            0.0
+        } else {
+            dot3(cross3(next, prev), unit) / (ln * lp)
+        };
+        worst = worst.min(value);
+    }
+    worst
+}
+
+/// Quality record of a cell that cannot be evaluated: unsupported cell type,
+/// wrong number of nodes for its type, a connectivity entry that does not
+/// refer to an existing point, or a non-finite coordinate.
+fn unmeasurable_cell_quality(cell_index: usize, cell_type: u8) -> VtuCellQuality {
+    VtuCellQuality {
+        cell_index,
+        cell_type,
+        aspect_ratio: 0.0,
+        min_edge: 0.0,
+        max_edge: 0.0,
+        scaled_jacobian: 0.0,
+    }
+}
+
+/// Measure one cell; see [`compute_cell_quality`].
+fn cell_quality(
+    cell_index: usize,
+    cell_type: u8,
+    node_ids: &[usize],
+    points: &[[f64; 3]],
+) -> VtuCellQuality {
+    let Some(shape) = QualityShape::from_cell_type(cell_type) else {
+        return unmeasurable_cell_quality(cell_index, cell_type);
+    };
+    if node_ids.len() != higher_order_cell_num_nodes(cell_type) {
+        return unmeasurable_cell_quality(cell_index, cell_type);
+    }
+    let mut corners: Vec<[f64; 3]> = Vec::with_capacity(shape.corner_count());
+    for &node in &node_ids[..shape.corner_count()] {
+        match points.get(node) {
+            Some(&position) => corners.push(position),
+            None => return unmeasurable_cell_quality(cell_index, cell_type),
+        }
+    }
+    if corners
+        .iter()
+        .flatten()
+        .any(|coordinate| !coordinate.is_finite())
+    {
+        return unmeasurable_cell_quality(cell_index, cell_type);
+    }
+    if cell_type == VTK_VOXEL {
+        let voxel = corners.clone();
+        for (slot, &source) in corners.iter_mut().zip(VOXEL_TO_HEX.iter()) {
+            *slot = voxel[source];
+        }
+    }
+
+    let mut min_edge = f64::INFINITY;
+    let mut max_edge = 0.0_f64;
+    for &(a, b) in shape.edges() {
+        let length = norm3(sub3(corners[a], corners[b]));
+        min_edge = min_edge.min(length);
+        max_edge = max_edge.max(length);
+    }
+    let aspect_ratio = if max_edge > 0.0 {
+        min_edge / max_edge
+    } else {
+        0.0
+    };
+
+    let scaled_jacobian = match shape {
+        QualityShape::Line => {
+            if max_edge > 0.0 {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        QualityShape::Triangle => 2.0 / 3.0_f64.sqrt() * polygon_scaled_jacobian(&corners),
+        QualityShape::Quad => polygon_scaled_jacobian(&corners),
+        QualityShape::Tet => tet_scaled_jacobian(&corners),
+        QualityShape::Hex => min_corner_jacobian(&corners, &HEX_CORNER_NEIGHBOURS),
+        QualityShape::Wedge => {
+            2.0 / 3.0_f64.sqrt() * min_corner_jacobian(&corners, &WEDGE_CORNER_NEIGHBOURS)
+        }
+        QualityShape::Pyramid => {
+            std::f64::consts::SQRT_2
+                * min_corner_jacobian(&corners, &PYRAMID_BASE_CORNER_NEIGHBOURS)
+        }
+    };
+
+    VtuCellQuality {
+        cell_index,
+        cell_type,
+        aspect_ratio,
+        min_edge,
+        max_edge,
+        scaled_jacobian,
+    }
+}
+
+/// Compute per-cell quality metrics for all cells in a `VtuWriter`.
+///
+/// The metrics are measured on the *true edges* of every cell shape (1 for a
+/// line, 3 triangle, 4 quadrilateral, 6 tetrahedron, 8 pyramid, 9 wedge, 12
+/// hexahedron/voxel), not on the cyclic node order:
+///
+/// * `min_edge` / `max_edge` are the shortest and longest edge,
+///   `aspect_ratio = min_edge / max_edge` (`1` for an equilateral cell).
+/// * `scaled_jacobian` follows the Verdict definitions: the minimum over the
+///   element corners of the Jacobian determinant normalised by the lengths of
+///   the edges spanning the corner, rescaled so that the ideal element of each
+///   shape scores `1` (unit cube, unit square, regular tetrahedron,
+///   equilateral triangle, equilateral prism, pyramid with eight equal
+///   edges).  Degenerate elements score `0` and inverted or non-convex ones a
+///   negative value.  Quadrilaterals and triangles are measured against their
+///   own element normal, so they may sit anywhere in 3-D space.
+///
+/// VTK node ordering is assumed: tetrahedron and pyramid base `(0, 1, 2)` have
+/// their right-hand normal pointing towards the remaining node(s), the wedge
+/// base `(0, 1, 2)` points away from `(3, 4, 5)`, and `VTK_VOXEL` is first
+/// permuted to hexahedron order.  Quadratic triangles, quadrilaterals,
+/// tetrahedra and hexahedra are measured on their corner nodes.
+///
+/// A line has no Jacobian; it reports `1` when it has a non-zero length.
+///
+/// A cell that cannot be measured (unsupported type such as a vertex or a
+/// polygon, a node count that does not match the type, a connectivity entry
+/// outside the point list, or a NaN/infinite coordinate) reports all-zero
+/// metrics.
+pub fn compute_cell_quality(writer: &VtuWriter) -> Vec<VtuCellQuality> {
+    let points = writer.points();
+    writer
+        .cell_types()
+        .iter()
+        .zip(writer.cells_per_cell().iter())
+        .enumerate()
+        .map(|(cell_index, (&cell_type, node_ids))| {
+            cell_quality(cell_index, cell_type, node_ids, points)
+        })
+        .collect()
 }
 #[inline]
 pub(super) fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -230,63 +534,96 @@ pub fn cell_to_point_data(writer: &VtuWriter, cell_data: &[f64]) -> Vec<f64> {
         .map(|(s, &c)| if c > 0 { s / c as f64 } else { 0.0 })
         .collect()
 }
-/// Estimate the gradient of a scalar field at each node using a weighted
-/// sum over node neighbours (based on connectivity).
+/// Estimate the gradient of a scalar field at each node with a weighted
+/// least-squares fit over the node's neighbours (all nodes that share a cell
+/// with it).
 ///
-/// This is a simple O(n*k) implementation for unstructured meshes.
+/// For node `i`, neighbour `j`, `d_j = x_j - x_i` and `ds_j = s_j - s_i` the
+/// gradient `g` minimises `sum_j w_j (g . d_j - ds_j)^2` with `w_j = 1 / |d_j|^2`.
+/// The `3 x 3` normal equations `A g = b` (`A = sum w d d^T`,
+/// `b = sum w ds d`) are solved with the pseudo-inverse of the symmetric matrix
+/// `A` obtained from its eigen-decomposition (eigenvalues below `1e-12` times
+/// the largest one are dropped).  Linear fields are therefore reproduced
+/// exactly on any mesh, and planar or collinear neighbourhoods yield the
+/// minimum-norm gradient (zero component normal to the plane) instead of a
+/// singular system.
+///
+/// Nodes that have no neighbour, no scalar value or only coincident neighbours
+/// get a zero gradient.  Cost is `O(n_nodes * k)` for `k` neighbours per node.
+///
 /// Returns interleaved `[gx, gy, gz, gx, gy, gz, ...]`.
 pub fn estimate_gradient(writer: &VtuWriter, scalars: &[f64]) -> Vec<f64> {
     let n_pts = writer.num_points();
     let pts = writer.points();
-    let cells = writer.cells_per_cell();
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n_pts];
-    for node_ids in cells {
+    for node_ids in writer.cells_per_cell() {
         for &ni in node_ids {
+            if ni >= n_pts {
+                continue;
+            }
             for &nj in node_ids {
-                if ni != nj && ni < n_pts && nj < n_pts && !adj[ni].contains(&nj) {
+                if ni != nj && nj < n_pts {
                     adj[ni].push(nj);
                 }
             }
         }
     }
+    for neighbours in &mut adj {
+        neighbours.sort_unstable();
+        neighbours.dedup();
+    }
     let mut grad = vec![0.0_f64; n_pts * 3];
-    for i in 0..n_pts {
-        if i >= scalars.len() {
+    for (i, neighbours) in adj.iter().enumerate() {
+        let Some(&si) = scalars.get(i) else {
             continue;
-        }
+        };
         let pi = pts[i];
-        let si = scalars[i];
-        let mut gx = 0.0_f64;
-        let mut gy = 0.0_f64;
-        let mut gz = 0.0_f64;
-        let mut w_sum = 0.0_f64;
-        for &j in &adj[i] {
-            if j >= scalars.len() {
+        let mut normal = [[0.0_f64; 3]; 3];
+        let mut rhs = [0.0_f64; 3];
+        for &j in neighbours {
+            let Some(&sj) = scalars.get(j) else {
                 continue;
-            }
-            let pj = pts[j];
-            let sj = scalars[j];
-            let dx = pj[0] - pi[0];
-            let dy = pj[1] - pi[1];
-            let dz = pj[2] - pi[2];
-            let d2 = dx * dx + dy * dy + dz * dz;
+            };
+            let d = sub3(pts[j], pi);
+            let d2 = dot3(d, d);
             if d2 < 1e-30 {
                 continue;
             }
-            let ds = sj - si;
             let w = 1.0 / d2;
-            gx += w * ds * dx / d2;
-            gy += w * ds * dy / d2;
-            gz += w * ds * dz / d2;
-            w_sum += w;
+            let ds = sj - si;
+            for (r, row) in normal.iter_mut().enumerate() {
+                for (c, entry) in row.iter_mut().enumerate() {
+                    *entry += w * d[r] * d[c];
+                }
+                rhs[r] += w * ds * d[r];
+            }
         }
-        if w_sum > 1e-30 {
-            grad[i * 3] = gx / w_sum;
-            grad[i * 3 + 1] = gy / w_sum;
-            grad[i * 3 + 2] = gz / w_sum;
-        }
+        let g = solve_symmetric_pseudo_inverse(normal, rhs);
+        grad[i * 3..i * 3 + 3].copy_from_slice(&g);
     }
     grad
+}
+
+/// Minimum-norm least-squares solution of `a x = b` for a symmetric positive
+/// semi-definite `3 x 3` matrix `a`: the pseudo-inverse is built from the
+/// eigen-decomposition, dropping eigenvalues below `1e-12 * lambda_max`.
+fn solve_symmetric_pseudo_inverse(a: [[f64; 3]; 3], b: [f64; 3]) -> [f64; 3] {
+    let eigen = symmetric_eigen(a);
+    let largest = eigen.values[0];
+    let mut x = [0.0_f64; 3];
+    if largest.is_nan() || largest <= 0.0 {
+        return x;
+    }
+    let cutoff = 1e-12 * largest;
+    for (value, vector) in eigen.values.iter().zip(eigen.vectors.iter()) {
+        if *value > cutoff {
+            let coefficient = dot3(*vector, b) / value;
+            for (xi, vi) in x.iter_mut().zip(vector.iter()) {
+                *xi += coefficient * vi;
+            }
+        }
+    }
+    x
 }
 /// Write a VTU file with metadata annotations in the XML header comment.
 pub fn write_vtu_with_annotations(writer: &VtuWriter, annotations: &[VtuAnnotation]) -> String {

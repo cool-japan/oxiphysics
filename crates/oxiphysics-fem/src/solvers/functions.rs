@@ -4,9 +4,8 @@
 
 use crate::sparse::CsrMatrix;
 
-use super::types::{
-    CholeskyDense, ConjugateGradient, ConvergenceMonitor, GaussSeidel, SolverStats,
-};
+use super::symmetric_amg::SymmetricAmg;
+use super::types::{CholeskyDense, ConvergenceMonitor, GaussSeidel, SolverStats};
 
 /// Compute `y = A x` for a CSR sparse matrix.
 ///
@@ -323,8 +322,13 @@ pub fn bicgstab_dense(
 }
 /// Solve a dense symmetric system `A x = b` using MINRES.
 ///
-/// Suitable for indefinite symmetric systems (not just SPD).
-/// Returns `(solution, stats)`.
+/// Suitable for indefinite symmetric systems (not just SPD).  The iteration is
+/// the Paige–Saunders recurrence (Lanczos process plus a QR factorisation of
+/// the tridiagonal matrix by Givens rotations), started from `x = 0`.
+///
+/// Returns `(solution, stats)`.  `stats.residual` is the true residual norm
+/// `‖b − A x‖₂` of the returned vector and `stats.converged` is set only if
+/// `‖b − A x‖₂ / ‖b‖₂ < tol`; it is never inferred from the recurrence.
 pub fn minres_dense(
     a: &[f64],
     b: &[f64],
@@ -332,6 +336,29 @@ pub fn minres_dense(
     max_iter: usize,
     tol: f64,
 ) -> (Vec<f64>, SolverStats) {
+    minres_iterate(b, max_iter, tol, |v| dense_matvec(a, v, n))
+}
+/// Shared MINRES iteration for a symmetric operator given as a mat-vec closure.
+///
+/// With Lanczos vectors `v_k`, coefficients `α_k`, `β_k` and the Givens
+/// rotations `(c, s)` that triangularise the tridiagonal matrix, step `k`
+/// computes
+///
+/// ```text
+/// δ  = c₁ α − c₀ s₁ β_k           ρ₁ = √(δ² + β_{k+1}²)
+/// ρ₂ = s₁ α + c₀ c₁ β_k           ρ₃ = s₀ β_k
+/// w_k = (v_k − ρ₃ w_{k−2} − ρ₂ w_{k−1}) / ρ₁
+/// x  += (δ/ρ₁) η w_k              η ← −(β_{k+1}/ρ₁) η
+/// ```
+///
+/// where `(c₀, s₀)` and `(c₁, s₁)` are the rotations of steps `k−2` and `k−1`
+/// and `|η|` is the norm of the current residual.  The three-term search
+/// direction recurrence needs both `w_{k−1}` and `w_{k−2}`.
+fn minres_iterate<F>(b: &[f64], max_iter: usize, tol: f64, matvec: F) -> (Vec<f64>, SolverStats)
+where
+    F: Fn(&[f64]) -> Vec<f64>,
+{
+    let n = b.len();
     let mut x = vec![0.0_f64; n];
     let b_norm = dot_slice(b, b).sqrt();
     if b_norm < 1e-60 {
@@ -346,23 +373,17 @@ pub fn minres_dense(
     }
     let mut v_prev = vec![0.0_f64; n];
     let mut v_curr: Vec<f64> = b.iter().map(|bi| bi / b_norm).collect();
-    let mut beta_old = 0.0_f64;
-    let mut beta_curr = b_norm;
-    let mut c_old = 1.0_f64;
-    let mut s_old = 0.0_f64;
-    // c_cur and s_cur are always assigned before being read (first loop body),
-    // so no meaningful initial value is needed.
-    let mut c_cur;
-    let mut s_cur;
+    let mut beta_curr = 0.0_f64;
+    let (mut c_km2, mut s_km2) = (1.0_f64, 0.0_f64);
+    let (mut c_km1, mut s_km1) = (1.0_f64, 0.0_f64);
     let mut eta = b_norm;
-    let mut w = vec![0.0_f64; n];
-    let mut w_old = vec![0.0_f64; n];
+    let mut w_km2 = vec![0.0_f64; n];
+    let mut w_km1 = vec![0.0_f64; n];
     let mut iters = 0usize;
-    let mut converged = false;
     for _ in 0..max_iter {
         iters += 1;
-        let av = dense_matvec(a, &v_curr, n);
-        let alpha: f64 = dot_slice(&v_curr, &av);
+        let av = matvec(&v_curr);
+        let alpha = dot_slice(&v_curr, &av);
         let mut v_next: Vec<f64> = av
             .iter()
             .zip(v_curr.iter())
@@ -370,46 +391,53 @@ pub fn minres_dense(
             .map(|((avi, vci), vpi)| avi - alpha * vci - beta_curr * vpi)
             .collect();
         let beta_next = dot_slice(&v_next, &v_next).sqrt();
-        if beta_next > 1e-60 {
-            for vi in &mut v_next {
-                *vi /= beta_next;
-            }
+        let delta = c_km1 * alpha - c_km2 * s_km1 * beta_curr;
+        let rho1 = delta.hypot(beta_next);
+        if rho1 <= 0.0 || rho1.is_nan() {
+            break;
         }
-        let eps = s_old * beta_old;
-        let delta = c_old * beta_old + s_old * alpha;
-        let gamma_sq = (delta * delta + beta_next * beta_next).sqrt().max(1e-60);
-        c_cur = delta / gamma_sq;
-        s_cur = -beta_next / gamma_sq;
-        for (i, w_i) in w.iter_mut().enumerate() {
-            *w_i = (v_curr[i] - eps * w_old[i] - delta * *w_i) / gamma_sq;
-        }
+        let rho2 = s_km1 * alpha + c_km2 * c_km1 * beta_curr;
+        let rho3 = s_km2 * beta_curr;
+        let c_new = delta / rho1;
+        let s_new = beta_next / rho1;
+        let w: Vec<f64> = v_curr
+            .iter()
+            .zip(w_km2.iter())
+            .zip(w_km1.iter())
+            .map(|((vi, w2), w1)| (vi - rho3 * w2 - rho2 * w1) / rho1)
+            .collect();
         for (x_i, &w_i) in x.iter_mut().zip(w.iter()) {
-            *x_i += c_cur * eta * w_i;
+            *x_i += c_new * eta * w_i;
         }
-        eta *= -s_cur;
-        let r_norm = eta.abs();
-        if r_norm / b_norm < tol {
-            converged = true;
+        eta *= -s_new;
+        c_km2 = c_km1;
+        s_km2 = s_km1;
+        c_km1 = c_new;
+        s_km1 = s_new;
+        w_km2 = std::mem::replace(&mut w_km1, w);
+        if eta.abs() / b_norm < tol {
             break;
         }
-        v_prev = v_curr.clone();
-        v_curr = v_next;
-        beta_old = beta_curr;
+        // An invariant Krylov subspace was found: the iterate is already the
+        // minimiser over the whole subspace and further steps add nothing.
+        let av_norm = dot_slice(&av, &av).sqrt();
+        if beta_next <= f64::EPSILON * av_norm {
+            break;
+        }
+        for vi in &mut v_next {
+            *vi /= beta_next;
+        }
+        v_prev = std::mem::replace(&mut v_curr, v_next);
         beta_curr = beta_next;
-        c_old = c_cur;
-        s_old = s_cur;
-        w_old = w.clone();
-        if beta_next < 1e-60 {
-            converged = true;
-            break;
-        }
     }
-    let ax = dense_matvec(a, &x, n);
-    let r: Vec<f64> = b.iter().zip(ax.iter()).map(|(bi, ai)| bi - ai).collect();
-    let residual = dot_slice(&r, &r).sqrt();
-    if residual / b_norm < tol {
-        converged = true;
-    }
+    let ax = matvec(&x);
+    let residual = b
+        .iter()
+        .zip(ax.iter())
+        .map(|(bi, ai)| (bi - ai) * (bi - ai))
+        .sum::<f64>()
+        .sqrt();
+    let converged = residual / b_norm < tol;
     (
         x,
         SolverStats {
@@ -632,47 +660,96 @@ pub fn schur_complement_dense(a: &[f64], b: &[f64], c: &[f64], d: &[f64], n: usi
     }
     s
 }
-/// Perform a two-level multigrid V-cycle for a dense system `A x = b`.
+/// Linear-interpolation prolongation for a line of `n` unknowns with
+/// full coarsening: coarse node `i` coincides with fine node `2i + 1`.
 ///
-/// Uses Gauss-Seidel as smoother (`pre_smooth` and `post_smooth` iterations).
-/// The coarse-grid operator is the lower-left quarter of `A`.
-/// Returns `(solution, stats)`.
+/// Returns, for every fine node, its `(coarse index, weight)` entries: a coarse
+/// node is injected with weight 1, and a fine node between two coarse nodes
+/// takes the weight ½ from each neighbour (a missing neighbour beyond a
+/// homogeneous Dirichlet end contributes nothing).
+fn linear_interpolation_rows(n: usize, n_coarse: usize) -> Vec<Vec<(usize, f64)>> {
+    (0..n)
+        .map(|j| {
+            if j % 2 == 1 {
+                vec![((j - 1) / 2, 1.0)]
+            } else {
+                let mut entries = Vec::with_capacity(2);
+                if j >= 2 {
+                    entries.push((j / 2 - 1, 0.5));
+                }
+                if j / 2 < n_coarse {
+                    entries.push((j / 2, 0.5));
+                }
+                entries
+            }
+        })
+        .collect()
+}
+/// Perform one two-grid V-cycle for a dense system `A x = b`.
+///
+/// The cycle starts from the initial guess `x0` (the zero vector if
+/// `x0.len() != n`) and consists of
+///
+/// 1. `pre_smooth` Gauss-Seidel sweeps applied **to the current iterate**,
+/// 2. a coarse-grid correction with the Galerkin operator `A_c = Pᵀ A P`,
+///    where `P` is linear interpolation from every second unknown (the
+///    unknowns are assumed to be ordered along a line, as for a 1-D mesh),
+///    solved exactly by Cholesky (pivoted LU if `A_c` is not SPD), and
+/// 3. `post_smooth` Gauss-Seidel sweeps applied to the corrected iterate.
+///
+/// Returns `(solution, stats)`.  `stats.converged` is `true` when the final
+/// relative residual `‖b − A x‖₂ / ‖b‖₂` is below `1e-6`.
 pub fn multigrid_vcycle_dense(
     a: &[f64],
     b: &[f64],
-    _x0: &[f64],
+    x0: &[f64],
     n: usize,
     pre_smooth: usize,
     post_smooth: usize,
 ) -> (Vec<f64>, SolverStats) {
-    let gs = GaussSeidel::new(pre_smooth, 1e-60, 1.0);
-    let mut x;
-    x = gs.solve(a, b, n);
-    let ax = dense_matvec(a, &x, n);
-    let r: Vec<f64> = b.iter().zip(ax.iter()).map(|(bi, ai)| bi - ai).collect();
-    let nc = (n / 2).max(1);
-    let r_c: Vec<f64> = (0..nc).map(|i| r[i * 2]).collect();
-    let mut a_c = vec![0.0_f64; nc * nc];
-    for i in 0..nc {
-        for j in 0..nc {
-            a_c[i * nc + j] = a[(i * 2) * n + (j * 2)];
-        }
-    }
-    let chol_c = CholeskyDense::new(nc);
-    let e_c = if let Ok(lc) = chol_c.factorize(&a_c) {
-        chol_c.solve(&lc, &r_c)
+    let mut x = if x0.len() == n {
+        x0.to_vec()
     } else {
-        let cg = ConjugateGradient::new(nc * 10, 1e-10);
-        cg.solve(&a_c, &r_c, nc)
+        vec![0.0_f64; n]
     };
-    for i in 0..nc {
-        x[i * 2] += e_c[i];
-        if i * 2 + 1 < n {
-            x[i * 2 + 1] += 0.5 * (e_c[i] + if i + 1 < nc { e_c[i + 1] } else { 0.0 });
+    GaussSeidel::new(pre_smooth, 1e-60, 1.0).smooth_in_place(a, b, n, &mut x);
+    let nc = n / 2;
+    if nc > 0 {
+        let ax = dense_matvec(a, &x, n);
+        let r: Vec<f64> = b.iter().zip(ax.iter()).map(|(bi, ai)| bi - ai).collect();
+        let p = linear_interpolation_rows(n, nc);
+        let mut r_c = vec![0.0_f64; nc];
+        for (r_j, row) in r.iter().zip(p.iter()) {
+            for &(ci, w) in row {
+                r_c[ci] += w * r_j;
+            }
+        }
+        let mut a_c = vec![0.0_f64; nc * nc];
+        for (j, row_j) in p.iter().enumerate() {
+            for (k, row_k) in p.iter().enumerate() {
+                let a_jk = a[j * n + k];
+                if a_jk == 0.0 {
+                    continue;
+                }
+                for &(ci, wi) in row_j {
+                    for &(cj, wj) in row_k {
+                        a_c[ci * nc + cj] += wi * a_jk * wj;
+                    }
+                }
+            }
+        }
+        let chol_c = CholeskyDense::new(nc);
+        let e_c = match chol_c.factorize(&a_c) {
+            Ok(lc) => chol_c.solve(&lc, &r_c),
+            Err(_) => lu_solve(&a_c, &r_c, nc),
+        };
+        for (x_j, row) in x.iter_mut().zip(p.iter()) {
+            for &(ci, w) in row {
+                *x_j += w * e_c[ci];
+            }
         }
     }
-    let gs_post = GaussSeidel::new(post_smooth, 1e-60, 1.0);
-    x = gs_post.solve(a, b, n);
+    GaussSeidel::new(post_smooth, 1e-60, 1.0).smooth_in_place(a, b, n, &mut x);
     let ax_final = dense_matvec(a, &x, n);
     let r_final: Vec<f64> = b
         .iter()
@@ -909,6 +986,10 @@ pub fn bicgstab_sparse(
 /// Solve a sparse symmetric system `A x = b` using MINRES.
 ///
 /// Suitable for symmetric indefinite systems (SPD and SPSD are also handled).
+/// See [`minres_dense`] for the recurrence and the meaning of the returned
+/// statistics: `stats.residual` is the true residual and `stats.converged`
+/// reflects only `‖b − A x‖₂ / ‖b‖₂ < tol`.
+///
 /// Returns `(solution, stats)`.
 pub fn minres_sparse(
     a: &CsrMatrix,
@@ -919,95 +1000,7 @@ pub fn minres_sparse(
     let n = b.len();
     assert_eq!(a.nrows, n);
     assert_eq!(a.ncols, n);
-    let b_norm = dot(b, b).sqrt();
-    let mut x = vec![0.0f64; n];
-    if b_norm < 1e-60 {
-        return (
-            x,
-            SolverStats {
-                iterations: 0,
-                residual: 0.0,
-                converged: true,
-            },
-        );
-    }
-    let mut v_prev = vec![0.0f64; n];
-    let mut v_curr: Vec<f64> = b.iter().map(|bi| bi / b_norm).collect();
-    let mut beta_old = 0.0f64;
-    let mut beta_curr = b_norm;
-    let mut c_old = 1.0f64;
-    let mut s_old = 0.0f64;
-    // c_cur and s_cur are always assigned before being read (first loop body).
-    let mut c_cur;
-    let mut s_cur;
-    let mut eta = b_norm;
-    let mut w = vec![0.0f64; n];
-    let mut w_old = vec![0.0f64; n];
-    let mut iters = 0usize;
-    let mut converged = false;
-    for _ in 0..max_iter {
-        iters += 1;
-        let av = a.mul_vec(&v_curr);
-        let alpha: f64 = dot(&v_curr, &av);
-        let mut v_next: Vec<f64> = av
-            .iter()
-            .zip(v_curr.iter())
-            .zip(v_prev.iter())
-            .map(|((avi, vci), vpi)| avi - alpha * vci - beta_curr * vpi)
-            .collect();
-        let beta_next = dot(&v_next, &v_next).sqrt();
-        if beta_next > 1e-60 {
-            for vi in &mut v_next {
-                *vi /= beta_next;
-            }
-        }
-        let eps = s_old * beta_old;
-        let delta = c_old * beta_old + s_old * alpha;
-        let gamma_sq = (delta * delta + beta_next * beta_next).sqrt().max(1e-60);
-        c_cur = delta / gamma_sq;
-        s_cur = -beta_next / gamma_sq;
-        for (i, w_i) in w.iter_mut().enumerate() {
-            *w_i = (v_curr[i] - eps * w_old[i] - delta * *w_i) / gamma_sq;
-        }
-        for (x_i, &w_i) in x.iter_mut().zip(w.iter()) {
-            *x_i += c_cur * eta * w_i;
-        }
-        eta *= -s_cur;
-        let r_norm = eta.abs();
-        if r_norm / b_norm < tol {
-            converged = true;
-            break;
-        }
-        v_prev = v_curr.clone();
-        v_curr = v_next;
-        beta_old = beta_curr;
-        beta_curr = beta_next;
-        c_old = c_cur;
-        s_old = s_cur;
-        w_old = w.clone();
-        if beta_next < 1e-60 {
-            converged = true;
-            break;
-        }
-    }
-    let ax_final = a.mul_vec(&x);
-    let r: Vec<f64> = b
-        .iter()
-        .zip(ax_final.iter())
-        .map(|(bi, ai)| bi - ai)
-        .collect();
-    let residual = dot(&r, &r).sqrt();
-    if residual / b_norm < tol {
-        converged = true;
-    }
-    (
-        x,
-        SolverStats {
-            iterations: iters,
-            residual,
-            converged,
-        },
-    )
+    minres_iterate(b, max_iter, tol, |v| a.mul_vec(v))
 }
 /// Solve a sparse system `A x = b` using GMRES(m) with restart.
 ///
@@ -1125,20 +1118,25 @@ pub fn gmres_sparse(
         },
     )
 }
-/// Solve `A x = b` using a simple two-level algebraic multigrid (AMG) V-cycle
-/// as a preconditioner to PCG.
+/// Solve `A x = b` with PCG preconditioned by an algebraic multigrid V-cycle.
 ///
-/// The coarse grid is built using the AMG coarsening/prolongation/Galerkin
-/// operators from the `sparse` module.  This implements the outer PCG loop
-/// with one AMG V-cycle per iteration.
+/// The grid hierarchy (coarsening, interpolation and Galerkin coarse
+/// operators) is built **once** by [`SymmetricAmg`] before the iteration
+/// starts, and every PCG iteration applies one symmetric positive definite
+/// V-cycle (identical damped-Jacobi pre- and post-smoothing, exact coarsest
+/// solve), as the conjugate-gradient method requires of its preconditioner.
+///
+/// If the hierarchy cannot be built (for example because `A` is only
+/// positive semi-definite, so the coarsest Cholesky factorisation breaks down)
+/// the solver falls back to Jacobi-preconditioned CG.
 ///
 /// Returns `(solution, stats)`.
 pub fn amg_pcg(a: &CsrMatrix, b: &[f64], max_iter: usize, tol: f64) -> (Vec<f64>, SolverStats) {
-    use crate::sparse::amg_v_cycle;
     let n = b.len();
+    assert_eq!(a.nrows, n);
+    assert_eq!(a.ncols, n);
     let mut x = vec![0.0f64; n];
-    let ax = a.mul_vec(&x);
-    let mut r: Vec<f64> = b.iter().zip(ax.iter()).map(|(bi, ai)| bi - ai).collect();
+    let mut r: Vec<f64> = b.to_vec();
     let b_norm = dot(b, b).sqrt();
     if b_norm < 1e-60 {
         let residual = dot(&r, &r).sqrt();
@@ -1151,7 +1149,12 @@ pub fn amg_pcg(a: &CsrMatrix, b: &[f64], max_iter: usize, tol: f64) -> (Vec<f64>
             },
         );
     }
-    let mut z = amg_v_cycle(a, &r, &vec![0.0f64; n], 2, 2);
+    let amg = match SymmetricAmg::new(a) {
+        Ok(amg) => amg,
+        Err(_) => return pcg_solve(a, b, &jacobi_preconditioner(a), max_iter, tol),
+    };
+    let mut z = vec![0.0f64; n];
+    amg.apply(&r, &mut z);
     let mut p = z.clone();
     let mut rz_old = dot(&r, &z);
     let mut iters = 0usize;
@@ -1173,7 +1176,7 @@ pub fn amg_pcg(a: &CsrMatrix, b: &[f64], max_iter: usize, tol: f64) -> (Vec<f64>
             converged = true;
             break;
         }
-        z = amg_v_cycle(a, &r, &vec![0.0f64; n], 2, 2);
+        amg.apply(&r, &mut z);
         let rz_new = dot(&r, &z);
         let beta = rz_new / rz_old;
         for i in 0..n {

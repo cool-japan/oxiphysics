@@ -8,12 +8,12 @@
 //! 1. `test_lbm_soa_to_gpu_buffer_roundtrip` — CPU-only marshalling correctness.
 //!    Verifies the q-major flatten/unflatten round-trip.  Always passes without a GPU.
 //!
-//! 2. `test_lbm_d3q19_lid_cavity_gpu_vs_cpu` — GPU / CPU physics parity test.
-//!    Uses **periodic-only** boundary conditions (no solid mask, no lid, no body
-//!    force) so that both the WGSL shader and the CPU reference compute identical
-//!    physics.  A non-uniform initial perturbation in density/velocity makes the
-//!    simulation non-trivial; after 500 steps the mean velocities must agree
-//!    within 1e-3.
+//! 2. `test_lbm_d3q19_periodic_gpu_vs_cpu` — GPU / CPU physics parity test.
+//!    A fully periodic box (solid mask cleared, no lid, no body force) with a
+//!    non-uniform initial perturbation is advanced on the GPU and on the CPU
+//!    reference path of the same `LbmSimulation` (GPU disabled); the per-cell
+//!    density and velocity must agree to f32 precision.  Walls, lid and Guo
+//!    forcing parity is covered by the unit tests in `src/lbm_gpu/tests.rs`.
 //!
 //! 3. `test_lbm_d3q19_gpu_resident_stepping` — verifies that multiple GPU steps
 //!    can run without intermediate readback, and that a single final readback
@@ -109,10 +109,7 @@ mod gpu_tests {
 
     /// Build a periodic LBM simulation with a non-uniform initial state.
     ///
-    /// The solid mask is cleared (all fluid) so that the GPU WGSL shader
-    /// (which uses periodic boundary conditions on all faces) and the CPU
-    /// reference path compute identical physics.
-    ///
+    /// The solid mask is cleared (all fluid) so the box is fully periodic.
     /// The non-uniformity is a single-mode density perturbation: the cell at
     /// index 0 receives an extra 1e-3 density in the rest direction (q=0).
     fn periodic_sim(nx: usize, ny: usize, nz: usize, tau: f64) -> LbmSimulation {
@@ -127,204 +124,66 @@ mod gpu_tests {
             force_z: 0.0,
         };
         let mut sim = LbmSimulation::new(cfg);
-        // Clear all solid cells so physics is fully periodic.
-        for v in sim.solid.iter_mut() {
-            *v = false;
-        }
-        // Apply a tiny density perturbation so the system is non-trivial.
-        sim.f[0][0] += 1e-3;
+        sim.set_solid_mask(vec![false; nx * ny * nz])
+            .expect("mask length matches the grid");
+        sim.populations_mut()[0][0] += 1e-3;
         sim
     }
 
-    /// Run a reference CPU simulation in **periodic** mode:
-    /// no solid mask, no lid, no body force.
+    /// LBM D3Q19 BGK GPU vs CPU parity test on a periodic box.
     ///
-    /// We re-implement the CPU step here as a minimal periodic BGK kernel that
-    /// matches the WGSL shader exactly, to avoid the CPU `step_cpu()` applying
-    /// bounce-back walls.
-    fn run_cpu_periodic(
-        nx: usize,
-        ny: usize,
-        nz: usize,
-        tau: f64,
-        n_steps: usize,
-    ) -> (f64, f64, f64) {
-        use oxiphysics_gpu::lbm_gpu::{D3Q19_EX, D3Q19_EY, D3Q19_EZ, D3Q19_W};
-
-        let nc = nx * ny * nz;
-        let omega = 1.0 / tau;
-
-        // Initialise at rest with tiny density perturbation at cell 0.
-        let mut f: Vec<Vec<f64>> = (0..19)
-            .map(|q| {
-                let mut dir = vec![D3Q19_W[q]; nc];
-                if q == 0 {
-                    dir[0] += 1e-3;
-                }
-                dir
-            })
-            .collect();
-        let mut f_tmp: Vec<Vec<f64>> = vec![vec![0.0; nc]; 19];
-
-        let nx_i = nx as i32;
-        let ny_i = ny as i32;
-        let nz_i = nz as i32;
-
-        for _ in 0..n_steps {
-            // BGK collision (in-place)
-            for z in 0..nz {
-                for y in 0..ny {
-                    for x in 0..nx {
-                        let cell = x + nx * (y + ny * z);
-                        let mut rho = 0.0_f64;
-                        let mut ux = 0.0_f64;
-                        let mut uy = 0.0_f64;
-                        let mut uz = 0.0_f64;
-                        for i in 0..19 {
-                            let fi = f[i][cell];
-                            rho += fi;
-                            ux += fi * D3Q19_EX[i] as f64;
-                            uy += fi * D3Q19_EY[i] as f64;
-                            uz += fi * D3Q19_EZ[i] as f64;
-                        }
-                        if rho < 1e-10 {
-                            continue;
-                        }
-                        ux /= rho;
-                        uy /= rho;
-                        uz /= rho;
-                        let u2 = ux * ux + uy * uy + uz * uz;
-                        for i in 0..19 {
-                            let eu = D3Q19_EX[i] as f64 * ux
-                                + D3Q19_EY[i] as f64 * uy
-                                + D3Q19_EZ[i] as f64 * uz;
-                            let feq =
-                                D3Q19_W[i] * rho * (1.0 + 3.0 * eu + 4.5 * eu * eu - 1.5 * u2);
-                            f[i][cell] += omega * (feq - f[i][cell]);
-                        }
-                    }
-                }
-            }
-
-            // Periodic streaming (pull-style, matching WGSL)
-            for dir in f_tmp.iter_mut().take(19) {
-                for v in dir.iter_mut().take(nc) {
-                    *v = 0.0;
-                }
-            }
-            for z in 0..nz {
-                for y in 0..ny {
-                    for x in 0..nx {
-                        let cell = x + nx * (y + ny * z);
-                        for i in 0..19 {
-                            // Pull from upstream (periodic wrap)
-                            let sx = ((x as i32 - D3Q19_EX[i] + nx_i).rem_euclid(nx_i)) as usize;
-                            let sy = ((y as i32 - D3Q19_EY[i] + ny_i).rem_euclid(ny_i)) as usize;
-                            let sz = ((z as i32 - D3Q19_EZ[i] + nz_i).rem_euclid(nz_i)) as usize;
-                            f_tmp[i][cell] = f[i][sx + nx * (sy + ny * sz)];
-                        }
-                    }
-                }
-            }
-            std::mem::swap(&mut f, &mut f_tmp);
-        }
-
-        // Compute mean velocity over all cells.
-        // Build per-cell (rho, ux, uy, uz) by accumulating across directions.
-        let mut cell_rho = vec![0.0_f64; nc];
-        let mut cell_ux = vec![0.0_f64; nc];
-        let mut cell_uy = vec![0.0_f64; nc];
-        let mut cell_uz = vec![0.0_f64; nc];
-        for (i, dir) in f.iter().enumerate().take(19) {
-            let ex = D3Q19_EX[i] as f64;
-            let ey = D3Q19_EY[i] as f64;
-            let ez = D3Q19_EZ[i] as f64;
-            for (fi, (rho_c, (ux_c, (uy_c, uz_c)))) in dir.iter().zip(
-                cell_rho.iter_mut().zip(
-                    cell_ux
-                        .iter_mut()
-                        .zip(cell_uy.iter_mut().zip(cell_uz.iter_mut())),
-                ),
-            ) {
-                *rho_c += fi;
-                *ux_c += fi * ex;
-                *uy_c += fi * ey;
-                *uz_c += fi * ez;
-            }
-        }
-        let mut sum_ux = 0.0_f64;
-        let mut sum_uy = 0.0_f64;
-        let mut sum_uz = 0.0_f64;
-        for (rho, (ux, (uy, uz))) in cell_rho
-            .iter()
-            .zip(cell_ux.iter().zip(cell_uy.iter().zip(cell_uz.iter())))
-        {
-            if *rho > 1e-10 {
-                sum_ux += ux / rho;
-                sum_uy += uy / rho;
-                sum_uz += uz / rho;
-            }
-        }
-        let n = nc as f64;
-        (sum_ux / n, sum_uy / n, sum_uz / n)
-    }
-
-    /// LBM D3Q19 BGK GPU vs CPU parity test.
-    ///
-    /// Both paths use periodic boundary conditions (no solid mask, no lid, no
-    /// body force) so they compute identical physics.  After 500 steps the
-    /// mean velocities must agree within 1e-3 (GPU uses f32 internally).
-    ///
-    /// Skipped gracefully when no GPU adapter is available.
-    #[ignore = "heavy: GPU physics parity test (>300s), run manually in isolated environment"]
+    /// The CPU side is the real `step_cpu` reference (GPU disabled), not a
+    /// re-implementation.  Skipped gracefully when no GPU adapter is available.
     #[test]
-    fn test_lbm_d3q19_lid_cavity_gpu_vs_cpu() {
-        const NX: usize = 32;
-        const NY: usize = 32;
-        const NZ: usize = 32;
+    fn test_lbm_d3q19_periodic_gpu_vs_cpu() {
+        const N: usize = 12;
         const TAU: f64 = 1.0 / 1.8; // omega = 1.8
-        const N_STEPS: usize = 500;
+        const N_STEPS: usize = 100;
 
-        // GPU path via LbmSimulation (periodic)
-        let mut gpu_sim = periodic_sim(NX, NY, NZ, TAU);
-
-        // Force lazy GPU init by taking one step
-        gpu_sim.step();
-
-        // Check whether a real GPU was acquired
-        if !gpu_sim.has_gpu() {
-            eprintln!("SKIPPED: no GPU adapter available for test_lbm_d3q19_lid_cavity_gpu_vs_cpu");
+        let mut gpu_sim = periodic_sim(N, N, N, TAU);
+        if !gpu_sim.ensure_gpu() {
+            eprintln!(
+                "SKIPPED: no GPU adapter available ({:?})",
+                gpu_sim.gpu_error()
+            );
             return;
         }
+        let mut cpu_sim = periodic_sim(N, N, N, TAU);
+        cpu_sim.disable_gpu();
 
-        // Run remaining steps on GPU
-        for _ in 1..N_STEPS {
+        for _ in 0..N_STEPS {
             gpu_sim.step();
+            cpu_sim.step();
         }
-
-        let (gpu_ux, gpu_uy, gpu_uz) = gpu_sim.mean_velocity();
-
-        // CPU reference using the periodic mini-kernel
-        let (cpu_ux, cpu_uy, cpu_uz) = run_cpu_periodic(NX, NY, NZ, TAU, N_STEPS);
-
-        let diff_ux = (gpu_ux - cpu_ux).abs();
-        let diff_uy = (gpu_uy - cpu_uy).abs();
-        let diff_uz = (gpu_uz - cpu_uz).abs();
-
         assert!(
-            diff_ux < 1e-3,
-            "mean_ux mismatch: gpu={gpu_ux:.6} cpu={cpu_ux:.6} diff={diff_ux:.6e}"
-        );
-        assert!(
-            diff_uy < 1e-3,
-            "mean_uy mismatch: gpu={gpu_uy:.6} cpu={cpu_uy:.6} diff={diff_uy:.6e}"
-        );
-        assert!(
-            diff_uz < 1e-3,
-            "mean_uz mismatch: gpu={gpu_uz:.6} cpu={cpu_uz:.6} diff={diff_uz:.6e}"
+            gpu_sim.has_gpu(),
+            "GPU path dropped out: {:?}",
+            gpu_sim.gpu_error()
         );
 
-        // Mean density should still be approximately 1.0 (mass conserved)
+        let rho_gpu = gpu_sim.density_field();
+        let rho_cpu = cpu_sim.density_field();
+        let u_gpu = gpu_sim.velocity_field();
+        let u_cpu = cpu_sim.velocity_field();
+        let mut max_rho = 0.0_f64;
+        let mut max_u = 0.0_f64;
+        for cell in 0..N * N * N {
+            max_rho = max_rho.max((rho_gpu[cell] - rho_cpu[cell]).abs());
+            for k in 0..3 {
+                max_u = max_u.max((u_gpu[cell][k] - u_cpu[cell][k]).abs());
+            }
+        }
+        assert!(max_rho < 5e-5, "density mismatch {max_rho:e}");
+        assert!(max_u < 1e-5, "velocity mismatch {max_u:e}");
+
+        // The perturbation must actually have spread (non-trivial dynamics).
+        let spread = rho_cpu.iter().filter(|&&r| (r - 1.0).abs() > 1e-9).count();
+        assert!(
+            spread > 100,
+            "perturbation did not propagate: {spread} cells"
+        );
+
+        // Mean density stays ≈ 1 (mass conserved under periodic BC).
         let gpu_rho = gpu_sim.mean_density();
         assert!(
             (gpu_rho - 1.0).abs() < 1e-4,

@@ -747,55 +747,6 @@ impl DicomReader {
         self.get_tag(&DicomTag::modality())
     }
 }
-/// NIfTI-1 writer.
-#[derive(Clone, Debug)]
-pub struct NiftiWriter {
-    /// Output path.
-    pub output_path: String,
-    /// Data scaling: slope.
-    pub scl_slope: f64,
-    /// Data scaling: intercept.
-    pub scl_inter: f64,
-    /// Use gzip compression.
-    pub gzip: bool,
-}
-impl NiftiWriter {
-    /// Create a new NIfTI writer.
-    pub fn new(output_path: &str) -> Self {
-        Self {
-            output_path: output_path.to_string(),
-            scl_slope: 1.0,
-            scl_inter: 0.0,
-            gzip: false,
-        }
-    }
-    /// Build NIfTI-1 header bytes (simplified, 348-byte mock).
-    pub fn build_header(&self, reader: &NiftiReader) -> Vec<u8> {
-        let mut header = vec![0u8; 348];
-        let sizeof_hdr = 348u32.to_le_bytes();
-        header[0] = sizeof_hdr[0];
-        header[1] = sizeof_hdr[1];
-        let ndim = reader.dim[0] as u16;
-        let bytes = ndim.to_le_bytes();
-        header[40] = bytes[0];
-        header[41] = bytes[1];
-        header[344] = b'n';
-        header[345] = b'+';
-        header[346] = b'1';
-        header[347] = 0;
-        header
-    }
-    /// Write NIfTI data to a buffer (mock: returns serialized bytes).
-    pub fn write_to_buffer(&self, reader: &NiftiReader) -> Vec<u8> {
-        let header = self.build_header(reader);
-        let mut buf = header;
-        for &v in &reader.data {
-            let scaled = (v * self.scl_slope + self.scl_inter) as f32;
-            buf.extend_from_slice(&scaled.to_le_bytes());
-        }
-        buf
-    }
-}
 /// A binary or multi-label 3D segmentation mask.
 #[derive(Clone, Debug)]
 pub struct SegmentationMask {

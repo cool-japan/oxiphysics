@@ -6,6 +6,7 @@ use super::super::types::{
     AmberAngle, AmberBond, AmberDihedral, AmberEnergyFrame, AmberTopology, FfAngleParam,
     FfBondParam, LjParameter, MdcrdFrame,
 };
+use crate::fortran_fields::parse_real_record;
 
 /// Extract the raw text body of a `%FLAG `name` section.
 ///
@@ -64,14 +65,39 @@ pub fn parse_fortran_strings(s: &str) -> Vec<String> {
     }
     result
 }
-/// Build `AmberBond` entries from a flat integer array (i*3, j*3, type_idx triplets).
+/// Zero-based atom index designated by a prmtop atom pointer: `|pointer| / 3`.
+///
+/// The sign of a pointer carries no atom information (AMBER only uses it as a
+/// flag in dihedral records), so it is ignored.  The result saturates at
+/// `usize::MAX`, which no topology contains, instead of wrapping around to an
+/// index that could designate a real atom.
+fn atom_index_of_pointer(pointer: i64) -> usize {
+    usize::try_from(pointer.unsigned_abs() / 3).unwrap_or(usize::MAX)
+}
+/// Zero-based parameter type designated by a one-based prmtop type index.
+///
+/// A non-positive index selects the first type; an index too large for
+/// `usize` saturates, so that the table lookup of the caller misses.
+fn type_slot_of_index(type_index: i64) -> usize {
+    usize::try_from(type_index.saturating_sub(1).max(0)).unwrap_or(usize::MAX)
+}
+/// Build `AmberBond` entries from a flat integer array
+/// (`3*i`, `3*j`, `type_idx` triplets).
+///
+/// The first two integers of each triplet are atom pointers (three times the
+/// zero-based atom index, sign ignored), the third is the one-based index into
+/// the bond parameter tables.  A trailing incomplete triplet is ignored.
+/// [`AmberTopology::from_prmtop_str`] validates the pointers and the type
+/// indices before calling this function; for unchecked input a non-positive
+/// type index selects the first parameter type and an index beyond the tables
+/// yields `k = 0` and `r0 = 0`.
 pub fn build_bonds(ints: &[i64], force_k: &[f64], equil_r: &[f64]) -> Vec<AmberBond> {
     let mut bonds = Vec::new();
     let mut idx = 0;
     while idx + 2 < ints.len() {
-        let i = (ints[idx] / 3) as usize;
-        let j = (ints[idx + 1] / 3) as usize;
-        let type_idx = (ints[idx + 2] - 1).max(0) as usize;
+        let i = atom_index_of_pointer(ints[idx]);
+        let j = atom_index_of_pointer(ints[idx + 1]);
+        let type_idx = type_slot_of_index(ints[idx + 2]);
         let k = force_k.get(type_idx).copied().unwrap_or(0.0);
         let r0 = equil_r.get(type_idx).copied().unwrap_or(0.0);
         bonds.push(AmberBond { i, j, k, r0 });
@@ -79,19 +105,30 @@ pub fn build_bonds(ints: &[i64], force_k: &[f64], equil_r: &[f64]) -> Vec<AmberB
     }
     bonds
 }
-/// Build `AmberAngle` entries from a flat integer array (i*3, j*3, k*3, type_idx quads).
+/// Build `AmberAngle` entries from a flat integer array
+/// (`3*i`, `3*j`, `3*k`, `type_idx` quadruples).
+///
+/// The first three integers of each quadruple are atom pointers (three times
+/// the zero-based atom index, sign ignored), the fourth is the one-based index
+/// into the angle parameter tables.  A trailing incomplete quadruple is
+/// ignored.  [`AmberTopology::from_prmtop_str`] validates the pointers and the
+/// type indices before calling this function; for unchecked input a
+/// non-positive type index selects the first parameter type and an index
+/// beyond the tables yields `k = 0` and `theta0 = 0`.
 pub fn build_angles(ints: &[i64], force_k: &[f64], equil_t: &[f64]) -> Vec<AmberAngle> {
     let mut angles = Vec::new();
     let mut idx = 0;
     while idx + 3 < ints.len() {
-        let i = (ints[idx] / 3) as usize;
-        let j = (ints[idx + 1] / 3) as usize;
-        let k_idx = (ints[idx + 3] - 1).max(0) as usize;
+        let i = atom_index_of_pointer(ints[idx]);
+        let j = atom_index_of_pointer(ints[idx + 1]);
+        let atom_k = atom_index_of_pointer(ints[idx + 2]);
+        let k_idx = type_slot_of_index(ints[idx + 3]);
         let k = force_k.get(k_idx).copied().unwrap_or(0.0);
         let theta0 = equil_t.get(k_idx).copied().unwrap_or(0.0);
         angles.push(AmberAngle {
             i,
             j,
+            atom_k,
             k_idx,
             k,
             theta0,
@@ -100,45 +137,192 @@ pub fn build_angles(ints: &[i64], force_k: &[f64], equil_t: &[f64]) -> Vec<Amber
     }
     angles
 }
-/// Parse Lennard-Jones A/B coefficient pairs from a raw prmtop string.
+/// Decode a prmtop atom pointer (three times the zero-based atom index).
 ///
-/// Looks for the `%FLAG LENNARD_JONES_ACOEF` and `%FLAG LENNARD_JONES_BCOEF`
-/// sections and returns one [`LjParameter`] per pair.
+/// Returns `None` for a pointer that cannot designate an atom: a negative
+/// value or one that is not a multiple of three.
+pub(crate) fn decode_atom_pointer(pointer: i64) -> Option<usize> {
+    let pointer = u64::try_from(pointer).ok()?;
+    if !pointer.is_multiple_of(3) {
+        return None;
+    }
+    usize::try_from(pointer / 3).ok()
+}
+/// Read a non-negative counter from the `POINTERS` array (zero when the array
+/// is too short to contain it).
+pub(crate) fn pointer_count(pointers: &[i64], index: usize, name: &str) -> Result<usize, String> {
+    match pointers.get(index) {
+        None => Ok(0),
+        Some(&value) => {
+            usize::try_from(value).map_err(|_| format!("POINTERS: {name} is negative ({value})"))
+        }
+    }
+}
+/// Check the records of a flat `BONDS_*` or `ANGLES_*` prmtop section.
 ///
-/// This is a best-effort parser; it handles well-formed AMBER 7+ files only.
+/// Every record holds `atoms` atom pointers followed by a one-based parameter
+/// type index.  Returns a description of the first defect: a trailing
+/// incomplete record, an atom pointer that does not designate one of the
+/// `n_atoms` atoms, or a type index outside `1..=n_types`.
+pub(crate) fn validate_valence_records(
+    flag: &str,
+    ints: &[i64],
+    atoms: usize,
+    n_atoms: usize,
+    n_types: usize,
+) -> Result<(), String> {
+    let stride = atoms + 1;
+    if !ints.len().is_multiple_of(stride) {
+        return Err(format!(
+            "{flag}: {} integers do not form whole records of {stride} values",
+            ints.len()
+        ));
+    }
+    for (record_idx, record) in ints.chunks_exact(stride).enumerate() {
+        for &pointer in &record[..atoms] {
+            let designates_atom = decode_atom_pointer(pointer).is_some_and(|atom| atom < n_atoms);
+            if !designates_atom {
+                return Err(format!(
+                    "{flag}: record {record_idx} has atom pointer {pointer}, which does not designate one of the {n_atoms} atoms declared in POINTERS"
+                ));
+            }
+        }
+        let type_index = record[atoms];
+        let known_type = usize::try_from(type_index).is_ok_and(|t| (1..=n_types).contains(&t));
+        if !known_type {
+            return Err(format!(
+                "{flag}: record {record_idx} has parameter type index {type_index}, expected 1..={n_types}"
+            ));
+        }
+    }
+    Ok(())
+}
+/// Parse the Lennard-Jones pair parameters of a raw prmtop string.
+///
+/// `LENNARD_JONES_ACOEF` and `LENNARD_JONES_BCOEF` hold one entry per
+/// unordered pair of atom types (`NTYPES * (NTYPES + 1) / 2` entries).  The
+/// `NONBONDED_PARM_INDEX` section (`NTYPES` x `NTYPES` entries, row-major,
+/// with `NTYPES` taken from `POINTERS`) maps a pair of types to the one-based
+/// position of its entry.  A non-positive entry designates a 10-12 hydrogen
+/// bond term that has no 12-6 parameters and is skipped.
+///
+/// One [`LjParameter`] is returned for every pair `type_a <= type_b` that has
+/// a 12-6 term, with zero-based type indices.  The pair assignment is never
+/// guessed: if `POINTERS` or `NONBONDED_PARM_INDEX` is missing, or an index
+/// points outside the coefficient tables, the result is empty.
 pub fn extract_lj_parameters(prmtop: &str) -> Vec<LjParameter> {
+    let pointers = extract_flag_integers(prmtop, "POINTERS");
+    let Some(n_types) = pointers
+        .get(1)
+        .and_then(|&n| usize::try_from(n).ok())
+        .filter(|&n| n > 0)
+    else {
+        return Vec::new();
+    };
+    let nb_index = extract_flag_integers(prmtop, "NONBONDED_PARM_INDEX");
     let a_vals = extract_flag_floats(prmtop, "LENNARD_JONES_ACOEF");
     let b_vals = extract_flag_floats(prmtop, "LENNARD_JONES_BCOEF");
-    let n = a_vals.len().min(b_vals.len());
-    (0..n)
-        .map(|i| LjParameter {
-            type_a: i,
-            type_b: i,
-            a_coeff: a_vals[i],
-            b_coeff: b_vals[i],
-        })
-        .collect()
-}
-/// Parse dihedral entries from `%FLAG DIHEDRALS_INC_HYDROGEN` and
-/// `%FLAG DIHEDRALS_WITHOUT_HYDROGEN` sections.
-///
-/// Returns a flat list of [`AmberDihedral`]s in the order they appear.
-pub fn extract_dihedrals(prmtop: &str) -> Vec<AmberDihedral> {
     let mut out = Vec::new();
-    for flag in &["DIHEDRALS_INC_HYDROGEN", "DIHEDRALS_WITHOUT_HYDROGEN"] {
-        let raw = extract_flag_integers(prmtop, flag);
-        let chunks = raw.chunks_exact(5);
-        for chunk in chunks {
-            let is_improper = chunk[2] < 0;
+    for type_a in 0..n_types {
+        for type_b in type_a..n_types {
+            let Some(&entry) = n_types
+                .checked_mul(type_a)
+                .and_then(|row| row.checked_add(type_b))
+                .and_then(|slot| nb_index.get(slot))
+            else {
+                return Vec::new();
+            };
+            if entry <= 0 {
+                continue;
+            }
+            let position = usize::try_from(entry - 1).ok();
+            let (Some(&a_coeff), Some(&b_coeff)) = (
+                position.and_then(|p| a_vals.get(p)),
+                position.and_then(|p| b_vals.get(p)),
+            ) else {
+                return Vec::new();
+            };
+            out.push(LjParameter {
+                type_a,
+                type_b,
+                a_coeff,
+                b_coeff,
+            });
+        }
+    }
+    out
+}
+/// Parse dihedral entries from the `DIHEDRALS_INC_HYDROGEN` and
+/// `DIHEDRALS_WITHOUT_HYDROGEN` sections.
+///
+/// Every entry is five integers: three times the zero-based indices of the
+/// four atoms, then the one-based index of the torsion parameter set in the
+/// `DIHEDRAL_FORCE_CONSTANT`, `DIHEDRAL_PERIODICITY` and `DIHEDRAL_PHASE`
+/// tables.  The sign of the third atom pointer marks a term whose 1-4
+/// non-bonded interaction is skipped ([`AmberDihedral::skip_14`]); the sign of
+/// the fourth marks an improper torsion ([`AmberDihedral::is_improper`]).
+///
+/// AMBER stores `PK` with `E = PK * (1 + cos(PN * phi - PHASE))`, whereas the
+/// returned [`AmberDihedral::v_n`] follows the `V_n / 2 * (1 + cos(..))`
+/// convention of `dihedral_energy`, so `v_n` is `2 * PK`.
+///
+/// Entries that cannot be decoded are skipped: an atom pointer that is not a
+/// multiple of three, an atom beyond the `NATOM` declared in `POINTERS` (when
+/// present), a parameter index outside the three tables, or a parameter set
+/// that is not finite.  Terms are returned in file order, hydrogen terms
+/// first.
+pub fn extract_dihedrals(prmtop: &str) -> Vec<AmberDihedral> {
+    let force_constants = extract_flag_floats(prmtop, "DIHEDRAL_FORCE_CONSTANT");
+    let periodicities = extract_flag_floats(prmtop, "DIHEDRAL_PERIODICITY");
+    let phases = extract_flag_floats(prmtop, "DIHEDRAL_PHASE");
+    let n_atoms = extract_flag_integers(prmtop, "POINTERS")
+        .first()
+        .and_then(|&n| usize::try_from(n).ok());
+    // The sign of a dihedral atom pointer carries a flag; the magnitude
+    // designates the atom.
+    let atom = |pointer: i32| -> Option<usize> {
+        let atom = decode_atom_pointer(i64::from(pointer).abs())?;
+        n_atoms.is_none_or(|n| atom < n).then_some(atom)
+    };
+    let mut out = Vec::new();
+    for flag in ["DIHEDRALS_INC_HYDROGEN", "DIHEDRALS_WITHOUT_HYDROGEN"] {
+        for chunk in extract_flag_integers(prmtop, flag).chunks_exact(5) {
+            let (Some(i), Some(j), Some(k), Some(l)) = (
+                atom(chunk[0]),
+                atom(chunk[1]),
+                atom(chunk[2]),
+                atom(chunk[3]),
+            ) else {
+                continue;
+            };
+            let Some(term) = usize::try_from(chunk[4])
+                .ok()
+                .and_then(|t| t.checked_sub(1))
+            else {
+                continue;
+            };
+            let (Some(&pk), Some(&pn), Some(&phase)) = (
+                force_constants.get(term),
+                periodicities.get(term),
+                phases.get(term),
+            ) else {
+                continue;
+            };
+            let periodicity = pn.abs().round();
+            let v_n = 2.0 * pk;
+            if !(v_n.is_finite() && phase.is_finite() && periodicity <= f64::from(i32::MAX)) {
+                continue;
+            }
             out.push(AmberDihedral {
-                i: (chunk[0].abs() / 3) as usize,
-                j: (chunk[1].abs() / 3) as usize,
-                k: (chunk[2].abs() / 3) as usize,
-                l: (chunk[3].abs() / 3) as usize,
-                v_n: 0.0,
-                gamma: 0.0,
-                n: chunk[4].abs(),
-                is_improper,
+                i,
+                j,
+                k,
+                l,
+                v_n,
+                gamma: phase,
+                n: periodicity as i32,
+                is_improper: chunk[3] < 0,
+                skip_14: chunk[2] < 0,
             });
         }
     }
@@ -468,56 +652,59 @@ pub fn parse_residue_selection(s: &str) -> Result<Vec<usize>, String> {
     }
     Ok(result)
 }
+/// Number of coordinate values per line of an MDCRD record (`10F8.3`).
+const MDCRD_VALUES_PER_LINE: usize = 10;
+/// Column width of an MDCRD field (`F8.3`).
+const MDCRD_COLUMN_WIDTH: usize = 8;
+/// Parse the periodic-box line of an MDCRD frame (`a b c`, extra values are
+/// ignored).
+fn parse_mdcrd_box(line: &str) -> Option<[f64; 3]> {
+    match parse_real_record(line, MDCRD_COLUMN_WIDTH).ok()?.as_slice() {
+        [a, b, c, ..] => Some([*a, *b, *c]),
+        _ => None,
+    }
+}
 /// Parse AMBER MDCRD trajectory data from a string.
 ///
-/// MDCRD format: title line, then coordinates in groups of 10 per line
-/// (8.3f format), with optional box at the end of each frame.
+/// MDCRD format: a title line, then for every frame the coordinates in
+/// `10F8.3` records (ten values per line, fewer on the last line of a frame),
+/// followed by one `3F8.3` box line when `has_box` is set.
+///
+/// Fields are cut into 8-character columns when they touch each other
+/// (`1.000-100.000`) and split on blanks otherwise.  Only complete frames are
+/// returned: parsing stops at the first frame whose coordinate lines are
+/// truncated, do not hold exactly `3 * n_atoms` numbers, or contain something
+/// that is not a number.  A final frame without its box line, or with a box
+/// line of fewer than three numbers, is returned with `box_dims == None`.
+/// `n_atoms == 0` yields no frames.
 pub fn parse_mdcrd(s: &str, n_atoms: usize, has_box: bool) -> Vec<MdcrdFrame> {
+    let Some(n_coords) = n_atoms.checked_mul(3).filter(|&n| n > 0) else {
+        return Vec::new();
+    };
+    let coords_lines = n_coords.div_ceil(MDCRD_VALUES_PER_LINE);
+    let frame_lines = coords_lines + usize::from(has_box);
+    let lines: Vec<&str> = s.lines().skip(1).collect();
     let mut frames = Vec::new();
-    let mut lines = s.lines();
-    let _ = lines.next();
-    let n_coords = n_atoms * 3;
-    let coords_per_line = 10_usize;
-    let coords_lines = n_coords.div_ceil(coords_per_line);
-    let mut remaining_lines: Vec<&str> = lines.collect();
-    let box_lines = if has_box { 1 } else { 0 };
-    let frame_lines = coords_lines + box_lines;
-    let mut i = 0;
-    while i + coords_lines <= remaining_lines.len() {
+    let mut first = 0usize;
+    while first + coords_lines <= lines.len() {
+        let box_line = first + coords_lines;
         let mut coords: Vec<f64> = Vec::with_capacity(n_coords);
-        for line in &remaining_lines[i..i + coords_lines] {
-            for tok in line.split_whitespace() {
-                if let Ok(v) = tok.parse::<f64>() {
-                    coords.push(v);
-                    if coords.len() == n_coords {
-                        break;
-                    }
-                }
+        for line in &lines[first..box_line] {
+            match parse_real_record(line, MDCRD_COLUMN_WIDTH) {
+                Ok(values) => coords.extend(values),
+                Err(_) => return frames,
             }
         }
-        let box_dims = if has_box && i + frame_lines <= remaining_lines.len() {
-            let box_line = remaining_lines[i + coords_lines];
-            let vals: Vec<f64> = box_line
-                .split_whitespace()
-                .filter_map(|t| t.parse().ok())
-                .collect();
-            if vals.len() >= 3 {
-                Some([vals[0], vals[1], vals[2]])
-            } else {
-                None
-            }
+        if coords.len() != n_coords {
+            return frames;
+        }
+        let box_dims = if has_box {
+            lines.get(box_line).and_then(|line| parse_mdcrd_box(line))
         } else {
             None
         };
-        if coords.len() >= n_coords {
-            frames.push(MdcrdFrame { coords, box_dims });
-        }
-        i += frame_lines;
-        if frame_lines == 0 {
-            break;
-        }
-        remaining_lines = remaining_lines[i..].to_vec();
-        i = 0;
+        frames.push(MdcrdFrame { coords, box_dims });
+        first += frame_lines;
     }
     frames
 }
@@ -867,11 +1054,24 @@ mod tests {
     }
     #[test]
     fn test_extract_lj_basic() {
-        let prmtop = "%FLAG LENNARD_JONES_ACOEF\n%FORMAT(5E16.8)\n1.0  2.0  3.0\n%FLAG LENNARD_JONES_BCOEF\n%FORMAT(5E16.8)\n0.5  1.0  1.5\n";
-        let params = extract_lj_parameters(prmtop);
+        // Two atom types: NTYPES * (NTYPES + 1) / 2 = 3 pair entries.
+        let prmtop = lj_prmtop(
+            2,
+            "       1       2       2       3",
+            "  1.0  2.0  3.0",
+            "  0.5  1.0  1.5",
+        );
+        let params = extract_lj_parameters(&prmtop);
         assert_eq!(params.len(), 3);
+        let pairs: Vec<(usize, usize)> = params.iter().map(|p| (p.type_a, p.type_b)).collect();
+        assert_eq!(pairs, vec![(0, 0), (0, 1), (1, 1)]);
         assert!((params[0].a_coeff - 1.0).abs() < 1e-10);
         assert!((params[0].b_coeff - 0.5).abs() < 1e-10);
+        // The (0, 1) pair is entry 2 of the coefficient tables.
+        assert!((params[1].a_coeff - 2.0).abs() < 1e-10);
+        assert!((params[1].b_coeff - 1.0).abs() < 1e-10);
+        assert!((params[2].a_coeff - 3.0).abs() < 1e-10);
+        assert!((params[2].b_coeff - 1.5).abs() < 1e-10);
     }
     #[test]
     fn test_lj_r_min() {
@@ -907,18 +1107,28 @@ mod tests {
     }
     #[test]
     fn test_extract_dihedrals_basic() {
-        let prmtop = "%FLAG DIHEDRALS_INC_HYDROGEN\n%FORMAT(10I8)\n0  3  6  9  1\n";
-        let dihedrals = extract_dihedrals(prmtop);
+        let prmtop = dihedral_prmtop(4, "       0       3       6       9       1", "");
+        let dihedrals = extract_dihedrals(&prmtop);
         assert_eq!(dihedrals.len(), 1);
-        assert_eq!(dihedrals[0].n, 1);
-        assert!(!dihedrals[0].is_improper);
+        let d = &dihedrals[0];
+        assert_eq!((d.i, d.j, d.k, d.l), (0, 1, 2, 3));
+        assert_eq!(d.n, 3);
+        assert!((d.v_n - 2.0 * 0.155555556).abs() < 1e-12, "v_n={}", d.v_n);
+        assert_eq!(d.gamma, 0.0);
+        assert!(!d.is_improper);
+        assert!(!d.skip_14);
     }
     #[test]
     fn test_extract_dihedrals_improper_flag() {
-        let prmtop = "%FLAG DIHEDRALS_WITHOUT_HYDROGEN\n%FORMAT(10I8)\n0  3  -6  9  2\n";
-        let dihedrals = extract_dihedrals(prmtop);
+        // A negative FOURTH atom pointer marks an improper torsion.
+        let prmtop = dihedral_prmtop(4, "", "       0       3       6      -9       1");
+        let dihedrals = extract_dihedrals(&prmtop);
         assert_eq!(dihedrals.len(), 1);
-        assert!(dihedrals[0].is_improper);
+        let d = &dihedrals[0];
+        assert!(d.is_improper);
+        assert!(!d.skip_14);
+        assert_eq!((d.i, d.j, d.k, d.l), (0, 1, 2, 3));
+        assert_eq!(d.n, 3);
     }
     fn sample_mdout() -> &'static str {
         " NSTEP =       10  TIME(PS) =  0.010000  TEMP(K) =  298.5  PRESS =    0.0\n\
@@ -1019,5 +1229,670 @@ mod tests {
             );
             assert!(a.theta0_deg > 0.0);
         }
+    }
+    // ── helpers for the prmtop section tests below ────────────────────────────
+
+    /// Build a prmtop text from `(flag, format, body)` sections.
+    fn prmtop_text(sections: &[(&str, &str, &str)]) -> String {
+        let mut text = String::from("%VERSION  VERSION_STAMP = V0001.000\n");
+        for (flag, format, body) in sections {
+            text.push_str(&format!("%FLAG {flag}\n%FORMAT({format})\n"));
+            if !body.is_empty() {
+                text.push_str(body);
+                text.push('\n');
+            }
+        }
+        text
+    }
+    /// Topology with `natom` atoms and two angle parameter types.
+    fn angle_prmtop(natom: usize, inc_h: &str, without_h: &str) -> String {
+        prmtop_text(&[
+            ("POINTERS", "10I8", &format!("{natom:8}")),
+            ("ANGLES_INC_HYDROGEN", "10I8", inc_h),
+            ("ANGLES_WITHOUT_HYDROGEN", "10I8", without_h),
+            (
+                "ANGLE_FORCE_CONSTANT",
+                "5E16.8",
+                "  5.00000000E+01  8.00000000E+01",
+            ),
+            (
+                "ANGLE_EQUIL_VALUE",
+                "5E16.8",
+                "  1.90000000E+00  2.10000000E+00",
+            ),
+        ])
+    }
+    /// Topology with `natom` atoms and one bond parameter type.
+    fn bond_prmtop(natom: usize, inc_h: &str, without_h: &str) -> String {
+        prmtop_text(&[
+            ("POINTERS", "10I8", &format!("{natom:8}")),
+            ("BONDS_INC_HYDROGEN", "10I8", inc_h),
+            ("BONDS_WITHOUT_HYDROGEN", "10I8", without_h),
+            ("BOND_FORCE_CONSTANT", "5E16.8", "  3.40000000E+02"),
+            ("BOND_EQUIL_VALUE", "5E16.8", "  1.09000000E+00"),
+        ])
+    }
+    fn lj_prmtop(n_types: usize, nb_index: &str, a_coeff: &str, b_coeff: &str) -> String {
+        prmtop_text(&[
+            ("POINTERS", "10I8", &format!("{:8}{:8}", 4, n_types)),
+            ("NONBONDED_PARM_INDEX", "10I8", nb_index),
+            ("LENNARD_JONES_ACOEF", "5E16.8", a_coeff),
+            ("LENNARD_JONES_BCOEF", "5E16.8", b_coeff),
+        ])
+    }
+    /// Topology with `natom` atoms and two dihedral parameter sets:
+    /// `PK = 0.155555556, PN = 3, PHASE = 0` and `PK = 1.1, PN = 2, PHASE = pi`.
+    fn dihedral_prmtop(natom: usize, inc_h: &str, without_h: &str) -> String {
+        prmtop_text(&[
+            ("POINTERS", "10I8", &format!("{natom:8}")),
+            ("DIHEDRALS_INC_HYDROGEN", "10I8", inc_h),
+            ("DIHEDRALS_WITHOUT_HYDROGEN", "10I8", without_h),
+            (
+                "DIHEDRAL_FORCE_CONSTANT",
+                "5E16.8",
+                "  1.55555556E-01  1.10000000E+00",
+            ),
+            (
+                "DIHEDRAL_PERIODICITY",
+                "5E16.8",
+                "  3.00000000E+00  2.00000000E+00",
+            ),
+            (
+                "DIHEDRAL_PHASE",
+                "5E16.8",
+                "  0.00000000E+00  3.14159274E+00",
+            ),
+        ])
+    }
+    fn topology_error(text: &str) -> String {
+        match AmberTopology::from_prmtop_str(text) {
+            Ok(_) => panic!("the topology must be rejected:\n{text}"),
+            Err(message) => message,
+        }
+    }
+
+    #[test]
+    fn test_write_prmtop_output_passes_the_strict_reader() {
+        let text = write_prmtop(&parse_minimal());
+        let again = AmberTopology::from_prmtop_str(&text).unwrap();
+        assert_eq!(again.n_atoms, 2);
+        assert_eq!(again.atoms[0].name, "N");
+        assert_eq!(again.atoms[1].name, "H");
+        assert!((again.atoms[0].mass - 14.01).abs() < 1e-6);
+    }
+
+    // ── angles (third atom) ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_angle_third_atom_is_parsed() {
+        let text = prmtop_text(&[
+            ("POINTERS", "10I8", "       3"),
+            (
+                "ANGLES_WITHOUT_HYDROGEN",
+                "10I8",
+                "       0       3       6       1",
+            ),
+            ("ANGLE_FORCE_CONSTANT", "5E16.8", "  6.30000000E+01"),
+            ("ANGLE_EQUIL_VALUE", "5E16.8", "  1.94000000E+00"),
+        ]);
+        let top = AmberTopology::from_prmtop_str(&text).unwrap();
+        assert_eq!(top.angles.len(), 1);
+        let angle = &top.angles[0];
+        assert_eq!((angle.i, angle.j, angle.atom_k), (0, 1, 2));
+        assert_eq!(angle.k_idx, 0);
+        assert!((angle.k - 63.0).abs() < 1e-12, "k={}", angle.k);
+        assert!(
+            (angle.theta0 - 1.94).abs() < 1e-12,
+            "theta0={}",
+            angle.theta0
+        );
+    }
+    #[test]
+    fn test_angle_sections_combine_in_file_order_with_their_own_types() {
+        let text = angle_prmtop(
+            4,
+            "       3       0       9       2",
+            "       0       3       6       1       6       9       3       1",
+        );
+        let top = AmberTopology::from_prmtop_str(&text).unwrap();
+        let atoms: Vec<(usize, usize, usize, usize)> = top
+            .angles
+            .iter()
+            .map(|a| (a.i, a.j, a.atom_k, a.k_idx))
+            .collect();
+        assert_eq!(atoms, vec![(1, 0, 3, 1), (0, 1, 2, 0), (2, 3, 1, 0)]);
+        assert!((top.angles[0].k - 80.0).abs() < 1e-9);
+        assert!((top.angles[0].theta0 - 2.1).abs() < 1e-9);
+        assert!((top.angles[1].k - 50.0).abs() < 1e-9);
+        assert!((top.angles[2].theta0 - 1.9).abs() < 1e-9);
+    }
+    #[test]
+    fn test_build_angles_reads_the_third_pointer() {
+        let angles = build_angles(&[0, 3, 6, 1, 9, 6, 3, 2], &[10.0, 20.0], &[1.0, 2.0]);
+        assert_eq!(angles.len(), 2);
+        assert_eq!((angles[0].i, angles[0].j, angles[0].atom_k), (0, 1, 2));
+        assert_eq!((angles[1].i, angles[1].j, angles[1].atom_k), (3, 2, 1));
+        assert_eq!(angles[1].k_idx, 1);
+        assert!((angles[1].k - 20.0).abs() < 1e-12);
+        assert!((angles[1].theta0 - 2.0).abs() < 1e-12);
+        // A trailing incomplete quadruple is ignored.
+        assert_eq!(build_angles(&[0, 3, 6, 1, 0, 3], &[1.0], &[1.0]).len(), 1);
+    }
+    #[test]
+    fn test_build_angles_pointer_sign_is_ignored_and_extremes_do_not_panic() {
+        // The sign of an angle pointer carries no meaning: |p| / 3 designates
+        // the atom, so a negative pointer cannot wrap around to a huge index.
+        let angles = build_angles(&[-3, 3, -6, 1], &[10.0], &[1.0]);
+        assert_eq!(angles.len(), 1);
+        assert_eq!((angles[0].i, angles[0].j, angles[0].atom_k), (1, 1, 2));
+        // The extreme 64-bit values must not overflow (`i64::MIN - 1` and
+        // `i64::MIN.abs()` both would).
+        let extreme = build_angles(&[i64::MIN, i64::MAX, i64::MIN, i64::MIN], &[10.0], &[1.0]);
+        assert_eq!(extreme.len(), 1);
+        assert!(extreme[0].i >= 1 << 30 && extreme[0].j >= 1 << 30 && extreme[0].atom_k >= 1 << 30);
+        // A non-positive type index selects the first parameter type ...
+        assert_eq!(extreme[0].k_idx, 0);
+        assert!((extreme[0].k - 10.0).abs() < 1e-12);
+        // ... and an index beyond the tables yields zero parameters.
+        let beyond = build_angles(&[0, 3, 6, i64::MAX], &[10.0], &[1.0]);
+        assert_eq!((beyond[0].k, beyond[0].theta0), (0.0, 0.0));
+    }
+    #[test]
+    fn test_build_bonds_pointer_and_type_arithmetic_never_overflows() {
+        let bonds = build_bonds(&[0, 3, 1, 6, 9, 2], &[300.0, 400.0], &[1.0, 2.0]);
+        assert_eq!(bonds.len(), 2);
+        assert_eq!((bonds[0].i, bonds[0].j), (0, 1));
+        assert_eq!((bonds[1].i, bonds[1].j), (2, 3));
+        assert!((bonds[1].k - 400.0).abs() < 1e-12);
+        assert!((bonds[1].r0 - 2.0).abs() < 1e-12);
+        let extreme = build_bonds(&[i64::MIN, -3, i64::MIN], &[300.0], &[1.0]);
+        assert_eq!(extreme.len(), 1);
+        assert_eq!(extreme[0].j, 1);
+        assert!((extreme[0].k - 300.0).abs() < 1e-12);
+        // A trailing incomplete triplet is ignored.
+        assert_eq!(build_bonds(&[0, 3, 1, 6], &[1.0], &[1.0]).len(), 1);
+    }
+    #[test]
+    fn test_angle_atoms_beyond_natom_are_rejected() {
+        // Each of the three atom pointers is checked in turn.
+        for ints in [
+            "      12       3       6       1",
+            "       0      12       6       1",
+            "       0       3      12       1",
+        ] {
+            let message = topology_error(&angle_prmtop(3, "", ints));
+            assert!(
+                message.contains("ANGLES_WITHOUT_HYDROGEN") && message.contains("pointer 12"),
+                "{message}"
+            );
+        }
+        let message = topology_error(&angle_prmtop(3, "       0       3       9       1", ""));
+        assert!(message.contains("ANGLES_INC_HYDROGEN"), "{message}");
+        // The same record is fine once the topology has enough atoms.
+        let top = AmberTopology::from_prmtop_str(&angle_prmtop(
+            4,
+            "       0       3       9       1",
+            "",
+        ))
+        .unwrap();
+        assert_eq!(top.angles[0].atom_k, 3);
+    }
+    #[test]
+    fn test_angle_malformed_records_are_rejected() {
+        // negative pointer, pointer that is not a multiple of three
+        for ints in [
+            "       0       3      -3       1",
+            "       0       3       4       1",
+        ] {
+            let message = topology_error(&angle_prmtop(3, "", ints));
+            assert!(message.contains("atom pointer"), "{message}");
+        }
+        // type index 0 and past the end of the tables
+        for ints in [
+            "       0       3       6       0",
+            "       0       3       6       3",
+        ] {
+            let message = topology_error(&angle_prmtop(3, "", ints));
+            assert!(message.contains("parameter type index"), "{message}");
+        }
+        // incomplete trailing record
+        let message = topology_error(&angle_prmtop(3, "", "       0       3       6"));
+        assert!(message.contains("whole records"), "{message}");
+    }
+    #[test]
+    fn test_bond_atoms_and_types_are_validated() {
+        let top = AmberTopology::from_prmtop_str(&bond_prmtop(2, "       0       3       1", ""))
+            .unwrap();
+        assert_eq!((top.bonds[0].i, top.bonds[0].j), (0, 1));
+        let message = topology_error(&bond_prmtop(2, "", "       0       6       1"));
+        assert!(message.contains("BONDS_WITHOUT_HYDROGEN"), "{message}");
+        let message = topology_error(&bond_prmtop(2, "       0       3       2", ""));
+        assert!(message.contains("parameter type index"), "{message}");
+        let message = topology_error(&bond_prmtop(2, "       0       3", ""));
+        assert!(message.contains("whole records"), "{message}");
+    }
+    #[test]
+    fn test_prmtop_counters_are_sanity_checked() {
+        let negative = prmtop_text(&[("POINTERS", "10I8", "      -1")]);
+        assert!(topology_error(&negative).contains("NATOM"));
+        // An atom count that no input of this size could describe must not
+        // allocate a gigantic atom table.
+        let huge = prmtop_text(&[("POINTERS", "10I8", "99999999999999")]);
+        assert!(topology_error(&huge).contains("more than"));
+    }
+    #[test]
+    fn test_validate_topology_checks_the_third_angle_atom() {
+        let atom = |name: &str| AmberAtom {
+            name: name.to_string(),
+            residue_name: "R".to_string(),
+            charge: 0.0,
+            mass: 12.0,
+            atom_type: "C".to_string(),
+        };
+        let topo = AmberTopology {
+            title: "t".to_string(),
+            atoms: vec![atom("A"), atom("B")],
+            bonds: Vec::new(),
+            angles: vec![AmberAngle {
+                i: 0,
+                j: 1,
+                atom_k: 5,
+                k_idx: 0,
+                k: 50.0,
+                theta0: 1.9,
+            }],
+            n_atoms: 2,
+            n_bonds: 0,
+        };
+        let issues = crate::amber::validate_topology(&topo);
+        assert_eq!(issues.len(), 1, "issues: {issues:?}");
+        assert!(issues[0].contains("Angle 0") && issues[0].contains("k=5"));
+    }
+
+    // ── Lennard-Jones pair table ──────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_lj_three_types_follow_the_nonbonded_index() {
+        // AMBER numbering of the 6 unordered pairs of 3 types.
+        let prmtop = lj_prmtop(
+            3,
+            "       1       2       4       2       3       5       4       5       6",
+            "  1.0  2.0  3.0  4.0  5.0  6.0",
+            "  0.1  0.2  0.3  0.4  0.5  0.6",
+        );
+        let params = extract_lj_parameters(&prmtop);
+        let pairs: Vec<(usize, usize)> = params.iter().map(|p| (p.type_a, p.type_b)).collect();
+        assert_eq!(pairs, vec![(0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2)]);
+        let a: Vec<f64> = params.iter().map(|p| p.a_coeff).collect();
+        let b: Vec<f64> = params.iter().map(|p| p.b_coeff).collect();
+        assert_eq!(a, vec![1.0, 2.0, 4.0, 3.0, 5.0, 6.0]);
+        assert_eq!(b, vec![0.1, 0.2, 0.4, 0.3, 0.5, 0.6]);
+    }
+    #[test]
+    fn test_extract_lj_skips_hydrogen_bond_pairs() {
+        let prmtop = lj_prmtop(
+            2,
+            "       1      -1      -1       2",
+            "  1.0  2.0",
+            "  0.5  1.5",
+        );
+        let params = extract_lj_parameters(&prmtop);
+        let pairs: Vec<(usize, usize)> = params.iter().map(|p| (p.type_a, p.type_b)).collect();
+        assert_eq!(pairs, vec![(0, 0), (1, 1)]);
+        assert!((params[1].a_coeff - 2.0).abs() < 1e-12);
+    }
+    #[test]
+    fn test_extract_lj_never_guesses_the_pair_assignment() {
+        let tables = ("  1.0  2.0  3.0", "  0.5  1.0  1.5");
+        // The tables alone (no POINTERS / NONBONDED_PARM_INDEX) used to be
+        // mislabelled as the diagonal (i, i) types.
+        let tables_only = prmtop_text(&[
+            ("LENNARD_JONES_ACOEF", "5E16.8", tables.0),
+            ("LENNARD_JONES_BCOEF", "5E16.8", tables.1),
+        ]);
+        assert!(extract_lj_parameters(&tables_only).is_empty());
+        // POINTERS but no index.
+        let no_index = prmtop_text(&[
+            ("POINTERS", "10I8", "       4       2"),
+            ("LENNARD_JONES_ACOEF", "5E16.8", tables.0),
+            ("LENNARD_JONES_BCOEF", "5E16.8", tables.1),
+        ]);
+        assert!(extract_lj_parameters(&no_index).is_empty());
+        // Index shorter than NTYPES * NTYPES.
+        let short = lj_prmtop(2, "       1       2       2", tables.0, tables.1);
+        assert!(extract_lj_parameters(&short).is_empty());
+        // Index pointing past the coefficient tables.
+        let beyond = lj_prmtop(2, "       1       2       2       4", tables.0, tables.1);
+        assert!(extract_lj_parameters(&beyond).is_empty());
+        // Zero types.
+        let zero = lj_prmtop(0, "", tables.0, tables.1);
+        assert!(extract_lj_parameters(&zero).is_empty());
+    }
+
+    // ── dihedrals ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_dihedrals_skip_14_flag() {
+        // A negative THIRD atom pointer means "skip the 1-4 interaction".
+        let prmtop = dihedral_prmtop(4, "       0       3      -6       9       1", "");
+        let d = &extract_dihedrals(&prmtop)[0];
+        assert!(d.skip_14);
+        assert!(!d.is_improper);
+        assert_eq!((d.i, d.j, d.k, d.l), (0, 1, 2, 3));
+    }
+    #[test]
+    fn test_extract_dihedrals_both_flags_and_parameter_lookup() {
+        let prmtop = dihedral_prmtop(
+            4,
+            "       0       3      -6      -9       2",
+            "       0       3       6       9       2       3       0       6       9       1",
+        );
+        let dihedrals = extract_dihedrals(&prmtop);
+        assert_eq!(dihedrals.len(), 3);
+        // hydrogen section first, file order inside a section
+        let d = &dihedrals[0];
+        assert!(d.skip_14 && d.is_improper);
+        assert_eq!(d.n, 2);
+        assert!((d.v_n - 2.2).abs() < 1e-9, "v_n={}", d.v_n);
+        assert!((d.gamma - 3.14159274).abs() < 1e-9, "gamma={}", d.gamma);
+        assert!(!dihedrals[1].skip_14 && !dihedrals[1].is_improper);
+        assert_eq!(dihedrals[1].n, 2);
+        assert_eq!((dihedrals[2].i, dihedrals[2].j), (1, 0));
+        assert_eq!(dihedrals[2].n, 3);
+    }
+    #[test]
+    fn test_extract_dihedrals_reproduce_the_amber_energy() {
+        // AMBER: E = PK * (1 + cos(PN * phi - PHASE)).
+        let prmtop = dihedral_prmtop(4, "       0       3       6       9       2", "");
+        let d = &extract_dihedrals(&prmtop)[0];
+        let phi = std::f64::consts::FRAC_PI_2;
+        let amber = 1.1 * (1.0 + (2.0 * phi - 3.14159274_f64).cos());
+        let ours = crate::amber::dihedral_energy(d.v_n, f64::from(d.n), phi, d.gamma);
+        assert!((ours - amber).abs() < 1e-9, "ours={ours}, amber={amber}");
+        assert!((ours - 2.2).abs() < 1e-6);
+    }
+    #[test]
+    fn test_extract_dihedrals_skips_undecodable_entries() {
+        let prmtop = dihedral_prmtop(
+            4,
+            // parameter set 3 does not exist, set 0 is not one-based
+            "       0       3       6       9       3       0       3       6       9       0",
+            // atom 4 does not exist; pointer 4 is not a multiple of three;
+            // the last record is valid
+            "       0       3       6      12       1       0       3       6       4       1       0       3       6       9       1",
+        );
+        let dihedrals = extract_dihedrals(&prmtop);
+        assert_eq!(dihedrals.len(), 1);
+        assert_eq!((dihedrals[0].k, dihedrals[0].l), (2, 3));
+        // Without POINTERS the atom count is unknown, so only the parameter
+        // index and the pointer arithmetic are checked.
+        let no_pointers = "%FLAG DIHEDRALS_INC_HYDROGEN\n%FORMAT(10I8)\n0 3 6 12 1\n%FLAG DIHEDRAL_FORCE_CONSTANT\n%FORMAT(5E16.8)\n1.0\n%FLAG DIHEDRAL_PERIODICITY\n%FORMAT(5E16.8)\n2.0\n%FLAG DIHEDRAL_PHASE\n%FORMAT(5E16.8)\n0.0\n";
+        assert_eq!(extract_dihedrals(no_pointers).len(), 1);
+    }
+    #[test]
+    fn test_extract_dihedrals_negative_periodicity_is_its_magnitude() {
+        let prmtop = prmtop_text(&[
+            ("DIHEDRALS_INC_HYDROGEN", "10I8", "0 3 6 9 1"),
+            ("DIHEDRAL_FORCE_CONSTANT", "5E16.8", "0.5"),
+            ("DIHEDRAL_PERIODICITY", "5E16.8", "-2.0"),
+            ("DIHEDRAL_PHASE", "5E16.8", "0.0"),
+        ]);
+        let dihedrals = extract_dihedrals(&prmtop);
+        assert_eq!(dihedrals[0].n, 2);
+        assert!((dihedrals[0].v_n - 1.0).abs() < 1e-12);
+    }
+
+    // ── MDCRD ─────────────────────────────────────────────────────────────────
+
+    /// Coordinates of one frame as `10F8.3` lines (plus a `3F8.3` box line).
+    fn mdcrd_frame(coords: &[f64], box_dims: Option<[f64; 3]>) -> String {
+        let mut text = String::new();
+        for line in coords.chunks(10) {
+            text.extend(line.iter().map(|v| format!("{v:8.3}")));
+            text.push('\n');
+        }
+        if let Some(dims) = box_dims {
+            text.extend(dims.iter().map(|v| format!("{v:8.3}")));
+            text.push('\n');
+        }
+        text
+    }
+    #[test]
+    fn test_mdcrd_boxless_final_frame_does_not_panic() {
+        let frames = parse_mdcrd("t\n1 2 3 4 5 6\n", 2, true);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].coords, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(frames[0].box_dims, None);
+    }
+    #[test]
+    fn test_mdcrd_frames_with_boxes() {
+        // 5 atoms = 15 coordinates = two lines per frame, plus the box line.
+        let mut text = String::from("title\n");
+        let frame =
+            |f: usize| -> Vec<f64> { (0..15).map(|i| (f * 100 + i) as f64 * 0.5).collect() };
+        for f in 0..3 {
+            text.push_str(&mdcrd_frame(&frame(f), Some([30.0 + f as f64, 40.0, 50.0])));
+        }
+        let frames = parse_mdcrd(&text, 5, true);
+        assert_eq!(frames.len(), 3);
+        for (f, parsed) in frames.iter().enumerate() {
+            assert_eq!(parsed.coords, frame(f));
+            assert_eq!(parsed.box_dims, Some([30.0 + f as f64, 40.0, 50.0]));
+            assert_eq!(parsed.n_atoms(), 5);
+        }
+        // Dropping the last box line keeps the frame and loses only the box.
+        let truncated = text
+            .trim_end()
+            .rsplit_once('\n')
+            .map(|(head, _)| head.to_string());
+        let frames = parse_mdcrd(&truncated.unwrap(), 5, true);
+        assert_eq!(frames.len(), 3);
+        assert_eq!(frames[2].box_dims, None);
+        assert_eq!(frames[1].box_dims, Some([31.0, 40.0, 50.0]));
+    }
+    #[test]
+    fn test_mdcrd_two_thousand_frames_parse_completely() {
+        // 4 atoms = 12 coordinates = lines of 10 + 2 values.  Four-digit values
+        // fill their F8.3 column, so neighbouring fields touch.
+        let coords =
+            |f: usize| -> Vec<f64> { (0..12).map(|i| f as f64 + i as f64 * 0.5).collect() };
+        let mut text = String::from("2000 frames\n");
+        for f in 0..2000 {
+            text.push_str(&mdcrd_frame(
+                &coords(f),
+                Some([50.0 + f as f64, 60.0, 70.0]),
+            ));
+        }
+        let frames = parse_mdcrd(&text, 4, true);
+        assert_eq!(frames.len(), 2000);
+        for f in [0, 1, 999, 1000, 1998, 1999] {
+            assert_eq!(frames[f].coords, coords(f), "frame {f}");
+            assert_eq!(
+                frames[f].box_dims,
+                Some([50.0 + f as f64, 60.0, 70.0]),
+                "frame {f}"
+            );
+        }
+        assert!(
+            text.lines()
+                .any(|l| l.split_whitespace().any(|t| t.len() > 8))
+        );
+    }
+    #[test]
+    fn test_mdcrd_adjacent_negative_fields_parse() {
+        let coords = [1.0, -100.0, 3.0, -100.0, -200.5, 6.0];
+        let text = format!("t\n{}", mdcrd_frame(&coords, None));
+        assert!(text.contains("1.000-100.000"), "{text}");
+        let frames = parse_mdcrd(&text, 2, false);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].coords, coords.to_vec());
+        assert_eq!(frames[0].position(1), Some([-100.0, -200.5, 6.0]));
+    }
+    #[test]
+    fn test_mdcrd_touching_box_fields() {
+        let text = format!(
+            "t\n{}",
+            mdcrd_frame(&[1.0, 2.0, 3.0], Some([1000.0, 1000.5, 1001.0]))
+        );
+        assert!(text.contains("1000.0001000.5001001.000"), "{text}");
+        let frames = parse_mdcrd(&text, 1, true);
+        assert_eq!(frames[0].box_dims, Some([1000.0, 1000.5, 1001.0]));
+    }
+    #[test]
+    fn test_mdcrd_short_box_line_keeps_the_frame() {
+        let frames = parse_mdcrd("t\n   1.000   2.000   3.000\n  50.000  60.000\n", 1, true);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].box_dims, None);
+    }
+    #[test]
+    fn test_mdcrd_stops_at_an_incomplete_frame() {
+        // 5 atoms = two lines per frame, no box.
+        let coords: Vec<f64> = (0..15).map(f64::from).collect();
+        let mut text = String::from("t\n");
+        for _ in 0..3 {
+            text.push_str(&mdcrd_frame(&coords, None));
+        }
+        // a fourth frame with only its first line
+        text.push_str(&mdcrd_frame(&coords[..10], None));
+        assert_eq!(parse_mdcrd(&text, 5, false).len(), 3);
+        // a fourth frame whose second line is short
+        let mut short = String::from("t\n");
+        short.push_str(&mdcrd_frame(&coords, None));
+        short.push_str(&mdcrd_frame(&coords[..12], None));
+        assert_eq!(parse_mdcrd(&short, 5, false).len(), 1);
+        // a second frame that holds an extra value
+        let mut long = String::from("t\n");
+        long.push_str(&mdcrd_frame(&coords, None));
+        long.push_str(&mdcrd_frame(&[coords.as_slice(), &[99.0]].concat(), None));
+        assert_eq!(parse_mdcrd(&long, 5, false).len(), 1);
+    }
+    #[test]
+    fn test_mdcrd_stops_at_garbage() {
+        let good = mdcrd_frame(&[1.0, 2.0, 3.0], None);
+        let text = format!("t\n{good}   1.000   x.000   3.000\n{good}");
+        let frames = parse_mdcrd(&text, 1, false);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].coords, vec![1.0, 2.0, 3.0]);
+    }
+    #[test]
+    fn test_mdcrd_degenerate_atom_counts() {
+        let text = format!("t\n{}", mdcrd_frame(&[1.0, 2.0, 3.0], None));
+        assert!(parse_mdcrd(&text, 0, false).is_empty());
+        assert!(parse_mdcrd(&text, 0, true).is_empty());
+        assert!(parse_mdcrd(&text, usize::MAX, false).is_empty());
+        assert!(parse_mdcrd(&text, usize::MAX / 3, true).is_empty());
+        assert!(parse_mdcrd("", 1, false).is_empty());
+    }
+    #[test]
+    fn test_mdcrd_accepts_crlf_line_endings() {
+        let frames = parse_mdcrd(
+            "t\r\n   1.000   2.000   3.000\r\n  50.000  60.000  70.000\r\n",
+            1,
+            true,
+        );
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].box_dims, Some([50.0, 60.0, 70.0]));
+    }
+
+    // ── mutation sweeps ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_mutated_prmtop_text_never_yields_out_of_range_terms() {
+        use crate::fortran_fields::test_support::{SplitMix64, mutate_text};
+        let seeds = [
+            minimal_prmtop(),
+            angle_prmtop(
+                4,
+                "       3       0       9       2",
+                "       0       3       6       1       6       9       3       1",
+            ),
+            bond_prmtop(3, "       0       3       1", "       3       6       1"),
+            dihedral_prmtop(
+                4,
+                "       0       3      -6      -9       2",
+                "       0       3       6       9       2       3       0       6       9       1",
+            ),
+            lj_prmtop(
+                3,
+                "       1       2       4       2       3       5       4       5       6",
+                "  1.0  2.0  3.0  4.0  5.0  6.0",
+                "  0.1  0.2  0.3  0.4  0.5  0.6",
+            ),
+        ];
+        let mut rng = SplitMix64::new(0xA2B3_0001);
+        let mut accepted = 0usize;
+        let mut rejected = 0usize;
+        for seed in &seeds {
+            for round in 0..1200 {
+                let text = mutate_text(seed, &mut rng, 1 + round % 4);
+                match AmberTopology::from_prmtop_str(&text) {
+                    Ok(top) => {
+                        accepted += 1;
+                        assert_eq!(top.atoms.len(), top.n_atoms);
+                        for bond in &top.bonds {
+                            assert!(bond.i < top.n_atoms && bond.j < top.n_atoms, "{text}");
+                        }
+                        for angle in &top.angles {
+                            assert!(
+                                angle.i < top.n_atoms
+                                    && angle.j < top.n_atoms
+                                    && angle.atom_k < top.n_atoms,
+                                "{text}"
+                            );
+                        }
+                    }
+                    Err(_) => rejected += 1,
+                }
+                let pointers = extract_flag_integers(&text, "POINTERS");
+                let n_atoms = pointers.first().and_then(|&n| usize::try_from(n).ok());
+                for d in extract_dihedrals(&text) {
+                    if let Some(n) = n_atoms {
+                        assert!(d.i < n && d.j < n && d.k < n && d.l < n, "{text}");
+                    }
+                    assert!(
+                        d.v_n.is_finite() && d.gamma.is_finite() && d.n >= 0,
+                        "{text}"
+                    );
+                }
+                let n_types = pointers
+                    .get(1)
+                    .and_then(|&n| usize::try_from(n).ok())
+                    .unwrap_or(0);
+                for pair in extract_lj_parameters(&text) {
+                    assert!(
+                        pair.type_a <= pair.type_b && pair.type_b < n_types,
+                        "{text}"
+                    );
+                }
+            }
+        }
+        assert!(accepted > 0, "no damaged topology was accepted");
+        assert!(rejected > 0, "no damaged topology was rejected");
+    }
+    #[test]
+    fn test_mutated_mdcrd_text_keeps_whole_frames() {
+        use crate::fortran_fields::test_support::{SplitMix64, mutate_text};
+        let mut seed = String::from("title\n");
+        for frame in 0..3 {
+            let coords: Vec<f64> = (0..12)
+                .map(|i| f64::from(frame) * 100.0 - 150.0 + f64::from(i) * 0.5)
+                .collect();
+            seed.push_str(&mdcrd_frame(&coords, Some([40.0, 41.0, 42.0])));
+        }
+        let mut rng = SplitMix64::new(0x3DC2_0001);
+        let mut frames_seen = 0usize;
+        for n_atoms in [1usize, 2, 4, 5] {
+            for has_box in [false, true] {
+                for round in 0..300 {
+                    let text = mutate_text(&seed, &mut rng, 1 + round % 4);
+                    for frame in parse_mdcrd(&text, n_atoms, has_box) {
+                        frames_seen += 1;
+                        assert_eq!(frame.coords.len(), 3 * n_atoms, "{text}");
+                        assert!(has_box || frame.box_dims.is_none(), "{text}");
+                    }
+                }
+            }
+        }
+        assert!(frames_seen > 0, "no damaged trajectory yielded a frame");
     }
 }

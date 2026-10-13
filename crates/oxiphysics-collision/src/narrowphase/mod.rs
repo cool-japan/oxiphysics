@@ -2,6 +2,7 @@
 
 pub mod batchnarrowphase_traits;
 pub mod contactfilter_traits;
+mod convex_contact;
 pub mod dispatch;
 pub mod epa;
 pub mod functions;
@@ -10,9 +11,11 @@ pub mod gjk;
 pub mod gjk_cache;
 pub mod manifold;
 pub mod obb_sat;
+mod plane_contact;
 pub mod primitives;
 pub mod simple;
 pub mod specialized;
+mod triangle_contact;
 pub mod types;
 
 // Re-export from dispatch (primary for CompoundShape, ShapeType, generate_speculative_contacts)

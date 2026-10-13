@@ -2,12 +2,16 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use super::step_kernels::{
+    CollisionSetup, LatticeTable, WallLink, add_half_force_velocity, apply_wall_links,
+    build_wall_links_3d, collide_field, rescale_field, reset_solid_cells,
+};
 use crate::boundary::{Boundary, apply_boundaries_2d};
-use crate::collision::{bgk_collide_2d, bgk_collide_3d};
-use crate::grid::{LbmGrid2D, LbmGrid3D, equilibrium_2d};
-use crate::lattice::{CS2, LatticeType};
+use crate::collision::bgk_collide_2d;
+use crate::error::Error;
+use crate::grid::{LbmGrid2D, LbmGrid3D};
+use crate::lattice::{CS2, D2Q9_VELOCITIES, D2Q9_WEIGHTS, LatticeType};
 use crate::streaming::{stream_2d, stream_3d};
-use crate::turbulence::smagorinsky_omega;
 
 /// Result of a single ensemble member run.
 #[derive(Debug, Clone)]
@@ -26,6 +30,15 @@ pub struct EnsembleMemberResult {
     pub mach: f64,
 }
 /// Guo body-force scheme parameters.
+///
+/// The scheme (Guo, Zheng & Shi 2002) adds the body force `F` to a BGK
+/// collision through the source term
+/// `F_i = w_i (1 - omega/2) [ (c_i - u)/cs^2 + (c_i . u) c_i / cs^4 ] . F`
+/// evaluated with the *force-shifted* velocity `u = (sum f_i c_i + F/2) / rho`,
+/// which is also the velocity of the equilibrium.  With that velocity the
+/// source conserves mass (`sum F_i = 0`) and injects exactly
+/// `(1 - omega/2) F` of momentum (`sum F_i c_i`); the equilibrium shift
+/// supplies the remaining `omega F / 2`.
 #[derive(Debug, Clone)]
 pub struct GuoForceParams {
     /// Body force vector `[fx, fy, fz]`.
@@ -42,33 +55,34 @@ impl GuoForceParams {
     pub fn prefactor(&self) -> f64 {
         1.0 - 0.5 * self.omega
     }
-    /// Compute the force term for direction `i` of D2Q9 at macroscopic velocity `(ux, uy)`.
+    /// Guo force term of one lattice direction with weight `weight` and
+    /// velocity `c`, for the force-shifted fluid velocity `u`.
     ///
-    /// `Fi = wi * (1 - omega/2) * [ (ei/cs2 + (ei·u)ei/cs4) · F ]`
+    /// `Fi = wi * (1 - omega/2) * [ (ci - u)/cs2 + (ci·u) ci/cs4 ] · F`
+    ///
+    /// Two-dimensional lattices use `c_z = u_z = 0`.
+    pub fn force_term(&self, weight: f64, c: [f64; 3], u: [f64; 3]) -> f64 {
+        let f = self.force;
+        let c_dot_f = c[0] * f[0] + c[1] * f[1] + c[2] * f[2];
+        let u_dot_f = u[0] * f[0] + u[1] * f[1] + u[2] * f[2];
+        let c_dot_u = c[0] * u[0] + c[1] * u[1] + c[2] * u[2];
+        weight * self.prefactor() * ((c_dot_f - u_dot_f) / CS2 + c_dot_u * c_dot_f / (CS2 * CS2))
+    }
+    /// Compute the force term for direction `i` of D2Q9 at the force-shifted
+    /// macroscopic velocity `(ux, uy)`.
+    ///
+    /// `Fi = wi * (1 - omega/2) * [ (ci - u)/cs2 + (ci·u) ci/cs4 ] · F`
+    ///
+    /// # Panics
+    ///
+    /// Panics if `i >= 9`.
     pub fn d2q9_force_term(&self, i: usize, ux: f64, uy: f64) -> f64 {
-        use crate::lattice::CS2;
-        let weights = [
-            4.0 / 9.0,
-            1.0 / 9.0,
-            1.0 / 9.0,
-            1.0 / 9.0,
-            1.0 / 9.0,
-            1.0 / 36.0,
-            1.0 / 36.0,
-            1.0 / 36.0,
-            1.0 / 36.0,
-        ];
-        let ex = [0i32, 1, 0, -1, 0, 1, -1, -1, 1];
-        let ey = [0i32, 0, 1, 0, -1, 1, 1, -1, -1];
-        let cx = ex[i] as f64;
-        let cy = ey[i] as f64;
-        let eu = cx * ux + cy * uy;
-        let pref = self.prefactor();
-        let fx = self.force[0];
-        let fy = self.force[1];
-        weights[i]
-            * pref
-            * ((cx / CS2 + eu * cx / (CS2 * CS2)) * fx + (cy / CS2 + eu * cy / (CS2 * CS2)) * fy)
+        let c = D2Q9_VELOCITIES[i];
+        self.force_term(
+            D2Q9_WEIGHTS[i],
+            [f64::from(c[0]), f64::from(c[1]), 0.0],
+            [ux, uy, 0.0],
+        )
     }
 }
 /// Snapshot of a simulation state for restart purposes.
@@ -158,8 +172,17 @@ impl MrtParamsD3Q19 {
 /// Fully-featured LBM simulation runner.
 ///
 /// Supports D2Q9, D3Q19, and D3Q27 lattices with optional body forcing
-/// and Smagorinsky turbulence.  Use [`LbmSimulation::new`] with an
-/// [`LbmConfig`] to create an instance.
+/// (Guo scheme), Smagorinsky turbulence modelling and no-slip walls.  Use
+/// [`LbmSimulation::new`] with an [`LbmConfig`] to create an instance.
+///
+/// * D2Q9 simulations take their boundary conditions from the [`Boundary`]
+///   list set with [`LbmSimulation::set_boundaries`].
+/// * D3Q19 / D3Q27 simulations take a mask of solid cells set with
+///   [`LbmSimulation::set_solid_cells_3d`] (see also [`channel_walls_3d`]);
+///   the walls are half-way bounce-back walls located midway between a solid
+///   and a fluid cell.
+///
+/// Without boundary conditions the domain is periodic in every direction.
 ///
 /// # Example
 /// ```no_run
@@ -180,8 +203,21 @@ pub struct LbmSimulation {
     pub(super) grid: SimGrid,
     /// 2D boundary conditions (used only for 2D grids).
     pub(super) boundaries_2d: Vec<Boundary>,
+    /// Solid-cell mask of a 3D grid, `z * ny * nx + y * nx + x` (empty when
+    /// no walls are set and for 2D grids).
+    pub(super) solid_3d: Vec<bool>,
+    /// Fluid-to-solid links derived from [`LbmSimulation::solid_3d`].
+    pub(super) wall_links_3d: Vec<WallLink>,
+    /// Lattice weights, velocities and opposite directions.
+    pub(super) table: LatticeTable,
     /// Current step counter.
     pub step_count: usize,
+    /// Physical time covered so far, in units of the reference lattice time
+    /// step: the sum of the `dt` values of all completed steps.
+    pub elapsed_time: f64,
+    /// Time step of the previous step; the populations are expressed in the
+    /// lattice units that belong to it.
+    pub(super) last_dt: f64,
 }
 impl LbmSimulation {
     /// Create a new simulation from a configuration.
@@ -203,97 +239,199 @@ impl LbmSimulation {
                 LatticeType::D3Q27,
             )),
         };
+        let table = match &grid {
+            SimGrid::Grid2D(g) => LatticeTable::from_lattice(&g.lattice),
+            SimGrid::Grid3D(g) => LatticeTable::from_lattice(&g.lattice),
+        };
         Self {
             config,
             grid,
             boundaries_2d: Vec::new(),
+            solid_3d: Vec::new(),
+            wall_links_3d: Vec::new(),
+            table,
             step_count: 0,
+            elapsed_time: 0.0,
+            last_dt: 1.0,
         }
     }
     /// Set 2D boundary conditions (only applicable to D2Q9 simulations).
     pub fn set_boundaries(&mut self, boundaries: Vec<Boundary>) {
         self.boundaries_2d = boundaries;
     }
-    /// Perform a single complete LBM step.
+    /// Set the solid cells of a 3D simulation, replacing any previous mask.
+    ///
+    /// Every listed `[x, y, z]` cell becomes a no-slip wall cell.  Solid cells
+    /// are excluded from collision, forcing and the macroscopic output (they
+    /// report density 1 and velocity 0), and fluid populations that stream
+    /// into them are reflected back (half-way bounce-back), so the wall lies
+    /// midway between a solid cell and its fluid neighbour and the fluid mass
+    /// is conserved exactly.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::IncompatibleParameters`] if the simulation is 2D (use
+    ///   [`LbmSimulation::set_boundaries`] there).
+    /// * [`Error::IndexOutOfBounds3D`] if a cell lies outside the grid.  The
+    ///   previous mask is kept in that case.
+    pub fn set_solid_cells_3d(&mut self, cells: &[[usize; 3]]) -> Result<(), Error> {
+        let (nx, ny, nz) = match &self.grid {
+            SimGrid::Grid3D(g) => (g.nx, g.ny, g.nz),
+            SimGrid::Grid2D(_) => {
+                return Err(Error::IncompatibleParameters {
+                    message: "solid cells are only supported by 3D (D3Q19/D3Q27) simulations; \
+                              use set_boundaries for D2Q9"
+                        .to_string(),
+                });
+            }
+        };
+        let mut mask = vec![false; nx * ny * nz];
+        for &[x, y, z] in cells {
+            if x >= nx || y >= ny || z >= nz {
+                return Err(Error::IndexOutOfBounds3D {
+                    x,
+                    y,
+                    z,
+                    nx,
+                    ny,
+                    nz,
+                });
+            }
+            mask[z * ny * nx + y * nx + x] = true;
+        }
+        self.wall_links_3d = build_wall_links_3d(&mask, [nx, ny, nz], &self.table);
+        self.solid_3d = mask;
+        if let SimGrid::Grid3D(g) = &mut self.grid {
+            reset_solid_cells(&mut g.f, &self.solid_3d, &self.table);
+            g.compute_macroscopic();
+        }
+        Ok(())
+    }
+    /// Perform a single complete LBM step of duration `dt`.
+    ///
+    /// `dt` is the physical time covered by the step, in units of the
+    /// reference lattice time step for which the [`LbmConfig`] (viscosity,
+    /// body force) is expressed; `1.0` is the ordinary lattice step.  The
+    /// lattice spacing is fixed, so a different `dt` changes the lattice units
+    /// of the step: velocities scale with `dt`, the kinematic viscosity
+    /// becomes `nu * dt` and the body force `F * dt^2`.  When `dt` differs
+    /// from the previous step the populations are rescaled accordingly (the
+    /// velocity, the density deviation that carries the pressure and the
+    /// non-equilibrium part each follow their own scaling law), so the
+    /// physical flow is continuous across the change.  The reported velocity
+    /// field is always in the lattice units of the latest step, i.e. it is
+    /// proportional to the `dt` that was used.
     ///
     /// The step sequence is:
-    /// 1. BGK collision (with optional Smagorinsky turbulence model for 2D)
-    /// 2. Optional body-force application (simple velocity shift for 2D)
+    /// 1. Rescale to the new time step (only if `dt` changed)
+    /// 2. BGK collision with Guo body forcing and, if configured, the
+    ///    Smagorinsky model with a per-cell relaxation time (all lattices)
     /// 3. Streaming
-    /// 4. Boundary conditions
-    /// 5. Macroscopic recomputation
-    pub fn step(&mut self, _dt: f64) {
-        let omega = self.config.omega();
-        let force = self.config.body_force;
-        let smag_cs = self.config.smagorinsky_cs;
+    /// 4. Boundary conditions (2D boundary list / 3D half-way bounce-back)
+    /// 5. Macroscopic recomputation, including the Guo half-force velocity
+    ///    shift `F / (2 rho)`
+    ///
+    /// A `dt` that is not a positive finite number leaves the simulation
+    /// untouched; use [`LbmSimulation::try_step`] to be told about it.
+    pub fn step(&mut self, dt: f64) {
+        // An invalid dt is reported by `try_step`; this convenience wrapper
+        // documents that it then does nothing.
+        let _ = self.try_step(dt);
+    }
+    /// Like [`LbmSimulation::step`] but reports an invalid time step.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ParameterOutOfBounds`] if `dt` is not a positive finite
+    /// number; the simulation is not modified in that case.
+    pub fn try_step(&mut self, dt: f64) -> Result<(), Error> {
+        if !dt.is_finite() || dt <= 0.0 {
+            return Err(Error::ParameterOutOfBounds {
+                name: "dt".to_string(),
+                value: dt,
+                min: f64::MIN_POSITIVE,
+                max: f64::MAX,
+            });
+        }
+        let tau0 = self.config.viscosity * dt / CS2 + 0.5;
+        let force = scaled_force(self.config.body_force, dt);
+
+        let ratio = dt / self.last_dt;
+        if (ratio - 1.0).abs() > 1e-12 {
+            let tau_prev = self.config.viscosity * self.last_dt / CS2 + 0.5;
+            let neq_factor = tau0 / tau_prev * ratio;
+            // A freshly created simulation has not seen a force impulse yet,
+            // so its populations carry no Guo half-force offset.
+            let force_prev = if self.step_count == 0 {
+                [0.0; 3]
+            } else {
+                scaled_force(self.config.body_force, self.last_dt)
+            };
+            match &mut self.grid {
+                SimGrid::Grid2D(g) => {
+                    let n = g.nx * g.ny;
+                    rescale_field(
+                        &mut g.f,
+                        n,
+                        &self.table,
+                        ratio,
+                        neq_factor,
+                        force_prev,
+                        None,
+                    );
+                }
+                SimGrid::Grid3D(g) => {
+                    let n = g.nx * g.ny * g.nz;
+                    let solid = (!self.solid_3d.is_empty()).then_some(self.solid_3d.as_slice());
+                    rescale_field(
+                        &mut g.f,
+                        n,
+                        &self.table,
+                        ratio,
+                        neq_factor,
+                        force_prev,
+                        solid,
+                    );
+                }
+            }
+        }
+
+        let setup = CollisionSetup {
+            omega: 1.0 / tau0,
+            smagorinsky_cs: self.config.smagorinsky_cs,
+            force,
+        };
         match &mut self.grid {
             SimGrid::Grid2D(g) => {
-                if let Some(cs) = smag_cs {
-                    let nx = g.nx;
-                    let ny = g.ny;
-                    let q = g.lattice.q();
-                    g.compute_macroscopic();
-                    for y in 0..ny {
-                        for x in 0..nx {
-                            let local_omega = smagorinsky_omega(g, cs, omega, x, y);
-                            let k = g.idx(x, y);
-                            let rho_k = g.rho[k];
-                            let ux_k = g.ux[k];
-                            let uy_k = g.uy[k];
-                            for i in 0..q {
-                                let w = g.lattice.weight(i);
-                                let c = g.lattice.velocity_2d(i);
-                                let feq =
-                                    equilibrium_2d(w, rho_k, ux_k, uy_k, c[0] as f64, c[1] as f64);
-                                g.f[i][k] -= local_omega * (g.f[i][k] - feq);
-                            }
-                        }
-                    }
-                } else {
-                    bgk_collide_2d(g, omega);
-                }
-                if let Some(f) = force {
-                    let nx = g.nx;
-                    let ny = g.ny;
-                    let q = g.lattice.q();
-                    g.compute_macroscopic();
-                    for y in 0..ny {
-                        for x in 0..nx {
-                            let k = g.idx(x, y);
-                            let rho = g.rho[k];
-                            g.ux[k] += f[0] * 0.5 / rho;
-                            g.uy[k] += f[1] * 0.5 / rho;
-                            let ux_k = g.ux[k];
-                            let uy_k = g.uy[k];
-                            for i in 0..q {
-                                let w = g.lattice.weight(i);
-                                let c = g.lattice.velocity_2d(i);
-                                let cx = c[0] as f64;
-                                let cy = c[1] as f64;
-                                let tau = 1.0 / omega;
-                                let eu = cx * ux_k + cy * uy_k;
-                                let fi_term = w
-                                    * (1.0 - 0.5 * omega)
-                                    * ((cx / CS2 + eu * cx / (CS2 * CS2)) * f[0]
-                                        + (cy / CS2 + eu * cy / (CS2 * CS2)) * f[1]);
-                                let _ = tau;
-                                g.f[i][k] += fi_term;
-                            }
-                        }
-                    }
-                }
+                let n = g.nx * g.ny;
+                collide_field(&mut g.f, n, &self.table, &setup, None);
                 stream_2d(g);
-                let boundaries = self.boundaries_2d.clone();
-                apply_boundaries_2d(g, &boundaries);
+                apply_boundaries_2d(g, &self.boundaries_2d);
                 g.compute_macroscopic();
+                add_half_force_velocity(&g.rho, &mut [&mut g.ux[..], &mut g.uy[..]], force, None);
             }
             SimGrid::Grid3D(g) => {
-                bgk_collide_3d(g, omega);
+                let n = g.nx * g.ny * g.nz;
+                let solid = (!self.solid_3d.is_empty()).then_some(self.solid_3d.as_slice());
+                collide_field(&mut g.f, n, &self.table, &setup, solid);
                 stream_3d(g);
+                if let Some(mask) = solid {
+                    apply_wall_links(&mut g.f, &self.wall_links_3d, &self.table.opposite);
+                    reset_solid_cells(&mut g.f, mask, &self.table);
+                }
                 g.compute_macroscopic();
+                add_half_force_velocity(
+                    &g.rho,
+                    &mut [&mut g.ux[..], &mut g.uy[..], &mut g.uz[..]],
+                    force,
+                    solid,
+                );
             }
         }
         self.step_count += 1;
+        self.elapsed_time += dt;
+        self.last_dt = dt;
+        Ok(())
     }
     /// Perform `n` complete LBM steps.
     pub fn step_n(&mut self, n: usize) {
@@ -595,8 +733,11 @@ impl MrtParamsD2Q9 {
 /// Ensemble runner that executes multiple independent simulations and
 /// averages the results.
 ///
-/// Each member shares the same `LbmConfig` but may have a different initial
-/// perturbation applied via `initial_ux_perturbation`.
+/// Each member shares the same `LbmConfig` but starts from a different,
+/// deterministic velocity perturbation whose size is `perturbation_amplitude`
+/// times `member_index + 1`.  The perturbation is imposed on the distribution
+/// functions (as a local equilibrium with the shifted velocity), so it is part
+/// of the state that the first step evolves.
 pub struct EnsembleRunner {
     /// Shared simulation configuration.
     pub config: LbmConfig,
@@ -605,6 +746,7 @@ pub struct EnsembleRunner {
     /// Steps per member run.
     pub steps_per_member: usize,
     /// Small initial perturbation amplitude applied to ux (lattice units).
+    /// With `0.0` every member is identical.
     pub perturbation_amplitude: f64,
     /// Collected results from all members.
     pub results: Vec<EnsembleMemberResult>,
@@ -623,8 +765,9 @@ impl EnsembleRunner {
     /// Run all ensemble members and store individual results.
     ///
     /// Each member is initialised fresh from `config`.  A deterministic
-    /// perturbation proportional to the member index is added to ux so the
-    /// members are not identical.
+    /// perturbation proportional to the member index is added to ux (by
+    /// re-initialising every cell to the equilibrium of the perturbed
+    /// velocity) so the members are not identical.
     pub fn run_all(&mut self) {
         self.results.clear();
         for idx in 0..self.n_members {
@@ -636,9 +779,31 @@ impl EnsembleRunner {
     fn run_member(&self, member_idx: usize) -> EnsembleMemberResult {
         let mut sim = LbmSimulation::new(self.config.clone());
         let perturb = self.perturbation_amplitude * (member_idx as f64 + 1.0);
-        if let SimGrid::Grid2D(ref mut g) = sim.grid {
-            for k in 0..g.nx * g.ny {
-                g.ux[k] += perturb * ((k % 7) as f64 - 3.0);
+        // The perturbation must be written into the populations: the first
+        // collision recomputes the macroscopic fields from them, so a change
+        // of the cached velocity alone would be discarded.
+        match &mut sim.grid {
+            SimGrid::Grid2D(g) => {
+                for y in 0..g.ny {
+                    for x in 0..g.nx {
+                        let k = g.idx(x, y);
+                        let delta = perturb * ((k % 7) as f64 - 3.0);
+                        let (rho, ux, uy) = (g.rho[k], g.ux[k], g.uy[k]);
+                        g.set_equilibrium(x, y, rho, ux + delta, uy);
+                    }
+                }
+            }
+            SimGrid::Grid3D(g) => {
+                for z in 0..g.nz {
+                    for y in 0..g.ny {
+                        for x in 0..g.nx {
+                            let k = g.idx(x, y, z);
+                            let delta = perturb * ((k % 7) as f64 - 3.0);
+                            let (rho, ux, uy, uz) = (g.rho[k], g.ux[k], g.uy[k], g.uz[k]);
+                            g.set_equilibrium(x, y, z, rho, ux + delta, uy, uz);
+                        }
+                    }
+                }
             }
         }
         let mut stats = SimulationStatistics::new();
@@ -1270,6 +1435,37 @@ impl FlowFieldAnalysis {
         let mean = Self::mean_pressure(pressure);
         pressure.iter().map(|&p| (p - mean).powi(2)).sum::<f64>() / (pressure.len() - 1) as f64
     }
+}
+/// Body force in the lattice units of a step of duration `dt`.
+///
+/// With a fixed lattice spacing the lattice force (an acceleration) scales
+/// with `dt^2`.  Without a configured force the result is the zero vector.
+fn scaled_force(body_force: Option<[f64; 3]>, dt: f64) -> [f64; 3] {
+    let scale = dt * dt;
+    let force = body_force.unwrap_or([0.0; 3]);
+    [force[0] * scale, force[1] * scale, force[2] * scale]
+}
+/// Solid cells of two parallel no-slip plates enclosing a 3D channel.
+///
+/// The plates are the planes `y = 0` and `y = ny - 1` (every `x` and `z`), the
+/// 3D counterpart of [`channel_walls`](crate::boundary::channel_walls).  The
+/// fluid occupies `y = 1 ..= ny - 2` and the half-way walls sit at
+/// `y = 1/2` and `y = ny - 3/2`, so the channel width is `ny - 2`.  Pass the
+/// result to [`LbmSimulation::set_solid_cells_3d`].
+pub fn channel_walls_3d(nx: usize, ny: usize, nz: usize) -> Vec<[usize; 3]> {
+    let mut cells = Vec::new();
+    if ny == 0 {
+        return cells;
+    }
+    for z in 0..nz {
+        for x in 0..nx {
+            cells.push([x, 0, z]);
+            if ny > 1 {
+                cells.push([x, ny - 1, z]);
+            }
+        }
+    }
+    cells
 }
 /// Enum holding either a 2D or a 3D computational grid.
 #[derive(Debug, Clone)]

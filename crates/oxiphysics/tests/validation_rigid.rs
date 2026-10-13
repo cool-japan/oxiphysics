@@ -7,10 +7,11 @@
 //! Three tests, each anchored to a closed-form physics result:
 //!
 //! * `test_restitution_ladder` — a ball is dropped from `h = 1 m` under
-//!   gravity onto a static body with restitution `e = 0.5`. Peak heights
-//!   follow a geometric series `h_n = h_0 * e^(2n)` so the second bounce
-//!   peak is `0.25 m`. The baseline `rigid_bounce_height_2` locks this
-//!   expected value with an 8% relative tolerance.
+//!   gravity onto a static body with restitution `e = 0.5`. Rebound apex
+//!   heights follow a geometric series `h_n = h_0 * e^(2n)`, so the first
+//!   rebound reaches `0.25 m` (the second impact's drop height) and the
+//!   next one `0.0625 m`. The baseline `rigid_bounce_height_2` locks the
+//!   `0.25 m` value with an 8% relative tolerance.
 //!
 //! * `test_angular_momentum_conservation` — a torque-free box in zero
 //!   gravity with an initial spin is integrated for 10 s. The magnitude
@@ -22,107 +23,99 @@
 //!   near-rest state with small penetration, small lateral drift, and
 //!   small residual kinetic energy.
 //!
-//! Tests 1 and 3 are currently `#[ignore]`'d because the `PhysicsWorld`
-//! collision resolver has two production bugs that make the closed-form
-//! assertions impossible to satisfy today (see inline comments). They
-//! still contain the full numerical check so the ignore attribute can be
-//! removed the moment the solver is fixed.
+//! Tests 1 and 3 run the full `PhysicsWorld` pipeline: contacts come from
+//! the attached collider shapes and the collider restitution / friction
+//! reach the sequential-impulse solver.
 
 #[path = "regression_harness.rs"]
 mod harness;
 
+use oxiphysics::geometry::{BoxShape, Shape, Sphere};
 use oxiphysics::rigid::world::PhysicsWorld;
-use oxiphysics::rigid::{BodyType, RigidBody, RigidBodySet, integrate_bodies};
+use oxiphysics::rigid::{BodyType, Collider, RigidBody, RigidBodySet, integrate_bodies};
 use oxiphysics_core::math::{Mat3, Vec3};
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Test 1 — restitution ladder (geometric bounce series)
 // ---------------------------------------------------------------------------
 
 /// Drop a ball from `h = 1 m` onto a static body with `e = 0.5` and record
-/// the peak height after the second bounce. The analytical value is
-/// `h_2 = 1.0 * 0.5^2 = 0.25 m`.
+/// the rebound apex heights. The analytical values are
+/// `h_1 = 1.0 * 0.5^2 = 0.25 m` and `h_2 = 0.25 * 0.5^2 = 0.0625 m`.
 ///
-/// **Currently `#[ignore]`'d** — the `PhysicsWorld::solve_contact_velocity`
-/// in `crates/oxiphysics-rigid/src/world/types.rs` has two bugs that
-/// prevent this test from ever measuring a bounce:
-///
-/// 1. **Sign-inverted early return** (line ~997): `if rel_vn <= 0.0 { return; }`
-///    uses the contact normal built by `narrowphase_contacts`
-///    (`n = (pa - pb)/|pa - pb|`), under which an approaching A→B pair
-///    yields a NEGATIVE `rel_vn`. The solver therefore silently skips every
-///    approaching contact and applies no impulse on impact.
-///
-/// 2. **Hardcoded restitution** (line ~1004): `let restitution = 0.3_f64;`
-///    overrides any per-collider restitution. Even after bug #1 is fixed,
-///    the ladder would be `0.09`, not `0.25`, and the baseline would still
-///    fail.
-///
-/// Once both bugs are fixed in `solve_contact_velocity` (read the normal's
-/// sign convention and honour the collider material's restitution), remove
-/// the `#[ignore]` and this test becomes a live regression gate.
+/// Both colliders carry `e = 0.5` (the contact uses `max(e_a, e_b)`), the
+/// ball is a radius-0.5 sphere and the ground a wide box whose top face is
+/// the plane `y = -0.5`, so the ball rests with its centre at `y = 0`.
 #[test]
-#[ignore = "blocked by PhysicsWorld::solve_contact_velocity bugs (sign-inverted early return + hardcoded e=0.3); re-enable once normal convention and per-collider restitution are wired through"]
 fn test_restitution_ladder() {
     // dt = 1/240 s gives sub-millimetre bounce resolution without
     // inflating the test runtime.
     let mut world = PhysicsWorld::new([0.0, -9.81, 0.0], 1.0 / 240.0);
 
-    // Ball — mass 1, bounding r = mass^(1/3) * 0.5 = 0.5 (see
-    // broadphase_pairs in world/types.rs). Damping disabled so kinetic
+    // Ball — mass 1, sphere collider r = 0.5. Damping disabled so kinetic
     // energy is only lost through the coefficient of restitution.
     let mut ball = RigidBody::new(1.0);
     ball.transform.position = Vec3::new(0.0, 1.0, 0.0);
     ball.linear_damping = 0.0;
     ball.angular_damping = 0.0;
+    let ball_shape: Arc<dyn Shape> = Arc::new(Sphere::new(0.5));
+    ball.set_inertia_from_shape(ball_shape.as_ref());
+    ball.update_world_inertia();
     let ball_h = world.add_rigid_body(ball);
+    world.add_collider(
+        Collider::new(ball_shape).with_restitution(0.5),
+        Some(ball_h),
+    );
 
-    // Static "ground": a zero-mass body positioned so that the combined
-    // bounding radius (0.5 + 0.5) reaches y = 0 when the ball is at y = 0.
+    // Static ground: top face at y = -0.5, i.e. the ball touches it when its
+    // centre reaches y = 0 (1 m below the release height).
     let mut ground = RigidBody::new_static();
     ground.transform.position = Vec3::new(0.0, -1.0, 0.0);
-    world.add_rigid_body(ground);
+    let ground_h = world.add_rigid_body(ground);
+    world.add_collider(
+        Collider::new(Arc::new(BoxShape::new(Vec3::new(10.0, 0.5, 10.0)))).with_restitution(0.5),
+        Some(ground_h),
+    );
 
-    // Step the world for 4 s (960 steps). That is long enough for the
-    // ball to complete 2 full bounces even at e = 0.5.
-    let mut prev_y = 1.0;
-    let mut going_up = false;
+    // Step the world for 4 s (960 steps): long enough for several bounces.
+    // An apex is the step at which the vertical velocity turns from upward to
+    // downward; apexes lower than 1 cm are contact jitter, not bounces.
+    let mut prev_vy = 0.0_f64;
     let mut peaks: Vec<f64> = Vec::new();
     for _ in 0..960 {
         world.step();
-        let y = world
+        let b = world
             .get_body(ball_h)
-            .expect("ball handle inserted above must exist")
-            .transform
-            .position
-            .y;
-        // Detect a peak as the transition from ascending to descending.
-        if y < prev_y && going_up {
-            peaks.push(prev_y);
-            going_up = false;
-        } else if y > prev_y {
-            going_up = true;
+            .expect("ball handle inserted above must exist");
+        let y = b.transform.position.y;
+        let vy = b.velocity.y;
+        if prev_vy > 0.0 && vy <= 0.0 && y > 0.01 {
+            peaks.push(y);
         }
-        prev_y = y;
+        prev_vy = vy;
     }
 
-    // The first recorded peak is the drop itself (~1.0); the second is the
-    // first rebound (~0.25 for e = 0.5). We want the SECOND bounce peak,
-    // which is the third entry overall (0: release, 1: first peak, 2: second peak).
     assert!(
-        peaks.len() >= 3,
-        "expected at least 3 peaks (release + two bounces), got {}: {peaks:?}",
+        peaks.len() >= 2,
+        "expected at least two rebound apexes, got {}: {peaks:?}",
         peaks.len()
     );
-    let h2 = peaks[2];
+    let h1 = peaks[0];
+    let h2 = peaks[1];
 
     let baseline = harness::load_baseline("rigid_bounce_height_2")
         .expect("baseline `rigid_bounce_height_2` must exist");
     eprintln!(
-        "[test_restitution_ladder] second-bounce peak = {h2:.6} m (analytical = 0.25 m, baseline tol_rel = {:.1}%)",
+        "[test_restitution_ladder] rebound apexes = {peaks:?} (analytical 0.25, 0.0625 m; baseline tol_rel = {:.1}%)",
         baseline.tolerance_rel * 100.0
     );
-    assert_close!(h2, baseline);
+    assert_close!(h1, baseline);
+    let expected_h2 = h1 * 0.25;
+    assert!(
+        (h2 - expected_h2).abs() < 0.15 * expected_h2,
+        "second rebound {h2} must be e^2 = 0.25 of the first ({expected_h2})"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -218,24 +211,14 @@ fn test_angular_momentum_conservation() {
 /// * per-body translational kinetic energy `< 1e-3 J` (i.e. the stack has
 ///   come to rest).
 ///
-/// **Currently `#[ignore]`'d** — the `PhysicsWorld::step` pipeline in
-/// `crates/oxiphysics-rigid/src/world/types.rs` line ~840 has no position
-/// correction stage (no Baumgarte, no pseudo-velocity pass). Combined with
-/// the sign-inverted `rel_vn <= 0.0` guard in `solve_contact_velocity`,
-/// contacts between falling boxes are silently skipped and every body
-/// free-falls through its neighbour. No bounded penetration is achievable
-/// until (a) `solve_contact_velocity` applies its impulse for approaching
-/// contacts, and (b) a position-correction (Baumgarte or split-impulse)
-/// stage is added to the step pipeline. Once both land, remove
-/// `#[ignore]` and this test becomes a live regression gate.
+/// Each body carries a unit `BoxShape` collider (half-extent 0.5) and the
+/// ground is a wide static box whose top face is the plane `y = 0`, so the
+/// box-box manifolds are full 4-point face contacts.
 #[test]
-#[ignore = "blocked by missing position correction and PhysicsWorld::solve_contact_velocity sign bug; re-enable once Baumgarte/split-impulse is wired into PhysicsWorld::step"]
 fn test_stacked_box_equilibrium() {
     let mut world = PhysicsWorld::new([0.0, -9.81, 0.0], 1.0 / 100.0);
 
-    // Three unit-mass boxes at y = 1, 2, 3 (each body has a bounding
-    // sphere of radius 0.5, so "unit-box" stacking lines up the centres
-    // one diameter apart).
+    // Three unit-mass unit boxes resting at y = 0.5, 1.5, 2.5.
     let mut handles = Vec::with_capacity(3);
     let expected_rest_y = [0.5_f64, 1.5, 2.5];
     for &y in &expected_rest_y {
@@ -243,14 +226,22 @@ fn test_stacked_box_equilibrium() {
         b.transform.position = Vec3::new(0.0, y + 0.5, 0.0); // drop from +0.5 m above rest
         b.linear_damping = 0.0;
         b.angular_damping = 0.0;
-        handles.push(world.add_rigid_body(b));
+        let shape: Arc<dyn Shape> = Arc::new(BoxShape::new(Vec3::new(0.5, 0.5, 0.5)));
+        b.set_inertia_from_shape(shape.as_ref());
+        b.update_world_inertia();
+        let h = world.add_rigid_body(b);
+        world.add_collider(Collider::new(shape), Some(h));
+        handles.push(h);
     }
 
-    // Static ground at y = 0 (bounding r = 0.5, so top surface at y = 0.5
-    // when centred at y = 0; this aligns with expected_rest_y[0] = 0.5).
+    // Static ground box: top face at y = 0, aligned with expected_rest_y[0] = 0.5.
     let mut ground = RigidBody::new_static();
     ground.transform.position = Vec3::new(0.0, -0.5, 0.0);
-    world.add_rigid_body(ground);
+    let ground_h = world.add_rigid_body(ground);
+    world.add_collider(
+        Collider::new(Arc::new(BoxShape::new(Vec3::new(10.0, 0.5, 10.0)))),
+        Some(ground_h),
+    );
 
     // Step the world for 3 s (300 steps).
     for _ in 0..300 {

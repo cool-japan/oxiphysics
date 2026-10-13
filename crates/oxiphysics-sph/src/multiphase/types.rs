@@ -5,6 +5,44 @@
 use super::functions::*;
 
 use crate::kernel::{CubicSplineKernel, SphKernel};
+use crate::neighbor::SpatialHash;
+use oxiphysics_core::math::Vec3;
+
+/// Relative threshold on the colour-gradient magnitude `|∇c|` (in units of
+/// `1/h`) below which a particle is regarded as lying away from every interface
+/// and gets the zero unit normal.
+const NORMAL_THRESHOLD: f64 = 0.01;
+
+/// Reference density (kg/m³) assumed for particles of a phase that has not been registered.
+const DEFAULT_DENSITY_REF: f64 = 1000.0;
+
+/// Neighbour lists (self excluded) of all particles within `radius`.
+fn particle_neighbours(particles: &[MultiphaseParticle], radius: f64) -> Vec<Vec<usize>> {
+    let positions: Vec<Vec3> = particles
+        .iter()
+        .map(|p| Vec3::new(p.position[0], p.position[1], p.position[2]))
+        .collect();
+    SpatialHash::find_all_neighbors(&positions, radius)
+}
+
+/// Sum `Σ_{a,b} W(s √(a² + b²), h)` of the 3-D cubic-spline kernel over the
+/// points of an infinite planar square lattice of spacing `spacing`
+/// (including the origin).
+///
+/// A planar lattice of identical particles of mass `m` has the kernel-summed
+/// density `m · lattice_kernel_sum`, so `m = ρ / lattice_kernel_sum`
+/// reproduces the density `ρ` at interior sites.
+pub(super) fn planar_lattice_kernel_sum(spacing: f64, h: f64) -> f64 {
+    let reach = ((2.0 * h / spacing).ceil() as i64).clamp(1, 1024);
+    let mut sum = 0.0_f64;
+    for a in -reach..=reach {
+        for b in -reach..=reach {
+            let r = spacing * ((a * a + b * b) as f64).sqrt();
+            sum += cubic_spline_w(r, h);
+        }
+    }
+    sum
+}
 
 /// Density-ratio multiphase SPH solver (Hu & Adams 2006 variant).
 ///
@@ -483,6 +521,7 @@ pub enum Phase {
     Solid,
 }
 /// A single particle in the immiscible multiphase SPH system.
+#[derive(Debug, Clone)]
 pub struct MultiphaseParticle {
     /// Position (m).
     pub position: [f64; 3],
@@ -496,11 +535,17 @@ pub struct MultiphaseParticle {
     pub phase_id: usize,
     /// Particle mass (kg).
     pub mass: f64,
-    /// Smoothed colour-function value.
+    /// SPH-smoothed colour function `c = Σ_k V_k W_ik [phase_k = phase_i]` of the
+    /// particle's own phase (about 1 inside the phase, about 0.5 on an interface).
     pub color_field: f64,
-    /// Interface normal (gradient of colour field).
+    /// Colour gradient `∇c` (1/m) of the particle's own phase.
+    ///
+    /// Points into the particle's own phase; its magnitude is the inverse
+    /// interface thickness, so `σ κ ∇c` is the CSF force density.
     pub normal: [f64; 3],
-    /// Interface curvature κ.
+    /// Interface curvature `κ = −∇·n̂` (1/m), evaluated in the frame of the
+    /// particle's own phase: `+2/R` on the drop side of a spherical interface
+    /// of radius `R` and `−2/R` on the ambient side.
     pub curvature: f64,
 }
 /// A fluid phase (e.g. water, oil) with physical properties and a visualisation colour.
@@ -688,15 +733,26 @@ impl MultiphaseSystem {
         self.tension = InterphaseTension::new(n);
         idx
     }
-    /// Add a particle at `pos` with initial velocity `vel` belonging to `phase_id`.
+    /// Add a particle at `pos` with initial velocity `vel` and mass `mass`
+    /// belonging to `phase_id`.
+    ///
+    /// The mass must be consistent with the kernel normalisation: a lattice of
+    /// spacing `s` fills space with `mass ≈ density_ref · s³`.  The initial
+    /// density is the phase's reference density.
     ///
     /// Returns the index of the new particle.
-    pub fn add_particle(&mut self, pos: [f64; 3], vel: [f64; 3], phase_id: usize) -> usize {
+    pub fn add_particle(
+        &mut self,
+        pos: [f64; 3],
+        vel: [f64; 3],
+        phase_id: usize,
+        mass: f64,
+    ) -> usize {
         let idx = self.particles.len();
         let density_ref = if phase_id < self.phases.len() {
             self.phases[phase_id].density_ref
         } else {
-            1000.0
+            DEFAULT_DENSITY_REF
         };
         self.particles.push(MultiphaseParticle {
             position: pos,
@@ -704,7 +760,7 @@ impl MultiphaseSystem {
             density: density_ref,
             pressure: 0.0,
             phase_id,
-            mass: 1.0,
+            mass,
             color_field: 0.0,
             normal: [0.0; 3],
             curvature: 0.0,
@@ -746,44 +802,144 @@ impl MultiphaseSystem {
             p.pressure = rho0 * c0 * c0 / 7.0 * (ratio.powi(7) - 1.0);
         }
     }
-    /// Compute interface normals and curvature using the colour-field approach.
+    /// Compute interface normals and curvature with the colour-field (CSF) approach.
     ///
-    /// The colour function is +1 for same-phase neighbours and −1 for different-phase.
+    /// For every phase `p` present in the system the SPH-smoothed colour field
+    /// `c^p_j = Σ_k V_k W_jk [phase_k = p]` (`V_k = m_k / ρ_k`) is formed and
+    /// differentiated with the SPH gradient
+    /// `∇c^p_i = Σ_j V_j (c^p_j − c^p_i) ∇_i W_ij`.  A particle `i` of phase `p`
+    /// then receives
+    ///
+    /// * `normal = ∇c^p_i`, pointing into its own phase;
+    /// * the unit normal field `n̂^p = ∇c^p / |∇c^p|` (zero where
+    ///   `|∇c^p| ≤ 0.01 / h`);
+    /// * `curvature = −Σ_j V_j (n̂^p_j − n̂^p_i) · ∇_i W_ij`, i.e. `κ = −∇·n̂`
+    ///   with the neighbour normals taken from the same phase field, so both
+    ///   sides of an interface are evaluated in a consistent frame.
+    ///
+    /// The result depends only on positions, masses, densities and phases, not
+    /// on the storage order of the particles.  Densities must be up to date
+    /// (see [`compute_density`](Self::compute_density)).  The cost is
+    /// `O(P · N · k)` for `P` phases, `N` particles and `k` neighbours.
     pub fn compute_interface_normals(&mut self) {
         let n = self.particles.len();
         let h = self.h;
-        let mut normals = vec![[0.0_f64; 3]; n];
-        for (i, ni) in normals.iter_mut().enumerate() {
-            let phase_i = self.particles[i].phase_id;
-            for pj in self.particles.iter() {
+        if n == 0 {
+            return;
+        }
+        if !(h > 0.0 && h.is_finite()) {
+            for p in self.particles.iter_mut() {
+                p.color_field = 0.0;
+                p.normal = [0.0; 3];
+                p.curvature = 0.0;
+            }
+            return;
+        }
+
+        let volumes: Vec<f64> = self
+            .particles
+            .iter()
+            .map(|p| p.mass / p.density.max(1e-10))
+            .collect();
+        let neighbours = particle_neighbours(&self.particles, 2.0 * h);
+
+        // Kernel values and gradients of every neighbour pair, shared by all phases.
+        let mut weights: Vec<Vec<f64>> = Vec::with_capacity(n);
+        let mut gradients: Vec<Vec<[f64; 3]>> = Vec::with_capacity(n);
+        for (pi, list) in self.particles.iter().zip(neighbours.iter()) {
+            let mut w_row = Vec::with_capacity(list.len());
+            let mut g_row = Vec::with_capacity(list.len());
+            for &j in list {
+                let pj = &self.particles[j];
                 let dx = [
-                    self.particles[i].position[0] - pj.position[0],
-                    self.particles[i].position[1] - pj.position[1],
-                    self.particles[i].position[2] - pj.position[2],
+                    pi.position[0] - pj.position[0],
+                    pi.position[1] - pj.position[1],
+                    pi.position[2] - pj.position[2],
                 ];
                 let r = (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt();
-                if r < 1e-14 {
-                    continue;
+                w_row.push(cubic_spline_w(r, h));
+                g_row.push(kernel_grad(dx, r, h));
+            }
+            weights.push(w_row);
+            gradients.push(g_row);
+        }
+        let self_weight = cubic_spline_w(0.0, h);
+        let threshold = NORMAL_THRESHOLD / h;
+
+        let mut phase_ids: Vec<usize> = self.particles.iter().map(|p| p.phase_id).collect();
+        phase_ids.sort_unstable();
+        phase_ids.dedup();
+
+        let mut colours = vec![0.0_f64; n];
+        let mut normals = vec![[0.0_f64; 3]; n];
+        let mut curvatures = vec![0.0_f64; n];
+        for &phase in &phase_ids {
+            let colour: Vec<f64> = (0..n)
+                .map(|j| {
+                    let mut c = if self.particles[j].phase_id == phase {
+                        volumes[j] * self_weight
+                    } else {
+                        0.0
+                    };
+                    for (&k, &w) in neighbours[j].iter().zip(weights[j].iter()) {
+                        if self.particles[k].phase_id == phase {
+                            c += volumes[k] * w;
+                        }
+                    }
+                    c
+                })
+                .collect();
+            let colour_gradient: Vec<[f64; 3]> = (0..n)
+                .map(|i| {
+                    let mut g = [0.0_f64; 3];
+                    for (&j, gw) in neighbours[i].iter().zip(gradients[i].iter()) {
+                        let f = volumes[j] * (colour[j] - colour[i]);
+                        g[0] += f * gw[0];
+                        g[1] += f * gw[1];
+                        g[2] += f * gw[2];
+                    }
+                    g
+                })
+                .collect();
+            let unit_normal: Vec<[f64; 3]> = colour_gradient
+                .iter()
+                .map(|g| {
+                    let magnitude = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
+                    if magnitude > threshold {
+                        [g[0] / magnitude, g[1] / magnitude, g[2] / magnitude]
+                    } else {
+                        [0.0; 3]
+                    }
+                })
+                .collect();
+
+            for i in (0..n).filter(|&i| self.particles[i].phase_id == phase) {
+                let mut divergence = 0.0_f64;
+                for (&j, gw) in neighbours[i].iter().zip(gradients[i].iter()) {
+                    let dn = [
+                        unit_normal[j][0] - unit_normal[i][0],
+                        unit_normal[j][1] - unit_normal[i][1],
+                        unit_normal[j][2] - unit_normal[i][2],
+                    ];
+                    divergence += volumes[j] * (dn[0] * gw[0] + dn[1] * gw[1] + dn[2] * gw[2]);
                 }
-                let c_j = if pj.phase_id == phase_i {
-                    1.0_f64
-                } else {
-                    -1.0_f64
-                };
-                let grad = kernel_grad(dx, r, h);
-                let vol_j = pj.mass / pj.density.max(1e-10);
-                ni[0] += c_j * vol_j * grad[0];
-                ni[1] += c_j * vol_j * grad[1];
-                ni[2] += c_j * vol_j * grad[2];
+                colours[i] = colour[i];
+                normals[i] = colour_gradient[i];
+                curvatures[i] = -divergence;
             }
         }
-        for (p, ni) in self.particles.iter_mut().zip(normals.iter()) {
-            p.normal = *ni;
-            let mag = (ni[0] * ni[0] + ni[1] * ni[1] + ni[2] * ni[2]).sqrt();
-            p.curvature = mag;
+        for (i, p) in self.particles.iter_mut().enumerate() {
+            p.color_field = colours[i];
+            p.normal = normals[i];
+            p.curvature = curvatures[i];
         }
     }
     /// Compute per-particle accelerations: pressure + viscosity + gravity + surface tension.
+    ///
+    /// The surface tension is the continuum surface force `σ κ ∇c / ρ` built from
+    /// the normals and curvatures of [`compute_interface_normals`](Self::compute_interface_normals);
+    /// `σ` is the interphase coefficient, averaged over the neighbours of other
+    /// phases with the weights `V_j W_ij`.
     ///
     /// Returns a `Vec<[f64; 3]>` of accelerations, one per particle.
     pub fn compute_forces(&self) -> Vec<[f64; 3]> {
@@ -799,6 +955,8 @@ impl MultiphaseSystem {
             } else {
                 0.0
             };
+            let mut sigma_weighted = 0.0_f64;
+            let mut sigma_weight = 0.0_f64;
             for (j, pj) in self.particles.iter().enumerate() {
                 if i == j {
                     continue;
@@ -842,19 +1000,22 @@ impl MultiphaseSystem {
                 acc_i[2] += visc_scale * grad[2];
                 if pi.phase_id != pj.phase_id {
                     let n_phases = self.phases.len();
-                    let sigma = if pi.phase_id < n_phases && pj.phase_id < n_phases {
-                        self.tension.get(pi.phase_id, pj.phase_id)
-                    } else {
-                        0.0
-                    };
-                    if sigma > 0.0 {
-                        let st = InterphaseTension::surface_tension_force(pi, pj, sigma, h);
-                        let inv_m = 1.0 / pi.mass.max(1e-30);
-                        acc_i[0] += st[0] * inv_m;
-                        acc_i[1] += st[1] * inv_m;
-                        acc_i[2] += st[2] * inv_m;
+                    if pi.phase_id < n_phases && pj.phase_id < n_phases {
+                        let weight = pj.mass / rho_j * cubic_spline_w(r, h);
+                        sigma_weighted += weight * self.tension.get(pi.phase_id, pj.phase_id);
+                        sigma_weight += weight;
                     }
                 }
+            }
+            // Continuum surface force, applied once per particle:
+            // a_i = σ_i κ_i ∇c_i / ρ_i with σ_i the tension of the interface seen by i.
+            if sigma_weight > 0.0 {
+                let sigma_i = sigma_weighted / sigma_weight;
+                let csf =
+                    InterphaseTension::csf_acceleration(sigma_i, pi.curvature, pi.normal, rho_i);
+                acc_i[0] += csf[0];
+                acc_i[1] += csf[1];
+                acc_i[2] += csf[2];
             }
             acc_i[0] += self.gravity[0];
             acc_i[1] += self.gravity[1];
@@ -916,14 +1077,35 @@ impl MultiphaseSystem {
     }
     /// Build a two-layer particle lattice: lower half = phase_a, upper half = phase_b.
     ///
-    /// Returns a flat `Vec<MultiphaseParticle>` (does *not* add them to `self`).
+    /// The `nx × ny` lattice lies in the plane `z = 0`.  Because the SPH kernel
+    /// is three-dimensional, the particle masses are calibrated so that the
+    /// kernel-summed density at an interior lattice site equals the reference
+    /// density of its phase: `m = ρ_ref / Σ_{a,b} W(s √(a² + b²), h)` with the
+    /// spacing `s` and this system's smoothing length `h`.  (A mass of
+    /// `ρ_ref · s³` would only fill a three-dimensional lattice.)  Phases that
+    /// have not been registered use a reference density of 1000 kg/m³.
+    ///
+    /// Returns a flat `Vec<MultiphaseParticle>` (does *not* add them to `self`),
+    /// or an empty vector if `spacing` or the smoothing length is not a
+    /// positive finite number.
     pub fn initialize_two_layer(
+        &self,
         nx: usize,
         ny: usize,
         phase_a: usize,
         phase_b: usize,
         spacing: f64,
     ) -> Vec<MultiphaseParticle> {
+        let valid = |x: f64| x > 0.0 && x.is_finite();
+        if !valid(spacing) || !valid(self.h) {
+            return Vec::new();
+        }
+        let kernel_sum = planar_lattice_kernel_sum(spacing, self.h);
+        let density_ref = |phase_id: usize| {
+            self.phases
+                .get(phase_id)
+                .map_or(DEFAULT_DENSITY_REF, |phase| phase.density_ref)
+        };
         let mut particles = Vec::with_capacity(nx * ny);
         let half = ny / 2;
         for row in 0..ny {
@@ -931,13 +1113,14 @@ impl MultiphaseSystem {
                 let x = col as f64 * spacing;
                 let y = row as f64 * spacing;
                 let phase_id = if row < half { phase_a } else { phase_b };
+                let rho = density_ref(phase_id);
                 particles.push(MultiphaseParticle {
                     position: [x, y, 0.0],
                     velocity: [0.0; 3],
-                    density: 1000.0,
+                    density: rho,
                     pressure: 0.0,
                     phase_id,
-                    mass: 1.0,
+                    mass: rho / kernel_sum,
                     color_field: 0.0,
                     normal: [0.0; 3],
                     curvature: 0.0,
@@ -968,29 +1151,26 @@ impl InterphaseTension {
     pub fn get(&self, i: usize, j: usize) -> f64 {
         self.sigma_ij[i][j]
     }
-    /// Surface-tension force on particle i due to particle j (Morris method).
+    /// Continuum-surface-force (CSF) acceleration of a particle,
+    /// `a = σ κ ∇c / ρ` (m/s²).
     ///
-    /// F = σ · (κ_i + κ_j) / 2 · n̂_i · W(r_ij, h)
-    pub fn surface_tension_force(
-        pi: &MultiphaseParticle,
-        pj: &MultiphaseParticle,
+    /// # Arguments
+    /// * `sigma`     – interface tension coefficient σ (N/m)
+    /// * `curvature` – interface curvature κ (1/m) in the frame of the particle's own phase
+    /// * `normal`    – colour gradient `∇c` (1/m) pointing into the particle's own phase
+    /// * `density`   – particle density ρ (kg/m³)
+    ///
+    /// κ and `∇c` change sign together when the roles of the two phases are
+    /// exchanged, so both sides of an interface are pulled towards the centre
+    /// of curvature.
+    pub fn csf_acceleration(
         sigma: f64,
-        h: f64,
+        curvature: f64,
+        normal: [f64; 3],
+        density: f64,
     ) -> [f64; 3] {
-        let dx = [
-            pi.position[0] - pj.position[0],
-            pi.position[1] - pj.position[1],
-            pi.position[2] - pj.position[2],
-        ];
-        let r = (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt();
-        let w = cubic_spline_w(r, h);
-        let kappa_avg = (pi.curvature + pj.curvature) * 0.5;
-        let scale = sigma * kappa_avg * w;
-        [
-            scale * pi.normal[0],
-            scale * pi.normal[1],
-            scale * pi.normal[2],
-        ]
+        let scale = sigma * curvature / density.max(1e-10);
+        [scale * normal[0], scale * normal[1], scale * normal[2]]
     }
 }
 /// Simple connected-component labelling for phase morphology analysis.

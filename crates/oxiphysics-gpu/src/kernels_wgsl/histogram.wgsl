@@ -22,8 +22,11 @@ var<workgroup> local_bins: array<atomic<u32>, 256u>;
 fn histogram_main(
     @builtin(global_invocation_id) gid_vec: vec3<u32>,
     @builtin(local_invocation_id) lid_vec: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
-    let gid = gid_vec.x;
+    // A dispatch wider than one dimension allows is folded into y (see
+    // `dispatch_count_for`): linearise the invocation index.
+    let gid = gid_vec.x + gid_vec.y * nwg.x * 256u;
     let lid = lid_vec.x;
     let n = params.n;
     let num_bins = params.num_bins;

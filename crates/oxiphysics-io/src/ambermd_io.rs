@@ -16,6 +16,10 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+
+mod prmtop_text;
+mod rst7_text;
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Shared error type
 // ──────────────────────────────────────────────────────────────────────────────
@@ -31,6 +35,10 @@ pub enum AmberIoError {
     MissingSection(String),
     /// Unexpected end of data.
     UnexpectedEof,
+    /// The in-memory data cannot be represented in the file format, for
+    /// example a bond that refers to a missing atom or a value that overflows
+    /// its fixed-width column.
+    InvalidData(String),
 }
 
 impl fmt::Display for AmberIoError {
@@ -40,11 +48,18 @@ impl fmt::Display for AmberIoError {
             AmberIoError::IoError(s) => write!(f, "AMBER I/O error: {s}"),
             AmberIoError::MissingSection(s) => write!(f, "AMBER missing section: {s}"),
             AmberIoError::UnexpectedEof => write!(f, "AMBER unexpected end of file"),
+            AmberIoError::InvalidData(s) => write!(f, "AMBER invalid data: {s}"),
         }
     }
 }
 
 impl std::error::Error for AmberIoError {}
+
+impl From<std::io::Error> for AmberIoError {
+    fn from(error: std::io::Error) -> Self {
+        AmberIoError::IoError(error.to_string())
+    }
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // PrmtopAtom
@@ -178,13 +193,25 @@ impl PrmtopAngle {
 pub struct PrmtopFile {
     /// Version string from the `%VERSION` line.
     pub version: String,
+    /// The `POINTERS` counters read from the file (empty for a topology built
+    /// in memory).
+    ///
+    /// [`PrmtopFile::write`] derives the counters that describe the atoms,
+    /// bonds and angles from the topology itself and keeps every other one
+    /// (residue, dihedral and Lennard-Jones counters, `IFBOX`, ...) from here,
+    /// so the sections preserved in `extra_sections` stay consistent with
+    /// `POINTERS`.
+    pub pointers: Vec<usize>,
     /// All atoms in topology order.
     pub atoms: Vec<PrmtopAtom>,
     /// All covalent bonds.
     pub bonds: Vec<PrmtopBond>,
     /// All valence angles.
     pub angles: Vec<PrmtopAngle>,
-    /// Raw text for unrecognised `%FLAG` sections.
+    /// Sections that are not modelled above, keyed by `%FLAG` name.
+    ///
+    /// Each value holds the lines of the section verbatim, starting with its
+    /// `%FORMAT` line.
     pub extra_sections: HashMap<String, Vec<String>>,
 }
 
@@ -192,222 +219,6 @@ impl PrmtopFile {
     /// Create an empty [`PrmtopFile`].
     pub fn new() -> Self {
         PrmtopFile::default()
-    }
-
-    /// Write the topology to any [`Write`] sink in a simplified prmtop-style
-    /// text format.
-    ///
-    /// The output is intentionally human-readable rather than byte-perfect
-    /// AMBER binary prmtop; it is suitable for round-trip testing.
-    pub fn write<W: Write>(&self, writer: &mut W) -> Result<(), AmberIoError> {
-        let mut bw = BufWriter::new(writer);
-        writeln!(bw, "%VERSION  {}", self.version)
-            .map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        writeln!(bw, "%FLAG ATOM_NAME").map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        writeln!(bw, "%FORMAT(20a4)").map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        for (i, atom) in self.atoms.iter().enumerate() {
-            write!(bw, "{:<4}", &atom.name).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-            if (i + 1) % 20 == 0 {
-                writeln!(bw).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-            }
-        }
-        if !self.atoms.len().is_multiple_of(20) {
-            writeln!(bw).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        }
-
-        writeln!(bw, "%FLAG CHARGE").map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        writeln!(bw, "%FORMAT(5E16.8)").map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        for (i, atom) in self.atoms.iter().enumerate() {
-            write!(bw, "{:16.8E}", atom.charge)
-                .map_err(|e| AmberIoError::IoError(e.to_string()))?;
-            if (i + 1) % 5 == 0 {
-                writeln!(bw).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-            }
-        }
-        if !self.atoms.len().is_multiple_of(5) {
-            writeln!(bw).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        }
-
-        writeln!(bw, "%FLAG MASS").map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        writeln!(bw, "%FORMAT(5E16.8)").map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        for (i, atom) in self.atoms.iter().enumerate() {
-            write!(bw, "{:16.8E}", atom.mass).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-            if (i + 1) % 5 == 0 {
-                writeln!(bw).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-            }
-        }
-        if !self.atoms.len().is_multiple_of(5) {
-            writeln!(bw).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        }
-
-        writeln!(bw, "%FLAG ATOM_TYPE_INDEX").map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        writeln!(bw, "%FORMAT(20a4)").map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        for (i, atom) in self.atoms.iter().enumerate() {
-            write!(bw, "{:<4}", &atom.atom_type)
-                .map_err(|e| AmberIoError::IoError(e.to_string()))?;
-            if (i + 1) % 20 == 0 {
-                writeln!(bw).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-            }
-        }
-        if !self.atoms.len().is_multiple_of(20) {
-            writeln!(bw).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        }
-
-        // Bonds
-        writeln!(bw, "%FLAG BOND_FORCE_CONSTANT")
-            .map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        writeln!(bw, "%FORMAT(5E16.8)").map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        for (i, bond) in self.bonds.iter().enumerate() {
-            write!(bw, "{:16.8E}", bond.force_constant)
-                .map_err(|e| AmberIoError::IoError(e.to_string()))?;
-            if (i + 1) % 5 == 0 {
-                writeln!(bw).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-            }
-        }
-        if !self.bonds.is_empty() && !self.bonds.len().is_multiple_of(5) {
-            writeln!(bw).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        }
-
-        writeln!(bw, "%FLAG BOND_EQUIL_VALUE").map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        writeln!(bw, "%FORMAT(5E16.8)").map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        for (i, bond) in self.bonds.iter().enumerate() {
-            write!(bw, "{:16.8E}", bond.eq_length)
-                .map_err(|e| AmberIoError::IoError(e.to_string()))?;
-            if (i + 1) % 5 == 0 {
-                writeln!(bw).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-            }
-        }
-        if !self.bonds.is_empty() && !self.bonds.len().is_multiple_of(5) {
-            writeln!(bw).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        }
-
-        writeln!(bw, "%END").map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Parse a simplified prmtop-style text produced by [`PrmtopFile::write`].
-    pub fn read<R: Read>(reader: R) -> Result<Self, AmberIoError> {
-        let br = BufReader::new(reader);
-        let mut file = PrmtopFile::new();
-        let lines: Vec<String> = br
-            .lines()
-            .map(|l| l.map_err(|e| AmberIoError::IoError(e.to_string())))
-            .collect::<Result<_, _>>()?;
-
-        let mut i = 0usize;
-        let mut names: Vec<String> = Vec::new();
-        let mut charges: Vec<f64> = Vec::new();
-        let mut masses: Vec<f64> = Vec::new();
-        let mut types: Vec<String> = Vec::new();
-        let mut bond_kf: Vec<f64> = Vec::new();
-        let mut bond_eq: Vec<f64> = Vec::new();
-
-        while i < lines.len() {
-            let line = lines[i].trim();
-            if line.starts_with("%VERSION") {
-                file.version = line.trim_start_matches("%VERSION").trim().to_string();
-            } else if line == "%FLAG ATOM_NAME" {
-                i += 1; // skip FORMAT
-                i += 1;
-                while i < lines.len() && !lines[i].starts_with('%') {
-                    let row = &lines[i];
-                    let mut pos = 0usize;
-                    while pos + 4 <= row.len() {
-                        names.push(row[pos..pos + 4].trim().to_string());
-                        pos += 4;
-                    }
-                    i += 1;
-                }
-                continue;
-            } else if line == "%FLAG CHARGE" {
-                i += 1;
-                i += 1;
-                while i < lines.len() && !lines[i].starts_with('%') {
-                    for tok in lines[i].split_whitespace() {
-                        charges.push(
-                            tok.parse::<f64>()
-                                .map_err(|e| AmberIoError::ParseError(e.to_string()))?,
-                        );
-                    }
-                    i += 1;
-                }
-                continue;
-            } else if line == "%FLAG MASS" {
-                i += 1;
-                i += 1;
-                while i < lines.len() && !lines[i].starts_with('%') {
-                    for tok in lines[i].split_whitespace() {
-                        masses.push(
-                            tok.parse::<f64>()
-                                .map_err(|e| AmberIoError::ParseError(e.to_string()))?,
-                        );
-                    }
-                    i += 1;
-                }
-                continue;
-            } else if line == "%FLAG ATOM_TYPE_INDEX" {
-                i += 1;
-                i += 1;
-                while i < lines.len() && !lines[i].starts_with('%') {
-                    let row = &lines[i];
-                    let mut pos = 0usize;
-                    while pos + 4 <= row.len() {
-                        types.push(row[pos..pos + 4].trim().to_string());
-                        pos += 4;
-                    }
-                    i += 1;
-                }
-                continue;
-            } else if line == "%FLAG BOND_FORCE_CONSTANT" {
-                i += 1;
-                i += 1;
-                while i < lines.len() && !lines[i].starts_with('%') {
-                    for tok in lines[i].split_whitespace() {
-                        bond_kf.push(
-                            tok.parse::<f64>()
-                                .map_err(|e| AmberIoError::ParseError(e.to_string()))?,
-                        );
-                    }
-                    i += 1;
-                }
-                continue;
-            } else if line == "%FLAG BOND_EQUIL_VALUE" {
-                i += 1;
-                i += 1;
-                while i < lines.len() && !lines[i].starts_with('%') {
-                    for tok in lines[i].split_whitespace() {
-                        bond_eq.push(
-                            tok.parse::<f64>()
-                                .map_err(|e| AmberIoError::ParseError(e.to_string()))?,
-                        );
-                    }
-                    i += 1;
-                }
-                continue;
-            }
-            i += 1;
-        }
-
-        let n = names.len();
-        for idx in 0..n {
-            file.atoms.push(PrmtopAtom {
-                name: names.get(idx).cloned().unwrap_or_default(),
-                charge: charges.get(idx).copied().unwrap_or(0.0),
-                mass: masses.get(idx).copied().unwrap_or(0.0),
-                atom_type: types.get(idx).cloned().unwrap_or_default(),
-            });
-        }
-
-        for (idx, &force_constant) in bond_kf.iter().enumerate() {
-            file.bonds.push(PrmtopBond {
-                atom_i: idx * 2,
-                atom_j: idx * 2 + 1,
-                force_constant,
-                eq_length: bond_eq.get(idx).copied().unwrap_or(0.0),
-            });
-        }
-
-        Ok(file)
     }
 
     /// Return the number of atoms.
@@ -426,10 +237,14 @@ impl PrmtopFile {
 /// ```text
 /// title
 /// natom [time]
-/// x1 y1 z1 x2 y2 z2 ...   (10 per line, 12.7 format)
+/// x1 y1 z1 x2 y2 z2 ...   (6 per line, 12.7 format)
 /// [velocities – same format]
 /// [box: a b c alpha beta gamma]
 /// ```
+///
+/// The optional blocks carry no marker; [`Rst7File::read`] recognises them by
+/// the number of values (see [`Rst7File::read_with_hint`] for the one layout
+/// that is ambiguous).
 #[derive(Debug, Clone, Default)]
 pub struct Rst7File {
     /// Title line.
@@ -454,125 +269,6 @@ impl Rst7File {
     pub fn natom(&self) -> usize {
         self.coordinates.len() / 3
     }
-
-    /// Write the restart file to any [`Write`] sink.
-    ///
-    /// Coordinates are written in 12.7 fixed-point format, 6 values per line
-    /// (= 2 atoms per line, matching the AMBER specification).
-    pub fn write<W: Write>(&self, writer: &mut W) -> Result<(), AmberIoError> {
-        let mut bw = BufWriter::new(writer);
-        writeln!(bw, "{}", self.title).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        if let Some(t) = self.time {
-            writeln!(bw, "{:6}{:15.7e}", self.natom(), t)
-                .map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        } else {
-            writeln!(bw, "{:6}", self.natom()).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        }
-
-        write_f64_block(&mut bw, &self.coordinates, 6)?;
-
-        if !self.velocities.is_empty() {
-            write_f64_block(&mut bw, &self.velocities, 6)?;
-        }
-
-        if let Some(b) = self.box_dimensions {
-            writeln!(
-                bw,
-                "{:12.7}{:12.7}{:12.7}{:12.7}{:12.7}{:12.7}",
-                b[0], b[1], b[2], b[3], b[4], b[5]
-            )
-            .map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        }
-
-        Ok(())
-    }
-
-    /// Parse an AMBER restart file from any [`Read`] source.
-    pub fn read<R: Read>(reader: R) -> Result<Self, AmberIoError> {
-        let br = BufReader::new(reader);
-        let mut lines = br.lines();
-        let mut rst = Rst7File::new();
-
-        // title
-        rst.title = lines
-            .next()
-            .ok_or(AmberIoError::UnexpectedEof)?
-            .map_err(|e| AmberIoError::IoError(e.to_string()))?;
-
-        // natom [time]
-        let header = lines
-            .next()
-            .ok_or(AmberIoError::UnexpectedEof)?
-            .map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        let mut hparts = header.split_whitespace();
-        let natom: usize = hparts
-            .next()
-            .ok_or(AmberIoError::ParseError("missing natom".into()))?
-            .parse()
-            .map_err(|e: std::num::ParseIntError| AmberIoError::ParseError(e.to_string()))?;
-        if let Some(t) = hparts.next() {
-            rst.time = Some(
-                t.parse::<f64>()
-                    .map_err(|e| AmberIoError::ParseError(e.to_string()))?,
-            );
-        }
-
-        let n_coord = natom * 3;
-        let mut all_values: Vec<f64> = Vec::new();
-
-        for line in lines {
-            let l = line.map_err(|e| AmberIoError::IoError(e.to_string()))?;
-            let trimmed = l.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            // Check if this looks like a box line (6 values, reasonable floats)
-            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-            // If we already have all coords + all vels, remainder is box
-            if all_values.len() >= n_coord * 2 && parts.len() == 6 {
-                let mut box_vals = [0f64; 6];
-                for (i, p) in parts.iter().enumerate() {
-                    box_vals[i] = p
-                        .parse::<f64>()
-                        .map_err(|e| AmberIoError::ParseError(e.to_string()))?;
-                }
-                rst.box_dimensions = Some(box_vals);
-                break;
-            }
-            for p in parts {
-                all_values.push(
-                    p.parse::<f64>()
-                        .map_err(|e| AmberIoError::ParseError(e.to_string()))?,
-                );
-            }
-        }
-
-        rst.coordinates = all_values[..n_coord.min(all_values.len())].to_vec();
-        if all_values.len() > n_coord {
-            rst.velocities = all_values[n_coord..].to_vec();
-        }
-
-        Ok(rst)
-    }
-}
-
-/// Write a slice of `f64` values to a writer, `per_line` values per line,
-/// using 12.7 fixed-point format.
-fn write_f64_block<W: Write>(
-    writer: &mut BufWriter<W>,
-    values: &[f64],
-    per_line: usize,
-) -> Result<(), AmberIoError> {
-    for (i, v) in values.iter().enumerate() {
-        write!(writer, "{:12.7}", v).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        if (i + 1) % per_line == 0 {
-            writeln!(writer).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-        }
-    }
-    if !values.is_empty() && !values.len().is_multiple_of(per_line) {
-        writeln!(writer).map_err(|e| AmberIoError::IoError(e.to_string()))?;
-    }
-    Ok(())
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1196,6 +892,21 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    // ── AmberIoError ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_error_display_and_io_conversion() {
+        let invalid = AmberIoError::InvalidData("bond 3 references atom 9".to_string());
+        assert_eq!(
+            invalid.to_string(),
+            "AMBER invalid data: bond 3 references atom 9"
+        );
+        match AmberIoError::from(std::io::Error::other("sink closed")) {
+            AmberIoError::IoError(message) => assert!(message.contains("sink closed")),
+            other => panic!("unexpected variant: {other}"),
+        }
+    }
+
     // ── PrmtopAtom ────────────────────────────────────────────────────────────
 
     #[test]
@@ -1362,7 +1073,46 @@ mod tests {
                 a.force_constant,
                 b.force_constant
             );
+            assert!(
+                (a.eq_length - b.eq_length).abs() < 1e-6,
+                "eq_length mismatch: {} vs {}",
+                a.eq_length,
+                b.eq_length
+            );
         }
+    }
+
+    #[test]
+    fn test_prmtop_roundtrip_bond_connectivity() {
+        // The bond atoms used to be dropped on write and invented as the pairs
+        // (0, 1), (2, 3), ... on read, so (1, 2) came back as (2, 3).
+        let original = make_prmtop();
+        let mut buf = Vec::new();
+        original.write(&mut buf).unwrap();
+        let restored = PrmtopFile::read(Cursor::new(&buf)).unwrap();
+        let pairs: Vec<(usize, usize)> = restored
+            .bonds
+            .iter()
+            .map(|b| (b.atom_i, b.atom_j))
+            .collect();
+        assert_eq!(pairs, vec![(0, 1), (1, 2)]);
+        assert_eq!(restored.bonds, original.bonds);
+    }
+
+    #[test]
+    fn test_prmtop_roundtrip_angles_and_atom_types() {
+        let mut original = make_prmtop();
+        original.angles.push(PrmtopAngle::new(0, 1, 2, 50.0, 1.911));
+        let mut buf = Vec::new();
+        original.write(&mut buf).unwrap();
+        let restored = PrmtopFile::read(Cursor::new(&buf)).unwrap();
+        assert_eq!(restored.angles, original.angles);
+        let types: Vec<&str> = restored
+            .atoms
+            .iter()
+            .map(|a| a.atom_type.as_str())
+            .collect();
+        assert_eq!(types, vec!["N3", "H", "CT"]);
     }
 
     #[test]

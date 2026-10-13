@@ -688,4 +688,323 @@ mod tests {
         let ke = cg_kinetic_energy(&[b]);
         assert_eq!(ke, 0.0);
     }
+
+    // ----- Force / energy consistency of CgSystem (dihedrals and LJ sign) -----
+
+    /// Central finite-difference `-dE/dx` of the bonded + non-bonded energy of
+    /// `sys` for every bead component.
+    fn finite_difference_forces(sys: &mut CgSystem, h: f64) -> Vec<[f64; 3]> {
+        let n = sys.beads.len();
+        let mut out = vec![[0.0; 3]; n];
+        for (i, out_i) in out.iter_mut().enumerate() {
+            for (axis, out_component) in out_i.iter_mut().enumerate() {
+                let x0 = sys.beads[i].pos[axis];
+                sys.beads[i].pos[axis] = x0 + h;
+                let e_plus = sys.compute_bonded_energy() + sys.compute_nonbonded_energy();
+                sys.beads[i].pos[axis] = x0 - h;
+                let e_minus = sys.compute_bonded_energy() + sys.compute_nonbonded_energy();
+                sys.beads[i].pos[axis] = x0;
+                *out_component = -(e_plus - e_minus) / (2.0 * h);
+            }
+        }
+        out
+    }
+
+    /// Assert that `compute_forces` equals the finite-difference gradient of the
+    /// reported energy, component by component, relative to the largest force.
+    fn assert_forces_match_energy_gradient(sys: &mut CgSystem, rel_tol: f64) {
+        sys.compute_forces();
+        let analytic: Vec<[f64; 3]> = sys.beads.iter().map(|b| b.force).collect();
+        let numeric = finite_difference_forces(sys, 1e-6);
+        let largest = numeric
+            .iter()
+            .flat_map(|f| f.iter())
+            .fold(1.0_f64, |m, v| m.max(v.abs()));
+        for (i, (fa, fnum)) in analytic.iter().zip(numeric.iter()).enumerate() {
+            for axis in 0..3 {
+                assert!(
+                    (fa[axis] - fnum[axis]).abs() <= rel_tol * largest,
+                    "bead {i} axis {axis}: analytic {} vs finite difference {} (scale {largest})",
+                    fa[axis],
+                    fnum[axis]
+                );
+            }
+        }
+    }
+
+    /// Six-bead non-planar chain with bonds, angles and three periodic dihedrals
+    /// of different multiplicity and phase, plus non-bonded LJ between all
+    /// non-bonded pairs (every pair is inside the 2.5 nm cutoff).
+    fn six_bead_chain_with_dihedrals() -> CgSystem {
+        let coords = [
+            [0.00, 0.00, 0.00],
+            [0.47, 0.05, 0.02],
+            [0.80, 0.38, -0.05],
+            [0.78, 0.80, 0.25],
+            [1.20, 1.02, 0.55],
+            [1.50, 0.70, 0.95],
+        ];
+        let types = [0u8, 1, 2, 3, 4, 0];
+        let mut sys = CgSystem::new(2.5);
+        for (idx, (pos, ty)) in coords.iter().zip(types.iter()).enumerate() {
+            sys.add_bead(CgBead::new(format!("B{idx}"), *ty, 72.0, 0.0, *pos));
+        }
+        for idx in 0..5 {
+            sys.bonds.push(CgBond::new(idx, idx + 1, 0.47, 1250.0));
+        }
+        for idx in 0..4 {
+            sys.angles
+                .push(CgAngle::new(idx, idx + 1, idx + 2, 2.0, 25.0));
+        }
+        sys.dihedrals.push(CgDihedral::new(0, 1, 2, 3, 0.6, 3.0, 1));
+        sys.dihedrals
+            .push(CgDihedral::new(1, 2, 3, 4, -0.9, 1.5, 2));
+        sys.dihedrals.push(CgDihedral::new(2, 3, 4, 5, 1.1, 0.7, 3));
+        sys
+    }
+
+    #[test]
+    fn test_cgsystem_lj_force_repels_inside_r_min() {
+        // 0.4 nm is below the LJ minimum 2^(1/6) * 0.47 nm = 0.528 nm: repulsive.
+        let mut sys = CgSystem::new(2.0);
+        sys.add_bead(make_bead([0.0, 0.0, 0.0]));
+        sys.add_bead(make_bead([0.4, 0.0, 0.0]));
+        sys.compute_forces();
+        let f0 = sys.beads[0].force;
+        let f1 = sys.beads[1].force;
+        assert!(
+            f0[0] < 0.0,
+            "bead 0 must be pushed away from bead 1: {f0:?}"
+        );
+        assert!(
+            f1[0] > 0.0,
+            "bead 1 must be pushed away from bead 0: {f1:?}"
+        );
+        assert!((f0[0] + f1[0]).abs() < 1e-9 * f1[0].abs());
+        assert!(f0[1].abs() < 1e-12 && f0[2].abs() < 1e-12);
+        // The magnitude is the analytic LJ force of the MARTINI type pair.
+        let (sigma, epsilon) = MartiniLj::get_lj_params(0, 0);
+        let expected = MartiniLj::force_magnitude(0.4, sigma, epsilon);
+        assert!(expected > 0.0);
+        assert!((f1[0] - expected).abs() < 1e-9 * expected);
+        // And it is exactly -dE/dx of the reported non-bonded energy.
+        assert_forces_match_energy_gradient(&mut sys, 1e-5);
+    }
+
+    #[test]
+    fn test_cgsystem_lj_force_attracts_outside_r_min() {
+        let mut sys = CgSystem::new(2.0);
+        sys.add_bead(make_bead([0.0, 0.0, 0.0]));
+        sys.add_bead(make_bead([0.0, 0.8, 0.0]));
+        sys.compute_forces();
+        assert!(
+            sys.beads[0].force[1] > 0.0,
+            "bead 0 must be pulled towards bead 1: {:?}",
+            sys.beads[0].force
+        );
+        assert!(sys.beads[1].force[1] < 0.0);
+        assert_forces_match_energy_gradient(&mut sys, 1e-5);
+    }
+
+    #[test]
+    fn test_cgsystem_lj_pair_relaxes_to_minimum_distance() {
+        // Overdamped steepest descent along the force must settle at r_min.
+        let mut sys = CgSystem::new(2.0);
+        sys.add_bead(make_bead([0.0, 0.0, 0.0]));
+        sys.add_bead(make_bead([0.40, 0.0, 0.0]));
+        for _ in 0..4000 {
+            sys.compute_forces();
+            for bead in &mut sys.beads {
+                for axis in 0..3 {
+                    bead.pos[axis] += 2.0e-5 * bead.force[axis];
+                }
+            }
+        }
+        let r = length(sub(sys.beads[1].pos, sys.beads[0].pos));
+        let r_min = 2.0_f64.powf(1.0 / 6.0) * 0.47;
+        assert!(
+            (r - r_min).abs() < 1e-3,
+            "relaxed to r = {r}, r_min = {r_min}"
+        );
+    }
+
+    #[test]
+    fn test_cgsystem_forces_match_energy_gradient_with_dihedrals() {
+        let mut sys = six_bead_chain_with_dihedrals();
+        assert!(
+            sys.dihedrals.iter().all(|d| d.energy(&sys.beads) > 0.0),
+            "the test geometry must exercise every dihedral"
+        );
+        assert_forces_match_energy_gradient(&mut sys, 1e-5);
+    }
+
+    #[test]
+    fn test_cgsystem_dihedral_forces_are_applied() {
+        // Same system with and without the dihedral terms: the force difference
+        // is exactly the sum of the dihedral forces.
+        let mut with = six_bead_chain_with_dihedrals();
+        let mut without = six_bead_chain_with_dihedrals();
+        without.dihedrals.clear();
+        with.compute_forces();
+        without.compute_forces();
+        let mut expected = vec![[0.0_f64; 3]; with.beads.len()];
+        for dih in &with.dihedrals {
+            let f = dih.forces(&with.beads);
+            for (bead, fv) in [dih.i, dih.j, dih.k, dih.l].iter().zip(f.iter()) {
+                expected[*bead] = add(expected[*bead], *fv);
+            }
+        }
+        let mut total_dihedral_force = 0.0;
+        for (idx, expected_force) in expected.iter().enumerate() {
+            let diff = sub(with.beads[idx].force, without.beads[idx].force);
+            for (axis, (&actual, &wanted)) in diff.iter().zip(expected_force.iter()).enumerate() {
+                assert!(
+                    (actual - wanted).abs() < 1e-9,
+                    "bead {idx} axis {axis}: {actual} vs {wanted}"
+                );
+            }
+            total_dihedral_force += length(diff);
+        }
+        assert!(
+            total_dihedral_force > 1.0,
+            "dihedral forces vanish: {total_dihedral_force}"
+        );
+    }
+
+    /// Four-bead geometries with a clearly non-planar, non-symmetric arrangement.
+    fn dihedral_test_geometries() -> Vec<[[f64; 3]; 4]> {
+        vec![
+            [
+                [0.0, 1.0, 0.3],
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.1],
+                [1.2, -0.7, 0.9],
+            ],
+            [
+                [-0.3, 0.8, 0.5],
+                [0.1, 0.0, 0.0],
+                [0.9, 0.2, -0.1],
+                [1.1, 0.9, -0.8],
+            ],
+            [
+                [0.2, -0.9, 0.4],
+                [0.0, 0.1, 0.0],
+                [0.7, 0.3, 0.6],
+                [1.4, 0.2, 1.3],
+            ],
+        ]
+    }
+
+    #[test]
+    fn test_cgdihedral_forces_match_energy_gradient() {
+        // phi0 != 0 and multiplicities 1..4: with phi0 = 0 the energy is even in
+        // phi and a sign-convention error in the force would go unnoticed.
+        for coords in dihedral_test_geometries() {
+            let mut beads: Vec<CgBead> = coords.iter().map(|&c| make_bead(c)).collect();
+            for multiplicity in 1..=4_u32 {
+                for phi0 in [0.0, 0.6, -1.2, PI / 2.0, 2.5] {
+                    let dih = CgDihedral::new(0, 1, 2, 3, phi0, 2.3, multiplicity);
+                    let analytic = dih.forces(&beads);
+                    let h = 1e-6;
+                    for (atom, analytic_force) in analytic.iter().enumerate() {
+                        for (axis, &analytic_component) in analytic_force.iter().enumerate() {
+                            let x0 = beads[atom].pos[axis];
+                            beads[atom].pos[axis] = x0 + h;
+                            let e_plus = dih.energy(&beads);
+                            beads[atom].pos[axis] = x0 - h;
+                            let e_minus = dih.energy(&beads);
+                            beads[atom].pos[axis] = x0;
+                            let numeric = -(e_plus - e_minus) / (2.0 * h);
+                            assert!(
+                                (analytic_component - numeric).abs()
+                                    < 1e-6 * numeric.abs().max(1.0),
+                                "n={multiplicity} phi0={phi0} atom {atom} axis {axis}: {analytic_component} vs {numeric}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_cgdihedral_forces_have_no_net_force_or_torque() {
+        for coords in dihedral_test_geometries() {
+            let beads: Vec<CgBead> = coords.iter().map(|&c| make_bead(c)).collect();
+            let dih = CgDihedral::new(0, 1, 2, 3, 0.6, 3.1, 3);
+            let forces = dih.forces(&beads);
+            let mut net_force = [0.0_f64; 3];
+            let mut net_torque = [0.0_f64; 3];
+            for (bead, f) in beads.iter().zip(forces.iter()) {
+                net_force = add(net_force, *f);
+                net_torque = add(net_torque, cross(bead.pos, *f));
+            }
+            assert!(length(net_force) < 1e-12, "net force {net_force:?}");
+            assert!(length(net_torque) < 1e-11, "net torque {net_torque:?}");
+            assert!(forces.iter().any(|f| length(*f) > 0.1), "forces vanish");
+        }
+    }
+
+    #[test]
+    fn test_cgdihedral_forces_lower_the_energy() {
+        for coords in dihedral_test_geometries() {
+            let mut beads: Vec<CgBead> = coords.iter().map(|&c| make_bead(c)).collect();
+            let dih = CgDihedral::new(0, 1, 2, 3, 0.6, 2.0, 2);
+            let e_before = dih.energy(&beads);
+            let forces = dih.forces(&beads);
+            for (bead, f) in beads.iter_mut().zip(forces.iter()) {
+                bead.pos = add(bead.pos, scale(*f, 1e-4));
+            }
+            let e_after = dih.energy(&beads);
+            assert!(
+                e_after < e_before,
+                "a step along the forces must lower the energy: {e_before} -> {e_after}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cgdihedral_forces_vanish_for_collinear_beads() {
+        let beads = vec![
+            make_bead([0.0, 0.0, 0.0]),
+            make_bead([1.0, 0.0, 0.0]),
+            make_bead([2.0, 0.0, 0.0]),
+            make_bead([2.5, 1.0, 0.0]),
+        ];
+        let dih = CgDihedral::new(0, 1, 2, 3, 0.4, 1.0, 1);
+        let forces = dih.forces(&beads);
+        assert_eq!(forces, [[0.0; 3]; 4]);
+    }
+
+    #[test]
+    fn test_cgsystem_step_verlet_conserves_energy_with_dihedrals() {
+        // NVE: the Hamiltonian that `compute_*_energy` reports must be the one
+        // `step_verlet` integrates, dihedrals included.
+        let mut sys = six_bead_chain_with_dihedrals();
+        let total_energy = |s: &CgSystem| {
+            cg_kinetic_energy(&s.beads) + s.compute_bonded_energy() + s.compute_nonbonded_energy()
+        };
+        sys.compute_forces();
+        let e0 = total_energy(&sys);
+        let dihedral_energy: f64 = sys.dihedrals.iter().map(|d| d.energy(&sys.beads)).sum();
+        assert!(
+            dihedral_energy > 1.0,
+            "dihedrals must carry energy: {dihedral_energy}"
+        );
+        let mut max_deviation = 0.0_f64;
+        let mut kinetic_max = 0.0_f64;
+        for _ in 0..4000 {
+            sys.step_verlet(0.0005);
+            max_deviation = max_deviation.max((total_energy(&sys) - e0).abs());
+            kinetic_max = kinetic_max.max(cg_kinetic_energy(&sys.beads));
+        }
+        assert!(
+            kinetic_max > 1.0,
+            "the chain must actually move: KE_max = {kinetic_max}"
+        );
+        assert!(
+            max_deviation < 1e-3 * kinetic_max.max(e0.abs()),
+            "total energy drifted by {max_deviation} (E0 = {e0}, KE_max = {kinetic_max})"
+        );
+    }
 }

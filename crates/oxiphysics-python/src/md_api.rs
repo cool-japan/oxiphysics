@@ -5,9 +5,11 @@
 //!
 //! Provides a simple N-body MD simulation with Lennard-Jones pair potentials,
 //! optional velocity-rescaling thermostat, and periodic boundary conditions.
-//! All types are `no-lifetime`, serialization-friendly, and carry comprehensive
-//! tests.
+//! Pair forces are evaluated from a Verlet neighbour list. All types are
+//! `no-lifetime`, serialization-friendly, and carry comprehensive tests.
 
+use oxiphysics::md::neighbor::{CellList, PeriodicBox, VerletList};
+use oxiphysics_core::math::Vec3;
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -153,10 +155,31 @@ impl PyMdAtom {
 // PyMdSimulation
 // ---------------------------------------------------------------------------
 
+/// Verlet skin distance in units of the Lennard-Jones sigma.
+const VERLET_SKIN_IN_SIGMA: f64 = 0.3;
+
+/// Smallest number of neighbour-search cells per box edge for which the
+/// Verlet list is used; smaller boxes fall back to the all-pairs loop.
+const MIN_CELLS_PER_EDGE: f64 = 3.0;
+
+/// A Verlet neighbour list together with the box it was built for.
+#[derive(Debug, Clone)]
+struct MdNeighborList {
+    /// Pairs within `cutoff + skin` at the time of the last rebuild.
+    list: VerletList,
+    /// Box edge length the list was built for.
+    box_size: f64,
+}
+
 /// Molecular Dynamics simulation (NVE/NVT) with periodic boundary conditions.
 ///
 /// Uses a velocity-Verlet integrator and a truncated-shifted Lennard-Jones
 /// pair potential. Supports an optional velocity-rescaling thermostat.
+///
+/// Pair forces come from a Verlet neighbour list (cut-off plus a skin of
+/// `0.3 sigma`) that is rebuilt only when an atom has moved more than half the
+/// skin. Boxes shorter than three search cells per edge
+/// (`box_size < 3 * (cutoff + skin)`) use the all-pairs loop instead.
 #[pyclass(skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyMdSimulation {
@@ -172,6 +195,13 @@ pub struct PyMdSimulation {
     potential_energy: f64,
     /// Whether the thermostat is currently active.
     thermostat_active: bool,
+    /// Neighbour list reused between force evaluations; dropped whenever the
+    /// atom set changes.
+    neighbor_list: Option<MdNeighborList>,
+    /// Scratch copy of the atom positions in the engine's vector type.
+    scratch_positions: Vec<Vec3>,
+    /// Whether `atom.force` and `potential_energy` match the current positions.
+    forces_valid: bool,
 }
 
 #[pymethods]
@@ -186,6 +216,9 @@ impl PyMdSimulation {
             step_count: 0,
             potential_energy: 0.0,
             thermostat_active: true,
+            neighbor_list: None,
+            scratch_positions: Vec::new(),
+            forces_valid: false,
         }
     }
 
@@ -205,6 +238,9 @@ impl PyMdSimulation {
             force: [0.0; 3],
             atom_type,
         });
+        // The neighbour list and the forces no longer describe the atom set.
+        self.neighbor_list = None;
+        self.forces_valid = false;
         idx
     }
 
@@ -290,6 +326,8 @@ impl PyMdSimulation {
     /// Advance the simulation by `dt` using velocity Verlet integration.
     ///
     /// Steps:
+    /// 0. Evaluate the forces at the current positions if they are stale
+    ///    (first step, or atoms were added since the last evaluation)
     /// 1. Half-kick velocities: v += 0.5 * f/m * dt
     /// 2. Update positions: x += v * dt (with PBC wrap)
     /// 3. Recompute forces from LJ pair potential
@@ -305,6 +343,9 @@ impl PyMdSimulation {
         let m = self.config.particle_mass;
         let inv_m = if m > 0.0 { 1.0 / m } else { 0.0 };
 
+        // The first half-kick needs forces that belong to the current positions.
+        self.ensure_forces();
+
         // Half-kick
         for atom in &mut self.atoms {
             for k in 0..3 {
@@ -314,11 +355,22 @@ impl PyMdSimulation {
 
         // Update positions + PBC wrap
         let box_size = self.config.box_size;
+        let mut max_drift_sq = 0.0f64;
         for atom in &mut self.atoms {
+            let mut drift_sq = 0.0f64;
             for k in 0..3 {
-                atom.position[k] += atom.velocity[k] * dt;
+                let drift = atom.velocity[k] * dt;
+                drift_sq += drift * drift;
+                atom.position[k] += drift;
                 atom.position[k] = wrap_pbc(atom.position[k], box_size);
             }
+            max_drift_sq = max_drift_sq.max(drift_sq);
+        }
+        // The neighbour list tracks displacements with the minimum-image
+        // convention, which aliases once an atom jumps a large part of the
+        // box in one step; rebuild from scratch in that case.
+        if max_drift_sq.sqrt() > 0.25 * box_size {
+            self.neighbor_list = None;
         }
 
         // Recompute forces
@@ -375,66 +427,180 @@ impl PyMdSimulation {
 }
 
 impl PyMdSimulation {
+    /// Evaluate the forces unless they already match the current positions.
+    pub fn ensure_forces(&mut self) {
+        if !self.forces_valid {
+            self.compute_forces();
+        }
+    }
+
+    /// Skin distance of the Verlet list, or `None` when the all-pairs loop
+    /// must be used (degenerate parameters, or a box shorter than
+    /// [`MIN_CELLS_PER_EDGE`] cells per edge).
+    fn neighbor_skin(&self) -> Option<f64> {
+        let cfg = &self.config;
+        let positive_finite = |v: f64| v.is_finite() && v > 0.0;
+        if !(positive_finite(cfg.box_size)
+            && positive_finite(cfg.cutoff)
+            && positive_finite(cfg.lj_sigma))
+        {
+            return None;
+        }
+        let skin = VERLET_SKIN_IN_SIGMA * cfg.lj_sigma;
+        (cfg.box_size / (cfg.cutoff + skin) >= MIN_CELLS_PER_EDGE).then_some(skin)
+    }
+
+    /// Bring the Verlet list up to date with the current positions, building
+    /// it if it does not exist or does not match the atom set.
+    fn refresh_neighbor_list(&mut self, skin: f64) {
+        self.scratch_positions.clear();
+        self.scratch_positions.extend(
+            self.atoms
+                .iter()
+                .map(|a| Vec3::new(a.position[0], a.position[1], a.position[2])),
+        );
+        let pbox = PeriodicBox::cubic(self.config.box_size);
+        let cutoff = self.config.cutoff;
+        let n_atoms = self.scratch_positions.len();
+        let box_size = self.config.box_size;
+        let reusable = self.neighbor_list.as_ref().is_some_and(|state| {
+            state.box_size == box_size
+                && state.list.cutoff == cutoff
+                && state.list.skin == skin
+                && state.list.reference_positions.len() == n_atoms
+        });
+        match self.neighbor_list.as_mut() {
+            Some(state) if reusable => {
+                state.list.update_if_needed(&self.scratch_positions, &pbox);
+            }
+            _ => {
+                self.neighbor_list = Some(MdNeighborList {
+                    list: VerletList::build(&self.scratch_positions, &pbox, cutoff, skin),
+                    box_size,
+                });
+            }
+        }
+    }
+
+    /// Add the Lennard-Jones force of the pair `(i, j)` to both atoms and
+    /// return the pair energy (zero beyond the cut-off or for invalid indices).
+    fn accumulate_pair(&mut self, lj: &LennardJones, i: usize, j: usize) -> f64 {
+        let (Some(pos_i), Some(pos_j)) = (
+            self.atoms.get(i).map(|a| a.position),
+            self.atoms.get(j).map(|a| a.position),
+        ) else {
+            return 0.0;
+        };
+        let Some((force_on_j, energy)) = lj.pair(pos_i, pos_j) else {
+            return 0.0;
+        };
+        if let Some(atom) = self.atoms.get_mut(i) {
+            for (f, df) in atom.force.iter_mut().zip(force_on_j) {
+                *f -= df;
+            }
+        }
+        if let Some(atom) = self.atoms.get_mut(j) {
+            for (f, df) in atom.force.iter_mut().zip(force_on_j) {
+                *f += df;
+            }
+        }
+        energy
+    }
+
     /// Recompute all pair forces using the truncated-shifted Lennard-Jones potential.
+    ///
+    /// Pairs come from the Verlet list when the box is large enough for it
+    /// (see [`Self::neighbor_skin`]) and from the all-pairs loop otherwise.
     fn compute_forces(&mut self) {
-        let n = self.atoms.len();
-        // Zero forces and potential
         for atom in &mut self.atoms {
             atom.force = [0.0; 3];
         }
+        let lj = LennardJones::from_config(&self.config);
         let mut u_total = 0.0f64;
-
-        let eps = self.config.lj_epsilon;
-        let sig = self.config.lj_sigma;
-        let rc = self.config.cutoff;
-        let rc2 = rc * rc;
-        let box_size = self.config.box_size;
-
-        // Compute potential at cut-off for shift
-        let sig_rc2 = (sig / rc).powi(2);
-        let sig_rc6 = sig_rc2 * sig_rc2 * sig_rc2;
-        let u_shift = 4.0 * eps * sig_rc6 * (sig_rc6 - 1.0);
-
-        // Collect positions to avoid double-borrow
-        let positions: Vec<[f64; 3]> = self.atoms.iter().map(|a| a.position).collect();
-
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let mut dr = [0.0f64; 3];
-                for ((dr_k, &pj_k), &pi_k) in dr
-                    .iter_mut()
-                    .zip(positions[j].iter())
-                    .zip(positions[i].iter())
-                {
-                    let mut d = pj_k - pi_k;
-                    // Minimum image convention
-                    if d > 0.5 * box_size {
-                        d -= box_size;
-                    } else if d < -0.5 * box_size {
-                        d += box_size;
+        match self.neighbor_skin() {
+            Some(skin) => {
+                self.refresh_neighbor_list(skin);
+                if let Some(state) = self.neighbor_list.take() {
+                    for &(i, j) in &state.list.pairs {
+                        u_total += self.accumulate_pair(&lj, i, j);
                     }
-                    *dr_k = d;
+                    self.neighbor_list = Some(state);
                 }
-                let r2 = dr[0] * dr[0] + dr[1] * dr[1] + dr[2] * dr[2];
-                if r2 >= rc2 || r2 < 1e-20 {
-                    continue;
+            }
+            None => {
+                self.neighbor_list = None;
+                let n = self.atoms.len();
+                for i in 0..n {
+                    for j in (i + 1)..n {
+                        u_total += self.accumulate_pair(&lj, i, j);
+                    }
                 }
-                let sig2_r2 = (sig * sig) / r2;
-                let sig6_r6 = sig2_r2 * sig2_r2 * sig2_r2;
-                let sig12_r12 = sig6_r6 * sig6_r6;
-                // Force magnitude: -dU/dr * (1/r)
-                let f_mag = 24.0 * eps / r2 * (2.0 * sig12_r12 - sig6_r6);
-                for (k, &dr_k) in dr.iter().enumerate() {
-                    let fk = f_mag * dr_k;
-                    self.atoms[i].force[k] -= fk;
-                    self.atoms[j].force[k] += fk;
-                }
-                // Truncated-shifted potential
-                let u_pair = 4.0 * eps * sig6_r6 * (sig6_r6 - 1.0) - u_shift;
-                u_total += u_pair;
             }
         }
         self.potential_energy = u_total;
+        self.forces_valid = true;
+    }
+}
+
+/// Truncated-shifted Lennard-Jones pair potential in a cubic periodic box.
+#[derive(Debug, Clone, Copy)]
+struct LennardJones {
+    /// Well depth epsilon.
+    eps: f64,
+    /// Squared length scale sigma^2.
+    sigma_sq: f64,
+    /// Squared cut-off radius.
+    rc2: f64,
+    /// Box edge length (minimum-image convention).
+    box_size: f64,
+    /// Potential value at the cut-off, subtracted so that it vanishes there.
+    u_shift: f64,
+}
+
+impl LennardJones {
+    fn from_config(config: &PyMdConfig) -> Self {
+        let sig_rc2 = (config.lj_sigma / config.cutoff).powi(2);
+        let sig_rc6 = sig_rc2 * sig_rc2 * sig_rc2;
+        Self {
+            eps: config.lj_epsilon,
+            sigma_sq: config.lj_sigma * config.lj_sigma,
+            rc2: config.cutoff * config.cutoff,
+            box_size: config.box_size,
+            u_shift: 4.0 * config.lj_epsilon * sig_rc6 * (sig_rc6 - 1.0),
+        }
+    }
+
+    /// Force on the atom at `b` (the atom at `a` feels the opposite force) and
+    /// the pair energy, or `None` outside the cut-off or for coincident atoms.
+    fn pair(&self, a: [f64; 3], b: [f64; 3]) -> Option<([f64; 3], f64)> {
+        let mut dr = [0.0f64; 3];
+        for ((dr_k, &b_k), &a_k) in dr.iter_mut().zip(b.iter()).zip(a.iter()) {
+            *dr_k = minimum_image(b_k - a_k, self.box_size);
+        }
+        let r2 = dr[0] * dr[0] + dr[1] * dr[1] + dr[2] * dr[2];
+        if r2 >= self.rc2 || r2 < 1e-20 {
+            return None;
+        }
+        let sig2_r2 = self.sigma_sq / r2;
+        let sig6_r6 = sig2_r2 * sig2_r2 * sig2_r2;
+        let sig12_r12 = sig6_r6 * sig6_r6;
+        // Force magnitude: -dU/dr * (1/r)
+        let f_mag = 24.0 * self.eps / r2 * (2.0 * sig12_r12 - sig6_r6);
+        // Truncated-shifted potential
+        let u_pair = 4.0 * self.eps * sig6_r6 * (sig6_r6 - 1.0) - self.u_shift;
+        Some(([f_mag * dr[0], f_mag * dr[1], f_mag * dr[2]], u_pair))
+    }
+}
+
+/// Minimum-image convention for one displacement component.
+///
+/// A degenerate box (non-finite or not positive, like in [`wrap_pbc`]) disables
+/// the periodic wrapping.
+fn minimum_image(d: f64, box_size: f64) -> f64 {
+    if box_size.is_finite() && box_size > 0.0 {
+        d - box_size * (d / box_size).round()
+    } else {
+        d
     }
 }
 
@@ -541,9 +707,9 @@ mod tests {
     fn test_md_pbc_wrap() {
         let box_size = 10.0;
         let x = wrap_pbc(-0.5, box_size);
-        assert!(x >= 0.0 && x < box_size, "wrapped value = {}", x);
+        assert!((0.0..box_size).contains(&x), "wrapped value = {}", x);
         let x2 = wrap_pbc(10.5, box_size);
-        assert!(x2 >= 0.0 && x2 < box_size, "wrapped value = {}", x2);
+        assert!((0.0..box_size).contains(&x2), "wrapped value = {}", x2);
     }
 
     #[test]
@@ -641,6 +807,16 @@ mod tests {
         assert!((sim.config.target_temperature.expect("target temp") - 2.0).abs() < 1e-12);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Verlet-list forces and Nosé-Hoover dynamics
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod verlet_force_tests;
+
+#[cfg(test)]
+mod nose_hoover_dynamics_tests;
 
 // ---------------------------------------------------------------------------
 // AtomSet: typed collection with per-element properties
@@ -866,53 +1042,77 @@ impl AtomSet {
 /// Uses the complementary error function (erfc) for the short-range part.
 /// Returns the electrostatic potential energy in reduced units.
 ///
+/// Only charged atoms contribute. The pairs within `r_cut` come from a cell
+/// list (`O(N)`) when the box holds at least three cut-off lengths per edge and
+/// from the all-pairs loop over the charged atoms otherwise.
+///
 /// # Arguments
 /// * `set` - the atom set with charges and positions
 /// * `alpha` - Ewald convergence parameter (larger α → more work in reciprocal space)
 /// * `r_cut` - real-space cutoff radius
 #[pyfunction]
 pub fn ewald_real_space_energy(set: &AtomSet, alpha: f64, r_cut: f64) -> f64 {
-    let n = set.len();
     let box_size = set.box_size;
     let rc2 = r_cut * r_cut;
     let mut energy = 0.0f64;
 
-    for i in 0..n {
-        let qi = set.charge(i);
-        if qi == 0.0 {
+    for (i, j) in ewald_pair_candidates(set, r_cut) {
+        let (Some(pos_i), Some(pos_j)) = (set.positions.get(i), set.positions.get(j)) else {
+            continue;
+        };
+        // Minimum image
+        let mut dr = [0.0f64; 3];
+        for ((dr_k, &pj_k), &pi_k) in dr.iter_mut().zip(pos_j.iter()).zip(pos_i.iter()) {
+            *dr_k = minimum_image(pj_k - pi_k, box_size);
+        }
+        let r2 = dr[0] * dr[0] + dr[1] * dr[1] + dr[2] * dr[2];
+        if r2 >= rc2 || r2 < 1e-20 {
             continue;
         }
-        for j in (i + 1)..n {
-            let qj = set.charge(j);
-            if qj == 0.0 {
-                continue;
-            }
-            // Minimum image
-            let mut dr = [0.0f64; 3];
-            for ((dr_k, &pj_k), &pi_k) in dr
-                .iter_mut()
-                .zip(set.positions[j].iter())
-                .zip(set.positions[i].iter())
-            {
-                let mut d = pj_k - pi_k;
-                if d > 0.5 * box_size {
-                    d -= box_size;
-                } else if d < -0.5 * box_size {
-                    d += box_size;
-                }
-                *dr_k = d;
-            }
-            let r2 = dr[0] * dr[0] + dr[1] * dr[1] + dr[2] * dr[2];
-            if r2 >= rc2 || r2 < 1e-20 {
-                continue;
-            }
-            let r = r2.sqrt();
-            // erfc approximation: erfc(x) ≈ 1 - erf(x)
-            let erfc_val = erfc_approx(alpha * r);
-            energy += qi * qj * erfc_val / r;
-        }
+        let r = r2.sqrt();
+        // erfc approximation: erfc(x) ≈ 1 - erf(x)
+        let erfc_val = erfc_approx(alpha * r);
+        energy += set.charge(i) * set.charge(j) * erfc_val / r;
     }
     energy
+}
+
+/// Pairs `(i, j)` with `i < j` of charged atoms that can lie within `r_cut`.
+///
+/// Uncharged atoms never contribute and are left out. In a box of at least
+/// three cut-off lengths per edge the candidates come from a cell list, which
+/// keeps the sum `O(N)`; smaller boxes (and degenerate parameters) list every
+/// pair of charged atoms. The caller applies the exact distance test.
+fn ewald_pair_candidates(set: &AtomSet, r_cut: f64) -> Vec<(usize, usize)> {
+    let charged: Vec<usize> = (0..set.len())
+        .filter(|&i| set.charge(i) != 0.0 && set.positions.get(i).is_some())
+        .collect();
+    let box_size = set.box_size;
+    let cells_usable = box_size.is_finite()
+        && box_size > 0.0
+        && r_cut.is_finite()
+        && r_cut > 0.0
+        && box_size / r_cut >= MIN_CELLS_PER_EDGE;
+    if !cells_usable {
+        let mut pairs = Vec::new();
+        for (a, &i) in charged.iter().enumerate() {
+            for &j in &charged[a + 1..] {
+                pairs.push((i, j));
+            }
+        }
+        return pairs;
+    }
+    let positions: Vec<Vec3> = charged
+        .iter()
+        .filter_map(|&i| set.positions.get(i))
+        .map(|p| Vec3::new(p[0], p[1], p[2]))
+        .collect();
+    let pbox = PeriodicBox::cubic(box_size);
+    CellList::build(&positions, &pbox, r_cut)
+        .neighbor_pairs(&positions, &pbox)
+        .into_iter()
+        .filter_map(|(a, b, _, _)| Some((*charged.get(a)?, *charged.get(b)?)))
+        .collect()
 }
 
 /// Fast erfc approximation using Horner's method (Abramowitz & Stegun 7.1.26).
@@ -931,11 +1131,18 @@ fn erfc_approx(x: f64) -> f64 {
 // NVT Ensemble (Nosé-Hoover thermostat)
 // ---------------------------------------------------------------------------
 
-/// Nosé-Hoover chain thermostat state for the NVT ensemble.
+/// Nosé-Hoover thermostat state for the NVT ensemble.
 ///
 /// The NH thermostat couples a fictitious degree of freedom `ξ` (the "bath")
-/// to the kinetic energy. This implementation uses a simplified single-chain
-/// version.
+/// to the kinetic energy. This implementation is a single thermostat (a chain
+/// of length one) obeying
+///
+/// ```text
+/// dv/dt = F/m - ξ v,    dξ/dt = (2 KE - g k_B T) / Q,    dη/dt = ξ,
+/// ```
+///
+/// with `g` degrees of freedom and the conserved quantity
+/// `H = KE + PE + ½ Q ξ² + g k_B T η`.
 #[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NoseHooverThermostat {
@@ -948,7 +1155,7 @@ pub struct NoseHooverThermostat {
     /// Thermostat momentum ξ (conjugate to fictitious coordinate).
     #[pyo3(get, set)]
     pub xi: f64,
-    /// Thermostat "position" η (not needed for velocity-Verlet but tracked).
+    /// Thermostat "position" η; it only enters the conserved quantity.
     #[pyo3(get, set)]
     pub eta: f64,
     /// Number of degrees of freedom (3N for monatomic system).
@@ -964,32 +1171,58 @@ impl NoseHooverThermostat {
     #[new]
     pub fn new(target_temperature: f64, n_atoms: usize, tau: f64) -> Self {
         let n_dof = 3 * n_atoms;
-        // Q = n_dof * kB * T * tau^2 (reduced units: kB=1); use 1.0 when n_dof=0 to avoid blow-up
-        let thermostat_mass = if n_dof > 0 {
-            (n_dof as f64) * target_temperature * tau * tau
-        } else {
-            1.0
-        };
         Self {
             target_temperature,
-            thermostat_mass: thermostat_mass.max(1e-10),
+            thermostat_mass: Self::mass_for(n_dof, target_temperature, tau),
             xi: 0.0,
             eta: 0.0,
             n_dof,
         }
     }
 
-    /// Half-step update of thermostat momentum ξ from the kinetic energy.
+    /// Kick `ξ` over half a time step from the kinetic energy.
     ///
-    /// Returns the scaling factor to apply to velocities.
-    pub fn half_step_xi(&mut self, kinetic_energy: f64, dt: f64) -> f64 {
+    /// `ξ += ½ dt (2 KE - g k_B T) / Q`. The velocities are not touched; use
+    /// [`Self::half_step_xi`] to also obtain the velocity damping factor.
+    pub fn kick_xi(&mut self, kinetic_energy: f64, dt: f64) {
         let g = self.n_dof as f64;
         let t = self.target_temperature;
         // dξ/dt = (2*KE - g*kB*T) / Q
         let dxi_dt = (2.0 * kinetic_energy - g * t) / self.thermostat_mass;
         self.xi += 0.5 * dxi_dt * dt;
-        // Velocity scaling factor: exp(-ξ * dt/2)
+    }
+
+    /// Velocity damping factor `exp(-ξ dt/2)` for half a time step at the current `ξ`.
+    pub fn damping_factor(&self, dt: f64) -> f64 {
         (-self.xi * 0.5 * dt).exp()
+    }
+
+    /// Half-step update of thermostat momentum ξ from the kinetic energy.
+    ///
+    /// Returns the scaling factor to apply to velocities.
+    pub fn half_step_xi(&mut self, kinetic_energy: f64, dt: f64) -> f64 {
+        self.kick_xi(kinetic_energy, dt);
+        // Velocity scaling factor: exp(-ξ * dt/2)
+        self.damping_factor(dt)
+    }
+
+    /// Re-size the thermostat for `n_atoms` atoms and relaxation time `tau`.
+    ///
+    /// Sets the number of degrees of freedom to `3 n_atoms` and the thermostat
+    /// mass to `Q = g k_B T tau²`, so that the thermostat reacts on the time
+    /// scale `tau` whatever the system size.
+    pub fn set_atom_count(&mut self, n_atoms: usize, tau: f64) {
+        self.n_dof = 3 * n_atoms;
+        self.thermostat_mass = Self::mass_for(self.n_dof, self.target_temperature, tau);
+    }
+
+    /// Energy stored in the thermostat variables: `½ Q ξ² + g k_B T η`.
+    ///
+    /// Added to the kinetic and potential energy of the system this is the
+    /// conserved quantity of the Nosé-Hoover dynamics.
+    pub fn thermostat_energy(&self) -> f64 {
+        0.5 * self.thermostat_mass * self.xi * self.xi
+            + (self.n_dof as f64) * self.target_temperature * self.eta
     }
 
     /// Full-step update of η (Nosé-Hoover extended coordinate).
@@ -1003,9 +1236,32 @@ impl NoseHooverThermostat {
     }
 }
 
+impl NoseHooverThermostat {
+    /// Thermostat mass `Q = g k_B T tau²` (reduced units, `k_B = 1`).
+    ///
+    /// A system without degrees of freedom gets `Q = 1` to avoid a blow-up.
+    fn mass_for(n_dof: usize, target_temperature: f64, tau: f64) -> f64 {
+        let q = if n_dof > 0 {
+            (n_dof as f64) * target_temperature * tau * tau
+        } else {
+            1.0
+        };
+        q.max(1e-10)
+    }
+}
+
 /// NVT ensemble simulation using the Nosé-Hoover thermostat.
 ///
-/// Wraps a `PyMdSimulation` and applies Nosé-Hoover velocity scaling each step.
+/// Wraps a `PyMdSimulation` (whose own velocity-rescaling thermostat is
+/// switched off, so that Nosé-Hoover is the only thermostat) and integrates
+/// the thermostat with a symmetric splitting around the velocity-Verlet step:
+///
+/// 1. half-kick `ξ`, damp the velocities by `exp(-ξ dt/2)`,
+/// 2. one microcanonical velocity-Verlet step,
+/// 3. damp the velocities by `exp(-ξ dt/2)`, advance `η` by `ξ dt`, half-kick `ξ`.
+///
+/// The thermostat mass follows the relaxation time `tau` and the number of
+/// atoms (`Q = 3 N k_B T tau²`).
 #[pyclass(skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyNvtSimulation {
@@ -1013,6 +1269,8 @@ pub struct PyNvtSimulation {
     pub md: PyMdSimulation,
     /// Nosé-Hoover thermostat.
     pub thermostat: NoseHooverThermostat,
+    /// Thermostat relaxation time used to size `Q`.
+    tau: f64,
 }
 
 #[pymethods]
@@ -1021,34 +1279,76 @@ impl PyNvtSimulation {
     #[new]
     pub fn new(config: PyMdConfig, tau: f64) -> Self {
         let t_target = config.target_temperature.unwrap_or(1.2);
-        let md = PyMdSimulation::new(config);
+        let mut md = PyMdSimulation::new(config);
+        // Nosé-Hoover is the only thermostat: the velocity rescaling of the
+        // inner MD step would pin the temperature exactly.
+        md.set_thermostat(false);
         let thermostat = NoseHooverThermostat::new(t_target, 0, tau);
-        Self { md, thermostat }
+        Self {
+            md,
+            thermostat,
+            tau,
+        }
     }
 
     /// Add an atom. Returns atom index.
+    ///
+    /// The degrees of freedom and the thermostat mass `Q = 3 N k_B T tau²`
+    /// are updated for the new atom count.
     pub fn add_atom(&mut self, position: Vec<f64>, atom_type: u32) -> usize {
         let idx = self.md.add_atom(position, atom_type);
-        // Update thermostat DOF count
-        self.thermostat.n_dof = 3 * self.md.atom_count();
+        self.thermostat
+            .set_atom_count(self.md.atom_count(), self.tau);
         idx
     }
 
-    /// Advance by one step using Nosé-Hoover velocity rescaling.
+    /// Advance by one step with the symmetric Nosé-Hoover splitting
+    /// (half-kick `ξ`, damp, velocity Verlet, damp, advance `η`, half-kick `ξ`).
     pub fn step(&mut self, dt: f64) {
+        // First half: ξ half-kick from the current kinetic energy, then damp.
         let ke = self.md.kinetic_energy();
         let scale = self.thermostat.half_step_xi(ke, dt);
-        // Rescale velocities
-        for atom in &mut self.md.atoms {
-            for k in 0..3 {
-                atom.velocity[k] *= scale;
-            }
-        }
+        self.scale_velocities(scale);
+        // Microcanonical velocity-Verlet step (the inner thermostat is off).
         self.md.step(dt);
-        // Second half-step
-        let ke2 = self.md.kinetic_energy();
-        let _scale2 = self.thermostat.half_step_xi(ke2, dt);
+        // Second half: damp with the same ξ and advance η with it (the exact
+        // bookkeeping of the work the two dampings did on the particles), then
+        // half-kick ξ from the damped kinetic energy.
+        self.scale_velocities(self.thermostat.damping_factor(dt));
         self.thermostat.full_step_eta(dt);
+        let ke2 = self.md.kinetic_energy();
+        self.thermostat.kick_xi(ke2, dt);
+    }
+
+    /// Set the velocity of atom `i`. No-op if `i` is out of bounds.
+    pub fn set_velocity(&mut self, i: usize, vel: Vec<f64>) {
+        self.md.set_velocity(i, vel);
+    }
+
+    /// Position of atom `i`, or `None` if out of bounds.
+    pub fn position(&self, i: usize) -> Option<Vec<f64>> {
+        self.md.position(i)
+    }
+
+    /// Velocity of atom `i`, or `None` if out of bounds.
+    pub fn velocity(&self, i: usize) -> Option<Vec<f64>> {
+        self.md.velocity(i)
+    }
+
+    /// Potential energy of the atoms (forces are evaluated first if stale).
+    pub fn potential_energy(&mut self) -> f64 {
+        self.md.ensure_forces();
+        self.md.potential_energy()
+    }
+
+    /// Conserved quantity `H = KE + PE + ½ Q ξ² + g k_B T η` of the
+    /// Nosé-Hoover dynamics (forces are evaluated first if stale).
+    ///
+    /// It is constant up to the integration error, which makes it the
+    /// diagnostic for the thermostat integration.
+    pub fn conserved_energy(&mut self) -> f64 {
+        self.md.ensure_forces();
+        self.md.total_energy() + self.thermostat.thermostat_energy()
     }
 
     /// Temperature from instantaneous kinetic energy.
@@ -1069,6 +1369,17 @@ impl PyNvtSimulation {
     /// Total kinetic energy.
     pub fn kinetic_energy(&self) -> f64 {
         self.md.kinetic_energy()
+    }
+}
+
+impl PyNvtSimulation {
+    /// Multiply every atom velocity by `scale`.
+    fn scale_velocities(&mut self, scale: f64) {
+        for atom in &mut self.md.atoms {
+            for v in &mut atom.velocity {
+                *v *= scale;
+            }
+        }
     }
 }
 

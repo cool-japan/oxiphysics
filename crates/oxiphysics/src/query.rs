@@ -257,22 +257,34 @@ impl QueryShape {
         }
     }
 
-    /// Squared distance from `point` to the surface (negative if inside).
-    pub fn distance_sq_to_point(&self, point: [f64; 3]) -> f64 {
+    /// Signed distance from `point` to the surface of this shape.
+    ///
+    /// The value is positive outside the shape, zero on the surface and
+    /// negative inside, where its magnitude is the depth below the surface (for
+    /// an AABB, the distance to the nearest face).
+    pub fn signed_distance_to_point(&self, point: [f64; 3]) -> f64 {
         match self {
-            QueryShape::Sphere { center, radius } => {
-                let d = v3_len(v3_sub(point, *center)) - radius;
-                d * d
-            }
+            QueryShape::Sphere { center, radius } => v3_len(v3_sub(point, *center)) - radius,
             QueryShape::Aabb { min, max } => {
-                // Closest point on AABB
-                let cx = v3_clamp(point[0], min[0], max[0]);
-                let cy = v3_clamp(point[1], min[1], max[1]);
-                let cz = v3_clamp(point[2], min[2], max[2]);
-                let dx = point[0] - cx;
-                let dy = point[1] - cy;
-                let dz = point[2] - cz;
-                dx * dx + dy * dy + dz * dz
+                // Distance to the box: positive from the closest point when the
+                // query point is outside, negative distance to the nearest face
+                // when it is inside.
+                let mut outside_sq = 0.0_f64;
+                let mut deepest_inside = f64::NEG_INFINITY;
+                for axis in 0..3 {
+                    let below = min[axis] - point[axis];
+                    let above = point[axis] - max[axis];
+                    let excess = below.max(above);
+                    if excess > 0.0 {
+                        outside_sq += excess * excess;
+                    }
+                    deepest_inside = deepest_inside.max(excess);
+                }
+                if outside_sq > 0.0 {
+                    outside_sq.sqrt()
+                } else {
+                    deepest_inside
+                }
             }
             QueryShape::Capsule { start, end, radius } => {
                 let seg = v3_sub(*end, *start);
@@ -284,8 +296,33 @@ impl QueryShape {
                     v3_clamp(v3_dot(to_pt, seg) / seg_len_sq, 0.0, 1.0)
                 };
                 let closest = v3_add(*start, v3_scale(seg, t));
-                let d = v3_len(v3_sub(point, closest)) - radius;
-                d * d
+                v3_len(v3_sub(point, closest)) - radius
+            }
+        }
+    }
+
+    /// Squared distance from `point` to the shape, `0.0` when the point is on
+    /// or inside the shape.
+    ///
+    /// Interior points are at distance zero, not at "minus the depth squared":
+    /// squaring the signed distance of a point deep inside a large sphere would
+    /// rank the body containing the point *behind* bodies that merely touch it.
+    /// Use [`QueryShape::signed_distance_to_point`] to recover the depth.
+    pub fn distance_sq_to_point(&self, point: [f64; 3]) -> f64 {
+        match self {
+            QueryShape::Sphere { .. } | QueryShape::Capsule { .. } => {
+                let outside = self.signed_distance_to_point(point).max(0.0);
+                outside * outside
+            }
+            QueryShape::Aabb { min, max } => {
+                // Closest point on AABB
+                let cx = v3_clamp(point[0], min[0], max[0]);
+                let cy = v3_clamp(point[1], min[1], max[1]);
+                let cz = v3_clamp(point[2], min[2], max[2]);
+                let dx = point[0] - cx;
+                let dy = point[1] - cy;
+                let dz = point[2] - cz;
+                dx * dx + dy * dy + dz * dz
             }
         }
     }
@@ -661,8 +698,11 @@ impl QueryWorld {
             .collect()
     }
 
-    /// Return the index and approximate squared distance of the body whose
-    /// shape is nearest to `point`, or `None` if the world is empty.
+    /// Return the index and the squared distance to the surface of the body
+    /// whose shape is nearest to `point`, or `None` if the world is empty.
+    ///
+    /// A body that contains `point` is at distance `0.0`, so it always wins
+    /// over a body that merely lies near the point.
     pub fn closest_body(&self, point: [f64; 3], filter: &QueryFilter) -> Option<(usize, f64)> {
         self.entries
             .iter()
@@ -672,7 +712,8 @@ impl QueryWorld {
     }
 
     /// Return all bodies within `radius` of `point`, sorted nearest-first.
-    /// The second element is the approximate distance (not squared).
+    /// The second element is the distance to the body's surface (not squared),
+    /// `0.0` for a body that contains `point`.
     pub fn bodies_in_radius(
         &self,
         point: [f64; 3],
@@ -705,6 +746,8 @@ impl QueryWorld {
     }
 
     /// Return the k nearest bodies to `point`, sorted nearest-first.
+    /// The second element is the distance to the body's surface (not squared),
+    /// `0.0` for a body that contains `point`.
     pub fn k_nearest(&self, point: [f64; 3], k: usize, filter: &QueryFilter) -> Vec<(usize, f64)> {
         let mut scored: Vec<(usize, f64)> = self
             .entries
@@ -809,5 +852,153 @@ mod tests {
         let nearest = world.k_nearest([0.0, 0.0, 0.0], 3, &QueryFilter::default());
         assert_eq!(nearest.len(), 3);
         assert_eq!(nearest[0].0, 0); // body 0 is at origin
+    }
+
+    // -----------------------------------------------------------------------
+    // Interior points: distance is zero, not "minus the depth, squared"
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn overlap_sphere_at_centre_of_large_sphere_finds_it() {
+        let mut world = QueryWorld::new();
+        world.add_sphere(0, [0.0, 0.0, 0.0], 10.0, false);
+        world.add_sphere(1, [50.0, 0.0, 0.0], 1.0, false);
+        // The query sphere (radius 1) sits entirely inside body 0, 10 m below
+        // its surface. Squaring the signed distance used to report 100 m^2.
+        let found = world.overlap_sphere([0.0, 0.0, 0.0], 1.0, &QueryFilter::default());
+        assert_eq!(found, vec![0]);
+        assert_eq!(world.count_in_sphere([2.0, -3.0, 4.0], 0.5), 1);
+    }
+
+    #[test]
+    fn overlap_sphere_at_axis_of_capsule_finds_it() {
+        let mut world = QueryWorld::new();
+        world.add_capsule(7, [-5.0, 0.0, 0.0], [5.0, 0.0, 0.0], 4.0, false);
+        // A point on the capsule axis is 4 m below the capsule surface.
+        let on_axis = world.overlap_sphere([1.0, 0.0, 0.0], 0.5, &QueryFilter::default());
+        assert_eq!(on_axis, vec![7]);
+        // So is a point inside the hemispherical cap beyond the segment end.
+        let in_cap = world.overlap_sphere([7.0, 0.0, 0.0], 0.5, &QueryFilter::default());
+        assert_eq!(in_cap, vec![7]);
+        // A tiny sphere well outside (10 m from the axis) must still miss.
+        let outside = world.overlap_sphere([0.0, 10.0, 0.0], 0.5, &QueryFilter::default());
+        assert!(outside.is_empty(), "got {outside:?}");
+    }
+
+    #[test]
+    fn closest_body_returns_containing_body_at_zero_distance() {
+        let mut world = QueryWorld::new();
+        // Body 0 contains the probe point 9 m below its surface; body 1 is a
+        // smaller sphere whose surface is 8.5 m from the probe point. Squaring
+        // the signed distance (-9 m) made body 0 look 81 m^2 away, i.e. farther
+        // than body 1 (72.9 m^2).
+        world.add_sphere(0, [0.0, 0.0, 0.0], 10.0, false);
+        world.add_sphere(1, [0.0, 0.0, 12.5], 4.0, false);
+        let (idx, d_sq) = world
+            .closest_body([0.0, 1.0, 0.0], &QueryFilter::default())
+            .expect("world is not empty");
+        assert_eq!(idx, 0, "the body containing the point is the closest one");
+        assert_eq!(d_sq, 0.0);
+    }
+
+    #[test]
+    fn closest_body_ranks_capsule_and_aabb_interiors_first() {
+        let mut world = QueryWorld::new();
+        world.add_capsule(0, [0.0, -6.0, 0.0], [0.0, 6.0, 0.0], 5.0, false);
+        world.add_aabb(1, [20.0, -1.0, -1.0], [22.0, 1.0, 1.0], false);
+        let (idx, d_sq) = world
+            .closest_body([0.0, 0.0, 0.0], &QueryFilter::default())
+            .expect("world is not empty");
+        assert_eq!(idx, 0);
+        assert_eq!(d_sq, 0.0);
+        // Inside the box: distance zero as well.
+        let (idx, d_sq) = world
+            .closest_body([21.0, 0.0, 0.0], &QueryFilter::default())
+            .expect("world is not empty");
+        assert_eq!(idx, 1);
+        assert_eq!(d_sq, 0.0);
+    }
+
+    #[test]
+    fn bodies_in_radius_and_k_nearest_put_containing_body_first() {
+        let mut world = QueryWorld::new();
+        world.add_sphere(0, [0.0, 0.0, 0.0], 10.0, false); // contains the origin
+        world.add_sphere(1, [12.0, 0.0, 0.0], 1.0, false); // surface 11 m away
+        world.add_sphere(2, [0.0, 0.0, 30.0], 1.0, false); // surface 29 m away
+
+        let in_radius = world.bodies_in_radius([0.0, 0.0, 0.0], 15.0, &QueryFilter::default());
+        let ids: Vec<usize> = in_radius.iter().map(|&(i, _)| i).collect();
+        assert_eq!(ids, vec![0, 1], "body 2 is out of range");
+        assert_eq!(in_radius[0].1, 0.0);
+        assert!((in_radius[1].1 - 11.0).abs() < 1e-12);
+
+        let nearest = world.k_nearest([0.0, 0.0, 0.0], 3, &QueryFilter::default());
+        let ids: Vec<usize> = nearest.iter().map(|&(i, _)| i).collect();
+        assert_eq!(ids, vec![0, 1, 2]);
+        assert_eq!(nearest[0].1, 0.0);
+        assert!((nearest[1].1 - 11.0).abs() < 1e-12);
+        assert!((nearest[2].1 - 29.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn distance_sq_is_squared_gap_outside_and_zero_inside() {
+        let sphere = QueryShape::Sphere {
+            center: [0.0, 0.0, 0.0],
+            radius: 2.0,
+        };
+        assert!((sphere.distance_sq_to_point([5.0, 0.0, 0.0]) - 9.0).abs() < 1e-12);
+        assert_eq!(sphere.distance_sq_to_point([2.0, 0.0, 0.0]), 0.0);
+        assert_eq!(sphere.distance_sq_to_point([0.5, 0.5, 0.0]), 0.0);
+
+        let capsule = QueryShape::Capsule {
+            start: [0.0, 0.0, 0.0],
+            end: [0.0, 4.0, 0.0],
+            radius: 1.0,
+        };
+        // 3 m from the axis, 2 m beyond the surface.
+        assert!((capsule.distance_sq_to_point([3.0, 2.0, 0.0]) - 4.0).abs() < 1e-12);
+        // Beyond the end cap: 3 m above the end point, 2 m above the surface.
+        assert!((capsule.distance_sq_to_point([0.0, 7.0, 0.0]) - 4.0).abs() < 1e-12);
+        assert_eq!(capsule.distance_sq_to_point([0.5, 2.0, 0.0]), 0.0);
+
+        let aabb = QueryShape::Aabb {
+            min: [-1.0, -1.0, -1.0],
+            max: [1.0, 1.0, 1.0],
+        };
+        // Nearest point on the box is the corner (1, 1, 1): sqrt(3) m away.
+        assert!((aabb.distance_sq_to_point([2.0, 2.0, 2.0]) - 3.0).abs() < 1e-12);
+        assert_eq!(aabb.distance_sq_to_point([0.0, 0.0, 0.0]), 0.0);
+    }
+
+    #[test]
+    fn signed_distance_is_negative_inside_and_positive_outside() {
+        let sphere = QueryShape::Sphere {
+            center: [1.0, 0.0, 0.0],
+            radius: 3.0,
+        };
+        assert!((sphere.signed_distance_to_point([1.0, 0.0, 0.0]) + 3.0).abs() < 1e-12);
+        assert!(sphere.signed_distance_to_point([4.0, 0.0, 0.0]).abs() < 1e-12);
+        assert!((sphere.signed_distance_to_point([6.0, 0.0, 0.0]) - 2.0).abs() < 1e-12);
+
+        let capsule = QueryShape::Capsule {
+            start: [0.0, 0.0, 0.0],
+            end: [0.0, 4.0, 0.0],
+            radius: 1.0,
+        };
+        assert!((capsule.signed_distance_to_point([0.0, 2.0, 0.0]) + 1.0).abs() < 1e-12);
+        assert!((capsule.signed_distance_to_point([0.0, 2.0, 3.0]) - 2.0).abs() < 1e-12);
+
+        let aabb = QueryShape::Aabb {
+            min: [-1.0, -2.0, -3.0],
+            max: [1.0, 2.0, 3.0],
+        };
+        // Depth below the nearest face: min(1, 2, 3) at the centre.
+        assert!((aabb.signed_distance_to_point([0.0, 0.0, 0.0]) + 1.0).abs() < 1e-12);
+        // Off-centre: nearest face is x = +1, 0.25 m away.
+        assert!((aabb.signed_distance_to_point([0.75, 0.0, 0.0]) + 0.25).abs() < 1e-12);
+        assert!(aabb.signed_distance_to_point([1.0, 0.0, 0.0]).abs() < 1e-12);
+        // Outside along one axis, then past an edge (3-4-5 triangle).
+        assert!((aabb.signed_distance_to_point([4.0, 0.0, 0.0]) - 3.0).abs() < 1e-12);
+        assert!((aabb.signed_distance_to_point([4.0, 6.0, 0.0]) - 5.0).abs() < 1e-12);
     }
 }

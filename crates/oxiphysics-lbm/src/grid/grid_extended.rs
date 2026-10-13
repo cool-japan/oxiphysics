@@ -25,6 +25,10 @@ pub struct LbmGrid3D {
     pub lattice: Lattice,
     /// Distribution functions: `f[q][z * ny * nx + y * nx + x]`.
     pub f: Vec<Vec<f64>>,
+    /// Scratch buffer with the same layout as [`LbmGrid3D::f`].  Streaming
+    /// writes into it and then swaps the per-direction buffers with `f`, so a
+    /// step never allocates.  Its contents are meaningless between calls.
+    pub f_tmp: Vec<Vec<f64>>,
     /// Macroscopic density.
     pub rho: Vec<f64>,
     /// Macroscopic x-velocity.
@@ -58,12 +62,14 @@ impl LbmGrid3D {
             let w = lattice.weight(i);
             f.push(vec![w; n]);
         }
+        let f_tmp = f.clone();
         Self {
             nx,
             ny,
             nz,
             lattice,
             f,
+            f_tmp,
             rho,
             ux,
             uy,
@@ -508,6 +514,10 @@ pub struct LbmGrid2D {
     pub lattice: Lattice,
     /// Distribution functions: `f[q][y * nx + x]`.
     pub f: Vec<Vec<f64>>,
+    /// Scratch buffer with the same layout as [`LbmGrid2D::f`].  Streaming
+    /// writes into it and then swaps the per-direction buffers with `f`, so a
+    /// step never allocates.  Its contents are meaningless between calls.
+    pub f_tmp: Vec<Vec<f64>>,
     /// Macroscopic density field: `rho[y * nx + x]`.
     pub rho: Vec<f64>,
     /// Macroscopic x-velocity field.
@@ -534,11 +544,13 @@ impl LbmGrid2D {
             let w = lattice.weight(i);
             f.push(vec![w; n]);
         }
+        let f_tmp = f.clone();
         Self {
             nx,
             ny,
             lattice,
             f,
+            f_tmp,
             rho,
             ux,
             uy,

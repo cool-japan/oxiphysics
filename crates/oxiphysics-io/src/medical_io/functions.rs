@@ -110,6 +110,7 @@ pub fn ct_point_cloud_threshold(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::medical_io::NiftiWriter;
     use crate::medical_io::types::*;
     #[test]
     fn test_dicom_tag_new() {
@@ -208,9 +209,17 @@ mod tests {
     fn test_nifti_writer_build_header() {
         let writer = NiftiWriter::new("out.nii");
         let reader = NiftiReader::new("test.nii");
-        let header = writer.build_header(&reader);
+        let header = writer.build_header(&reader).unwrap();
         assert_eq!(header.len(), 348);
-        assert_eq!(header[344], b'n');
+        assert_eq!(&header[344..348], b"n+1\0");
+        // dim[0..4] = 3, 64, 64, 32 and a data offset right after the extender.
+        assert_eq!(i16::from_le_bytes([header[40], header[41]]), 3);
+        assert_eq!(i16::from_le_bytes([header[42], header[43]]), 64);
+        assert_eq!(i16::from_le_bytes([header[46], header[47]]), 32);
+        assert_eq!(
+            f32::from_le_bytes([header[108], header[109], header[110], header[111]]),
+            352.0
+        );
     }
     #[test]
     fn test_mha_mhd_format_new() {

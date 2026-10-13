@@ -268,8 +268,21 @@ impl ShapeMatchingConstraint {
 }
 /// Strain limiting constraint for a triangle element.
 ///
-/// Limits the maximum stretch and compression of a triangle to prevent
-/// excessive deformation. Based on principal strain analysis.
+/// Limits the principal stretches of a triangle to `[min_compression,
+/// max_stretch]` (relative to its rest shape) to prevent excessive deformation.
+///
+/// In its own plane the triangle has the deformation gradient `F = Ds Dm^-1` with
+/// the singular value decomposition `F = U diag(s1, s2) V^T`.  `project` clamps
+/// `s1` and `s2` into the limits and moves the vertices to the edge vectors of
+/// the clamped gradient `F* = U diag(clamp(s1), clamp(s2)) V^T`, spreading the
+/// motion by the inverse masses so that the mass-weighted centroid stays fixed
+/// (pinned vertices do not move).  A stretched triangle shrinks only as far as the
+/// limit requires, an over-compressed one expands, and a triangle inside its
+/// limits is left alone.
+///
+/// The projection is stateless: there is no Lagrange multiplier to accumulate.  A
+/// positive `compliance` softens it in the XPBD manner (see
+/// [`SoftConstraint::project`](super::functions::SoftConstraint::project)).
 #[derive(Debug, Clone)]
 pub struct StrainLimitingConstraint {
     /// Indices of the three vertices.
@@ -282,8 +295,6 @@ pub struct StrainLimitingConstraint {
     pub(super) inv_rest: [Real; 4],
     /// Compliance (XPBD).
     pub compliance: Real,
-    /// Accumulated Lagrange multiplier.
-    pub(super) lambda: Real,
 }
 impl StrainLimitingConstraint {
     /// Create a strain limiting constraint from the current configuration.
@@ -304,13 +315,13 @@ impl StrainLimitingConstraint {
             min_compression,
             inv_rest,
             compliance,
-            lambda: 0.0,
         }
     }
-    /// Reset the Lagrange multiplier.
-    pub fn reset_lambda(&mut self) {
-        self.lambda = 0.0;
-    }
+    /// Reset the accumulated constraint state before a new sub-step.
+    ///
+    /// The strain limit is a stateless projection, so there is nothing to reset;
+    /// the method exists so that solvers can reset every constraint uniformly.
+    pub fn reset_lambda(&mut self) {}
     /// Compute the inverse of the 2D rest matrix.
     fn compute_inv_rest(p0: &Vec3, p1: &Vec3, p2: &Vec3) -> [Real; 4] {
         let d1 = p1 - p0;
@@ -338,11 +349,47 @@ impl StrainLimitingConstraint {
         [d / det, -c / det, -b / det, a / det]
     }
 }
-/// Neo-Hookean strain energy constraint for a tetrahedron (FEM-based XPBD).
+/// Stable Neo-Hookean strain-energy constraint for a tetrahedron (XPBD).
 ///
-/// Uses the linearised Neo-Hookean model:
-///   Ψ = (mu/2)(I1 - 3) + (lambda/2)(J-1)^2
-/// where I1 = tr(F^T F), J = det(F), and F is the deformation gradient.
+/// Follows the constraint formulation of Macklin and Müller, "A Constraint-based
+/// Formulation of Stable Neo-Hookean Materials" (2021).  With the deformation
+/// gradient `F = Ds Dm^-1`, `I1 = tr(F^T F)`, `J = det(F)` and the rest volume
+/// `V0`, the element energy `V0 [ (mu/2)(I1 - 3) + (K/2)(J - gamma)^2 ]` is split
+/// into two XPBD constraints that are projected together:
+///
+/// * deviatoric: `C_D = sqrt(I1)` with compliance `1 / (mu V0)`,
+/// * hydrostatic: `C_H = J - gamma` with `gamma = 1 + mu / K` and compliance
+///   `1 / (K V0) + compliance`.
+///
+/// `K = lambda + mu` is the hydrostatic modulus
+/// ([`hydrostatic_modulus`](Self::hydrostatic_modulus)).  Compared with using
+/// `lambda` directly, this makes the first Piola stress `P = mu F + K (J - gamma)
+/// cof(F)` equal to Hooke's law with the Lamé parameters `(mu, lambda)` for
+/// small strains (`P_xx = (lambda + 2 mu) eps`, `P_yy = lambda eps` under
+/// uniaxial strain), keeps the rest state stable for every Poisson ratio below
+/// 1/2, and stays finite for `lambda = 0`.  With `lambda` itself the effective
+/// bulk modulus would be `lambda - mu/3` and the rest state would be unstable
+/// for Poisson ratios below 1/8.
+///
+/// `C_D` equals `sqrt(3)` at rest, so the two constraint forces only cancel
+/// when both are solved as one coupled 2 x 2 system; solving them one after the
+/// other makes stiff elements drift away from, and eventually collapse towards,
+/// zero volume.  The coupled projection leaves the rest state exactly
+/// unchanged, conserves the mass-weighted centroid, and pushes inverted
+/// elements back to positive volume.
+///
+/// The XPBD update is a Gauss-Newton step of the element's implicit-Euler
+/// problem.  Both constraints are strongly nonlinear in the vertex positions, so
+/// when `mu V0 dt_sub^2` is large compared with the element mass (a stiff
+/// element, a long sub-step) the full step overshoots and can collapse or invert
+/// the element.  `project` therefore halves the step until it sufficiently
+/// decreases the element-local incremental potential (Armijo backtracking).  For
+/// the usual stiffness and sub-step ranges the full XPBD step passes that test
+/// and nothing changes; for stiff elements it makes repeated projections (solver
+/// iterations, or `reset_lambda` followed by `project`) relax the element
+/// monotonically.  One iteration per sub-step is still only an approximation of
+/// the implicit step, so stiff materials call for sub-steps or several
+/// iterations.
 ///
 /// Indices: \[i0, i1, i2, i3\] — tet vertices.
 #[derive(Debug, Clone)]
@@ -353,7 +400,9 @@ pub struct NeoHookeanConstraint {
     pub mu: Real,
     /// First Lamé parameter (lambda).
     pub lambda_lame: Real,
-    /// Compliance for volume part.
+    /// Extra compliance of the hydrostatic (volume) constraint in `1/J`, added in
+    /// series to its physical compliance `1 / (K V0)` with `K = lambda + mu`;
+    /// `0` gives the pure Neo-Hookean response.
     pub compliance: Real,
     /// Inverse rest-shape matrix Dm^-1 (stored as 9 entries, column-major 3x3).
     pub(super) dm_inv: [Real; 9],
@@ -398,12 +447,13 @@ impl NeoHookeanConstraint {
     }
     /// Compute deformation gradient F = Ds * Dm_inv.
     pub fn deformation_gradient(&self, particles: &[SoftParticle]) -> [Real; 9] {
-        let [i0, i1, i2, i3] = self.indices;
-        let p0 = particles[i0].position;
-        let p1 = particles[i1].position;
-        let p2 = particles[i2].position;
-        let p3 = particles[i3].position;
-        let ds = Self::compute_shape_matrix(&p0, &p1, &p2, &p3);
+        self.deformation_gradient_of(&self.indices.map(|index| particles[index].position))
+    }
+    /// Deformation gradient F = Ds * Dm_inv of the element whose four corners
+    /// are at `positions`, given in the order of `indices`.
+    pub(super) fn deformation_gradient_of(&self, positions: &[Vec3; 4]) -> [Real; 9] {
+        let ds =
+            Self::compute_shape_matrix(&positions[0], &positions[1], &positions[2], &positions[3]);
         mat3_mul(ds, self.dm_inv)
     }
     /// Compute I1 = tr(F^T F).
@@ -673,9 +723,12 @@ impl DistanceConstraint {
 /// Uses a quadratic energy based on the Laplacian of the surface positions,
 /// which is more robust than dihedral-angle bending for small angles.
 ///
-/// For two triangles sharing edge (p0,p1) with opposite vertices p2,p3:
-/// `C = (p0*Q[0] + p1*Q[1] + p2*Q[2] + p3*Q[3])`
-/// where Q are cotangent-weighted coefficients.
+/// For two triangles sharing edge (p0,p1) with opposite vertices p2,p3 the
+/// constraint value is `C = stiffness * sum_ab Q_ab p_a . p_b` with
+/// `Q = 3 / (A0 + A1) * K K^T`, i.e. `C = 3 stiffness / (A0 + A1) * |sum_a K_a p_a|^2`.
+/// `A0` and `A1` are the triangle areas and `K` holds cotangent weights that sum to
+/// zero and annihilate the positions of every planar hinge, so `C` vanishes for a
+/// flat hinge and is invariant under rigid translations and rotations.
 #[derive(Debug, Clone)]
 pub struct IsometricBendingConstraint {
     /// Indices of the four particles: shared edge (i0, i1), wing vertices (i2, i3).
@@ -714,13 +767,37 @@ impl IsometricBendingConstraint {
     pub fn reset_lambda(&mut self) {
         self.lambda = 0.0;
     }
-    /// Compute the Q matrix from cotangent weights.
+    /// Current constraint value `C = stiffness * sum_ab Q_ab p_a . p_b`.
     ///
-    /// Uses the Bergou et al. formulation where the constraint is based on
-    /// the discrete Laplacian. The key idea is that the constraint vector
-    /// K = \[c03+c06, c02+c05, -c01, -c04\] satisfies K.p = 0 at rest
-    /// (when the surface is flat), and Q = K^T K / (4A) encodes the energy.
-    fn compute_q_matrix(p0: &Vec3, p1: &Vec3, p2: &Vec3, p3: &Vec3) -> [Real; 16] {
+    /// `C` is non-negative.  It is zero for a planar hinge and does not change
+    /// when the four particles are translated or rotated rigidly.
+    pub fn constraint_value(&self, particles: &[SoftParticle]) -> Real {
+        let mut value = 0.0_f64;
+        for (a, &ia) in self.indices.iter().enumerate() {
+            for (b, &ib) in self.indices.iter().enumerate() {
+                value +=
+                    self.q_matrix[a * 4 + b] * particles[ia].position.dot(&particles[ib].position);
+            }
+        }
+        value * self.stiffness
+    }
+    /// Cotangent weights `K` and the prefactor `3 / (A0 + A1)` of the hinge
+    /// (p0, p1 | p2, p3), or `None` when both triangles are degenerate.
+    ///
+    /// With `c_p0(t)` and `c_p1(t)` the cotangents of the angles of triangle `t` at
+    /// the shared-edge vertices p0 and p1 (`t1 = (p0, p1, p2)`, `t2 = (p0, p1, p3)`):
+    ///
+    /// `K = [c_p1(t1) + c_p1(t2), c_p0(t1) + c_p0(t2), -(c_p0(t1) + c_p1(t1)), -(c_p0(t2) + c_p1(t2))]`
+    ///
+    /// The angles at the wing vertices p2 and p3 do not enter.  `sum(K) = 0` makes
+    /// `K . p` translation invariant, and `K . p = 0` for every planar hinge, so a
+    /// flat sheet carries no bending energy.
+    pub(super) fn hinge_weights(
+        p0: &Vec3,
+        p1: &Vec3,
+        p2: &Vec3,
+        p3: &Vec3,
+    ) -> Option<([Real; 4], Real)> {
         let e = p1 - p0;
         let e0_2 = p2 - p0;
         let e1_2 = p2 - p1;
@@ -733,23 +810,35 @@ impl IsometricBendingConstraint {
             }
             a.dot(b) / cross_norm
         };
-        let c01 = cot(&e0_2, &e1_2);
-        let c02 = cot(&e, &e0_2);
-        let c03 = cot(&(-e), &e1_2);
-        let c04 = cot(&e0_3, &e1_3);
-        let c05 = cot(&e, &e0_3);
-        let c06 = cot(&(-e), &e1_3);
+        // Angle at p0 / p1 in triangle (p0, p1, p2) and in triangle (p0, p1, p3).
+        let cot_p0_t1 = cot(&e, &e0_2);
+        let cot_p1_t1 = cot(&(-e), &e1_2);
+        let cot_p0_t2 = cot(&e, &e0_3);
+        let cot_p1_t2 = cot(&(-e), &e1_3);
         let a1 = 0.5 * e0_2.cross(&e).norm();
         let a2 = 0.5 * e0_3.cross(&e).norm();
         let a_total = a1 + a2;
         if a_total < 1e-14 {
-            return [0.0; 16];
+            return None;
         }
-        let kk = [c03 + c06, c02 + c05, -c01, -c04];
+        let k = [
+            cot_p1_t1 + cot_p1_t2,
+            cot_p0_t1 + cot_p0_t2,
+            -(cot_p0_t1 + cot_p1_t1),
+            -(cot_p0_t2 + cot_p1_t2),
+        ];
+        Some((k, 3.0 / a_total))
+    }
+    /// Quadratic form `Q = 3 / (A0 + A1) * K K^T` of the hinge (p0, p1 | p2, p3)
+    /// (see [`hinge_weights`](Self::hinge_weights)); all zeros for a degenerate hinge.
+    fn compute_q_matrix(p0: &Vec3, p1: &Vec3, p2: &Vec3, p3: &Vec3) -> [Real; 16] {
+        let Some((k, scale)) = Self::hinge_weights(p0, p1, p2, p3) else {
+            return [0.0; 16];
+        };
         let mut q = [0.0_f64; 16];
         for row in 0..4 {
             for col in 0..4 {
-                q[row * 4 + col] = kk[row] * kk[col] / (4.0 * a_total);
+                q[row * 4 + col] = scale * k[row] * k[col];
             }
         }
         q
@@ -821,35 +910,25 @@ impl IsometricBendingConstraintV2 {
         }
         0.5 * self.stiffness * energy
     }
-    fn cot_angle(a: &Vec3, b: &Vec3) -> Real {
-        let cross = a.cross(b).norm();
-        if cross < 1e-14 {
-            return 0.0;
-        }
-        a.dot(b) / cross
-    }
+    /// Bergou quadratic form of the hinge; the same `Q` as
+    /// [`IsometricBendingConstraint`] uses, so a flat hinge has zero energy.
     fn build_q(p0: &Vec3, p1: &Vec3, p2: &Vec3, p3: &Vec3) -> [Real; 16] {
-        let e0 = *p2 - *p0;
-        let e1 = *p2 - *p1;
-        let e2 = *p3 - *p0;
-        let e3 = *p3 - *p1;
-        let c01 = Self::cot_angle(&e0, &e1);
-        let c02 = Self::cot_angle(&e2, &e3);
-        let k = [c01 + c02, -(c01 + c02), c01, -c01 + c02 - c02, c02, -c02];
-        let coeff = [k[0], k[1], k[2], k[3]];
-        let mut q = [0.0f64; 16];
-        for i in 0..4 {
-            for j in 0..4 {
-                q[i * 4 + j] = coeff[i] * coeff[j];
-            }
-        }
-        q
+        IsometricBendingConstraint::compute_q_matrix(p0, p1, p2, p3)
     }
 }
-/// Balloon pressure constraint for inflatable objects.
+/// Per-triangle balloon pressure constraint (legacy, deprecated).
 ///
-/// Enforces a target enclosed volume by applying outward pressure on the
-/// surface triangles. Indices specify a surface triangle (i0, i1, i2).
+/// **Deprecated:** use
+/// [`BalloonVolumeConstraint`](super::balloon_volume::BalloonVolumeConstraint),
+/// which enforces the volume enclosed by the *whole* closed surface.
+///
+/// A balloon's volume is a property of the entire surface, but this constraint
+/// is attached to a single triangle (i0, i1, i2).  It compares that one
+/// triangle's volume term `p0 . (p1 x p2) / 6` (which depends on the origin)
+/// with `rest_volume`, the volume of the whole balloon, and moves the three
+/// vertices along the triangle normal instead of along the volume gradient, so
+/// it does not drive the enclosed volume to the target.  It is kept only for
+/// source compatibility.
 #[derive(Debug, Clone)]
 pub struct BalloonPressureConstraint {
     /// Surface triangle indices.
@@ -891,11 +970,19 @@ impl BalloonPressureConstraint {
 /// Dihedral-angle bending constraint for two triangles sharing an edge.
 ///
 /// Vertices (p0, p1) are the shared edge; p2 and p3 are the opposing vertices.
+///
+/// The constrained quantity is the angle `theta` in `[0, pi]` between the face
+/// normals `(p2 - p0) x e` and `(p3 - p0) x e` with `e = p1 - p0`.  A flat hinge,
+/// whose wings lie on opposite sides of the edge, has `theta = pi`; folding the
+/// hinge in either direction lowers `theta`, and `theta = 0` means the two
+/// triangles lie on top of each other.  The projection moves all four particles
+/// along the gradient of `theta`, so it restores a fold in either direction and
+/// conserves linear and angular momentum.
 #[derive(Debug, Clone)]
 pub struct BendingConstraint {
     /// Indices of the four particles: shared edge (i0, i1), wing vertices (i2, i3).
     pub indices: [usize; 4],
-    /// Rest dihedral angle.
+    /// Rest dihedral angle `theta` in radians, in `[0, pi]` (`pi` for a flat hinge).
     pub rest_angle: Real,
     /// Compliance (XPBD).
     pub compliance: Real,
@@ -931,19 +1018,14 @@ impl BendingConstraint {
     pub fn reset_lambda(&mut self) {
         self.lambda = 0.0;
     }
-    /// Compute the dihedral angle between two triangles sharing edge (p0,p1).
+    /// Compute the dihedral angle `theta` in `[0, pi]` between the two triangles
+    /// sharing edge (p0,p1): `pi` for a flat hinge, smaller when it is folded.
+    ///
+    /// It is evaluated as `pi - |phi|` from the signed fold angle `phi`
+    /// (`atan2`-based), which stays exact near the flat state where an `acos`
+    /// of the normals' dot product would lose half of its digits.  A degenerate
+    /// hinge (zero-length edge, wing on the hinge line) yields `0`.
     pub(super) fn compute_dihedral(p0: &Vec3, p1: &Vec3, p2: &Vec3, p3: &Vec3) -> Real {
-        let e = p1 - p0;
-        let n1 = (p2 - p0).cross(&e);
-        let n2 = (p3 - p0).cross(&e);
-        let n1_len = n1.norm();
-        let n2_len = n2.norm();
-        if n1_len < 1e-12 || n2_len < 1e-12 {
-            return 0.0;
-        }
-        let n1 = n1 / n1_len;
-        let n2 = n2 / n2_len;
-        let cos_a = n1.dot(&n2).clamp(-1.0, 1.0);
-        cos_a.acos()
+        Self::hinge_fold(p0, p1, p2, p3).map_or(0.0, |fold| std::f64::consts::PI - fold.angle.abs())
     }
 }

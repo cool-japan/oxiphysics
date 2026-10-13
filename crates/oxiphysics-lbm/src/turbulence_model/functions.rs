@@ -757,34 +757,65 @@ pub fn rotation_rate_tensor(g: [f64; 9]) -> [f64; 9] {
 }
 /// Compute eigenvalues of a symmetric 3×3 matrix using the analytical method.
 ///
-/// Returns \[λ₁, λ₂, λ₃\] (unsorted).
+/// `a` is the row-major 3×3 matrix; only its upper triangle is read.
+/// Returns `[λ₁, λ₂, λ₃]` sorted in descending order (`λ₁ ≥ λ₂ ≥ λ₃`).
+///
+/// The characteristic polynomial is depressed by the shift `m = tr(A)/3`.
+/// With `B = A − m·I` and `s = √(‖B‖_F² / 6)` the eigenvalues are
+///
+/// ```text
+/// λ_k = m + 2 s cos((θ + 2πk)/3),   θ = acos(det(B) / (2 s³)),   k = 0, 1, 2.
+/// ```
+///
+/// `det(B)` is evaluated from the normalised matrix `B / s`, so the result is
+/// free of the catastrophic cancellation that appears when the cubic constant
+/// is assembled from the raw invariants, and it is scale invariant.  A
+/// (numerically) isotropic matrix returns `[m, m, m]`.
 pub fn eigenvalues_3x3_symmetric(a: [f64; 9]) -> [f64; 3] {
-    let a11 = a[0];
     let a12 = a[1];
     let a13 = a[2];
-    let a22 = a[4];
     let a23 = a[5];
-    let a33 = a[8];
-    let p = a11 + a22 + a33;
-    let q = a11 * a22 + a11 * a33 + a22 * a33 - a12 * a12 - a13 * a13 - a23 * a23;
-    let r = a11 * (a22 * a33 - a23 * a23) - a12 * (a12 * a33 - a23 * a13)
-        + a13 * (a12 * a23 - a22 * a13);
-    let p3 = p / 3.0;
-    let q3 = q / 3.0;
-    let b = p3 * p3 - q3;
-    let c = 2.0 * p3 * p3 * p3 - p3 * q3 + r / 3.0;
-    let discriminant = b * b * b - c * c;
-    if discriminant >= 0.0 {
-        let theta = (c / (b * b * b).max(1e-30).sqrt()).clamp(-1.0, 1.0).acos();
-        let sqrt_b = b.max(0.0).sqrt();
-        [
-            p3 + 2.0 * sqrt_b * (theta / 3.0).cos(),
-            p3 + 2.0 * sqrt_b * ((theta + 2.0 * std::f64::consts::PI) / 3.0).cos(),
-            p3 + 2.0 * sqrt_b * ((theta + 4.0 * std::f64::consts::PI) / 3.0).cos(),
-        ]
-    } else {
-        [p / 3.0, p / 3.0, p / 3.0]
+    let trace = a[0] + a[4] + a[8];
+    let mean = trace / 3.0;
+    let b11 = a[0] - mean;
+    let b22 = a[4] - mean;
+    let b33 = a[8] - mean;
+    // s² = ‖A − mean·I‖_F² / 6 = mean² − (sum of principal 2×2 minors)/3.
+    let s_sq =
+        (b11 * b11 + b22 * b22 + b33 * b33 + 2.0 * (a12 * a12 + a13 * a13 + a23 * a23)) / 6.0;
+    let s = s_sq.sqrt();
+    if !s.is_finite() || s <= 0.0 {
+        return [mean; 3];
     }
+    // Normalised deviatoric matrix N = (A − mean·I) / s.
+    let n11 = b11 / s;
+    let n22 = b22 / s;
+    let n33 = b33 / s;
+    let n12 = a12 / s;
+    let n13 = a13 / s;
+    let n23 = a23 / s;
+    let det_n = n11 * (n22 * n33 - n23 * n23) - n12 * (n12 * n33 - n23 * n13)
+        + n13 * (n12 * n23 - n22 * n13);
+    let cos_theta = (0.5 * det_n).clamp(-1.0, 1.0);
+    let phi = cos_theta.acos() / 3.0;
+    let two_pi_third = 2.0 * std::f64::consts::PI / 3.0;
+    let largest = mean + 2.0 * s * phi.cos();
+    let smallest = mean + 2.0 * s * (phi + two_pi_third).cos();
+    // The three eigenvalues sum to the trace; this keeps the middle one exact.
+    let middle = trace - largest - smallest;
+    let mut eigenvalues = [largest, middle, smallest];
+    // Analytically already descending; a three-element sorting network guards
+    // against round-off swaps when two eigenvalues (nearly) coincide.
+    if eigenvalues[0] < eigenvalues[1] {
+        eigenvalues.swap(0, 1);
+    }
+    if eigenvalues[1] < eigenvalues[2] {
+        eigenvalues.swap(1, 2);
+    }
+    if eigenvalues[0] < eigenvalues[1] {
+        eigenvalues.swap(0, 1);
+    }
+    eigenvalues
 }
 /// Detached Eddy Simulation (DES97) interface length scale.
 ///
@@ -1370,5 +1401,326 @@ mod tests_advanced_turbulence {
         let m = DynamicSmagorinskyLilly::new(1.0, 2.0);
         let m_val = m.m_tensor_scalar(1.0, 1.0, 1.0, 1.0);
         assert!((m_val - 3.0).abs() < 1e-12, "M tensor: {m_val}");
+    }
+}
+#[cfg(test)]
+mod tests_sgs_eigen {
+    use super::*;
+    use crate::turbulence_model::types::*;
+
+    fn sorted(mut v: [f64; 3]) -> [f64; 3] {
+        v.sort_by(|a, b| a.total_cmp(b));
+        v
+    }
+
+    /// Deterministic pseudo-random numbers in [-1, 1) (64-bit LCG).
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> f64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((self.0 >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        }
+    }
+
+    fn random_symmetric(rng: &mut Lcg) -> [f64; 9] {
+        let mut a = [0.0; 9];
+        for i in 0..3 {
+            for j in i..3 {
+                let v = rng.next();
+                a[i * 3 + j] = v;
+                a[j * 3 + i] = v;
+            }
+        }
+        a
+    }
+
+    fn det3(a: &[f64; 9]) -> f64 {
+        a[0] * (a[4] * a[8] - a[5] * a[7]) - a[1] * (a[3] * a[8] - a[5] * a[6])
+            + a[2] * (a[3] * a[7] - a[4] * a[6])
+    }
+
+    /// Reference symmetric eigenvalue solver (cyclic Jacobi rotations).
+    fn jacobi_eigenvalues(mut a: [f64; 9]) -> [f64; 3] {
+        for _ in 0..60 {
+            let off = a[1] * a[1] + a[2] * a[2] + a[5] * a[5];
+            if off < 1e-300 {
+                break;
+            }
+            for &(p, q) in &[(0usize, 1usize), (0, 2), (1, 2)] {
+                let apq = a[p * 3 + q];
+                if apq.abs() < 1e-300 {
+                    continue;
+                }
+                let theta = (a[q * 3 + q] - a[p * 3 + p]) / (2.0 * apq);
+                let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
+                let c = 1.0 / (t * t + 1.0).sqrt();
+                let s = t * c;
+                for k in 0..3 {
+                    let akp = a[k * 3 + p];
+                    let akq = a[k * 3 + q];
+                    a[k * 3 + p] = c * akp - s * akq;
+                    a[k * 3 + q] = s * akp + c * akq;
+                }
+                for k in 0..3 {
+                    let apk = a[p * 3 + k];
+                    let aqk = a[q * 3 + k];
+                    a[p * 3 + k] = c * apk - s * aqk;
+                    a[q * 3 + k] = s * apk + c * aqk;
+                }
+            }
+        }
+        [a[0], a[4], a[8]]
+    }
+
+    #[test]
+    fn eigenvalues_of_diag_1_2_3_are_1_2_3() {
+        let a = [1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0];
+        let ev = sorted(eigenvalues_3x3_symmetric(a));
+        for (got, want) in ev.iter().zip([1.0, 2.0, 3.0]) {
+            assert!((got - want).abs() < 1e-12, "{ev:?}");
+        }
+    }
+
+    #[test]
+    fn eigenvalues_of_coupled_block_matrix() {
+        let a = [2.0, 1.0, 0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 5.0];
+        let ev = sorted(eigenvalues_3x3_symmetric(a));
+        for (got, want) in ev.iter().zip([1.0, 3.0, 5.0]) {
+            assert!((got - want).abs() < 1e-10, "{ev:?}");
+        }
+    }
+
+    #[test]
+    fn eigenvalues_are_not_the_isotropic_fallback() {
+        // The previous implementation returned [tr/3; 3] for every matrix.
+        let a = [4.0, 1.0, 0.5, 1.0, -2.0, 0.3, 0.5, 0.3, 1.0];
+        let ev = eigenvalues_3x3_symmetric(a);
+        let spread = ev.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+            - ev.iter().cloned().fold(f64::INFINITY, f64::min);
+        assert!(spread > 1.0, "eigenvalue spread {spread}");
+    }
+
+    #[test]
+    fn eigenvalues_of_random_matrices_match_the_matrix_invariants() {
+        let mut rng = Lcg(0x5EED_1234_ABCD);
+        for case in 0..500 {
+            let a = random_symmetric(&mut rng);
+            let ev = eigenvalues_3x3_symmetric(a);
+            let trace = a[0] + a[4] + a[8];
+            let frob: f64 = a.iter().map(|v| v * v).sum();
+            let sum = ev[0] + ev[1] + ev[2];
+            let sum_sq = ev[0] * ev[0] + ev[1] * ev[1] + ev[2] * ev[2];
+            let prod = ev[0] * ev[1] * ev[2];
+            assert!((sum - trace).abs() < 1e-12, "case {case}: trace");
+            assert!((sum_sq - frob).abs() < 1e-11, "case {case}: Frobenius norm");
+            assert!((prod - det3(&a)).abs() < 1e-11, "case {case}: determinant");
+        }
+    }
+
+    #[test]
+    fn eigenvalues_agree_with_jacobi_reference() {
+        let mut rng = Lcg(42);
+        for case in 0..200 {
+            let a = random_symmetric(&mut rng);
+            let got = sorted(eigenvalues_3x3_symmetric(a));
+            let want = sorted(jacobi_eigenvalues(a));
+            for k in 0..3 {
+                assert!(
+                    (got[k] - want[k]).abs() < 1e-10,
+                    "case {case}: {got:?} vs {want:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn eigenvalues_handle_repeated_roots() {
+        // R diag(2, 2, 7) R^T with R a rotation about an oblique axis.
+        let (s, c) = (0.7_f64).sin_cos();
+        let r = [c, -s, 0.0, s, c, 0.0, 0.0, 0.0, 1.0];
+        let (s2, c2) = (0.4_f64).sin_cos();
+        let r2 = [1.0, 0.0, 0.0, 0.0, c2, -s2, 0.0, s2, c2];
+        let mut rr = [0.0; 9];
+        for i in 0..3 {
+            for j in 0..3 {
+                for k in 0..3 {
+                    rr[i * 3 + j] += r[i * 3 + k] * r2[k * 3 + j];
+                }
+            }
+        }
+        let d = [2.0, 7.0, 2.0];
+        let mut a = [0.0; 9];
+        for i in 0..3 {
+            for j in 0..3 {
+                for k in 0..3 {
+                    a[i * 3 + j] += rr[i * 3 + k] * d[k] * rr[j * 3 + k];
+                }
+            }
+        }
+        let ev = sorted(eigenvalues_3x3_symmetric(a));
+        for (got, want) in ev.iter().zip([2.0, 2.0, 7.0]) {
+            assert!((got - want).abs() < 1e-6, "{ev:?}");
+        }
+    }
+
+    #[test]
+    fn eigenvalues_are_scale_invariant() {
+        let a = [3.0, 0.4, -0.2, 0.4, 1.0, 0.7, -0.2, 0.7, -2.0];
+        let base = sorted(eigenvalues_3x3_symmetric(a));
+        for scale in [1e-12_f64, 1e-6, 1e6, 1e12] {
+            let scaled = a.map(|v| v * scale);
+            let ev = sorted(eigenvalues_3x3_symmetric(scaled));
+            for k in 0..3 {
+                assert!(
+                    (ev[k] / scale - base[k]).abs() < 1e-9,
+                    "scale {scale}: {ev:?} vs {base:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn eigenvalues_of_isotropic_matrices_equal_the_mean() {
+        for value in [0.0, 1.0, -3.5, 1e-9] {
+            let a = [value, 0.0, 0.0, 0.0, value, 0.0, 0.0, 0.0, value];
+            for ev in eigenvalues_3x3_symmetric(a) {
+                assert!((ev - value).abs() < 1e-15, "isotropic {value}: {ev}");
+            }
+        }
+    }
+
+    #[test]
+    fn sigma_model_singular_values_of_diagonal_gradient() {
+        let m = SigmaModel::new(1.0);
+        let g = [3.0, 0.0, 0.0, 0.0, -2.0, 0.0, 0.0, 0.0, 1.0];
+        let (s1, s2, s3) = m.singular_values_g(g);
+        assert!((s1 - 3.0).abs() < 1e-10, "s1 = {s1}");
+        assert!((s2 - 2.0).abs() < 1e-10, "s2 = {s2}");
+        assert!((s3 - 1.0).abs() < 1e-10, "s3 = {s3}");
+    }
+
+    #[test]
+    fn sigma_model_eddy_viscosity_matches_the_closed_form() {
+        // sigma = (3, 2, 1): D_sigma = s3 (s1 - s2)(s2 - s3) / s1^2 = 1/9.
+        let delta = 0.5;
+        let m = SigmaModel::new(delta);
+        let g = [3.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, -1.0];
+        let nu_t = m.eddy_viscosity(g);
+        let expected = (m.c_sigma * delta).powi(2) / 9.0;
+        assert!(nu_t > 0.0, "Sigma nu_t must be positive for a 3D gradient");
+        assert!((nu_t - expected).abs() < 1e-12, "{nu_t} vs {expected}");
+    }
+
+    #[test]
+    fn sigma_model_is_positive_for_a_generic_three_dimensional_gradient() {
+        let m = SigmaModel::new(1.0);
+        let g = [0.3, 0.1, -0.05, 0.02, -0.2, 0.07, 0.04, -0.03, -0.1];
+        let (s1, s2, s3) = m.singular_values_g(g);
+        assert!(s1 > s2 && s2 > s3 && s3 > 0.0, "{s1} {s2} {s3}");
+        let nu_t = m.eddy_viscosity(g);
+        assert!(nu_t > 0.0, "nu_t = {nu_t}");
+        // Cross-check the singular values against the Jacobi reference.
+        let mut gtg = [0.0; 9];
+        for i in 0..3 {
+            for j in 0..3 {
+                for k in 0..3 {
+                    gtg[i * 3 + j] += g[k * 3 + i] * g[k * 3 + j];
+                }
+            }
+        }
+        let reference = sorted(jacobi_eigenvalues(gtg));
+        assert!((s1 - reference[2].sqrt()).abs() < 1e-10);
+        assert!((s2 - reference[1].sqrt()).abs() < 1e-10);
+        assert!((s3 - reference[0].sqrt()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn sigma_model_vanishes_for_rotation_and_two_dimensional_flow() {
+        let m = SigmaModel::new(1.0);
+        let rotation = [0.0, -0.4, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0];
+        assert!(m.eddy_viscosity(rotation).abs() < 1e-7);
+        let shear = [0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        assert!(m.eddy_viscosity(shear).abs() < 1e-7);
+    }
+
+    #[test]
+    fn amd_vanishes_for_pure_rotation() {
+        let m = AmdModel::new([1.0, 1.0, 1.0]);
+        let rotation = [0.0, -0.3, 0.2, 0.3, 0.0, -0.1, -0.2, 0.1, 0.0];
+        assert!(m.eddy_viscosity(rotation).abs() < 1e-15);
+    }
+
+    #[test]
+    fn amd_vanishes_for_axisymmetric_extension() {
+        let m = AmdModel::new([1.0, 1.0, 1.0]);
+        let extension = [2.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, -1.0];
+        assert_eq!(m.eddy_viscosity(extension), 0.0);
+    }
+
+    #[test]
+    fn amd_axisymmetric_contraction_gives_the_model_constant() {
+        // S = diag(-2, 1, 1): -tr(S^3) = 6 and |grad u|^2 = 6, so nu_t = C.
+        let m = AmdModel::new([1.0, 1.0, 1.0]);
+        let contraction = [-2.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        assert!((m.eddy_viscosity(contraction) - m.c).abs() < 1e-14);
+        let m = AmdModel::with_constant([1.0, 1.0, 1.0], 0.25);
+        assert!((m.eddy_viscosity(contraction) - 0.25).abs() < 1e-14);
+    }
+
+    #[test]
+    fn amd_uses_the_anisotropic_mesh_spacings() {
+        // numerator = -sum_k d_k^2 g_kk^3 = -(9 * (-8) + 1 + 1) = 70, denominator 6.
+        let m = AmdModel::with_constant([3.0, 1.0, 1.0], 0.5);
+        let contraction = [-2.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let expected = 0.5 * 70.0 / 6.0;
+        assert!((m.eddy_viscosity(contraction) - expected).abs() < 1e-12);
+        // Stretching the other direction makes the same gradient dissipative-free.
+        let m = AmdModel::with_constant([1.0, 3.0, 3.0], 0.5);
+        assert_eq!(m.eddy_viscosity(contraction), 0.0);
+    }
+
+    #[test]
+    fn amd_matches_an_independent_index_loop_for_a_generic_gradient() {
+        let m = AmdModel::with_constant([0.8, 1.1, 1.7], 1.0 / 3.0);
+        let g = [-1.0, 0.3, 0.1, 0.25, 0.5, -0.35, 0.05, 0.2, 0.4];
+        let mut numer = 0.0;
+        for k in 0..3 {
+            for i in 0..3 {
+                for j in 0..3 {
+                    let s_ij = 0.5 * (g[i * 3 + j] + g[j * 3 + i]);
+                    numer -= m.delta[k].powi(2) * g[i * 3 + k] * g[j * 3 + k] * s_ij;
+                }
+            }
+        }
+        let denom: f64 = g.iter().map(|v| v * v).sum();
+        let expected = (m.c * numer / denom).max(0.0);
+        let got = m.eddy_viscosity(g);
+        assert!(got > 0.0, "chosen gradient must be dissipative: {got}");
+        assert!((got - expected).abs() < 1e-14, "{got} vs {expected}");
+        // nu_t is homogeneous of degree one in the gradient.
+        let doubled = g.map(|v| 2.0 * v);
+        assert!((m.eddy_viscosity(doubled) - 2.0 * got).abs() < 1e-13);
+    }
+
+    #[test]
+    fn eigenvalues_are_returned_in_descending_order() {
+        let mut rng = Lcg(7);
+        for case in 0..300 {
+            let a = random_symmetric(&mut rng);
+            let ev = eigenvalues_3x3_symmetric(a);
+            assert!(ev[0] >= ev[1] && ev[1] >= ev[2], "case {case}: {ev:?}");
+        }
+        // Repeated roots must keep the order too, whichever end they sit at.
+        let upper_pair = eigenvalues_3x3_symmetric([5.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 2.0]);
+        assert!(upper_pair[0] >= upper_pair[1] && upper_pair[1] >= upper_pair[2]);
+        assert!((upper_pair[0] - 5.0).abs() < 1e-12 && (upper_pair[1] - 5.0).abs() < 1e-12);
+        assert!((upper_pair[2] - 2.0).abs() < 1e-12);
+        let lower_pair = eigenvalues_3x3_symmetric([2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 5.0]);
+        assert!(lower_pair[0] >= lower_pair[1] && lower_pair[1] >= lower_pair[2]);
+        assert!((lower_pair[0] - 5.0).abs() < 1e-12);
+        assert!((lower_pair[1] - 2.0).abs() < 1e-12 && (lower_pair[2] - 2.0).abs() < 1e-12);
     }
 }

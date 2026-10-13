@@ -4,6 +4,9 @@
 
 use super::functions::*;
 use super::functions::{HBAR, KB};
+use crate::error::MdError;
+use crate::gaussian_noise::standard_normal;
+use rand::Rng;
 
 /// Propagator for the free ring polymer (spring part only) in normal-mode space.
 ///
@@ -105,13 +108,18 @@ pub struct TrpmdIntegrator {
 }
 impl TrpmdIntegrator {
     /// Create a TRPMD integrator.
-    pub fn new(n_beads: usize, temperature: f64, gamma0: f64) -> Self {
-        TrpmdIntegrator {
+    ///
+    /// # Errors
+    /// Returns an error if `n_beads` is zero, or if `temperature` or `gamma0`
+    /// is negative or not finite (see [`PileLThermostat::new`]).
+    pub fn new(n_beads: usize, temperature: f64, gamma0: f64) -> Result<Self, MdError> {
+        let thermostat = PileLThermostat::new(n_beads, temperature, gamma0)?;
+        Ok(TrpmdIntegrator {
             n_beads,
             temperature,
             propagator: NormalModePropagator::new(n_beads, temperature),
-            thermostat: PileLThermostat::new(n_beads, temperature, gamma0),
-        }
+            thermostat,
+        })
     }
     /// One TRPMD step for a single ring polymer.
     ///
@@ -122,25 +130,47 @@ impl TrpmdIntegrator {
     /// 4. Half force kick (B) in bead space
     /// 5. Half thermostat (O) in normal-mode space
     ///
-    /// `forces` — external forces on each bead (length n_beads).
-    pub fn step(
+    /// `forces` — external forces on each bead (length n_beads), evaluated by
+    /// the caller once per step and held fixed over both half kicks.
+    /// `rng` supplies the Gaussian noise of the two thermostat half steps, so
+    /// a seeded generator makes the trajectory reproducible.
+    ///
+    /// # Errors
+    /// Returns an error if `pos`, `vel` or `forces` do not hold exactly
+    /// `n_beads` entries, or if `mass` is not a positive finite number.
+    pub fn step<R: Rng + ?Sized>(
         &self,
         pos: &mut Vec<[f64; 3]>,
         vel: &mut Vec<[f64; 3]>,
         forces: &[[f64; 3]],
         mass: f64,
         dt: f64,
-    ) {
+        rng: &mut R,
+    ) -> Result<(), MdError> {
+        if pos.len() != self.n_beads || vel.len() != self.n_beads || forces.len() != self.n_beads {
+            return Err(MdError::General(format!(
+                "TRPMD step expects {} beads, got {} positions, {} velocities and {} forces",
+                self.n_beads,
+                pos.len(),
+                vel.len(),
+                forces.len()
+            )));
+        }
+        if !mass.is_finite() || mass <= 0.0 {
+            return Err(MdError::General(format!(
+                "TRPMD step needs a positive finite mass, got {mass}"
+            )));
+        }
         let c = &self.propagator.c_matrix;
         let mut mode_vel = beads_to_normal_modes(vel, c);
-        self.thermostat.apply(&mut mode_vel, mass, dt * 0.5);
+        self.thermostat.apply(&mut mode_vel, mass, dt * 0.5, rng);
         *vel = normal_modes_to_beads(&mode_vel, c);
         for i in 0..self.n_beads {
             for d in 0..3 {
                 vel[i][d] += 0.5 * dt * forces[i][d] / mass;
             }
         }
-        let (new_pos, new_vel) = self.propagator.propagate(pos, vel, mass, dt);
+        let (new_pos, new_vel) = self.propagator.propagate(pos, vel, dt);
         *pos = new_pos;
         *vel = new_vel;
         for i in 0..self.n_beads {
@@ -149,8 +179,9 @@ impl TrpmdIntegrator {
             }
         }
         let mut mode_vel2 = beads_to_normal_modes(vel, c);
-        self.thermostat.apply(&mut mode_vel2, mass, dt * 0.5);
+        self.thermostat.apply(&mut mode_vel2, mass, dt * 0.5, rng);
         *vel = normal_modes_to_beads(&mode_vel2, c);
+        Ok(())
     }
 }
 /// A single atom represented as a ring polymer for PIMD.
@@ -216,12 +247,18 @@ impl PimdAtom {
 /// The centroid mode uses the user-supplied γ₀, while higher modes use
 /// γ_k = 2 ω_k (critical damping).
 ///
+/// Every mode velocity is advanced with the exact Ornstein-Uhlenbeck
+/// propagator driven by *standard normal* noise, so that each mode velocity
+/// has the stationary variance `k_B T / m`.
+///
 /// Reference: Ceriotti, Parrinello, Markland & Manolopoulos (2010).
 #[derive(Debug, Clone)]
 pub struct PileLThermostat {
     /// Number of beads.
     pub n_beads: usize,
-    /// Centroid friction γ₀ (rad s^-1 or ps^-1 in MD units).
+    /// Centroid friction γ₀ in s⁻¹.  The mode frequencies `omega` are SI
+    /// (rad s⁻¹), so γ₀ and the time steps passed to [`PileLThermostat::apply`]
+    /// must be in SI units (s⁻¹ and s) as well.
     pub gamma0: f64,
     /// Per-mode friction γ_k (length n_beads).
     pub gamma: Vec<f64>,
@@ -233,42 +270,73 @@ pub struct PileLThermostat {
 impl PileLThermostat {
     /// Create a PILE-L thermostat.
     ///
-    /// * `n_beads` — number of ring-polymer beads P
-    /// * `temperature` — simulation temperature (K)
-    /// * `gamma0` — centroid friction (ps^-1 in typical MD units)
-    pub fn new(n_beads: usize, temperature: f64, gamma0: f64) -> Self {
-        let omega = normal_mode_frequencies(n_beads, temperature);
-        let mut gamma = vec![0.0f64; n_beads];
-        gamma[0] = gamma0;
-        for k in 1..n_beads {
-            gamma[k] = 2.0 * omega[k];
+    /// * `n_beads` — number of ring-polymer beads P (at least 1)
+    /// * `temperature` — simulation temperature (K, non-negative)
+    /// * `gamma0` — centroid friction in s⁻¹ (SI, like the normal-mode
+    ///   frequencies and the time steps given to `apply`; non-negative)
+    ///
+    /// # Errors
+    /// Returns an error if `n_beads` is zero (there would be no centroid mode
+    /// to attach `gamma0` to), or if `temperature` or `gamma0` is negative or
+    /// not finite.
+    pub fn new(n_beads: usize, temperature: f64, gamma0: f64) -> Result<Self, MdError> {
+        if n_beads == 0 {
+            return Err(MdError::General(
+                "PILE-L thermostat needs at least one ring-polymer bead".to_string(),
+            ));
         }
-        PileLThermostat {
+        if !temperature.is_finite() || temperature < 0.0 {
+            return Err(MdError::General(format!(
+                "PILE-L temperature must be finite and non-negative, got {temperature}"
+            )));
+        }
+        if !gamma0.is_finite() || gamma0 < 0.0 {
+            return Err(MdError::General(format!(
+                "PILE-L centroid friction must be finite and non-negative, got {gamma0}"
+            )));
+        }
+        let omega = normal_mode_frequencies(n_beads, temperature);
+        let gamma: Vec<f64> = omega
+            .iter()
+            .enumerate()
+            .map(|(k, &w)| if k == 0 { gamma0 } else { 2.0 * w })
+            .collect();
+        Ok(PileLThermostat {
             n_beads,
             gamma0,
             gamma,
             temperature,
             omega,
-        }
+        })
     }
-    /// Apply the O-U step to a single normal-mode velocity component.
+    /// Apply the exact Ornstein-Uhlenbeck step to one normal-mode velocity component.
     ///
-    /// v → v exp(-γ_k dt/2) + σ_k ξ, where σ_k = sqrt(k_B T / m) * sqrt(1 - exp(-γ_k dt)).
-    fn ou_step(gamma_k: f64, temperature: f64, mass: f64, v: f64, dt: f64) -> f64 {
+    /// `v → c₁ v + c₂ ξ` with `c₁ = exp(-γ_k dt)`,
+    /// `c₂ = sqrt((1 - c₁²) k_B T / m)` and `ξ ~ N(0, 1)` (`xi`).
+    /// `dt` is the time interval the bath acts for (the caller passes `dt/2`
+    /// for each half-step of a BAOAB-like scheme).
+    fn ou_step(gamma_k: f64, temperature: f64, mass: f64, v: f64, dt: f64, xi: f64) -> f64 {
         let decay = (-gamma_k * dt).exp();
-        let sigma = ((1.0 - decay * decay) * KB * temperature / mass).sqrt();
-        let mut rng = rand::rng();
-        use rand::RngExt;
-        let xi: f64 = rng.random_range(-1.0_f64..1.0_f64);
+        let sigma = ((1.0 - decay * decay).max(0.0) * KB * temperature / mass).sqrt();
         decay * v + sigma * xi
     }
     /// Apply PILE-L thermostat to normal-mode velocities of a single particle.
     ///
-    /// Performs the stochastic velocity update for each mode k.
-    pub fn apply(&self, mode_vel: &mut [[f64; 3]], mass: f64, dt: f64) {
+    /// Performs the stochastic velocity update for each mode k over the time
+    /// interval `dt`, drawing one standard normal variate per Cartesian
+    /// component from `rng`.
+    pub fn apply<R: Rng + ?Sized>(
+        &self,
+        mode_vel: &mut [[f64; 3]],
+        mass: f64,
+        dt: f64,
+        rng: &mut R,
+    ) {
         for (k, mv) in mode_vel.iter_mut().enumerate() {
+            let gamma_k = self.gamma.get(k).copied().unwrap_or(0.0);
             for v in mv.iter_mut() {
-                *v = Self::ou_step(self.gamma[k], self.temperature, mass, *v, dt);
+                let xi = standard_normal(rng);
+                *v = Self::ou_step(gamma_k, self.temperature, mass, *v, dt, xi);
             }
         }
     }
@@ -809,12 +877,14 @@ impl PimdThermostat {
 /// Free-particle ring-polymer propagator in normal-mode space.
 ///
 /// For each non-centroid mode k with frequency ω_k, the exact harmonic
-/// propagator over time step dt is applied to (q_k, p_k/m):
+/// propagator over time step dt is applied to the mode coordinate q_k and the
+/// mode *velocity* v_k:
 ///
-///   q_k(t+dt) = q_k cos(ω_k dt) + p_k/(m ω_k) sin(ω_k dt)
-///   p_k(t+dt) = -m ω_k q_k sin(ω_k dt) + p_k cos(ω_k dt)
+///   q_k(t+dt) = q_k cos(ω_k dt) + v_k/ω_k sin(ω_k dt)
+///   v_k(t+dt) = -ω_k q_k sin(ω_k dt) + v_k cos(ω_k dt)
 ///
-/// The centroid mode (k=0) is propagated with free-particle motion.
+/// The mass cancels in this velocity form, so the propagator does not depend
+/// on it.  The centroid mode (k=0) is propagated with free-particle motion.
 #[derive(Debug, Clone)]
 pub struct NormalModePropagator {
     /// Number of beads.
@@ -835,14 +905,13 @@ impl NormalModePropagator {
     }
     /// Apply the free ring-polymer propagator to a single particle.
     ///
-    /// `pos` and `vel` are in bead representation (length P each).
-    /// `mass` is the physical particle mass.
-    /// Returns updated (pos, vel) in bead space.
+    /// `pos` and `vel` are bead-space positions and **velocities** (length P
+    /// each); the harmonic rotation acts on `(q_k, v_k)` pairs, so no mass
+    /// enters.  Returns updated (pos, vel) in bead space.
     pub fn propagate(
         &self,
         pos: &[[f64; 3]],
         vel: &[[f64; 3]],
-        mass: f64,
         dt: f64,
     ) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
         let p = self.n_beads;
@@ -857,10 +926,9 @@ impl NormalModePropagator {
             } else {
                 let cos_w = (omega_k * dt).cos();
                 let sin_w = (omega_k * dt).sin();
-                let inv_mw = 1.0 / (mass * omega_k);
                 for d in 0..3 {
-                    let q_new = q[k][d] * cos_w + v[k][d] * inv_mw * sin_w;
-                    let v_new = -mass * omega_k * q[k][d] * sin_w + v[k][d] * cos_w;
+                    let q_new = q[k][d] * cos_w + v[k][d] / omega_k * sin_w;
+                    let v_new = -omega_k * q[k][d] * sin_w + v[k][d] * cos_w;
                     q[k][d] = q_new;
                     v[k][d] = v_new;
                 }

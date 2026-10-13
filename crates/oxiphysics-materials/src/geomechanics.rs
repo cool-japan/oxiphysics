@@ -20,6 +20,9 @@
 
 use std::f64::consts::PI;
 
+/// Customary Hazen coefficient C ≈ 100 for k in cm/s and d₁₀ in cm.
+const HAZEN_C_CGS: f64 = 100.0;
+
 // ---------------------------------------------------------------------------
 // SoilType
 // ---------------------------------------------------------------------------
@@ -136,10 +139,15 @@ impl RockMaterial {
     }
 
     /// Triaxial deformation: axial strain ε₁ and volumetric strain ε_v
-    /// under (σ₁, σ₃) using linear elasticity.
+    /// under (σ₁, σ₃) using linear elasticity (axisymmetric state σ₂ = σ₃,
+    /// stresses and strains taken positive in the same sense).
     ///
     /// ε₁ = (σ₁ − 2ν σ₃) / E
-    /// ε_v = (σ₁ − 2σ₃)(1 − 2ν) / E
+    /// ε₃ = (σ₃ − ν (σ₁ + σ₃)) / E
+    /// ε_v = ε₁ + 2ε₃ = (σ₁ + 2σ₃)(1 − 2ν) / E
+    ///
+    /// Under a hydrostatic state σ₁ = σ₃ = σ this reduces to
+    /// ε_v = 3σ(1 − 2ν)/E = σ/K with the bulk modulus K = E/(3(1 − 2ν)).
     ///
     /// # Returns
     /// `(axial_strain, volumetric_strain)`.
@@ -147,7 +155,7 @@ impl RockMaterial {
         let e = self.youngs_modulus;
         let nu = self.poisson_ratio;
         let eps1 = (sigma1 - 2.0 * nu * sigma3) / e;
-        let eps_v = (sigma1 - 2.0 * sigma3) * (1.0 - 2.0 * nu) / e;
+        let eps_v = (sigma1 + 2.0 * sigma3) * (1.0 - 2.0 * nu) / e;
         (eps1, eps_v)
     }
 }
@@ -314,7 +322,13 @@ impl Soil {
         ocr_est * sigma_ref
     }
 
-    /// Hazen (1911) hydraulic conductivity: k = C · d₁₀² \[m s⁻¹\].
+    /// Hazen (1911) hydraulic conductivity \[m s⁻¹\] with the customary
+    /// coefficient C = 100.
+    ///
+    /// Hazen's rule is k\[cm/s\] = C · d₁₀\[cm\]² with C ≈ 100.  Converting to
+    /// SI units (d₁₀ in m, k in m/s) gives k = 100 · C · d₁₀², i.e.
+    /// k = 10⁴ · d₁₀² \[m s⁻¹\] for C = 100 (d₁₀ = 0.1 mm gives 10⁻⁴ m/s, a
+    /// fine sand).
     ///
     /// # Parameters
     /// - `d10`: effective grain size D₁₀ \[m\].
@@ -322,10 +336,21 @@ impl Soil {
     /// # Returns
     /// Hydraulic conductivity \[m s⁻¹\].
     pub fn permeability_hazen(&self, d10: f64) -> f64 {
-        // Hazen constant C ≈ 0.0116 for d10 in metres, k in m/s
-        // (originally C=1 with d10 in cm, k in cm/s; converted here)
-        let c = 0.01; // dimensionless, SI units
-        c * d10 * d10
+        self.permeability_hazen_with(d10, HAZEN_C_CGS)
+    }
+
+    /// Hazen hydraulic conductivity with a caller-supplied coefficient.
+    ///
+    /// k\[m/s\] = 100 · `c_cgs` · d₁₀\[m\]², where `c_cgs` is Hazen's C in the
+    /// original centimetre-second form k\[cm/s\] = C · d₁₀\[cm\]² (about 100 for
+    /// clean sands, with a total range of roughly 1 to 1000 across soils).
+    ///
+    /// # Parameters
+    /// - `d10`: effective grain size D₁₀ \[m\].
+    /// - `c_cgs`: Hazen coefficient C for k in cm/s and d₁₀ in cm.
+    pub fn permeability_hazen_with(&self, d10: f64, c_cgs: f64) -> f64 {
+        // k[m/s] = 1e-2 · C · (1e2 · d10[m])² = 100 · C · d10²
+        100.0 * c_cgs * d10 * d10
     }
 
     /// Undrained shear strength c_u from the Skempton (1957) correlation:
@@ -527,7 +552,44 @@ mod tests {
     fn test_triaxial_volumetric_strain() {
         let rock = granite();
         let (_, ev) = rock.triaxial_deformation(200e6, 10e6);
-        assert!(ev.is_finite());
+        // ε_v = (σ₁ + 2σ₃)(1 − 2ν)/E = 220e6 · 0.5 / 70e9
+        let expected = (200e6 + 2.0 * 10e6) * (1.0 - 2.0 * 0.25) / 70e9;
+        assert!(
+            (ev - expected).abs() / expected.abs() < 1e-12,
+            "ε_v = {ev}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn test_triaxial_volumetric_strain_matches_axial_plus_twice_lateral() {
+        let rock = granite();
+        let (sigma1, sigma3) = (200e6, 10e6);
+        let (eps1, ev) = rock.triaxial_deformation(sigma1, sigma3);
+        // Independent route: ε₃ = (σ₃ − ν(σ₁ + σ₃))/E, ε_v = ε₁ + 2ε₃.
+        let nu = rock.poisson_ratio;
+        let eps3 = (sigma3 - nu * (sigma1 + sigma3)) / rock.youngs_modulus;
+        let expected = eps1 + 2.0 * eps3;
+        assert!(
+            (ev - expected).abs() / expected.abs() < 1e-12,
+            "ε_v = {ev}, ε₁ + 2ε₃ = {expected}"
+        );
+    }
+
+    #[test]
+    fn test_triaxial_hydrostatic_volumetric_strain_is_sigma_over_bulk_modulus() {
+        let rock = granite();
+        let sigma = 10e6;
+        let (eps1, ev) = rock.triaxial_deformation(sigma, sigma);
+        let bulk = rock.youngs_modulus / (3.0 * (1.0 - 2.0 * rock.poisson_ratio));
+        let expected = sigma / bulk;
+        assert!(
+            (ev - expected).abs() / expected < 1e-12,
+            "hydrostatic ε_v = {ev}, σ/K = {expected}"
+        );
+        // Compression-positive hydrostatic loading must give a positive volumetric strain
+        // with the same sign as the axial strain.
+        assert!(ev > 0.0 && eps1 > 0.0);
+        assert!((ev - 3.0 * eps1).abs() / ev < 1e-12);
     }
 
     // --- PoroelasticMaterial ---
@@ -609,8 +671,33 @@ mod tests {
     #[test]
     fn test_hazen_permeability() {
         let s = london_clay();
-        let k = s.permeability_hazen(0.0001); // d10 = 0.1 mm
-        assert!(k > 0.0 && k < 1.0);
+        let k = s.permeability_hazen(0.0001); // d10 = 0.1 mm (fine sand)
+        // C = 100 with k[cm/s] = C d10[cm]²: 100 · (0.01)² = 1e-2 cm/s = 1e-4 m/s.
+        assert!(
+            (k - 1.0e-4).abs() / 1.0e-4 < 1e-12,
+            "Hazen k(d10 = 0.1 mm) = {k} m/s, expected 1e-4 m/s"
+        );
+    }
+
+    #[test]
+    fn test_hazen_permeability_matches_cgs_formula() {
+        let s = london_clay();
+        let d10_m: f64 = 2.5e-4;
+        let d10_cm = d10_m * 100.0;
+        let k_cm_s = 100.0 * d10_cm * d10_cm;
+        let k_m_s = s.permeability_hazen(d10_m);
+        assert!((k_m_s - k_cm_s * 1.0e-2).abs() / k_m_s < 1e-12);
+    }
+
+    #[test]
+    fn test_hazen_permeability_with_custom_coefficient_scales_linearly_and_quadratically() {
+        let s = london_clay();
+        let base = s.permeability_hazen_with(1.0e-4, 100.0);
+        assert!((base - s.permeability_hazen(1.0e-4)).abs() < 1e-18);
+        let half_c = s.permeability_hazen_with(1.0e-4, 50.0);
+        assert!((half_c - 0.5 * base).abs() / base < 1e-12);
+        let double_d = s.permeability_hazen_with(2.0e-4, 100.0);
+        assert!((double_d - 4.0 * base).abs() / base < 1e-12);
     }
 
     #[test]

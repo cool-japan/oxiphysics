@@ -164,7 +164,12 @@ mod tests_toi {
         let s2 = EnhSphere::new([1.9, 0.0, 0.0], 0.5);
         let res = gjk_time_of_impact(&s1, &s2, [1.0, 0.0, 0.0], 64, 1e-3);
         assert!(res.hit, "approaching spheres should hit");
-        assert!(res.toi <= 1.0);
+        // The surfaces are 0.9 apart and close at speed 1: first contact at
+        // t = 0.9. The reported time never exceeds it and is within the
+        // tolerance of it. The normal points from B (to the right) toward A.
+        assert!(res.toi <= 0.9 + 1e-9, "toi {} is late", res.toi);
+        assert!(res.toi > 0.9 - 2e-3, "toi {} is early", res.toi);
+        assert!(res.normal[0] < -0.99, "normal {:?}", res.normal);
     }
     #[test]
     fn test_toi_diverging_spheres() {
@@ -172,6 +177,7 @@ mod tests_toi {
         let s2 = EnhSphere::new([5.0, 0.0, 0.0], 0.5);
         let res = gjk_time_of_impact(&s1, &s2, [-1.0, 0.0, 0.0], 32, 1e-3);
         assert!(!res.hit, "diverging spheres should not hit");
+        assert_eq!(res.toi, 1.0);
     }
     #[test]
     fn test_toi_lateral_motion() {
@@ -179,6 +185,7 @@ mod tests_toi {
         let s2 = EnhSphere::new([0.0, 5.0, 0.0], 0.5);
         let res = gjk_time_of_impact(&s1, &s2, [1.0, 0.0, 0.0], 32, 1e-3);
         assert!(!res.hit, "lateral motion should not hit");
+        assert_eq!(res.toi, 1.0);
     }
 }
 #[cfg(test)]

@@ -2,6 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use crate::random::{SOBOL_BITS, SOBOL_MAX_DIM, sobol_directions, sobol_state_at};
+
 /// Type alias for a conditional mean function used in Gibbs sampling.
 pub type ConditionalMeanFn = Box<dyn Fn(usize, &[f64]) -> f64>;
 
@@ -143,37 +145,41 @@ impl Lcg {
         (r * theta.cos(), r * theta.sin())
     }
 }
-/// Simplified 1-D Sobol quasi-random sequence.
+/// One-dimensional Sobol quasi-random sequence.
 ///
-/// Direction numbers are the powers of two shifted into the most-significant
-/// bits of a 32-bit word: `[1<<31, 1<<30, 1<<29, …]`, which corresponds to
-/// the standard `m_i = i` initialisation for dimension 1.
+/// The first coordinate of every Sobol sequence is the base-2 van der Corput
+/// sequence (all initial direction integers `m_k = 1`, i.e. the direction
+/// numbers `[1<<31, 1<<30, 1<<29, ...]`), so this generator is exactly the
+/// first coordinate of [`SobolSequence`] rather than an approximation of it.
+/// Point 0 is the origin and the sequence repeats after `2^32` points.
 pub struct Sobol {
-    /// Number of active dimensions (always 1 for this simplified version).
+    /// Number of active dimensions (always 1 for this generator).
     pub(super) _dim: usize,
     /// How many points have been generated so far.
     pub(super) count: usize,
-    /// Direction numbers, one `Vec`u32` per dimension.
+    /// Direction numbers, one `Vec<u32>` per dimension.
     pub(super) direction_numbers: Vec<Vec<u32>>,
 }
 impl Sobol {
-    const BITS: usize = 32;
+    const BITS: usize = SOBOL_BITS;
     /// Create a 1-D Sobol generator.
     pub fn new_1d() -> Self {
-        let v: Vec<u32> = (0..Self::BITS)
-            .map(|i| 1u32 << (Self::BITS - 1 - i))
+        let direction_numbers = SobolSequence::direction_table(1)
+            .iter()
+            .map(|numbers| numbers.to_vec())
             .collect();
         Self {
             _dim: 1,
             count: 0,
-            direction_numbers: vec![v],
+            direction_numbers,
         }
     }
     /// Return the next 1-D Sobol point in `\[0, 1)`.
     pub fn next_1d(&mut self) -> f64 {
         let v = &self.direction_numbers[0];
-        let c = self.count;
-        self.count += 1;
+        // The 32-bit construction has period 2^32: only the low 32 bits of the index matter.
+        let c = self.count & 0xFFFF_FFFF;
+        self.count = self.count.wrapping_add(1);
         let gray = c ^ (c >> 1);
         let x = (0..Self::BITS)
             .filter(|&i| (gray >> i) & 1 == 1)
@@ -181,63 +187,94 @@ impl Sobol {
         x as f64 / (1u64 << Self::BITS) as f64
     }
 }
-/// Multi-dimensional Sobol quasi-random sequence (dims 1-3).
+/// Multi-dimensional Sobol quasi-random sequence.
 ///
-/// Uses standard direction numbers for dimensions 1, 2, and 3.
+/// Every coordinate is generated from the Joe-Kuo direction numbers
+/// (`new-joe-kuo-6.21201`; Joe & Kuo, SIAM J. Sci. Comput. 30 (2008)) that are
+/// tabulated for [`SOBOL_MAX_DIM`] = 128 dimensions in [`crate::random`] and
+/// shared with [`crate::random::SobolSequence`]: coordinate 0 is the base-2 van
+/// der Corput sequence and the other coordinates follow from the primitive
+/// polynomials and initial integers of the published table.
+///
+/// Point 0 is the origin, the resolution is `2^-32` and the sequence repeats
+/// after `2^32` points.  Every coordinate is a (0, 1)-sequence in base 2, so
+/// the first `2^m` points put exactly one point into each of the `2^m` equal
+/// sub-intervals of `[0, 1)` in every coordinate.
 pub struct SobolSequence {
-    /// Number of dimensions (1..=3).
+    /// Number of dimensions (`1..=SOBOL_MAX_DIM`).
     pub n_dims: usize,
 }
 impl SobolSequence {
-    const BITS: usize = 32;
-    /// Create a new Sobol sequence generator for `n_dims` dimensions (max 3).
+    /// Create a new Sobol sequence generator for `n_dims` dimensions.
+    ///
+    /// `n_dims` is clamped to `1..=SOBOL_MAX_DIM` (128), the number of
+    /// tabulated dimensions; [`crate::random::SobolSequence::new`] reports an
+    /// error for an unsupported dimension count instead.
     pub fn new(n_dims: usize) -> Self {
         Self {
-            n_dims: n_dims.clamp(1, 3),
+            n_dims: n_dims.clamp(1, SOBOL_MAX_DIM),
         }
     }
-    /// Direction numbers for dimension `dim` (0-indexed).
-    pub(crate) fn direction_numbers(dim: usize) -> Vec<u32> {
-        match dim {
-            0 => (0..Self::BITS)
-                .map(|i| 1u32 << (Self::BITS - 1 - i))
-                .collect(),
-            1 => {
-                let mut v = vec![0u32; Self::BITS];
-                v[0] = 1u32 << (Self::BITS - 1);
-                for i in 1..Self::BITS {
-                    v[i] = v[i - 1] ^ (v[i - 1] >> 1);
-                }
-                v
-            }
-            _ => {
-                let mut v = vec![0u32; Self::BITS];
-                v[0] = 1u32 << (Self::BITS - 1);
-                v[1] = 1u32 << (Self::BITS - 2);
-                for i in 2..Self::BITS {
-                    v[i] = v[i - 2] ^ (v[i - 1] >> 1) ^ v[i - 1];
-                }
-                v
-            }
-        }
+    /// Direction numbers `v_1 ... v_32` (scaled by `2^32`) of the first
+    /// `n_dims` coordinates.
+    ///
+    /// `n_dims` is clamped to [`SOBOL_MAX_DIM`], for which every coordinate is
+    /// tabulated, so the result always holds `min(n_dims, SOBOL_MAX_DIM)` entries.
+    pub(crate) fn direction_table(n_dims: usize) -> Vec<[u32; SOBOL_BITS]> {
+        (0..n_dims.min(SOBOL_MAX_DIM))
+            .filter_map(|dim| sobol_directions(dim).ok())
+            .collect()
     }
-    /// Generate `n` Sobol points.  Each point is a `Vec`f64` of length `n_dims`
-    /// with values in `[0, 1)`.
+    /// Points `start .. start + count` of the Sobol sequence whose coordinates
+    /// use the given direction numbers.
+    ///
+    /// The points follow the Antonov-Saleev Gray-code update
+    /// `x_i = x_(i-1) ^ v[ctz(i)]`.  A non-empty `shifts` XORs coordinate `k`
+    /// with `shifts[k]` (a digital shift in base 2; coordinates without an
+    /// entry are not shifted).  Indices are taken modulo `2^32`, the period of
+    /// the 32-bit construction.
+    pub(crate) fn generate_block(
+        directions: &[[u32; SOBOL_BITS]],
+        shifts: &[u32],
+        start: usize,
+        count: usize,
+    ) -> Vec<Vec<f64>> {
+        const PERIOD_MASK: usize = 0xFFFF_FFFF;
+        const SCALE: f64 = 1.0 / 4_294_967_296.0;
+        let mut state: Vec<u32> = if start == 0 {
+            vec![0u32; directions.len()]
+        } else {
+            let previous = ((start - 1) & PERIOD_MASK) as u32;
+            directions
+                .iter()
+                .map(|numbers| sobol_state_at(numbers, previous))
+                .collect()
+        };
+        let mut points = Vec::with_capacity(count);
+        for offset in 0..count {
+            let position = (start.wrapping_add(offset) & PERIOD_MASK) as u32;
+            if position == 0 {
+                state.fill(0);
+            } else {
+                let bit = position.trailing_zeros() as usize;
+                for (x, numbers) in state.iter_mut().zip(directions.iter()) {
+                    *x ^= numbers[bit];
+                }
+            }
+            points.push(
+                state
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &x)| f64::from(x ^ shifts.get(k).copied().unwrap_or(0)) * SCALE)
+                    .collect(),
+            );
+        }
+        points
+    }
+    /// Generate the first `n` Sobol points.  Each point is a `Vec<f64>` of
+    /// length `n_dims` (at most [`SOBOL_MAX_DIM`]) with values in `[0, 1)`.
     pub fn sample(&self, n: usize) -> Vec<Vec<f64>> {
-        let dir: Vec<Vec<u32>> = (0..self.n_dims).map(Self::direction_numbers).collect();
-        let mut result = Vec::with_capacity(n);
-        for idx in 0..n {
-            let gray = idx ^ (idx >> 1);
-            let mut point = Vec::with_capacity(self.n_dims);
-            for dir_d in dir.iter() {
-                let x = (0..Self::BITS)
-                    .filter(|&i| (gray >> i) & 1 == 1)
-                    .fold(0u32, |acc, i| acc ^ dir_d[i]);
-                point.push(x as f64 / (1u64 << Self::BITS) as f64);
-            }
-            result.push(point);
-        }
-        result
+        Self::generate_block(&Self::direction_table(self.n_dims), &[], 0, n)
     }
 }
 /// Latin Hypercube sampler.

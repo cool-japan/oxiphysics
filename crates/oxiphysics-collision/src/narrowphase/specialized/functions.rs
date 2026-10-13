@@ -2,10 +2,13 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use crate::types::Contact;
+use crate::narrowphase::dispatch::box_box_manifold;
+use crate::narrowphase::epa::Epa;
+use crate::narrowphase::gjk::{Gjk, GjkResult, mpr_contact};
+use crate::types::{CollisionPair, Contact};
 use oxiphysics_core::Transform;
 use oxiphysics_core::math::{Real, Vec3};
-use oxiphysics_geometry::{BoxShape, Capsule, Cone, Cylinder, Sphere, Torus};
+use oxiphysics_geometry::{BoxShape, Capsule, Cone, ConvexHull, Cylinder, Sphere, Torus};
 
 use super::types::{CylinderContactMode, CylinderContactResult};
 
@@ -28,6 +31,15 @@ pub fn sphere_sphere(s1: &Sphere, t1: &Transform, s2: &Sphere, t2: &Transform) -
     Some(Contact::new(point_a, point_b, normal, depth))
 }
 /// Sphere-box collision test.
+///
+/// The returned [`Contact`] follows the crate convention: `normal` points from
+/// the box (body B) towards the sphere (body A), `point_a` is the point of the
+/// sphere surface facing the box, `point_b` is the point of the box surface
+/// closest to the sphere centre, and `point_b - point_a == normal * depth`.
+///
+/// When the sphere centre lies inside the box the sphere leaves through the face
+/// with the smallest penetration `pen`; the depth is then `radius + pen` (the
+/// whole sphere has to clear that face) and `point_b` lies on that face.
 pub fn sphere_box(
     sphere: &Sphere,
     sphere_t: &Transform,
@@ -36,16 +48,11 @@ pub fn sphere_box(
 ) -> Option<Contact> {
     let inv_box = box_t.inverse();
     let local_center = inv_box.transform_point(&sphere_t.position);
+    let half = box_shape.half_extents;
     let clamped = Vec3::new(
-        local_center
-            .x
-            .clamp(-box_shape.half_extents.x, box_shape.half_extents.x),
-        local_center
-            .y
-            .clamp(-box_shape.half_extents.y, box_shape.half_extents.y),
-        local_center
-            .z
-            .clamp(-box_shape.half_extents.z, box_shape.half_extents.z),
+        local_center.x.clamp(-half.x, half.x),
+        local_center.y.clamp(-half.y, half.y),
+        local_center.z.clamp(-half.z, half.z),
     );
     let diff = local_center - clamped;
     let dist_sq = diff.norm_squared();
@@ -53,130 +60,99 @@ pub fn sphere_box(
         return None;
     }
     let dist = dist_sq.sqrt();
-    let local_normal = if dist > 1e-10 {
-        diff / dist
+    // `local_normal` points from the box surface towards the sphere centre and
+    // `surface` is the box-surface point the sphere penetrates through.
+    let (local_normal, surface, depth) = if dist > 1e-10 {
+        (diff / dist, clamped, sphere.radius - dist)
     } else {
-        let dx = box_shape.half_extents.x - local_center.x.abs();
-        let dy = box_shape.half_extents.y - local_center.y.abs();
-        let dz = box_shape.half_extents.z - local_center.z.abs();
-        if dx <= dy && dx <= dz {
-            Vec3::new(local_center.x.signum(), 0.0, 0.0)
-        } else if dy <= dz {
-            Vec3::new(0.0, local_center.y.signum(), 0.0)
+        // Centre inside (or on the boundary of) the box: leave through the
+        // nearest face.
+        let pen = [
+            half.x - local_center.x.abs(),
+            half.y - local_center.y.abs(),
+            half.z - local_center.z.abs(),
+        ];
+        let axis = if pen[0] <= pen[1] && pen[0] <= pen[2] {
+            0
+        } else if pen[1] <= pen[2] {
+            1
         } else {
-            Vec3::new(0.0, 0.0, local_center.z.signum())
-        }
+            2
+        };
+        let sign = if local_center[axis] >= 0.0 { 1.0 } else { -1.0 };
+        let mut normal = Vec3::zeros();
+        normal[axis] = sign;
+        let mut face_point = local_center;
+        face_point[axis] = sign * half[axis];
+        (normal, face_point, sphere.radius + pen[axis])
     };
-    let depth = sphere.radius - dist;
     let world_normal = box_t.transform_vector(&local_normal);
-    let point_b = box_t.transform_point(&clamped);
-    let point_a = sphere_t.position - world_normal * (sphere.radius - depth);
+    let point_b = box_t.transform_point(&surface);
+    let point_a = sphere_t.position - world_normal * sphere.radius;
     Some(Contact::new(point_a, point_b, world_normal, depth))
 }
-/// Box-box SAT (Separating Axis Theorem) collision test.
+/// Box-box SAT (Separating Axis Theorem) collision test returning one contact.
+///
+/// The 15 candidate axes (3 face normals of each box and the 9 edge-edge cross
+/// products, normalised so that depths are true distances) are evaluated by the
+/// same separating-axis search that drives the full box-box manifold
+/// ([`box_box_manifold`]); the minimum-overlap axis gives the normal and the
+/// contact patch of that axis gives the witness points.
+///
+/// The returned [`Contact`] follows the crate convention: `normal` points from
+/// `box_b` towards `box_a`, `point_a` lies on the surface of `box_a`, `point_b`
+/// lies on the surface of `box_b` and `point_b - point_a == normal * depth`.
+/// When the contact patch is a face the points are the centroid of the deepest
+/// patch points, so the single contact does not bias a resting box towards a
+/// corner; use [`box_box_manifold`] when the full 4-point patch is needed.
+///
+/// Returns `None` when the boxes are separated.
 pub fn box_box_sat(
     box_a: &BoxShape,
     transform_a: &Transform,
     box_b: &BoxShape,
     transform_b: &Transform,
 ) -> Option<Contact> {
-    let rot_a = transform_a.rotation.to_rotation_matrix();
-    let rot_b = transform_b.rotation.to_rotation_matrix();
-    let t = transform_b.position - transform_a.position;
-    let t_local = Vec3::new(
-        rot_a.matrix().column(0).dot(&t),
-        rot_a.matrix().column(1).dot(&t),
-        rot_a.matrix().column(2).dot(&t),
-    );
-    let mut r = [[0.0; 3]; 3];
-    let mut abs_r = [[0.0; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            r[i][j] = rot_a.matrix().column(i).dot(&rot_b.matrix().column(j));
-            abs_r[i][j] = r[i][j].abs() + 1e-6;
-        }
+    let manifold = box_box_manifold(
+        box_a,
+        transform_a,
+        box_b,
+        transform_b,
+        CollisionPair::new(0, 1),
+    )
+    .manifold?;
+    let deepest = manifold
+        .contacts
+        .iter()
+        .map(|c| c.depth)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if !deepest.is_finite() {
+        return None;
     }
-    let ea = [
-        box_a.half_extents.x,
-        box_a.half_extents.y,
-        box_a.half_extents.z,
-    ];
-    let eb = [
-        box_b.half_extents.x,
-        box_b.half_extents.y,
-        box_b.half_extents.z,
-    ];
-    let t_arr = [t_local.x, t_local.y, t_local.z];
-    let mut min_depth = Real::INFINITY;
-    let mut min_axis = Vec3::new(0.0, 1.0, 0.0);
-    for i in 0..3 {
-        let ra = ea[i];
-        let rb = eb[0] * abs_r[i][0] + eb[1] * abs_r[i][1] + eb[2] * abs_r[i][2];
-        let depth = (ra + rb) - t_arr[i].abs();
-        if depth < 0.0 {
-            return None;
-        }
-        if depth < min_depth {
-            min_depth = depth;
-            let mut axis = Vec3::zeros();
-            axis[i] = if t_arr[i] >= 0.0 { 1.0 } else { -1.0 };
-            min_axis = rot_a.matrix() * axis;
-        }
+    let tie_tolerance = 1e-9 * (1.0 + deepest.abs());
+    let mut count = 0.0_f64;
+    let mut point_a = Vec3::zeros();
+    let mut point_b = Vec3::zeros();
+    let mut normal = Vec3::zeros();
+    for contact in manifold
+        .contacts
+        .iter()
+        .filter(|c| c.depth >= deepest - tie_tolerance)
+    {
+        point_a += contact.point_a;
+        point_b += contact.point_b;
+        normal = contact.normal;
+        count += 1.0;
     }
-    for j in 0..3 {
-        let ra = ea[0] * abs_r[0][j] + ea[1] * abs_r[1][j] + ea[2] * abs_r[2][j];
-        let rb = eb[j];
-        let sep = t_arr[0] * r[0][j] + t_arr[1] * r[1][j] + t_arr[2] * r[2][j];
-        let depth = (ra + rb) - sep.abs();
-        if depth < 0.0 {
-            return None;
-        }
-        if depth < min_depth {
-            min_depth = depth;
-            let mut axis = Vec3::zeros();
-            axis[j] = if sep >= 0.0 { 1.0 } else { -1.0 };
-            min_axis = rot_b.matrix() * axis;
-        }
+    if count < 1.0 {
+        return None;
     }
-    let edge_tests: [(usize, usize); 9] = [
-        (0, 0),
-        (0, 1),
-        (0, 2),
-        (1, 0),
-        (1, 1),
-        (1, 2),
-        (2, 0),
-        (2, 1),
-        (2, 2),
-    ];
-    for &(i, j) in &edge_tests {
-        let i1 = (i + 1) % 3;
-        let i2 = (i + 2) % 3;
-        let j1 = (j + 1) % 3;
-        let j2 = (j + 2) % 3;
-        let ra = ea[i1] * abs_r[i2][j] + ea[i2] * abs_r[i1][j];
-        let rb = eb[j1] * abs_r[i][j2] + eb[j2] * abs_r[i][j1];
-        let sep = t_arr[i2] * r[i1][j] - t_arr[i1] * r[i2][j];
-        let depth = (ra + rb) - sep.abs();
-        if depth < 0.0 {
-            return None;
-        }
-        let axis_a = rot_a.matrix().column(i).into_owned();
-        let axis_b = rot_b.matrix().column(j).into_owned();
-        let cross = axis_a.cross(&axis_b);
-        let cross_len = cross.norm();
-        if cross_len > 1e-6 && depth < min_depth {
-            min_depth = depth;
-            min_axis = cross / cross_len;
-            if min_axis.dot(&t) < 0.0 {
-                min_axis = -min_axis;
-            }
-        }
-    }
-    let normal = min_axis;
-    let point_a = transform_a.position + normal * min_depth * 0.5;
-    let point_b = transform_b.position - normal * min_depth * 0.5;
-    Some(Contact::new(point_a, point_b, normal, min_depth))
+    Some(Contact::new(
+        point_a / count,
+        point_b / count,
+        normal,
+        deepest,
+    ))
 }
 /// Sphere-capsule collision test.
 ///
@@ -700,7 +676,10 @@ pub fn heightfield_sphere(
 /// Torus vs infinite plane contact.
 ///
 /// The torus lies in its local XZ plane; its symmetry axis is local Y.
-/// Plane: `dot(n_hat, x) = d`.
+/// Plane: `dot(n_hat, x) = d`; the torus is in contact when its point of
+/// least `dot(n_hat, x)` lies below the plane. The contact `normal` is the unit
+/// plane normal (from the plane towards the torus), `point_a` is the deepest
+/// torus surface point and `point_b` its projection onto the plane.
 pub fn torus_plane(
     torus: &Torus,
     torus_t: &Transform,
@@ -733,7 +712,11 @@ pub fn torus_plane(
             Vec3::new(1.0, 0.0, 0.0)
         }
     };
-    let major_pt = center + major_dir * torus.major_radius;
+    // The ring point that minimises `n_hat . x` lies on the side of the centre
+    // opposite to the radial part of the plane normal, and the tube point of
+    // that ring section nearest the plane lies a minor radius along `-n_hat`
+    // (`n_hat` lies in the plane spanned by `major_dir` and the torus axis).
+    let major_pt = center - major_dir * torus.major_radius;
     let surface_pt = major_pt - n_hat * torus.minor_radius;
     let dist = n_hat.dot(&surface_pt) - plane_d;
     if dist > 0.0 {
@@ -1079,8 +1062,16 @@ pub fn rounded_box_rounded_box(
 }
 /// Convex hull vs convex hull contact using GJK + EPA.
 ///
-/// Given two convex hulls represented as vertex arrays, returns a contact
-/// if the hulls intersect.
+/// Each hull is given as a vertex cloud in its local frame together with its
+/// world transform (rotation included). The hulls are wrapped in
+/// [`ConvexHull`] and run through [`Gjk::query`]; for an intersecting pair the
+/// penetration normal, depth and witness points come from [`Epa`], falling back
+/// to the XenoCollide-style [`mpr_contact`] when EPA fails on a degenerate
+/// simplex. The result follows the crate [`Contact`] convention: the normal
+/// points from hull B towards hull A, `point_a` lies on hull A, `point_b` on
+/// hull B and `depth` is the true minimum translation distance.
+///
+/// Returns `None` when either vertex set is empty or the hulls are separated.
 pub fn convex_hull_vs_convex_hull(
     verts_a: &[Vec3],
     transform_a: &Transform,
@@ -1090,41 +1081,21 @@ pub fn convex_hull_vs_convex_hull(
     if verts_a.is_empty() || verts_b.is_empty() {
         return None;
     }
-    if !convex_convex_gjk_intersect(verts_a, transform_a, verts_b, transform_b) {
-        return None;
+    let hull_a = ConvexHull::new(verts_a.to_vec());
+    let hull_b = ConvexHull::new(verts_b.to_vec());
+    match Gjk::query(&hull_a, transform_a, &hull_b, transform_b) {
+        GjkResult::Separated { .. } => None,
+        GjkResult::Intersecting(simplex) => {
+            Epa::penetration_depth(&hull_a, transform_a, &hull_b, transform_b, &simplex)
+                .or_else(|| mpr_contact(&hull_a, transform_a, &hull_b, transform_b))
+        }
     }
-    let diff = transform_b.position - transform_a.position;
-    let dist = diff.norm();
-    let normal = if dist > 1e-10 {
-        diff / dist
-    } else {
-        Vec3::new(0.0, 1.0, 0.0)
-    };
-    fn hull_support(verts: &[Vec3], dir: &Vec3) -> Vec3 {
-        verts
-            .iter()
-            .copied()
-            .max_by(|a, b| {
-                a.dot(dir)
-                    .partial_cmp(&b.dot(dir))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .unwrap_or(Vec3::zeros())
-    }
-    let sa = hull_support(verts_a, &normal);
-    let sa_world = transform_a.transform_point(&sa);
-    let sb = hull_support(verts_b, &(-normal));
-    let sb_world = transform_b.transform_point(&sb);
-    let depth = (sa_world - sb_world).dot(&normal);
-    if depth <= 0.0 {
-        return None;
-    }
-    Some(Contact::new(sa_world, sb_world, normal, depth))
 }
-/// Convex hull GJK intersection returning contact depth and normal via EPA.
+/// Convex hull contact via GJK + EPA.
 ///
-/// Uses the standalone GJK vertex-array path from `convex_convex_gjk_intersect`
-/// and then runs a simplified EPA to extract the contact normal.
+/// Equivalent to [`convex_hull_vs_convex_hull`]: the same GJK intersection
+/// test, EPA penetration query and MPR fallback, with the contact normal
+/// pointing from hull B towards hull A.
 pub fn convex_hull_contact_gjk_epa(
     verts_a: &[Vec3],
     transform_a: &Transform,
@@ -1743,7 +1714,17 @@ mod tests {
         let t1 = Transform::from_position(Vec3::new(0.0, 0.0, 0.0));
         let t2 = Transform::from_position(Vec3::new(0.0, 0.0, 0.0));
         let contact = sphere_box(&s, &t1, &b, &t2).expect("sphere inside box must produce contact");
-        assert!(contact.depth > 0.0);
+        // The centre is 2.0 from the nearest face and the radius is 0.1, so the
+        // sphere has to travel 2.1 to get clear.
+        assert!(
+            (contact.depth - 2.1).abs() < 1e-12,
+            "depth {}",
+            contact.depth
+        );
+        assert!(
+            (contact.point_a.norm() - 0.1).abs() < 1e-12,
+            "point_a lies on the sphere surface"
+        );
     }
     #[test]
     fn test_sphere_mesh_contact_above_plane() {

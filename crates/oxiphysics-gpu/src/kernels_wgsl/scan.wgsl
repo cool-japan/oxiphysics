@@ -23,13 +23,24 @@ fn scan_block(
     @builtin(global_invocation_id) gid_vec: vec3<u32>,
     @builtin(local_invocation_id) lid_vec: vec3<u32>,
     @builtin(workgroup_id) wg_vec: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
     let lid = lid_vec.x;
-    let gid = gid_vec.x;
-    let wg_id = wg_vec.x;
+    // A dispatch wider than one dimension allows is folded into y (see
+    // `dispatch_count_for`): linearise the invocation and workgroup indices.
+    let gid = gid_vec.x + gid_vec.y * nwg.x * 256u;
+    let wg_id = wg_vec.x + wg_vec.y * nwg.x;
     let n = params.n;
+    // The folded grid can contain whole workgroups past the last block; they
+    // still run the (barrier-synchronised) scan on zeros but must not read the
+    // input or write `block_sums`.
+    let in_range = wg_id < n / 256u + select(0u, 1u, (n % 256u) != 0u);
 
-    shared_data[lid] = input[gid];
+    var loaded: u32 = 0u;
+    if (in_range) {
+        loaded = input[gid];
+    }
+    shared_data[lid] = loaded;
     workgroupBarrier();
 
     var offset_val: u32 = 1u;
@@ -47,7 +58,9 @@ fn scan_block(
     }
 
     if (lid == 0u) {
-        block_sums[wg_id] = shared_data[255u];
+        if (in_range) {
+            block_sums[wg_id] = shared_data[255u];
+        }
         shared_data[255u] = 0u;
     }
     workgroupBarrier();

@@ -5,10 +5,9 @@
 use oxiphysics_core::Transform;
 use oxiphysics_core::math::{Quat, Unit, Vec3};
 
-use super::types::{
-    AbaLinkData, ArticulatedChain2D, ArticulatedLink2D, ExternalForce, JointDof, RneaLink,
-    SpatialInertia, SpatialVec,
-};
+use super::planar_chain::{PlanarChain, coaxial_inertia_matrix, coaxial_kinetic_energy};
+use super::types::{ArticulatedChain2D, ArticulatedLink2D, ExternalForce, JointDof};
+use crate::error::Result;
 
 /// Build the incremental `Transform` produced by a joint at coordinate `q`.
 pub(super) fn joint_displacement(joint: &JointDof, q: f64) -> Transform {
@@ -494,12 +493,24 @@ mod tests {
         assert_eq!(JointType::Fixed, JointType::Fixed);
     }
 }
-/// Compute the inverse dynamics (joint torques) for a single revolute joint
-/// chain using the Recursive Newton-Euler Algorithm.
+/// Compute the inverse dynamics (joint torques) of a planar chain of `n`
+/// uniform slender rods with the Recursive Newton-Euler Algorithm.
 ///
-/// This is a simplified 1-DOF (revolute-z) version for `n` links.
+/// All joints are revolute about the z axis. `q[i]` is the angle of link `i`
+/// relative to its parent (the absolute angle of link `i` is
+/// `q[0] + ... + q[i]`), the centre of mass of each rod is at its midpoint and
+/// its moment of inertia about it is `m l² / 12`. For links with other
+/// inertias use [`rnea_3d_revolute_z`], which this function delegates to.
 ///
-/// Returns `Vec`f64` of joint torques.
+/// The returned torque of joint `i` is the torque the actuator must apply for
+/// the sub-chain distal to it to move with the accelerations `qdd` under
+/// `gravity`; it includes the weight of all distal links with their true lever
+/// arms, and the Coriolis, centrifugal and inertial terms.
+///
+/// Missing entries of `masses` and `lengths` default to 1, missing entries of
+/// `q`, `qd` and `qdd` to 0, and `n == 0` returns an empty vector.
+///
+/// Returns a `Vec<f64>` of joint torques (N·m).
 pub fn rnea_revolute_chain(
     n: usize,
     masses: &[f64],
@@ -509,41 +520,7 @@ pub fn rnea_revolute_chain(
     qdd: &[f64],
     gravity: [f64; 3],
 ) -> Vec<f64> {
-    assert!(n > 0);
-    let mut links: Vec<RneaLink> = vec![RneaLink::default(); n];
-    let a_base = SpatialVec::new([0.0; 3], [-gravity[0], -gravity[1], -gravity[2]]);
-    for i in 0..n {
-        let q_i = q[i];
-        let qd_i = qd[i];
-        let qdd_i = qdd[i];
-        let s = SpatialVec::new([0.0, 0.0, 1.0], [0.0; 3]);
-        links[i].velocity = if i == 0 {
-            s.scale(qd_i)
-        } else {
-            links[i - 1].velocity.add(&s.scale(qd_i))
-        };
-        let parent_acc = if i == 0 {
-            a_base
-        } else {
-            links[i - 1].acceleration
-        };
-        let v_i = links[i].velocity;
-        let coriolis = v_i.cross_motion(&s.scale(qd_i));
-        links[i].acceleration = parent_acc.add(&s.scale(qdd_i)).add(&coriolis);
-        let m = masses.get(i).copied().unwrap_or(1.0);
-        let l = lengths.get(i).copied().unwrap_or(1.0);
-        let com = [l / 2.0 * q_i.cos(), l / 2.0 * q_i.sin(), 0.0];
-        let i_zz = m * l * l / 3.0;
-        let inertia = SpatialInertia::new(m, com, [[0.0; 3], [0.0; 3], [0.0, 0.0, i_zz]]);
-        links[i].force = inertia.multiply(&links[i].acceleration);
-    }
-    let mut torques = vec![0.0_f64; n];
-    let s = SpatialVec::new([0.0, 0.0, 1.0], [0.0; 3]);
-    for i in (0..n).rev() {
-        let f = links[i].force;
-        torques[i] = f.dot(&s);
-    }
-    torques
+    PlanarChain::uniform_rods(n, masses, lengths).inverse_dynamics(q, qd, qdd, gravity)
 }
 /// Compute the composite rigid-body inertia for a single link by combining
 /// the link's own inertia with those of its children.
@@ -635,6 +612,12 @@ mod tests_featherstone {
             rnea_revolute_chain(1, &[1.0], &[1.0], &[0.0], &[0.0], &[0.0], [0.0, -9.81, 0.0]);
         assert_eq!(taus.len(), 1);
         assert!(taus[0].is_finite(), "torque should be finite: {}", taus[0]);
+        // A horizontal uniform rod must be held against its weight: m g l / 2.
+        assert!(
+            (taus[0] - 9.81 * 0.5).abs() < 1e-12,
+            "holding torque should be m g l/2, got {}",
+            taus[0]
+        );
     }
     #[test]
     fn test_composite_rigid_body_inertia_leaf() {
@@ -696,27 +679,38 @@ mod tests_featherstone {
         assert!((taus[1] - 20.0).abs() < 1e-10);
     }
 }
-/// Scalar (1-DOF per link) Articulated Body Algorithm for a revolute chain.
+/// Articulated Body Algorithm (forward dynamics) for a planar revolute chain.
 ///
-/// Given joint torques and the current state (q, q_dot), returns
-/// joint accelerations q_ddot via the ABA.
+/// Given joint torques and the current state (q, q_dot), returns the joint
+/// accelerations q_ddot with the `O(n)` Featherstone algorithm run in planar
+/// spatial algebra. The result includes gravity and the velocity-dependent
+/// Coriolis and centrifugal effects and satisfies
+/// `H(q) q_ddot + C(q, q_dot) + G(q) = τ`, so it agrees with
+/// [`forward_dynamics_full`] (which solves the same equation with a Cholesky
+/// factorisation) and inverts [`rnea_3d_revolute_z`].
 ///
 /// Assumptions:
-/// - All joints are revolute around the z-axis.
-/// - The joint motion subspace is scalar `s = 1`.
-/// - Inertias are scalar (moment about z).
+/// - All joints are revolute around the z-axis; `q[i]` is the angle of link
+///   `i` relative to its parent.
+/// - Link `i` is a rod of length `lengths[i]` whose centre of mass is at its
+///   midpoint.
 ///
 /// # Arguments
 /// * `n`       – number of links
-/// * `inertias`– moment of inertia of each link about its joint axis (kg·m²)
+/// * `inertias`– moment of inertia of each link about its centre of mass
+///   (kg·m²), `m l² / 12` for a uniform rod
 /// * `masses`  – mass of each link (kg)
-/// * `lengths` – link length (m), used for gravity torque
+/// * `lengths` – link length (m)
 /// * `q`       – joint positions (rad)
 /// * `qd`      – joint velocities (rad/s)
 /// * `torques` – applied joint torques (N·m)
 /// * `gravity` – gravitational acceleration vector [gx, gy, gz] (m/s²)
 ///
-/// Returns `Vec`f64` of joint accelerations (rad/s²).
+/// Missing entries default to 1 for `inertias`, `masses` and `lengths` and to 0
+/// for `q`, `qd` and `torques`. A joint whose articulated inertia vanishes (a
+/// massless distal chain) cannot be accelerated and reports 0.
+///
+/// Returns a `Vec<f64>` of joint accelerations (rad/s²).
 pub fn aba_revolute_chain(
     n: usize,
     inertias: &[f64],
@@ -727,71 +721,61 @@ pub fn aba_revolute_chain(
     torques: &[f64],
     gravity: [f64; 3],
 ) -> Vec<f64> {
-    if n == 0 {
-        return Vec::new();
-    }
-    let mut data: Vec<AbaLinkData> = vec![AbaLinkData::default(); n];
-    let mut v_cumulative = 0.0_f64;
-    for i in 0..n {
-        let qd_i = qd.get(i).copied().unwrap_or(0.0);
-        v_cumulative += qd_i;
-        data[i].v = v_cumulative;
-        let i_i = inertias.get(i).copied().unwrap_or(1.0);
-        data[i].abi = i_i;
-        let m_i = masses.get(i).copied().unwrap_or(1.0);
-        let l_i = lengths.get(i).copied().unwrap_or(1.0);
-        let q_i = q.get(i).copied().unwrap_or(0.0);
-        let abs_angle: f64 = q[..=i].iter().sum();
-        let g_perp = -gravity[0] * abs_angle.sin() + gravity[1] * abs_angle.cos();
-        data[i].bias = -m_i * g_perp * (l_i / 2.0);
-        let _ = q_i;
-    }
-    for i in (0..(n - 1)).rev() {
-        let child = i + 1;
-        data[i].abi += data[child].abi;
-        data[i].bias += data[child].bias;
-    }
-    let mut a_parent = 0.0_f64;
-    let mut result = vec![0.0_f64; n];
-    for i in 0..n {
-        let tau_i = torques.get(i).copied().unwrap_or(0.0);
-        let abi_i = data[i].abi.max(1e-30);
-        let qdd_i = (tau_i - data[i].bias - a_parent) / abi_i;
-        result[i] = qdd_i;
-        a_parent += qdd_i;
-    }
-    result
+    PlanarChain::new(n, masses, lengths, inertias).forward_dynamics(q, qd, torques, gravity)
 }
-/// Assemble the joint-space inertia matrix H (n×n) for a revolute chain.
+/// Assemble the joint-space inertia matrix of a *coaxial* rotor chain.
 ///
-/// Uses the Composite Rigid Body (CRB) algorithm:
-/// H_ij = s_i · I_C_i · s_j  where s is the joint motion axis and I_C is
-/// the composite inertia.
+/// `H_ij = Σ_{k = max(i,j)}^{n-1} I_k`: every body rotates about the same axis
+/// through the same point (a stack of flywheels), so the matrix does not depend
+/// on the configuration. A planar arm whose links are offset from one another
+/// has a configuration-dependent matrix (its coupling terms contain
+/// `m_k l_i l_ck cos q`), which this function cannot represent; use
+/// [`joint_space_inertia_matrix_planar`] for such chains.
 ///
-/// For a simple scalar revolute chain (all joints about z):
-/// H_ij = Σ_{k = max(i,j)}^{n-1}  I_k  (contribution of links distal to both joints).
-///
-/// Returns the n×n symmetric matrix as a flat `Vec`f64` in row-major order.
+/// Returns the n×n symmetric matrix as a flat `Vec<f64>` in row-major order.
+#[deprecated(
+    since = "0.1.3",
+    note = "describes a coaxial rotor chain and ignores the configuration; use `joint_space_inertia_matrix_planar` for planar arms"
+)]
 pub fn joint_space_inertia_matrix(n: usize, inertias: &[f64]) -> Vec<f64> {
-    let mut h = vec![0.0_f64; n * n];
-    for i in 0..n {
-        for j in 0..n {
-            let start = i.max(j);
-            let val: f64 = (start..n)
-                .map(|k| inertias.get(k).copied().unwrap_or(0.0))
-                .sum();
-            h[i * n + j] = val;
-        }
-    }
-    h
+    coaxial_inertia_matrix(n, inertias)
 }
-/// Compute gravity compensation torques for a revolute chain.
+/// Assemble the joint-space inertia matrix `H(q)` (n×n) of a planar revolute
+/// chain with the Composite Rigid Body method.
 ///
-/// The gravity compensation torque at joint i is:
-/// τ_g_i = Σ_{j=i}^{n-1}  m_j * g_perp_j * r_{ij}
+/// `H_kl = Σ_{j ≥ max(k,l)} ( m_j (c_j − p_k)·(c_j − p_l) + I_j )`, the sum over
+/// the links distal to both joints of the translational and rotational kinetic
+/// energy contributions `m_j J_vjᵀ J_vj + I_j J_ωjᵀ J_ωj`, where `p_k` is the
+/// origin of joint `k`, `c_j` the centre of mass of link `j` (at its midpoint,
+/// from the cumulative joint angles `q`) and `I_j` its moment of inertia about
+/// it. The matrix therefore depends on the configuration, for example through
+/// the `m_2 l_1 l_c2 cos q_2` coupling of a two-link arm.
 ///
-/// where `g_perp_j` is the component of gravity perpendicular to the
-/// link j axis, and `r_{ij}` is the distance from joint i to the COM of link j.
+/// Missing entries default to 1 for `masses`, `lengths` and `inertias_com` and
+/// to 0 for `q`.
+///
+/// Returns the n×n symmetric positive-definite matrix as a flat `Vec<f64>` in
+/// row-major order.
+pub fn joint_space_inertia_matrix_planar(
+    n: usize,
+    masses: &[f64],
+    lengths: &[f64],
+    inertias_com: &[f64],
+    q: &[f64],
+) -> Vec<f64> {
+    PlanarChain::new(n, masses, lengths, inertias_com).mass_matrix(q)
+}
+/// Compute gravity compensation torques for a planar revolute chain.
+///
+/// The torque that holds joint `k` against gravity is
+/// `τ_k = Σ_{j ≥ k} m_j [(c_j − p_k) × (−g)]_z`, where `p_k` is the origin of
+/// joint `k`, `c_j` the centre of mass of link `j` (at its midpoint) and `g` the
+/// gravity acceleration. The lever arm of every distal link is its actual
+/// offset from joint `k` in the current configuration, so the result is
+/// correct for bent chains and not only for straight ones. It equals the
+/// inverse dynamics at rest.
+///
+/// Missing entries of `masses` and `lengths` default to 1 and of `q` to 0.
 pub fn gravity_compensation_torques(
     n: usize,
     masses: &[f64],
@@ -799,29 +783,15 @@ pub fn gravity_compensation_torques(
     q: &[f64],
     gravity: [f64; 3],
 ) -> Vec<f64> {
-    let mut torques = vec![0.0_f64; n];
-    for i in 0..n {
-        let mut tau = 0.0;
-        for j in i..n {
-            let m_j = masses.get(j).copied().unwrap_or(1.0);
-            let l_j = lengths.get(j).copied().unwrap_or(1.0);
-            let abs_angle: f64 = q[..=j].iter().sum();
-            let g_perp = -gravity[0] * abs_angle.sin() + gravity[1] * abs_angle.cos();
-            let r: f64 = if j > i {
-                lengths[i..j].iter().sum::<f64>() + l_j / 2.0
-            } else {
-                l_j / 2.0
-            };
-            tau -= m_j * g_perp * r;
-        }
-        torques[i] = tau;
-    }
-    torques
+    PlanarChain::new(n, masses, lengths, &[]).gravity_torques(q, gravity)
 }
 /// Compute forward dynamics (joint accelerations) with applied external forces.
 ///
 /// External forces are projected onto the joint axis and added to the
-/// applied torques before running the ABA.
+/// applied torques before running the ABA ([`aba_revolute_chain`], whose
+/// conventions apply: `q[i]` is the angle of link `i` relative to its parent
+/// and `inertias[i]` the moment of inertia of link `i` about its centre of
+/// mass, `m l² / 12` for a uniform rod).
 pub fn forward_dynamics_with_external(
     n: usize,
     inertias: &[f64],
@@ -964,6 +934,24 @@ pub fn dls_ik_step_2d(jacobian: &[[f64; 2]], dx: [f64; 2], lambda: f64) -> Vec<f
 /// Compute the inverse dynamics for a planar revolute chain using the
 /// Newton-Euler recursive algorithm in 3-D (revolute about z).
 ///
+/// `inertias_zz[i]` is the moment of inertia of link `i` about the z axis
+/// through its centre of mass (kg·m², `m l² / 12` for a uniform rod); the
+/// centre of mass is at the midpoint of the link. `q[i]` is the angle of link
+/// `i` relative to its parent.
+///
+/// Forward pass: the absolute angular velocity and acceleration of each link,
+/// the acceleration of each joint origin `a_j[i+1] = a_j[i] + α_i × L_i +
+/// ω_i × (ω_i × L_i)` (`L_i` is the link vector) and of each centre of mass
+/// `a_c[i] = a_j[i] + α_i × r_ci + ω_i × (ω_i × r_ci)`, with gravity entering
+/// as the base acceleration `−g`. Backward pass: `f_i = m_i a_ci + f_{i+1}` and
+/// `n_i = I_i α_i + r_ci × m_i a_ci + n_{i+1} + L_i × f_{i+1}`; the joint
+/// torque is the z component of `n_i`. A static horizontal chain therefore
+/// needs `τ_0 = g (m_0 l_0/2 + m_1 (l_0 + l_1/2) + ...)`, including the lever
+/// arm of every distal link.
+///
+/// Missing entries default to 1 for `masses`, `inertias_zz` and `lengths` and
+/// to 0 for `q`, `qd` and `qdd`; `n == 0` returns an empty vector.
+///
 /// Returns joint torques.
 pub fn rnea_3d_revolute_z(
     n: usize,
@@ -975,72 +963,7 @@ pub fn rnea_3d_revolute_z(
     qdd: &[f64],
     gravity: [f64; 3],
 ) -> Vec<f64> {
-    if n == 0 {
-        return Vec::new();
-    }
-    let mut omega = vec![[0.0_f64; 3]; n];
-    let mut alpha = vec![[0.0_f64; 3]; n];
-    let mut a_com = vec![[0.0_f64; 3]; n];
-    let a_base = [-gravity[0], -gravity[1], -gravity[2]];
-    let mut cum_angle = 0.0_f64;
-    for i in 0..n {
-        let q_i = q.get(i).copied().unwrap_or(0.0);
-        let qd_i = qd.get(i).copied().unwrap_or(0.0);
-        let qdd_i = qdd.get(i).copied().unwrap_or(0.0);
-        let l_i = lengths.get(i).copied().unwrap_or(1.0);
-        cum_angle += q_i;
-        let parent_omega = if i == 0 { [0.0; 3] } else { omega[i - 1] };
-        let parent_alpha = if i == 0 { [0.0; 3] } else { alpha[i - 1] };
-        let parent_a = if i == 0 { a_base } else { a_com[i - 1] };
-        omega[i] = [parent_omega[0], parent_omega[1], parent_omega[2] + qd_i];
-        let w_cross_qd_z = [
-            omega[i][1] * qd_i - omega[i][2] * 0.0,
-            omega[i][2] * 0.0 - omega[i][0] * qd_i,
-            0.0,
-        ];
-        alpha[i] = [
-            parent_alpha[0] + w_cross_qd_z[0],
-            parent_alpha[1] + w_cross_qd_z[1],
-            parent_alpha[2] + qdd_i,
-        ];
-        let r_com = [
-            (l_i / 2.0) * cum_angle.cos(),
-            (l_i / 2.0) * cum_angle.sin(),
-            0.0,
-        ];
-        let ax_r = cross3w(alpha[i], r_com);
-        let w_r = cross3w(omega[i], r_com);
-        let w_w_r = cross3w(omega[i], w_r);
-        a_com[i] = add3w(add3w(parent_a, ax_r), w_w_r);
-    }
-    let mut f = vec![[0.0_f64; 3]; n];
-    let mut tau_net = vec![[0.0_f64; 3]; n];
-    let mut torques = vec![0.0_f64; n];
-    for i in (0..n).rev() {
-        let m_i = masses.get(i).copied().unwrap_or(1.0);
-        let i_zz = inertias_zz.get(i).copied().unwrap_or(1.0);
-        let l_i = lengths.get(i).copied().unwrap_or(1.0);
-        let abs_angle: f64 = q[..=i].iter().sum();
-        let r_com = [
-            (l_i / 2.0) * abs_angle.cos(),
-            (l_i / 2.0) * abs_angle.sin(),
-            0.0,
-        ];
-        let fi = scale3w(a_com[i], m_i);
-        let fi_child = if i + 1 < n { f[i + 1] } else { [0.0; 3] };
-        f[i] = add3w(fi, fi_child);
-        let i_alpha = [0.0, 0.0, i_zz * alpha[i][2]];
-        let w_times_iw = cross3w(omega[i], [0.0, 0.0, i_zz * omega[i][2]]);
-        let r_cross_f = cross3w(r_com, fi);
-        let tau_child = if i + 1 < n { tau_net[i + 1] } else { [0.0; 3] };
-        tau_net[i] = [
-            i_alpha[0] + w_times_iw[0] + r_cross_f[0] + tau_child[0],
-            i_alpha[1] + w_times_iw[1] + r_cross_f[1] + tau_child[1],
-            i_alpha[2] + w_times_iw[2] + r_cross_f[2] + tau_child[2],
-        ];
-        torques[i] = tau_net[i][2];
-    }
-    torques
+    PlanarChain::new(n, masses, lengths, inertias_zz).inverse_dynamics(q, qd, qdd, gravity)
 }
 #[inline]
 pub(super) fn add3w(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -1049,14 +972,6 @@ pub(super) fn add3w(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 #[inline]
 pub(super) fn scale3w(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
-}
-#[inline]
-pub(super) fn cross3w(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 #[cfg(test)]
 mod tests_aba {
@@ -1070,7 +985,6 @@ mod tests_aba {
     use crate::articulated::end_effector_jacobian_2d;
     use crate::articulated::forward_dynamics_with_external;
     use crate::articulated::gravity_compensation_torques;
-    use crate::articulated::joint_space_inertia_matrix;
     use crate::articulated::rnea_3d_revolute_z;
 
     use crate::articulated::spatial_jacobian_revolute_z;
@@ -1092,6 +1006,8 @@ mod tests_aba {
             qdd[0] > 0.0,
             "acceleration should be positive for positive torque"
         );
+        // I_joint = I_com + m (l/2)^2 = 1 + 0.25, so q_dd = tau / I_joint = 0.8.
+        assert!((qdd[0] - 0.8).abs() < 1e-12, "qdd = {}", qdd[0]);
     }
     #[test]
     fn test_aba_zero_torque_with_gravity_compensation() {
@@ -1103,7 +1019,7 @@ mod tests_aba {
         let gc = gravity_compensation_torques(1, &[m], &[l], &q, gravity);
         let qdd = aba_revolute_chain(
             1,
-            &[m * l * l / 3.0],
+            &[m * l * l / 12.0],
             &[m],
             &[l],
             &q,
@@ -1137,34 +1053,6 @@ mod tests_aba {
         assert_eq!(qdd.len(), 2);
         assert!(qdd[0].is_finite());
         assert!(qdd[1].is_finite());
-    }
-    #[test]
-    fn test_jsim_single_link() {
-        let h = joint_space_inertia_matrix(1, &[5.0]);
-        assert_eq!(h.len(), 1);
-        assert!((h[0] - 5.0).abs() < 1e-10);
-    }
-    #[test]
-    fn test_jsim_two_links() {
-        let h = joint_space_inertia_matrix(2, &[3.0, 2.0]);
-        assert_eq!(h.len(), 4);
-        assert!((h[0] - 5.0).abs() < 1e-10, "H[0][0]={}", h[0]);
-        assert!((h[1] - 2.0).abs() < 1e-10, "H[0][1]={}", h[1]);
-        assert!((h[2] - 2.0).abs() < 1e-10, "H[1][0]={}", h[2]);
-        assert!((h[3] - 2.0).abs() < 1e-10, "H[1][1]={}", h[3]);
-    }
-    #[test]
-    fn test_jsim_symmetric() {
-        let h = joint_space_inertia_matrix(3, &[1.0, 2.0, 3.0]);
-        let n = 3;
-        for i in 0..n {
-            for j in 0..n {
-                assert!(
-                    (h[i * n + j] - h[j * n + i]).abs() < 1e-10,
-                    "H not symmetric at ({i},{j})"
-                );
-            }
-        }
     }
     #[test]
     fn test_gravity_compensation_single_horizontal() {
@@ -1222,6 +1110,13 @@ mod tests_aba {
         assert!(
             qdd_with_ext[0] > qdd_no_ext[0],
             "external force should increase acceleration"
+        );
+        // The external torque acts like an applied one: 1 / (1 + 0.25) = 0.8.
+        assert!(qdd_no_ext[0].abs() < 1e-12, "qdd = {}", qdd_no_ext[0]);
+        assert!(
+            (qdd_with_ext[0] - 0.8).abs() < 1e-12,
+            "qdd = {}",
+            qdd_with_ext[0]
         );
     }
     #[test]
@@ -1318,6 +1213,11 @@ mod tests_aba {
         );
         assert_eq!(taus.len(), 1);
         assert!(taus[0].is_finite(), "torque must be finite: {}", taus[0]);
+        assert!(
+            (taus[0] - 9.81 * 0.5).abs() < 1e-12,
+            "holding torque should be m g l/2, got {}",
+            taus[0]
+        );
     }
     #[test]
     fn test_rnea_3d_no_gravity_no_motion() {
@@ -1378,7 +1278,7 @@ mod tests_aba {
 ///
 /// # Arguments
 /// * `n`       – number of links (indexed 0..n-1)
-/// * `inertias` – scalar moment of inertia about joint axis for each link
+/// * `inertias` – scalar moment of inertia of each link about its centre of mass
 /// * `masses`  – mass of each link
 /// * `lengths` – link length
 pub fn abi_backward_pass(n: usize, inertias: &[f64], masses: &[f64], lengths: &[f64]) -> Vec<f64> {
@@ -1395,12 +1295,19 @@ pub fn abi_backward_pass(n: usize, inertias: &[f64], masses: &[f64], lengths: &[
     }
     abi
 }
-/// Compute the net generalised forces at each joint due to inertial and
-/// velocity-product effects only (no external torques, no gravity).
+/// Compute the generalised forces at each joint due to velocity-product
+/// effects only (no applied torques, no gravity, no joint acceleration).
 ///
-/// Useful for isolating the Coriolis / centrifugal bias vector `C(q, q_dot)`.
+/// This is the Coriolis / centrifugal bias vector `C(q, q_dot)` of
+/// `H(q) q_ddot + C(q, q_dot) + G(q) = τ` for a planar revolute chain, computed
+/// as the inverse dynamics at zero acceleration and zero gravity. It does not
+/// depend on the rotational inertias of the links (their `I α` term vanishes
+/// without joint acceleration) and it depends on the configuration `q`: the
+/// centripetal force of a distal link only produces a torque about a joint when
+/// the chain is bent. A single link spinning about its joint, or a straight
+/// chain rotating rigidly, has `C = 0`.
 ///
-/// Returns `Vec`f64` of bias forces (length `n`).
+/// Returns a `Vec<f64>` of bias forces (length `n`).
 pub fn coriolis_bias_forces(
     n: usize,
     masses: &[f64],
@@ -1408,41 +1315,28 @@ pub fn coriolis_bias_forces(
     q: &[f64],
     qd: &[f64],
 ) -> Vec<f64> {
-    if n == 0 {
-        return Vec::new();
-    }
-    let mut omega_z = vec![0.0_f64; n];
-    for i in 0..n {
-        let qd_i = qd.get(i).copied().unwrap_or(0.0);
-        omega_z[i] = if i == 0 { qd_i } else { omega_z[i - 1] + qd_i };
-    }
-    let mut bias = vec![0.0_f64; n];
-    for i in 0..n {
-        let mut tau = 0.0_f64;
-        for j in i..n {
-            let m_j = masses.get(j).copied().unwrap_or(1.0);
-            let l_j = lengths.get(j).copied().unwrap_or(1.0);
-            let abs_angle: f64 = q[..=j].iter().sum();
-            let r_com = l_j / 2.0;
-            let omega_sq = omega_z[j] * omega_z[j];
-            let accel_perp = omega_sq * r_com;
-            let dist_to_com: f64 = if j > i {
-                lengths[i..j].iter().sum::<f64>() + l_j / 2.0
-            } else {
-                l_j / 2.0
-            };
-            let _ = abs_angle;
-            tau += m_j * accel_perp * dist_to_com;
-        }
-        bias[i] = tau;
-    }
-    bias
+    PlanarChain::new(n, masses, lengths, &[]).bias_forces(q, qd)
 }
 /// Compute joint accelerations from torques using the joint-space equation:
 ///
 /// H(q) * q_dd = τ - C(q, q_dot) - G(q)
 ///
-/// Solves by computing H, C, G and inverting H (scalar chain → diagonal solve).
+/// `H` is the configuration-dependent joint-space inertia matrix of
+/// [`joint_space_inertia_matrix_planar`], `C` the Coriolis/centrifugal vector of
+/// [`coriolis_bias_forces`] and `G` the gravity torques of
+/// [`gravity_compensation_torques`]. The dense, coupled system is solved with a
+/// Cholesky factorisation, so the off-diagonal inertia coupling between joints
+/// is taken into account.
+///
+/// `inertias[i]` is the moment of inertia of link `i` about its centre of
+/// mass (kg·m²); missing entries default to 1 for `inertias`, `masses` and
+/// `lengths` and to 0 for `q`, `qd` and `torques`.
+///
+/// # Errors
+///
+/// Returns [`crate::Error::ForwardDynamicsFailure`] when `H` is not positive
+/// definite (for example massless links or non-finite inputs) or the resulting
+/// accelerations are not finite.
 ///
 /// Returns joint accelerations `q_ddot`.
 pub fn forward_dynamics_full(
@@ -1454,38 +1348,42 @@ pub fn forward_dynamics_full(
     qd: &[f64],
     torques: &[f64],
     gravity: [f64; 3],
-) -> Vec<f64> {
-    if n == 0 {
-        return Vec::new();
-    }
-    let h = joint_space_inertia_matrix(n, inertias);
-    let g_vec = gravity_compensation_torques(n, masses, lengths, q, gravity);
-    let c_vec = coriolis_bias_forces(n, masses, lengths, q, qd);
-    let diag_h: Vec<f64> = (0..n).map(|i| h[i * n + i]).collect();
-    let mut qdd = vec![0.0_f64; n];
-    for i in 0..n {
-        let tau_i = torques.get(i).copied().unwrap_or(0.0);
-        let tau_eff =
-            tau_i - c_vec.get(i).copied().unwrap_or(0.0) - g_vec.get(i).copied().unwrap_or(0.0);
-        qdd[i] = tau_eff / diag_h[i].max(1e-30);
-    }
-    qdd
+) -> Result<Vec<f64>> {
+    PlanarChain::new(n, masses, lengths, inertias).forward_dynamics_crba(q, qd, torques, gravity)
 }
-/// Compute the total kinetic energy of a revolute chain.
+/// Compute the total kinetic energy of a coaxial rotor chain,
+/// `T = 0.5 * q_dot^T H q_dot` with the configuration-independent `H` of
+/// [`joint_space_inertia_matrix`].
 ///
-/// T = 0.5 * q_dot^T H(q) q_dot
-pub fn kinetic_energy(n: usize, inertias: &[f64], q: &[f64], qd: &[f64]) -> f64 {
-    let h = joint_space_inertia_matrix(n, inertias);
-    let _ = q;
-    let mut ke = 0.0_f64;
-    for i in 0..n {
-        for j in 0..n {
-            let qd_i = qd.get(i).copied().unwrap_or(0.0);
-            let qd_j = qd.get(j).copied().unwrap_or(0.0);
-            ke += h[i * n + j] * qd_i * qd_j;
-        }
-    }
-    0.5 * ke
+/// A planar arm with offset links needs the configuration-dependent matrix:
+/// use [`kinetic_energy_planar`].
+#[deprecated(
+    since = "0.1.3",
+    note = "describes a coaxial rotor chain and ignores the configuration; use `kinetic_energy_planar` for planar arms"
+)]
+pub fn kinetic_energy(n: usize, inertias: &[f64], _q: &[f64], qd: &[f64]) -> f64 {
+    coaxial_kinetic_energy(n, inertias, qd)
+}
+/// Compute the total kinetic energy of a planar revolute chain,
+///
+/// `T = 0.5 * q_dot^T H(q) q_dot`
+///
+/// with the configuration-dependent inertia matrix of
+/// [`joint_space_inertia_matrix_planar`], evaluated from the centre-of-mass
+/// velocities `v_cj = Σ_{k ≤ j} q̇_k ẑ × (c_j − p_k)` and the absolute angular
+/// velocities of the links: `T = Σ_j (½ m_j |v_cj|² + ½ I_j ω_j²)`.
+///
+/// Missing entries default to 1 for `masses`, `lengths` and `inertias_com` and
+/// to 0 for `q` and `qd`.
+pub fn kinetic_energy_planar(
+    n: usize,
+    masses: &[f64],
+    lengths: &[f64],
+    inertias_com: &[f64],
+    q: &[f64],
+    qd: &[f64],
+) -> f64 {
+    PlanarChain::new(n, masses, lengths, inertias_com).kinetic_energy(q, qd)
 }
 /// Compute the total gravitational potential energy for a revolute planar chain.
 ///

@@ -41,6 +41,12 @@ pub fn compute_g3(r_ij: f64, kappa: f64, rc: f64) -> f64 {
 }
 /// Verify energy-force consistency via central finite differences.
 ///
+/// Compares the analytic forces returned by
+/// [`MlPotential::energy_and_forces`] with the central finite-difference
+/// derivative (step `h`) of the all-pairs reference energy
+/// (`FeedForwardPotential::total_energy`), which shares no code with the
+/// neighbor-list evaluation behind the analytic forces.
+///
 /// Returns the maximum absolute difference between analytic and numerical
 /// forces across all atoms and Cartesian components.
 pub fn energy_force_consistency(
@@ -56,9 +62,9 @@ pub fn energy_force_consistency(
     for i in 0..n {
         for a in 0..3_usize {
             pos[i][a] += h;
-            let (e_plus, _) = potential.energy_and_forces(&pos, species);
+            let e_plus = potential.total_energy(&pos, species);
             pos[i][a] -= 2.0 * h;
-            let (e_minus, _) = potential.energy_and_forces(&pos, species);
+            let e_minus = potential.total_energy(&pos, species);
             pos[i][a] += h;
             let f_numeric = -(e_plus - e_minus) / (2.0 * h);
             let diff = (forces_analytic[i][a] - f_numeric).abs();
@@ -411,7 +417,29 @@ mod tests {
         let positions = vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)];
         let species = vec![1, 1];
         let max_diff = energy_force_consistency(&pot, &positions, &species, 1e-5);
-        assert!(max_diff < 1e-3, "Force consistency error = {max_diff}");
+        assert!(max_diff < 1e-6, "Force consistency error = {max_diff}");
+    }
+    #[test]
+    fn test_energy_force_consistency_three_atoms_with_real_forces() {
+        // The agreement is only meaningful if the forces are not all (nearly) zero.
+        let pot = simple_potential();
+        let positions = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.3, 0.0, 0.0),
+            Vec3::new(0.4, 1.1, 0.2),
+        ];
+        let species = vec![1, 1, 1];
+        let (_, forces) = pot.energy_and_forces(&positions, &species);
+        let largest = forces
+            .iter()
+            .flat_map(|f| f.iter().map(|x| x.abs()))
+            .fold(0.0_f64, f64::max);
+        assert!(largest > 1e-4, "need a non-trivial force, got {largest}");
+        let max_diff = energy_force_consistency(&pot, &positions, &species, 1e-5);
+        assert!(
+            max_diff < 1e-6 * largest.max(1.0),
+            "diff = {max_diff}, largest force = {largest}"
+        );
     }
     #[test]
     fn test_descriptor_stats_mean() {
@@ -539,6 +567,47 @@ mod tests {
                 f.iter().all(|&x| x.is_finite()),
                 "all force components should be finite"
             );
+        }
+    }
+    #[test]
+    fn test_ensemble_nnp_predict_forces_is_the_mean_of_member_forces() {
+        let cutoff = 5.0;
+        let sym = FeedForwardPotential::default_symmetry_set(cutoff);
+        let p1 = FeedForwardPotential::new(&[4, 8, 1], Activation::Tanh, sym.clone(), cutoff);
+        let p2 = FeedForwardPotential::new(&[4, 6, 1], Activation::Sigmoid, sym, cutoff);
+        let ens = EnsembleNnp::new(vec![p1.clone(), p2.clone()]);
+        let positions = [[0.0, 0.0, 0.0], [1.4, 0.2, 0.0], [0.5, 1.5, 0.3]];
+        let forces = ens.predict_forces(&positions);
+        let as_vec3: Vec<Vec3> = positions
+            .iter()
+            .map(|p| Vec3::new(p[0], p[1], p[2]))
+            .collect();
+        let species = vec![1; positions.len()];
+        let f1 = p1.finite_difference_forces(&as_vec3, &species);
+        let f2 = p2.finite_difference_forces(&as_vec3, &species);
+        let mean: Vec<[f64; 3]> = (0..positions.len())
+            .map(|i| {
+                [
+                    0.5 * (f1[i][0] + f2[i][0]),
+                    0.5 * (f1[i][1] + f2[i][1]),
+                    0.5 * (f1[i][2] + f2[i][2]),
+                ]
+            })
+            .collect();
+        let scale = mean
+            .iter()
+            .flat_map(|f| f.iter().map(|x| x.abs()))
+            .fold(0.0_f64, f64::max);
+        assert!(scale > 1e-4, "need non-trivial forces, got {scale}");
+        for (i, expected) in mean.iter().enumerate() {
+            for a in 0..3 {
+                assert!(
+                    (forces[i][a] - expected[a]).abs() < 1e-6 * scale,
+                    "atom {i} axis {a}: {} vs {}",
+                    forces[i][a],
+                    expected[a]
+                );
+            }
         }
     }
     #[test]

@@ -18,7 +18,14 @@ use super::types::PressureCouplingMode;
 pub fn virial_pressure(volume: f64, kinetic_energy: f64, virial: f64) -> f64 {
     (2.0 * kinetic_energy + virial) / (3.0 * volume)
 }
-/// Compute the scalar virial W = Σ rᵢ · fᵢ from atomic positions and forces.
+/// Compute the scalar *atomic* virial W = Σ rᵢ · fᵢ from atomic positions and forces.
+///
+/// This is only meaningful for an isolated (non-periodic) system or for
+/// unwrapped coordinates.  For periodic simulations with positions wrapped
+/// into the cell it is **not** translation invariant (a pair interacting
+/// across a cell face contributes a spurious `L · F_ij` term); use the pair
+/// virial returned by [`crate::forcefield::ForceField::compute_forces_virial`]
+/// for pressure control instead.
 ///
 /// # Arguments
 /// * `positions` – slice of `[x, y, z]` position arrays.
@@ -33,7 +40,27 @@ pub fn compute_virial(positions: &[[f64; 3]], forces: &[[f64; 3]]) -> f64 {
 /// Trait for barostats that control system pressure.
 pub trait Barostat: Send + Sync {
     /// Apply pressure control, potentially rescaling positions and box dimensions.
-    fn apply(&mut self, atoms: &mut AtomSet, pbox: &mut PeriodicBox, target_pressure: f64, dt: f64);
+    ///
+    /// # Arguments
+    /// * `atoms`           – the atoms; positions (and, for extended-Lagrangian
+    ///   barostats, velocities) may be rescaled.
+    /// * `pbox`            – the periodic box, rescaled together with the atoms.
+    /// * `target_pressure` – the pressure to relax towards.  A non-finite value
+    ///   (for example `f64::NAN`) selects the barostat's own `target_pressure`
+    ///   setting instead.
+    /// * `virial`          – the scalar pair virial `W = Σ r_ij · F_ij` of the
+    ///   current configuration, as returned by
+    ///   [`crate::forcefield::ForceField::compute_forces_virial`].  The
+    ///   instantaneous pressure is `P = (2·KE + W) / (3·V)`.
+    /// * `dt`              – the integration time step.
+    fn apply(
+        &mut self,
+        atoms: &mut AtomSet,
+        pbox: &mut PeriodicBox,
+        target_pressure: f64,
+        virial: f64,
+        dt: f64,
+    );
 }
 #[cfg(test)]
 mod tests {
@@ -54,7 +81,7 @@ mod tests {
         let orig_dims = pbox.dims;
         let orig_pos = atoms.positions[0];
         let mut baro = NoBarostat::new();
-        baro.apply(&mut atoms, &mut pbox, 1.0, 0.001);
+        baro.apply(&mut atoms, &mut pbox, 1.0, 0.0, 0.001);
         assert_eq!(pbox.dims, orig_dims);
         assert_eq!(atoms.positions[0], orig_pos);
     }
@@ -81,7 +108,7 @@ mod tests {
         let target_pressure = p_kinetic * 10.0;
         let mut baro = BerendsenBarostat::new(target_pressure, 1.0, 0.01);
         for _ in 0..100 {
-            Barostat::apply(&mut baro, &mut atoms, &mut pbox, target_pressure, 0.01);
+            Barostat::apply(&mut baro, &mut atoms, &mut pbox, target_pressure, 0.0, 0.01);
         }
         let vol_final = pbox.volume();
         assert!(
@@ -127,7 +154,7 @@ mod tests {
     #[test]
     fn test_mc_barostat_zero_delta() {
         let baro = MonteCarloBarostat::new(1.0);
-        let log_p = baro.acceptance_log_prob(0.0, 0.0, 100, 300.0, 1.380649e-23);
+        let log_p = baro.acceptance_log_prob(0.0, 1000.0, 1000.0, 100, 300.0, 1.380649e-23);
         assert!(
             log_p.abs() < 1e-12,
             "ΔE=0, ΔV=0 should give log_prob=0, got {log_p}"
@@ -653,7 +680,7 @@ mod extended_barostat_tests {
         let mut pbox = PeriodicBox::cubic(10.0);
         let dim_before = pbox.dims;
         let mut baro = NoBarostat::new();
-        Barostat::apply(&mut baro, &mut atoms, &mut pbox, 2.0, 0.01);
+        Barostat::apply(&mut baro, &mut atoms, &mut pbox, 2.0, 0.0, 0.01);
         assert_eq!(pbox.dims, dim_before, "NoBarostat must not change box");
     }
     /// At constant volume (V_new = V_old) the Jacobian vanishes and the result

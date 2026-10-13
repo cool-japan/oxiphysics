@@ -16,6 +16,13 @@
 
 use oxiphysics_core::math::{Real, Vec3};
 
+mod self_collision;
+#[cfg(test)]
+mod self_collision_tests;
+mod triangle_grid;
+
+pub use self_collision::SelfCollisionStats;
+
 // ─── YarnModel ────────────────────────────────────────────────────────────────
 
 /// Model of a single yarn as a twisted bundle of fibers.
@@ -748,37 +755,6 @@ impl FabricCollision {
             }
         }
         None
-    }
-
-    /// Resolve vertex-face penetrations using position-based correction.
-    pub fn resolve_self_collisions(&mut self) {
-        for _ in 0..self.collision_iterations {
-            let n_verts = self.particles.len();
-            let tris = self.triangles.clone();
-            for vi in 0..n_verts {
-                for tri in &tris {
-                    if let Some((depth, normal)) = self.vertex_face_test(vi, *tri) {
-                        // Position correction: push vertex out
-                        let w_v = self.particles[vi].inv_mass;
-                        let w_tri: Real = tri.iter().map(|&i| self.particles[i].inv_mass).sum();
-                        let total_w = w_v + w_tri / 3.0;
-                        if total_w < 1e-12 {
-                            continue;
-                        }
-                        let correction = depth / total_w;
-                        if !self.particles[vi].is_pinned() {
-                            self.particles[vi].position += normal * (correction * w_v);
-                        }
-                        for &ti in tri.iter() {
-                            if !self.particles[ti].is_pinned() {
-                                let w_i = self.particles[ti].inv_mass;
-                                self.particles[ti].position -= normal * (correction * w_i / 3.0);
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 
     /// Apply ground plane collision (floor at y = 0).

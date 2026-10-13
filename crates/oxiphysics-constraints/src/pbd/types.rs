@@ -155,10 +155,87 @@ impl XpbdDihedralBending {
         let cos_a = (pbd2_dot(n1, n2) / (l1 * l2)).clamp(-1.0, 1.0);
         cos_a.acos()
     }
-    /// Project the dihedral bending constraint (simplified gradient).
+    /// Analytic gradient of the dihedral angle with respect to the four
+    /// particle positions, `[∂θ/∂p0, ∂θ/∂p1, ∂θ/∂p2, ∂θ/∂p3]`.
     ///
-    /// Uses a linear approximation of the angle gradient suitable for
-    /// real-time cloth simulation.
+    /// Uses the closed-form gradients of Bridson et al. (2003), *Simulation of
+    /// Clothing with Folds and Wrinkles*.  With `e = p1 - p0`, `ê = e / |e|`,
+    /// `n1 = (p2 - p0) × e` and `n2 = e × (p3 - p0)`:
+    ///
+    /// ```text
+    /// q2 = |e| n1 / |n1|²
+    /// q3 = |e| n2 / |n2|²
+    /// q0 = ((p2 - p1)·ê) n1 / |n1|² + ((p3 - p1)·ê) n2 / |n2|²
+    /// q1 = -(q0 + q2 + q3)
+    /// ∂θ/∂p_i = -σ q_i
+    /// ```
+    ///
+    /// `θ` is the *unsigned* angle in `[0, π]` returned by
+    /// [`compute_angle`](Self::compute_angle), so the gradient direction flips
+    /// with the side the hinge is folded to; `σ = sign(ê · (n2 × n1))` selects
+    /// that side (`σ = +1` in the degenerate flat / fully folded poses where
+    /// both sides are equivalent).
+    ///
+    /// The gradients sum to zero (translation invariance) and are torque free
+    /// (rotation invariance).  Returns `None` when the shared edge is shorter
+    /// than `1e-12` or either triangle is degenerate (`|n1|` or `|n2|` below
+    /// `1e-12`), where the angle is not differentiable.
+    pub fn angle_gradients(&self, positions: &[[f64; 3]]) -> Option<[[f64; 3]; 4]> {
+        let p0 = positions[self.indices[0]];
+        let p1 = positions[self.indices[1]];
+        let p2 = positions[self.indices[2]];
+        let p3 = positions[self.indices[3]];
+        let e = pbd2_sub(p1, p0);
+        let edge_len = pbd2_norm(e);
+        if edge_len < 1e-12 {
+            return None;
+        }
+        let e_hat = pbd2_scale(e, 1.0 / edge_len);
+        let n1 = pbd2_cross(pbd2_sub(p2, p0), e);
+        let n2 = pbd2_cross(e, pbd2_sub(p3, p0));
+        let n1_sq = pbd2_dot(n1, n1);
+        let n2_sq = pbd2_dot(n2, n2);
+        if n1_sq < 1e-24 || n2_sq < 1e-24 {
+            return None;
+        }
+        let sigma = if pbd2_dot(pbd2_cross(n2, n1), e_hat) < 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        let inv_n1_sq = 1.0 / n1_sq;
+        let inv_n2_sq = 1.0 / n2_sq;
+        let q2 = pbd2_scale(n1, edge_len * inv_n1_sq);
+        let q3 = pbd2_scale(n2, edge_len * inv_n2_sq);
+        let along_a = pbd2_dot(pbd2_sub(p2, p1), e_hat);
+        let along_b = pbd2_dot(pbd2_sub(p3, p1), e_hat);
+        let q0 = pbd2_add(
+            pbd2_scale(n1, along_a * inv_n1_sq),
+            pbd2_scale(n2, along_b * inv_n2_sq),
+        );
+        let q1 = pbd2_scale(pbd2_add(pbd2_add(q0, q2), q3), -1.0);
+        Some([
+            pbd2_scale(q0, -sigma),
+            pbd2_scale(q1, -sigma),
+            pbd2_scale(q2, -sigma),
+            pbd2_scale(q3, -sigma),
+        ])
+    }
+    /// Project the dihedral bending constraint for one XPBD sub-step.
+    ///
+    /// Enforces `C = θ - θ_rest = 0` with the exact angle gradients from
+    /// [`angle_gradients`](Self::angle_gradients):
+    ///
+    /// ```text
+    /// Δλ  = (-C - α̃ λ) / (Σ w_i |∇θ_i|² + α̃),   α̃ = α / dt²
+    /// p_i += w_i ∇θ_i Δλ
+    /// ```
+    ///
+    /// The correction conserves linear and angular momentum, so a free hinge
+    /// folds about its own centre of mass instead of drifting.  Degenerate
+    /// poses (see [`angle_gradients`](Self::angle_gradients)) and constraints
+    /// whose particles are all pinned are left untouched.  A time step below
+    /// `1e-15` treats the constraint as rigid (`α̃ = 0`).
     pub fn project(
         &self,
         positions: &mut [[f64; 3]],
@@ -166,20 +243,24 @@ impl XpbdDihedralBending {
         lambda: &mut f64,
         dt: f64,
     ) {
-        let angle = self.compute_angle(positions);
-        let c = angle - self.rest_angle;
-        let w_sum: f64 = self.indices.iter().map(|&i| inv_masses[i]).sum();
-        if w_sum < 1e-14 {
+        let Some(grads) = self.angle_gradients(positions) else {
+            return;
+        };
+        let c = self.compute_angle(positions) - self.rest_angle;
+        let weights = self.indices.map(|i| inv_masses[i]);
+        let denom: f64 = weights
+            .iter()
+            .zip(grads.iter())
+            .map(|(&w, g)| w * pbd2_dot(*g, *g))
+            .sum();
+        if denom < 1e-14 {
             return;
         }
-        let alpha_tilde = self.compliance / (dt * dt);
-        let d_lambda = (-c - alpha_tilde * (*lambda)) / (w_sum + alpha_tilde);
+        let alpha_tilde = pbd2_alpha_tilde(self.compliance, dt);
+        let d_lambda = (-c - alpha_tilde * (*lambda)) / (denom + alpha_tilde);
         *lambda += d_lambda;
-        let correction = c * d_lambda / (w_sum + 1e-14);
-        for &idx in &self.indices {
-            let _w = inv_masses[idx];
-            let p = positions[idx];
-            positions[idx] = [p[0], p[1] - correction * 0.25, p[2]];
+        for ((&idx, &w), g) in self.indices.iter().zip(weights.iter()).zip(grads.iter()) {
+            positions[idx] = pbd2_add(positions[idx], pbd2_scale(*g, w * d_lambda));
         }
     }
 }
@@ -409,6 +490,8 @@ pub struct PbdSimulation {
     pub bending_constraints: Vec<PbdBendingConstraint>,
     /// Sphere collision constraints.
     pub sphere_collisions: Vec<PbdSphereCollision>,
+    /// Tetrahedral volume-preservation constraints.
+    pub volume_constraints: Vec<PbdVolumeConstraint>,
 }
 impl PbdSimulation {
     /// Create a new empty PBD simulation.
@@ -418,6 +501,7 @@ impl PbdSimulation {
             distance_constraints: Vec::new(),
             bending_constraints: Vec::new(),
             sphere_collisions: Vec::new(),
+            volume_constraints: Vec::new(),
         }
     }
     /// Add a particle and return its index.
@@ -511,6 +595,9 @@ impl PbdSimulation {
                 }
                 .project(&mut self.particles);
             }
+            for volume_constraint in &self.volume_constraints {
+                volume_constraint.project(&mut self.particles);
+            }
             for &(particle, sphere_center, sphere_radius, restitution) in &sphere_snapshots {
                 PbdSphereCollision {
                     particle,
@@ -538,7 +625,17 @@ impl PbdSimulation {
 impl PbdSimulation {
     /// Add a volume constraint for a tetrahedron.
     ///
-    /// Rest volume is computed from current particle positions.
+    /// The rest volume is the signed volume of the tetrahedron at the current
+    /// particle positions.  The constraint is projected by [`step`](Self::step)
+    /// after the distance and bending constraints of every iteration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ConfigurationError`](crate::Error::ConfigurationError)
+    /// when an index does not refer to an existing particle and
+    /// [`Error::DegenerateConstraint`](crate::Error::DegenerateConstraint) when
+    /// the four indices are not pairwise distinct.  The simulation is left
+    /// unchanged on error.
     pub fn add_volume_constraint(
         &mut self,
         i0: usize,
@@ -546,10 +643,32 @@ impl PbdSimulation {
         i2: usize,
         i3: usize,
         stiffness: f64,
-    ) {
+    ) -> crate::Result<()> {
         let indices = [i0, i1, i2, i3];
+        let particle_count = self.particles.len();
+        if let Some(&bad) = indices.iter().find(|&&i| i >= particle_count) {
+            return Err(crate::Error::config(
+                "tetrahedron particle index",
+                bad as f64,
+                0.0,
+                particle_count.saturating_sub(1) as f64,
+            ));
+        }
+        for (k, &a) in indices.iter().enumerate() {
+            if indices[k + 1..].contains(&a) {
+                return Err(crate::Error::degenerate(format!(
+                    "tetrahedron volume constraint repeats particle {a}"
+                )));
+            }
+        }
         let rest_volume = PbdVolumeConstraint::compute_volume(&self.particles, &indices);
-        let _ = PbdVolumeConstraint::new(indices, rest_volume, stiffness);
+        self.volume_constraints
+            .push(PbdVolumeConstraint::new(indices, rest_volume, stiffness));
+        Ok(())
+    }
+    /// Number of tetrahedral volume constraints.
+    pub fn volume_constraint_count(&self) -> usize {
+        self.volume_constraints.len()
     }
     /// Create a chain of particles connected by distance constraints.
     ///
@@ -717,10 +836,11 @@ impl XpbdDistanceConstraint {
         d_lambda
     }
 }
-/// XPBD pressure constraint enforcing volume conservation for a closed mesh.
+/// XPBD pressure constraint enforcing volume conservation of one tetrahedron.
 ///
-/// Adds a global volume term: `C = V - V_rest`, where `V` is the current
-/// volume approximated from a single tetrahedron.
+/// `C = V - V_rest`, where `V` is the signed volume of the tetrahedron
+/// `(p0, p1, p2, p3)`.  Mesh-wide pressure is obtained by adding one
+/// constraint per tetrahedron of the volumetric mesh.
 #[derive(Debug, Clone, Copy)]
 pub struct XpbdPressureConstraint {
     /// Indices of the four tetrahedron vertices.
@@ -746,7 +866,54 @@ impl XpbdPressureConstraint {
         let v3 = pbd2_sub(*p[3], *p[0]);
         pbd2_dot(v1, pbd2_cross(v2, v3)) / 6.0
     }
+    /// Gradients of the signed tetrahedron volume with respect to the four
+    /// vertices, `[∂V/∂p0, ∂V/∂p1, ∂V/∂p2, ∂V/∂p3]`.
+    ///
+    /// For `V = (p1 - p0)·((p2 - p0) × (p3 - p0)) / 6`:
+    ///
+    /// ```text
+    /// ∂V/∂p1 = (p2 - p0) × (p3 - p0) / 6
+    /// ∂V/∂p2 = (p3 - p0) × (p1 - p0) / 6
+    /// ∂V/∂p3 = (p1 - p0) × (p2 - p0) / 6
+    /// ∂V/∂p0 = -(∂V/∂p1 + ∂V/∂p2 + ∂V/∂p3)
+    /// ```
+    pub fn volume_gradients(&self, positions: &[[f64; 3]]) -> [[f64; 3]; 4] {
+        let [i0, i1, i2, i3] = self.tet_indices;
+        let p0 = positions[i0];
+        let e1 = pbd2_sub(positions[i1], p0);
+        let e2 = pbd2_sub(positions[i2], p0);
+        let e3 = pbd2_sub(positions[i3], p0);
+        let g1 = pbd2_scale(pbd2_cross(e2, e3), 1.0 / 6.0);
+        let g2 = pbd2_scale(pbd2_cross(e3, e1), 1.0 / 6.0);
+        let g3 = pbd2_scale(pbd2_cross(e1, e2), 1.0 / 6.0);
+        let g0 = pbd2_scale(pbd2_add(pbd2_add(g1, g2), g3), -1.0);
+        [g0, g1, g2, g3]
+    }
+    /// Signed volume of the tetrahedron at the given positions.
+    pub fn current_volume(&self, positions: &[[f64; 3]]) -> f64 {
+        let [i0, i1, i2, i3] = self.tet_indices;
+        Self::tet_signed_volume([
+            &positions[i0],
+            &positions[i1],
+            &positions[i2],
+            &positions[i3],
+        ])
+    }
     /// Project the pressure constraint for one XPBD sub-step.
+    ///
+    /// ```text
+    /// Δλ  = (-C - α̃ λ) / (Σ w_i |∂V/∂p_i|² + α̃),   α̃ = α / dt²
+    /// p_i += w_i ∂V/∂p_i Δλ
+    /// ```
+    ///
+    /// `inv_masses` holds *inverse* masses (`0` pins a particle).  The
+    /// correction is momentum conserving: the vertex gradients sum to zero.
+    /// A time step below `1e-15` treats the constraint as rigid (`α̃ = 0`).
+    ///
+    /// A collapsed tetrahedron, whose volume gradient vanishes relative to the
+    /// `edge²` scale it should have, and a constraint whose particles are all
+    /// pinned are left untouched.  The test is relative to the edge length, so
+    /// millimetre and metre sized tetrahedra are treated alike.
     pub fn project(
         &self,
         positions: &mut [[f64; 3]],
@@ -754,41 +921,41 @@ impl XpbdPressureConstraint {
         lambda: &mut f64,
         dt: f64,
     ) {
+        let c = self.current_volume(positions) - self.rest_volume;
+        let grads = self.volume_gradients(positions);
         let [i0, i1, i2, i3] = self.tet_indices;
-        let p0 = positions[i0];
-        let p1 = positions[i1];
-        let p2 = positions[i2];
-        let p3 = positions[i3];
-        let current_vol = Self::tet_signed_volume([&p0, &p1, &p2, &p3]);
-        let c = current_vol - self.rest_volume;
-        let g0_mag = pbd2_norm(pbd2_sub(p1, p2));
-        let g1_mag = pbd2_norm(pbd2_sub(p0, p3));
-        let g2_mag = pbd2_norm(pbd2_sub(p3, p0));
-        let g3_mag = pbd2_norm(pbd2_sub(p0, p2));
-        let w0 = inv_masses[i0];
-        let w1 = inv_masses[i1];
-        let w2 = inv_masses[i2];
-        let w3 = inv_masses[i3];
-        let denom = w0 * g0_mag * g0_mag
-            + w1 * g1_mag * g1_mag
-            + w2 * g2_mag * g2_mag
-            + w3 * g3_mag * g3_mag;
-        if denom < 1e-14 {
+        let longest_edge_sq = [i1, i2, i3]
+            .iter()
+            .map(|&i| {
+                let edge = pbd2_sub(positions[i], positions[i0]);
+                pbd2_dot(edge, edge)
+            })
+            .fold(0.0_f64, f64::max);
+        let grad_sq: f64 = grads.iter().map(|g| pbd2_dot(*g, *g)).sum();
+        // |dV/dp| is of the order edge², so |dV/dp|² is of the order edge⁴.
+        if grad_sq <= 1e-24 * longest_edge_sq * longest_edge_sq {
             return;
         }
-        let alpha_tilde = self.compliance / (dt * dt);
+        let weights = self.tet_indices.map(|i| inv_masses[i]);
+        let denom: f64 = weights
+            .iter()
+            .zip(grads.iter())
+            .map(|(&w, g)| w * pbd2_dot(*g, *g))
+            .sum();
+        if denom.is_nan() || denom <= f64::MIN_POSITIVE {
+            return;
+        }
+        let alpha_tilde = pbd2_alpha_tilde(self.compliance, dt);
         let d_lambda = (-c - alpha_tilde * (*lambda)) / (denom + alpha_tilde);
         *lambda += d_lambda;
-        let n_dir = if let Some(n) = pbd2_normalize(pbd2_cross(pbd2_sub(p1, p0), pbd2_sub(p2, p0)))
+        for ((&idx, &w), g) in self
+            .tet_indices
+            .iter()
+            .zip(weights.iter())
+            .zip(grads.iter())
         {
-            n
-        } else {
-            return;
-        };
-        positions[i0] = pbd2_sub(p0, pbd2_scale(n_dir, d_lambda * w0));
-        positions[i1] = pbd2_add(p1, pbd2_scale(n_dir, d_lambda * w1));
-        positions[i2] = pbd2_add(p2, pbd2_scale(n_dir, d_lambda * w2));
-        positions[i3] = pbd2_add(p3, pbd2_scale(n_dir, d_lambda * w3));
+            positions[idx] = pbd2_add(positions[idx], pbd2_scale(*g, w * d_lambda));
+        }
     }
 }
 /// PBD distance constraint between two particles.
@@ -1432,20 +1599,51 @@ impl XpbdBendingConstraint {
         positions[self.p2] = vec3_add(positions[self.p2], vec3_scale(opp, w2));
     }
 }
-/// A simple PBD sub-step solver that runs multiple sub-steps per frame.
+/// A PBD sub-step solver that runs multiple sub-steps per frame.
+///
+/// Each sub-step is one full position-based-dynamics step with a small time
+/// step `h = dt / substeps` (Macklin et al., *Small Steps in Physics
+/// Simulation*): external acceleration is integrated into the velocity, the
+/// positions are predicted, the caller's constraint projection corrects the
+/// predicted positions, and the velocities are re-derived from the net
+/// displacement so that constraint corrections feed back into the motion.
 pub struct PbdSubstepSolver {
     /// Number of sub-steps per frame.
     pub substeps: usize,
     /// Full frame timestep (sub-step dt = dt / substeps).
     pub dt: f64,
+    /// Constant external acceleration applied to every particle with a
+    /// positive mass (for example gravity).  Zero by default.
+    pub gravity: [f64; 3],
 }
 impl PbdSubstepSolver {
-    /// Create a new sub-step solver.
+    /// Create a new sub-step solver without external acceleration.
     pub fn new(substeps: usize, dt: f64) -> Self {
-        Self { substeps, dt }
+        Self {
+            substeps,
+            dt,
+            gravity: [0.0; 3],
+        }
     }
-    /// Advance positions/velocities through `substeps` sub-steps, calling
-    /// `constraints` each sub-step to project constraint corrections.
+    /// Set the constant external acceleration (builder style).
+    pub fn with_gravity(mut self, gravity: [f64; 3]) -> Self {
+        self.gravity = gravity;
+        self
+    }
+    /// Advance positions and velocities through `substeps` sub-steps.
+    ///
+    /// Per sub-step of length `h = dt / substeps`, for every particle with
+    /// `masses[i] > 0` (zero or negative masses are treated as pinned and never
+    /// move):
+    ///
+    /// 1. remember the start position `x_prev`,
+    /// 2. `v += gravity · h` and predict `x += v · h`,
+    /// 3. call `constraints` on the predicted positions,
+    /// 4. set `v = (x - x_prev) / h`.
+    ///
+    /// `positions`, `velocities` and `masses` must have the same length; if
+    /// they differ only the common prefix is simulated.  A `substeps` of zero
+    /// is treated as one sub-step.
     pub fn solve(
         &self,
         positions: &mut [[f64; 3]],
@@ -1453,14 +1651,36 @@ impl PbdSubstepSolver {
         masses: &[f64],
         constraints: &mut dyn FnMut(&mut [[f64; 3]]),
     ) {
-        let sub_dt = self.dt / self.substeps as f64;
-        for _ in 0..self.substeps {
-            for i in 0..positions.len() {
-                if masses[i] > 0.0 {
-                    positions[i] = vec3_add(positions[i], vec3_scale(velocities[i], sub_dt));
+        let count = positions.len().min(velocities.len()).min(masses.len());
+        let substeps = self.substeps.max(1);
+        let sub_dt = self.dt / substeps as f64;
+        let mut previous = positions[..count].to_vec();
+        for _ in 0..substeps {
+            previous.copy_from_slice(&positions[..count]);
+            for ((position, velocity), &mass) in positions[..count]
+                .iter_mut()
+                .zip(velocities[..count].iter_mut())
+                .zip(masses[..count].iter())
+            {
+                if mass > 0.0 {
+                    *velocity = vec3_add(*velocity, vec3_scale(self.gravity, sub_dt));
+                    *position = vec3_add(*position, vec3_scale(*velocity, sub_dt));
                 }
             }
             constraints(positions);
+            if sub_dt > 0.0 {
+                let inv_sub_dt = 1.0 / sub_dt;
+                for (((position, velocity), &mass), start) in positions[..count]
+                    .iter()
+                    .zip(velocities[..count].iter_mut())
+                    .zip(masses[..count].iter())
+                    .zip(previous.iter())
+                {
+                    if mass > 0.0 {
+                        *velocity = vec3_scale(vec3_sub(*position, *start), inv_sub_dt);
+                    }
+                }
+            }
         }
     }
 }

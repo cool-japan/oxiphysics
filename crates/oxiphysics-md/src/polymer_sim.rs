@@ -182,7 +182,8 @@ impl FeneSpring {
 /// Kremer–Grest bead-spring polymer chain.
 ///
 /// Combines FENE bonds between adjacent beads with WCA (purely repulsive
-/// Lennard-Jones) excluded-volume interactions between all bead pairs.
+/// Lennard-Jones) excluded-volume interactions between all bead pairs
+/// (bonded neighbours included, as in the original Kremer-Grest model).
 #[derive(Debug, Clone)]
 pub struct KremerGrestChain {
     /// Bead degrees of freedom.
@@ -253,11 +254,19 @@ impl KremerGrestChain {
     }
 
     /// Compute total force on each bead (FENE bonds + WCA repulsion).
+    ///
+    /// Follows the Kremer-Grest prescription: the WCA excluded-volume
+    /// interaction acts between *all* bead pairs, bonded neighbours included,
+    /// and the FENE spring is added on top for each bond.  The FENE potential
+    /// has no repulsive core of its own, so without the WCA term on bonded
+    /// pairs a bond would collapse to zero length.
     fn compute_forces(&self) -> Vec<[f64; 3]> {
         let n = self.beads.len();
         let mut forces = vec![[0.0_f64; 3]; n];
 
-        // FENE bonds between adjacent beads
+        // FENE bonds between adjacent beads.  `compute_force` returns the
+        // force along the bond axis (i -> i+1): negative when the bond is
+        // stretched, i.e. bead `i` is pulled towards bead `i + 1`.
         for i in 0..n.saturating_sub(1) {
             let ri = self.beads[i].position;
             let rj = self.beads[i + 1].position;
@@ -266,17 +275,18 @@ impl KremerGrestChain {
             let f_mag = self.fene_springs[i].compute_force(r);
             for k in 0..3 {
                 let fk = f_mag * dr[k] / r;
-                forces[i][k] += fk;
-                forces[i + 1][k] -= fk;
+                forces[i][k] -= fk;
+                forces[i + 1][k] += fk;
             }
         }
 
-        // WCA excluded-volume (truncated LJ at r_cut = 2^(1/6) σ)
-        let r_cut = 2.0_f64.powf(1.0 / 6.0) * self.lj_sigma;
+        // WCA excluded-volume (truncated LJ at r_cut = 2^(1/6) σ) between
+        // every pair of beads, including bonded neighbours.
+        let r_cut = self.wca_cutoff();
         let eps = self.lj_epsilon;
         let sig = self.lj_sigma;
         for i in 0..n {
-            for j in (i + 2)..n {
+            for j in (i + 1)..n {
                 let dr = sub3(self.beads[j].position, self.beads[i].position);
                 let r = mag3(dr).max(1e-12);
                 if r < r_cut {
@@ -294,9 +304,49 @@ impl KremerGrestChain {
         forces
     }
 
+    /// WCA cutoff radius `2^(1/6) σ` (the minimum of the Lennard-Jones potential).
+    fn wca_cutoff(&self) -> f64 {
+        2.0_f64.powf(1.0 / 6.0) * self.lj_sigma
+    }
+
     /// Total kinetic energy.
     pub fn kinetic_energy(&self) -> f64 {
         self.beads.iter().map(|b| b.kinetic_energy()).sum()
+    }
+
+    /// Total potential energy: FENE bonds plus the WCA excluded-volume term
+    /// summed over every bead pair (bonded neighbours included).
+    ///
+    /// `U_WCA(r) = 4 ε [(σ/r)^12 - (σ/r)^6] + ε` for `r < 2^(1/6) σ`, else 0.
+    /// This is the energy whose negative gradient is the force used by
+    /// [`KremerGrestChain::step`], so `kinetic_energy() + potential_energy()`
+    /// is conserved by the integrator up to its `O(dt²)` shadow-Hamiltonian
+    /// error.
+    pub fn potential_energy(&self) -> f64 {
+        let n = self.beads.len();
+        let mut energy = 0.0;
+        for i in 0..n.saturating_sub(1) {
+            let r = mag3(sub3(self.beads[i + 1].position, self.beads[i].position));
+            energy += self.fene_springs[i].potential_energy(r);
+        }
+        let r_cut = self.wca_cutoff();
+        let eps = self.lj_epsilon;
+        let sig = self.lj_sigma;
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let r = mag3(sub3(self.beads[j].position, self.beads[i].position)).max(1e-12);
+                if r < r_cut {
+                    let s6 = (sig / r).powi(6);
+                    energy += 4.0 * eps * (s6 * s6 - s6) + eps;
+                }
+            }
+        }
+        energy
+    }
+
+    /// Total energy (kinetic + potential).
+    pub fn total_energy(&self) -> f64 {
+        self.kinetic_energy() + self.potential_energy()
     }
 }
 
@@ -767,5 +817,182 @@ mod tests {
             .zip(pos_after.iter())
             .any(|(a, b)| (a - b).abs() > 1e-15);
         assert!(moved);
+    }
+
+    /// Two-bead chain with the given bond length along x (k = 30, R0 = 1.5, σ = ε = 1).
+    fn dimer(bond_length: f64) -> KremerGrestChain {
+        let mut chain = KremerGrestChain::new(2, 1.5, 30.0, 1.0, 1.0);
+        chain.beads[1].position[0] = bond_length;
+        chain
+    }
+
+    /// `d/dr` of the WCA pair potential magnitude: repulsive force at separation `r`.
+    fn wca_repulsion(r: f64) -> f64 {
+        let s6 = (1.0 / r).powi(6);
+        24.0 / r * (2.0 * s6 * s6 - s6)
+    }
+
+    #[test]
+    fn test_kremer_grest_stretched_bond_attracts() {
+        // r = 1.2 σ is beyond the WCA cutoff, so only the FENE spring acts:
+        // F = k r / (1 - (r/R0)²) = 30 · 1.2 / (1 - 0.64) = 100 towards the partner.
+        let chain = dimer(1.2);
+        let forces = chain.compute_forces();
+        assert!((forces[0][0] - 100.0).abs() < 1e-9, "f0 = {:?}", forces[0]);
+        assert!((forces[1][0] + 100.0).abs() < 1e-9, "f1 = {:?}", forces[1]);
+        assert!(forces[0][1].abs() < 1e-12 && forces[0][2].abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_kremer_grest_stretched_bond_accelerates_beads_together() {
+        let mut chain = dimer(1.2);
+        let separation_before = chain.beads[1].position[0] - chain.beads[0].position[0];
+        chain.step(1e-3);
+        assert!(
+            chain.beads[0].velocity[0] > 0.0,
+            "bead 0 must accelerate towards bead 1"
+        );
+        assert!(
+            chain.beads[1].velocity[0] < 0.0,
+            "bead 1 must accelerate towards bead 0"
+        );
+        let separation_after = chain.beads[1].position[0] - chain.beads[0].position[0];
+        assert!(
+            separation_after < separation_before,
+            "a stretched bond must contract: {separation_before} -> {separation_after}"
+        );
+    }
+
+    #[test]
+    fn test_kremer_grest_compressed_bond_is_repelled_by_wca_core() {
+        // At r = 0.9 σ the WCA core (138.66) outweighs the FENE pull (42.19):
+        // the bonded pair needs the WCA term to avoid collapsing.
+        let r = 0.9;
+        let chain = dimer(r);
+        let forces = chain.compute_forces();
+        let fene_pull = 30.0 * r / (1.0 - (r / 1.5) * (r / 1.5));
+        let expected_on_bead0 = fene_pull - wca_repulsion(r);
+        assert!(
+            (forces[0][0] - expected_on_bead0).abs() < 1e-9,
+            "f0 = {}, expected {expected_on_bead0}",
+            forces[0][0]
+        );
+        assert!(forces[0][0] < 0.0, "net force must push the beads apart");
+        assert!(forces[1][0] > 0.0, "net force must push the beads apart");
+    }
+
+    #[test]
+    fn test_kremer_grest_equilibrium_bond_length() {
+        // The zero of the net bond force is the Kremer-Grest bond length (~0.96 σ).
+        let net_force_on_bead1 = |r: f64| dimer(r).compute_forces()[1][0];
+        let (mut lo, mut hi) = (0.9_f64, 1.1_f64);
+        assert!(
+            net_force_on_bead1(lo) > 0.0,
+            "repulsive at the lower bracket"
+        );
+        assert!(
+            net_force_on_bead1(hi) < 0.0,
+            "attractive at the upper bracket"
+        );
+        for _ in 0..60 {
+            let mid = 0.5 * (lo + hi);
+            if net_force_on_bead1(mid) > 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let r_eq = 0.5 * (lo + hi);
+        assert!(
+            (0.95..0.97).contains(&r_eq),
+            "equilibrium bond length = {r_eq}"
+        );
+    }
+
+    /// A compact helical chain whose beads are in WCA contact with several non-neighbours.
+    fn helix_chain(n: usize) -> KremerGrestChain {
+        let mut chain = KremerGrestChain::new(n, 1.5, 30.0, 1.0, 1.0);
+        for (i, bead) in chain.beads.iter_mut().enumerate() {
+            let t = 0.9 * i as f64;
+            bead.position = [0.55 * t.cos(), 0.55 * t.sin(), 0.38 * i as f64];
+        }
+        chain
+    }
+
+    #[test]
+    fn test_kremer_grest_forces_sum_to_zero() {
+        let chain = helix_chain(9);
+        let forces = chain.compute_forces();
+        for axis in 0..3 {
+            let total: f64 = forces.iter().map(|f| f[axis]).sum();
+            assert!(total.abs() < 1e-9, "net force along axis {axis} = {total}");
+        }
+    }
+
+    #[test]
+    fn test_kremer_grest_forces_are_negative_energy_gradient() {
+        let chain = helix_chain(7);
+        let forces = chain.compute_forces();
+        let h = 1e-6;
+        for (i, force) in forces.iter().enumerate() {
+            for (axis, &analytic) in force.iter().enumerate() {
+                let mut plus = chain.clone();
+                plus.beads[i].position[axis] += h;
+                let mut minus = chain.clone();
+                minus.beads[i].position[axis] -= h;
+                let numeric = -(plus.potential_energy() - minus.potential_energy()) / (2.0 * h);
+                let scale = analytic.abs().max(1.0);
+                assert!(
+                    (analytic - numeric).abs() / scale < 1e-6,
+                    "bead {i} axis {axis}: analytic {analytic} vs numeric {numeric}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_kremer_grest_nve_chain_keeps_bonds_intact_and_conserves_energy() {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(2024);
+        let mut chain = KremerGrestChain::new(10, 1.5, 30.0, 1.0, 1.0);
+        for (i, bead) in chain.beads.iter_mut().enumerate() {
+            bead.position = [0.97 * i as f64, 0.0, 0.0];
+            // Maxwell-Boltzmann velocities at kT = 1 (unit mass).
+            for v in bead.velocity.iter_mut() {
+                *v = crate::gaussian_noise::standard_normal(&mut rng);
+            }
+        }
+        let e0 = chain.total_energy();
+        assert!(e0.is_finite() && e0 > 0.0, "initial energy = {e0}");
+        let mut max_rel_drift = 0.0_f64;
+        let mut max_bond = 0.0_f64;
+        let mut min_bond = f64::INFINITY;
+        for _ in 0..1000 {
+            chain.step(0.005);
+            max_rel_drift = max_rel_drift.max(((chain.total_energy() - e0) / e0).abs());
+            for pair in chain.beads.windows(2) {
+                let r = mag3(sub3(pair[1].position, pair[0].position));
+                max_bond = max_bond.max(r);
+                min_bond = min_bond.min(r);
+            }
+        }
+        assert!(max_bond < 1.5, "a bond reached R0: {max_bond}");
+        assert!(min_bond > 0.7, "a bond collapsed: {min_bond}");
+        assert!(
+            max_rel_drift < 1e-3,
+            "relative energy drift = {max_rel_drift}"
+        );
+    }
+
+    #[test]
+    fn test_kremer_grest_potential_energy_two_beads() {
+        // r = 1.2 σ: FENE only, U = -½ k R0² ln(1 - (r/R0)²).
+        let chain = dimer(1.2);
+        let expected = -0.5 * 30.0 * 1.5 * 1.5 * (1.0 - 0.64_f64).ln();
+        assert!((chain.potential_energy() - expected).abs() < 1e-9);
+        // The WCA potential is shifted by +ε so that it vanishes at its cutoff.
+        let at_cutoff = dimer(2.0_f64.powf(1.0 / 6.0) - 1e-12);
+        let fene = at_cutoff.fene_springs[0].potential_energy(2.0_f64.powf(1.0 / 6.0));
+        assert!((at_cutoff.potential_energy() - fene).abs() < 1e-6);
     }
 }

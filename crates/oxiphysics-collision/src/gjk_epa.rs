@@ -4,6 +4,11 @@
 //! GJK (Gilbert-Johnson-Keerthi) and EPA (Expanding Polytope Algorithm)
 //! for convex shape collision detection using plain `[f64; 3]` arrays.
 
+mod distance;
+#[cfg(test)]
+mod distance_tests;
+pub(crate) mod simplex_closest;
+
 // ─── Helper math ────────────────────────────────────────────────────────────
 
 /// Dot product of two 3-vectors stored as `[f64; 3]`.
@@ -285,37 +290,20 @@ pub fn gjk_intersect(shape_a: &dyn ConvexShape, shape_b: &dyn ConvexShape) -> bo
     false
 }
 
-/// Returns `Some(distance)` if not intersecting, `None` if intersecting.
+/// Euclidean distance between two convex shapes.
+///
+/// Returns `Some(distance)` when the shapes are disjoint and `None` when they
+/// overlap or touch (distance below `1e-12` of the Minkowski-difference extent).
+///
+/// This runs the Gilbert-Johnson-Keerthi distance iteration: the closest point
+/// `v` of the Minkowski difference `A - B` to the origin is refined with
+/// support points until `|v|^2 - v.w <= 1e-12 |v|^2`, so the result is exact
+/// (to that relative tolerance) rather than a support-vertex estimate. Use
+/// [`gjk_distance_with_witnesses`] to also obtain the closest points.
 pub fn gjk_distance(shape_a: &dyn ConvexShape, shape_b: &dyn ConvexShape) -> Option<f64> {
-    if gjk_intersect(shape_a, shape_b) {
-        None
-    } else {
-        // Simple distance estimate: iterate and track closest point
-        let mut direction = [1.0_f64, 0.0, 0.0];
-        let mut min_dist = f64::MAX;
-
-        for _ in 0..64 {
-            let s = minkowski_support(shape_a, shape_b, direction);
-            let d = len3(s);
-            if d < min_dist {
-                min_dist = d;
-            }
-            let new_dir = neg3(s);
-            if len3(new_dir) < 1e-12 {
-                break;
-            }
-            let next_s = minkowski_support(shape_a, shape_b, new_dir);
-            if dot3(next_s, new_dir) < dot3(s, direction) + 1e-10 {
-                break;
-            }
-            direction = new_dir;
-        }
-
-        // Approximate: distance between closest support points
-        let sa = shape_a.support(direction);
-        let sb = shape_b.support(neg3(direction));
-        let dist = len3(sub3(sa, sb));
-        Some(dist.max(0.0))
+    match distance::solve(shape_a, shape_b) {
+        distance::DistanceOutcome::Overlapping => None,
+        distance::DistanceOutcome::Separated { distance, .. } => Some(distance),
     }
 }
 
@@ -637,90 +625,39 @@ pub fn closest_point_segment_to_origin(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 /// Closest point on triangle ABC to the origin (point projection).
+///
+/// Degenerate triangles (coincident or collinear vertices) are handled by
+/// falling back to the nearest point of their edges instead of dividing by a
+/// vanishing area.
 pub fn closest_point_triangle_to_origin(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [f64; 3] {
-    let ab = sub3(b, a);
-    let ac = sub3(c, a);
-    let ao = neg3(a);
-
-    let d1 = dot3(ab, ao);
-    let d2 = dot3(ac, ao);
-    if d1 <= 0.0 && d2 <= 0.0 {
-        return a;
-    }
-
-    let bo = neg3(b);
-    let d3 = dot3(ab, bo);
-    let d4 = dot3(ac, bo);
-    if d3 >= 0.0 && d4 <= d3 {
-        return b;
-    }
-
-    let co = neg3(c);
-    let d5 = dot3(ab, co);
-    let d6 = dot3(ac, co);
-    if d6 >= 0.0 && d5 <= d6 {
-        return c;
-    }
-
-    let vc = d1 * d4 - d3 * d2;
-    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        let v = d1 / (d1 - d3);
-        return add3(a, scale3(ab, v));
-    }
-
-    let vb = d5 * d2 - d1 * d6;
-    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        let w = d2 / (d2 - d6);
-        return add3(a, scale3(ac, w));
-    }
-
-    let va = d3 * d6 - d5 * d4;
-    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
-        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-        return add3(b, scale3(sub3(c, b), w));
-    }
-
-    let denom = 1.0 / (va + vb + vc);
-    let v = vb * denom;
-    let w = vc * denom;
-    add3(a, add3(scale3(ab, v), scale3(ac, w)))
+    simplex_closest::closest_point_to_origin(&[a, b, c]).point
 }
 
-/// Improved GJK distance query that tracks the closest simplex points.
+/// GJK distance query that also returns the closest points on both shapes.
 ///
-/// Returns `Some((dist, witness_a, witness_b))` — the minimum distance and
-/// witness points on each shape — when the shapes do **not** intersect.
-/// Returns `None` when they intersect.
+/// Returns `Some((dist, witness_a, witness_b))` — the minimum distance and the
+/// closest point on each shape — when the shapes do **not** intersect, and
+/// `None` when they overlap or touch. The witnesses are the barycentric blend
+/// of the support points of the final simplex, so
+/// `witness_a - witness_b` is the closest point of the Minkowski difference to
+/// the origin and `|witness_a - witness_b| == dist`. When the closest features
+/// are parallel faces or edges the witness pair is one of infinitely many
+/// equally close pairs. On smooth shapes (spheres, capsules) the distance is
+/// accurate to about `1e-12` relative while the witnesses are accurate to
+/// about its square root (`~1e-6` relative), because the distance is
+/// quadratic in the witness position error.
 pub fn gjk_distance_with_witnesses(
     shape_a: &dyn ConvexShape,
     shape_b: &dyn ConvexShape,
 ) -> Option<(f64, [f64; 3], [f64; 3])> {
-    if gjk_intersect(shape_a, shape_b) {
-        return None;
+    match distance::solve(shape_a, shape_b) {
+        distance::DistanceOutcome::Overlapping => None,
+        distance::DistanceOutcome::Separated {
+            distance,
+            point_a,
+            point_b,
+        } => Some((distance, point_a, point_b)),
     }
-    // Walk the Minkowski difference to find the closest point.
-    let mut dir = [1.0_f64, 0.0, 0.0];
-    let mut best_a = shape_a.support(dir);
-    let mut best_b = shape_b.support(neg3(dir));
-    let mut best_dist = f64::MAX;
-
-    for _ in 0..64 {
-        let sa = shape_a.support(dir);
-        let sb = shape_b.support(neg3(dir));
-        let diff = sub3(sa, sb); // point on Minkowski difference boundary
-        let d = len3(diff);
-        if d < best_dist {
-            best_dist = d;
-            best_a = sa;
-            best_b = sb;
-        }
-        let new_dir = neg3(diff);
-        if len3(new_dir) < 1e-12 {
-            break;
-        }
-        dir = normalize3(new_dir);
-    }
-    Some((best_dist.max(0.0), best_a, best_b))
 }
 
 // ─── GJK with rotation ───────────────────────────────────────────────────────
@@ -980,8 +917,13 @@ mod tests {
     fn test_sphere_sphere_touching() {
         let a = sphere(0.0, 0.0, 0.0, 1.0);
         let b = sphere(2.0, 0.0, 0.0, 1.0);
-        // Touching spheres: borderline; GJK may report either
+        // Touching spheres: the boolean test is borderline and may report either,
+        // but the distance query must agree with contact: no gap at all.
         let _ = gjk_intersect(&a, &b);
+        match gjk_distance(&a, &b) {
+            None => {}
+            Some(d) => assert!(d < 1e-7, "tangent spheres reported a gap of {}", d),
+        }
     }
 
     #[test]
@@ -995,11 +937,9 @@ mod tests {
     fn test_sphere_sphere_distance_separated() {
         let a = sphere(0.0, 0.0, 0.0, 1.0);
         let b = sphere(4.0, 0.0, 0.0, 1.0);
-        let d = gjk_distance(&a, &b);
-        assert!(d.is_some());
-        // Distance between surfaces should be ~2.0
-        let d = d.unwrap();
-        assert!(d > 0.0 && d < 5.0, "distance={}", d);
+        // Surface gap: 4 - 1 - 1 = 2.
+        let d = gjk_distance(&a, &b).expect("disjoint spheres have a distance");
+        assert!((d - 2.0).abs() < 1e-6, "distance={}", d);
     }
 
     #[test]
@@ -1036,9 +976,9 @@ mod tests {
     fn test_box_box_distance() {
         let a = aabb(0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
         let b = aabb(4.0, 0.0, 0.0, 1.0, 1.0, 1.0);
-        let d = gjk_distance(&a, &b);
-        assert!(d.is_some());
-        assert!(d.unwrap() > 0.0);
+        // Face gap: 4 - 1 - 1 = 2.
+        let d = gjk_distance(&a, &b).expect("disjoint boxes have a distance");
+        assert!((d - 2.0).abs() < 1e-6, "distance={}", d);
     }
 
     // ── sphere-box ───────────────────────────────────────────────────────────
@@ -1061,9 +1001,9 @@ mod tests {
     fn test_sphere_box_distance() {
         let a = sphere(0.0, 0.0, 0.0, 0.5);
         let b = aabb(4.0, 0.0, 0.0, 1.0, 1.0, 1.0);
-        let d = gjk_distance(&a, &b);
-        assert!(d.is_some());
-        assert!(d.unwrap() > 0.0);
+        // Gap: box face at x = 3, sphere surface at x = 0.5.
+        let d = gjk_distance(&a, &b).expect("disjoint shapes have a distance");
+        assert!((d - 2.5).abs() < 1e-6, "distance={}", d);
     }
 
     // ── capsule tests ─────────────────────────────────────────────────────────
@@ -1179,6 +1119,30 @@ mod tests {
     }
 
     #[test]
+    fn test_closest_point_triangle_degenerate_inputs_stay_finite() {
+        // Coincident vertices: the triangle is the segment a-c.
+        let a = [1.0, 1.0, 0.0];
+        let c = [-1.0, 1.0, 0.0];
+        let p = closest_point_triangle_to_origin(a, a, c);
+        assert!(len3(sub3(p, [0.0, 1.0, 0.0])) < 1e-12, "got {:?}", p);
+        // Collinear vertices.
+        let p =
+            closest_point_triangle_to_origin([-3.0, 2.0, 0.0], [1.0, 2.0, 0.0], [5.0, 2.0, 0.0]);
+        assert!(len3(sub3(p, [0.0, 2.0, 0.0])) < 1e-12, "got {:?}", p);
+        // All three vertices equal.
+        let p = closest_point_triangle_to_origin([0.0, 3.0, 4.0], [0.0, 3.0, 4.0], [0.0, 3.0, 4.0]);
+        assert!(len3(sub3(p, [0.0, 3.0, 4.0])) < 1e-12, "got {:?}", p);
+    }
+
+    #[test]
+    fn test_closest_point_triangle_interior_projection_is_exact() {
+        // The origin projects into the interior of a triangle in the plane z = 3.
+        let p =
+            closest_point_triangle_to_origin([-1.0, -1.0, 3.0], [2.0, -1.0, 3.0], [-1.0, 2.0, 3.0]);
+        assert!(len3(sub3(p, [0.0, 0.0, 3.0])) < 1e-12, "got {:?}", p);
+    }
+
+    #[test]
     fn test_closest_point_triangle_origin_outside_near_vertex() {
         // Triangle far from origin: closest should be vertex A
         let a = [10.0, 0.0, 0.0];
@@ -1197,9 +1161,10 @@ mod tests {
         let result = gjk_distance_with_witnesses(&a, &b);
         assert!(result.is_some(), "separated spheres should have a distance");
         let (dist, pa, pb) = result.unwrap();
-        assert!(dist > 0.0, "distance should be positive");
-        assert!(pa.iter().all(|x| x.is_finite()));
-        assert!(pb.iter().all(|x| x.is_finite()));
+        assert!((dist - 3.0).abs() < 1e-6, "distance={}", dist);
+        assert!((pa[0] - 1.0).abs() < 1e-5, "witness_a={:?}", pa);
+        assert!((pb[0] - 4.0).abs() < 1e-5, "witness_b={:?}", pb);
+        assert!((len3(sub3(pa, pb)) - dist).abs() < 1e-9);
     }
 
     #[test]
@@ -1278,9 +1243,17 @@ mod tests {
         let cp = closest_points_between_shapes(&a, &b);
         assert!(cp.is_some(), "separated boxes should have closest points");
         let cp = cp.unwrap();
-        assert!(cp.distance > 0.0);
-        assert!(cp.point_a.iter().all(|x| x.is_finite()));
-        assert!(cp.point_b.iter().all(|x| x.is_finite()));
+        assert!((cp.distance - 3.0).abs() < 1e-6, "distance={}", cp.distance);
+        assert!(
+            (cp.point_a[0] - 1.0).abs() < 1e-9,
+            "point_a={:?}",
+            cp.point_a
+        );
+        assert!(
+            (cp.point_b[0] - 4.0).abs() < 1e-9,
+            "point_b={:?}",
+            cp.point_b
+        );
     }
 
     #[test]
